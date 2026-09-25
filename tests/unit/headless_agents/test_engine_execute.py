@@ -149,6 +149,15 @@ def test_a_one_step_run_writes_its_records(world: World) -> None:
     assert world.registry().resolve(outcome.run_id).status == "answered"
 
 
+def test_a_read_only_runs_entry_records_its_providers_and_no_continuation(world: World) -> None:
+    """Lot 3: every entry records its role's providers; the report's copy is a write run's."""
+    outcome = world.run("codex")
+    entry = world.registry().resolve(outcome.run_id)
+    assert entry.providers == ("codex",) and entry.continues is None
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["implement_providers"] is None and report["continues"] is None
+
+
 def test_the_spec_carries_the_role_the_context_and_a_read_only_workspace(world: World) -> None:
     world.roles('[rev]\nprovider = "codex"\ncontext = "full"\ninstructions = "be terse"\n')
     world.run("rev")

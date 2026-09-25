@@ -29,17 +29,10 @@ from .runs import RUN_ID_PATTERN, Entry, Registry, RegistryError
 from .state import Unknown
 from .write_flow import PATCH_FILE
 
-#: Fields whose one authority is a state record a later lot introduces (plan P6): a
-#: review's result (spec §3.8.1, §3.8.6) and the continuation records (§3.10).
-#: ``ha show`` never takes them from ``run.json``; lots 3 and 4 fill them from the state.
-LATER_AUTHORITIES: Final = (
-    "verdict",
-    "vendor_check",
-    "cleanup",
-    "continues",
-    "findings_from",
-    "implement_providers",
-)
+#: Fields whose one authority is a state record a later lot introduces (lot 2 plan P6):
+#: a review's result (spec §3.8.1, §3.8.6), and the findings a fix reads (§3.6). ``ha
+#: show`` never takes them from ``run.json``; lot 4 fills them from the state.
+LATER_AUTHORITIES: Final = ("verdict", "vendor_check", "cleanup", "findings_from")
 #: What the engine writes for a write run only; a run outside any lineage has none of them.
 _WRITE_FIELDS: Final = ("lineage", "branch", "base", "head", "commits")
 
@@ -212,6 +205,11 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
     )
     # Plan P6: their authority is a state record a later lot adds; run.json never supplies them.
     document.update(dict.fromkeys(LATER_AUTHORITIES))
+    # §3.10: a write run's continuation records, copied from its registry entry.
+    document.update(
+        continues=entry.continues,
+        implement_providers=list(entry.providers) if entry.lineage is not None else None,
+    )
     status: str | None = None
     lineage_status: str | None = None
     if entry.lineage is not None:

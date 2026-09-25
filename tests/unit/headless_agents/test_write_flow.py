@@ -209,6 +209,15 @@ def test_a_committed_write(world: World) -> None:
     assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
 
 
+def test_a_write_run_records_its_roles_providers(world: World) -> None:
+    """Lot 3, §3.10: implement_providers copies the entry's providers, every link of the role."""
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    assert world.registry().resolve(outcome.run_id).providers == ("codex",)
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["implement_providers"] == ["codex"] and report["continues"] is None
+
+
 def test_the_agent_works_in_the_worktree_with_the_role_shell(world: World) -> None:
     world.agent.edit = _edit_app
     outcome = world.write()

@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -616,11 +616,13 @@ def _admit(
     target: Mapping[str, str],
     repository: Path,
     write: bool = False,
+    providers: Sequence[str] = (),
 ) -> Entry:
     """Mint an id, take its lifecycle lock, then publish its entry (§3.8.3 step 1).
 
     A write run's entry names its lineage -- the one it starts, owned by its
     own id -- so its status lives in the lineage state only (§3.8.1).
+    ``providers`` is a continuation record the report copies (§3.10).
 
     The lock comes first: an entry is never visible with a free lock before
     its run starts, so ``ha clean`` cannot forget a run that is being admitted
@@ -652,6 +654,7 @@ def _admit(
                     target=target,
                     repository=repository,
                     lineage=run_id if write else None,
+                    providers=providers,
                 )
             except FileExistsError:
                 continue
@@ -760,7 +763,9 @@ def _execute_write(
         branch=outcome.branch,
         base=outcome.base,
         head=outcome.head,
-        lineage=entry.run_id,
+        lineage=entry.lineage,
+        continues=entry.continues,
+        implement_providers=list(entry.providers),
         commits=[{"sha": sha, "made_by": made_by} for sha, made_by in outcome.commits],
         failure_reason=outcome.failure_reason,
         duration_seconds=round(time.monotonic() - started, 3),
@@ -817,6 +822,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 target=target,
                 repository=repository,
                 write=role.write,
+                providers=role.providers,
             )
         except (LockTimeout, RegistryError) as exc:
             # A run that never started leaves nothing behind (codex review of #207).
