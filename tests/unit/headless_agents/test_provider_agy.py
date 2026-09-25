@@ -773,3 +773,40 @@ class TestTheProviderDiesWithHa:
         with pytest.raises(KeyboardInterrupt):
             _run(tmp_path)
         assert fake.returncode == -9, "terminate_process_group was not called"
+
+
+class _RecordedLifeline:
+    def __init__(self, pgid: int, log: list[object]) -> None:
+        log.append(("watch", pgid))
+        self._log = log
+
+    def release(self) -> None:
+        self._log.append("release")
+
+
+class TestTheGroupIsWatched:
+    """Operator decision Q75=a: a watcher kills the provider's whole group if
+    ha dies; the rail starts it on the provider's pid and releases it on every
+    exit path."""
+
+    def test_the_watcher_is_started_and_released(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        log: list[object] = []
+        monkeypatch.setattr(agy, "watch_group", lambda pgid: _RecordedLifeline(pgid, log))
+        fake = _FakeProcess(returncode=0)
+        _install(monkeypatch, fake)
+        _run(tmp_path)
+        assert log == [("watch", fake.pid), "release"]
+
+    def test_the_watcher_is_released_on_interruption(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        log: list[object] = []
+        monkeypatch.setattr(agy, "watch_group", lambda pgid: _RecordedLifeline(pgid, log))
+
+        class _Interrupted(_FakeProcess):
+            def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+                raise KeyboardInterrupt
+
+        fake = _Interrupted(returncode=0)
+        _install(monkeypatch, fake)
+        with pytest.raises(KeyboardInterrupt):
+            _run(tmp_path)
+        assert log == [("watch", fake.pid), "release"]

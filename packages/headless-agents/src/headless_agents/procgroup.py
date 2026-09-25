@@ -30,8 +30,10 @@ from __future__ import annotations
 import ctypes
 import os
 import signal
+import subprocess
 import sys
 from collections.abc import Callable
+from pathlib import Path
 from typing import Final
 
 PR_SET_PDEATHSIG: Final = 1
@@ -81,4 +83,66 @@ def preexec_for(parent_pid: int) -> Callable[[], None]:
     return preexec
 
 
-__all__ = ["PR_SET_PDEATHSIG", "preexec_for"]
+_REAPER: Final = Path(__file__).with_name("_reaper.py")
+
+
+class Lifeline:
+    """The write end of a watcher's pipe: holding it open keeps the group alive.
+
+    :meth:`release` tells the watcher the run ended normally. If ``ha`` dies
+    instead, the kernel closes this end and the watcher kills the group.
+    """
+
+    def __init__(self, write_fd: int | None, watcher: subprocess.Popen[bytes] | None) -> None:
+        self._write_fd = write_fd
+        self._watcher = watcher
+
+    def release(self) -> None:
+        if self._write_fd is not None:
+            try:
+                os.write(self._write_fd, b"d")
+            except OSError:
+                pass
+            os.close(self._write_fd)
+            self._write_fd = None
+        if self._watcher is not None:
+            try:
+                self._watcher.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self._watcher.kill()
+                self._watcher.wait()
+            self._watcher = None
+
+
+def watch_group(pgid: int) -> Lifeline:
+    """Start a watcher that kills process group ``pgid`` if this process dies.
+
+    ``PR_SET_PDEATHSIG`` reaches a provider's direct child only; its
+    descendants -- a CLI's workers, a shell command the agent started -- would
+    otherwise outlive a killed ``ha`` and keep writing after its locks died
+    (operator decision Q75 = a). The watcher runs in its own session, outside
+    the group it guards. A group that does not exist needs none.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except (ProcessLookupError, PermissionError):
+        return Lifeline(None, None)
+    read_fd, write_fd = os.pipe()
+    try:
+        watcher = subprocess.Popen(
+            [sys.executable, "-I", str(_REAPER), str(read_fd), str(pgid)],
+            pass_fds=(read_fd,),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        os.close(write_fd)
+        return Lifeline(None, None)
+    finally:
+        os.close(read_fd)
+    return Lifeline(write_fd, watcher)
+
+
+__all__ = ["PR_SET_PDEATHSIG", "Lifeline", "preexec_for", "watch_group"]

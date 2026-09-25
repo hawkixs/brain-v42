@@ -30,7 +30,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
-from ..procgroup import preexec_for
+from ..procgroup import preexec_for, watch_group
 from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
@@ -407,6 +407,7 @@ def run_claude(
                 # Claude did not start: nothing could have been written.
                 return PROVIDER_FALLBACK_EXIT_CODE
 
+            lifeline = watch_group(process.pid)
             try:
                 process.communicate(
                     input=prompt, timeout=_effective_timeout(timeout_seconds, deadline)
@@ -430,6 +431,7 @@ def run_claude(
                 terminate_process_group(process)
                 raise
             finally:
+                lifeline.release()
                 # Every exit path -- success, failure, timeout, interruption --
                 # rescues a rotated login before the per-run config is removed.
                 if copied is not None and real_at_build is not None:

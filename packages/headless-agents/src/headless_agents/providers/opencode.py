@@ -84,7 +84,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
-from ..procgroup import preexec_for
+from ..procgroup import preexec_for, watch_group
 from ..profile import CapabilityProfile, McpServer, Workspace
 from ..result import RunResult, TokenUsage
 from ..run_record import answer_text, record, run_id_of
@@ -868,6 +868,7 @@ def run_opencode(
             except OSError as exc:
                 stderr_stream.write(f"unable to start opencode: {exc}\n")
                 return PROVIDER_FALLBACK_EXIT_CODE
+            lifeline = watch_group(process.pid)
             try:
                 process.communicate(timeout=remaining)
             except subprocess.TimeoutExpired:
@@ -885,6 +886,9 @@ def run_opencode(
                 raise
             else:
                 timed_out = False
+            finally:
+                # Normal end: the watcher leaves without killing (Q75 = a).
+                lifeline.release()
 
         if timed_out:
             return _deadline_exit_code(

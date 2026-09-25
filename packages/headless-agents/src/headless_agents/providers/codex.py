@@ -30,7 +30,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
-from ..procgroup import preexec_for
+from ..procgroup import preexec_for, watch_group
 from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
@@ -859,6 +859,7 @@ def run_codex(
                 # Codex did not even start: nothing could have been written.
                 return PROVIDER_FALLBACK_EXIT_CODE
 
+            lifeline = watch_group(process.pid)
             try:
                 process.communicate(input=prompt, timeout=remaining)
             except subprocess.TimeoutExpired:
@@ -876,6 +877,9 @@ def run_codex(
                 raise
             else:
                 timed_out = False
+            finally:
+                # Normal end: the watcher leaves without killing (Q75 = a).
+                lifeline.release()
 
         if timed_out:
             return _deadline_exit_code(
