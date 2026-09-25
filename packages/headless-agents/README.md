@@ -376,10 +376,12 @@ section is being rewritten with the 0.5.0 lots.
   `shape = "implement"` takes one role with `write = true` in its `implement` slot: `ha run
   build "task"` runs it on a new `ha/<run_id>` branch, as a write run, with the task
   wrapped in the engine's implement prompt, and prints the run id, the branch, the diffstat
-  and the patch path before the agent's text. A workflow runs its roles as declared: `-m`,
-  `--write` and the other role options are refused. `ha workflows` lists what
-  `workflows.toml` declares; `shape = "review"` is validated there and arrives with the
-  vendor rule in a later 0.5.0 lot.
+  and the patch path before the agent's text. `--continue RUN_ID` joins that run's lineage
+  instead: the next run works in the same worktree, on the same branch, from its tip --
+  commits made there by hand included -- once the worktree is clean. A workflow runs its
+  roles as declared: `-m`, `--write` and the other role options are refused. `ha workflows`
+  lists what `workflows.toml` declares; `shape = "review"` is validated there and arrives
+  with the vendor rule in a later 0.5.0 lot.
 
 - **Read-only** (default): a CLI rail reads the current repository through a read-only
   workspace (no write tool; no shell, except codex, whose shell is its only read tool and

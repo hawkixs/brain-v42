@@ -526,3 +526,18 @@ def test_a_refused_unconfined_continuation_withdraws_its_intent(world: World) ->
     with pytest.raises(UsageError, match="uncommitted changes"):
         _continue(world, first.run_id)
     assert not (world.state / write_flow.UNCONFINED_INTENT).exists()
+
+
+def test_the_cli_continues_a_lineage_and_prints_the_new_run_id(world: World) -> None:
+    first = _first(world)
+    world.agent.edit = _fix
+    code, out, err = world.cli("run", "build", "--continue", first.run_id, "Turn it on.")
+    assert code == 0, err
+    (run_id,) = set(world.registry().run_ids()) - {first.run_id}
+    assert out.startswith(f"run: {run_id}\nbranch: ha/{first.run_id}\n")
+
+
+def test_the_cli_refuses_continue_on_a_role_target(world: World) -> None:
+    first = _first(world)
+    code, _, err = world.cli("run", "codex", "--continue", first.run_id, "task")
+    assert code == 2 and "--continue needs an implement workflow" in err

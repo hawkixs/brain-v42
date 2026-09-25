@@ -83,13 +83,14 @@ exit codes of a workflow (implement):
   5 the implementation changed nothing
   1 a step failed (its residue committed), the tripwire fired, HEAD moved or a hook
     refused; the step's own code is in run.json
-  2 invalid usage or configuration; nothing ran
+  2 invalid usage or configuration, a refused --continue, or its lineage in use for
+    more than 10 s; nothing ran
   130 interrupted (Ctrl-C); the run reads incomplete
 
 examples:
   ha run codex -m gpt-6-luna "Explain what this repository does."
-  ha run reviewer-codex - < task.md
   ha run build "Add a --verbose flag to the CLI."
+  ha run build --continue 20260926T101500-ab12cd34 "Also document the flag."
 """
 
 
@@ -157,6 +158,13 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--key-env", metavar="VAR", help="the key variable of openai-compat")
     run.add_argument("--json", action="store_true", help="print run.json")
     run.add_argument("--run-dir", type=Path, help="the run's directory (must not exist)")
+    run.add_argument(
+        "--continue",
+        dest="continue_run",
+        metavar="RUN_ID",
+        help="an implement workflow only: join the lineage of RUN_ID, an implement run, "
+        "and work on its branch in its worktree",
+    )
     # Removed in 0.5.0: kept hidden so their use gets a message, not argparse's guess.
     run.add_argument("-p", "--provider", help=argparse.SUPPRESS)
     run.add_argument("--chain", help=argparse.SUPPRESS)
@@ -280,6 +288,7 @@ def _run(args: argparse.Namespace, io: Io) -> int:
         cwd=io.cwd,
         environ=io.environ,
         home=io.home,
+        continue_run=args.continue_run,
     )
     outcome = execute(plan(request), say=io.say)
     branch = outcome.report.get("branch")
