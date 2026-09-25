@@ -273,8 +273,21 @@ message (claude alone gets a system prompt), and a weak model -- measured: openc
 Four registry names speak the OpenAI chat-completions API instead of running a CLI:
 `openrouter`, `mistral` and `nvidia` fix their endpoint and the **name** of their key
 variable (`OPENROUTER_API_KEY`, `MISTRAL_API_KEY`, `NVIDIA_API_KEY`); `openai-compat` takes
-both from the caller. The package never reads a key from a file: put it in the
-environment.
+both from the caller.
+
+A preset's key comes from the environment first. Otherwise, `~/.config/ha/keys.toml`
+names, per preset, the `.env` file that holds it:
+
+```toml
+openrouter = "~/.config/red/openrouter.env"
+mistral    = "~/.config/red/mistral.env"
+```
+
+ha reads only the preset's own variable from that file (`KEY=value`, `export KEY=value`,
+quoted or not), and only if the file belongs to you and nobody else can read it (mode
+`0600`). The key goes to the HTTP request only. `keys.toml` is read from the configuration
+directory only, never from a repository. `ha providers` shows where each key came from.
+`openai-compat` still takes its key from the variable `--key-env` names.
 
 ```python
 from pathlib import Path

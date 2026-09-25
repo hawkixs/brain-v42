@@ -3,8 +3,9 @@
 Spec 3.2 (headless-agents 0.4.0, lot 3). Four registry names share this
 provider: ``openrouter``, ``mistral`` and ``nvidia`` fix their endpoint and the
 NAME of the variable holding their key; ``openai-compat`` takes both from the
-caller, in ``RunSpec.extra["base_url"]`` and ``RunSpec.extra["key_env"]``. The
-package never reads a key from a file: the caller puts it in the environment.
+caller, in ``RunSpec.extra["base_url"]`` and ``RunSpec.extra["key_env"]``. A
+key comes from the environment; a preset's may also come from the file the
+operator's ``keys.toml`` declares for it (:mod:`headless_agents.keys`).
 
 Each call runs in a killable child (:mod:`._openai_worker`), so a deadline and
 a process-group kill behave exactly as on the CLI rails. The prompt AND the key
@@ -276,6 +277,17 @@ class OpenAICompatProvider:
             _write(spec.stderr_log, f"{exc}\n", append=True)
             return self._result(spec, INVALID_USAGE_EXIT_CODE, start)
         api_key = environ.get(key_env)
+        if not api_key and self.name in PRESETS:
+            # A preset may take its key from the file keys.toml declares (decision
+            # 0612592e). Imported here: keys reads this module's PRESETS.
+            from ..keys import KeysError, preset_key
+
+            try:
+                found = preset_key(self.name, environ)
+            except KeysError as exc:
+                _write(spec.stderr_log, f"{exc}\n", append=True)
+                return self._result(spec, 1, start)
+            api_key = found.value if found is not None else None
         if not api_key:
             _write(
                 spec.stderr_log, f"missing required environment variable: {key_env}\n", append=True
