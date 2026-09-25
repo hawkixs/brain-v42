@@ -111,3 +111,22 @@ def test_step_dir_name() -> None:
 def test_write_report_publishes_run_json(tmp_path: Path) -> None:
     write_report(tmp_path, _report())
     assert json.loads((tmp_path / RUN_JSON).read_text())["run_id"] == "20260925T000000-aaaaaaaa"
+
+
+def test_a_step_carries_its_tool_counts() -> None:
+    entry = step_entry(
+        index=1,
+        slot="run",
+        role="codex",
+        step_dir="steps/01-run-codex",
+        result=_result(),
+        tools={"command_execution": 4},
+    )
+    assert entry["tools"] == {"command_execution": 4}
+
+
+def test_a_step_without_counts_is_not_measured() -> None:
+    entry = step_entry(
+        index=1, slot="run", role="codex", step_dir="steps/01-run-codex", result=_result()
+    )
+    assert entry["tools"] is None

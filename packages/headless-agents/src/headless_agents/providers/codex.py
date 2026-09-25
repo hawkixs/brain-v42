@@ -20,10 +20,11 @@ import stat
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Mapping
 from contextlib import ExitStack
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from ..capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
@@ -32,6 +33,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
+from ..event_log import read_events
 from ..procgroup import preexec_for, spawn_watched
 from ..profile import McpServer, Workspace
 from ..result import RunResult
@@ -414,6 +416,38 @@ def write_tool_started(events_log: Path) -> bool:
         if isinstance(item, dict) and item.get("type") in {"command_execution", "file_change"}:
             return True
     return False
+
+
+#: codex item types that are not tool calls (spec §3.11 excludes messages and
+#: reasoning; an ``error`` item is neither a call nor a message -- plan P4).
+NON_TOOL_ITEM_TYPES: Final = frozenset({"agent_message", "reasoning", "error"})
+
+
+def count_tools(events_log: Path | None) -> dict[str, int] | None:
+    """Tool calls in this ``--json`` event stream, by item type (spec 0.5.0 §3.11).
+
+    codex writes ``item.started`` then ``item.completed`` for one call, under
+    one ``item.id``: a call is counted once, by that id (plan P2) -- one that
+    started and never completed included, since it may have run. ``None`` when
+    the stream cannot be read whole, or names a tool item with no id: not
+    measured, never a partial count.
+    """
+    events = read_events(events_log)
+    if events is None:
+        return None
+    calls: dict[str, str] = {}
+    for event in events:
+        item = event.get("item")
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("type")
+        if not isinstance(kind, str) or kind in NON_TOOL_ITEM_TYPES:
+            continue
+        item_id = item.get("id")
+        if not isinstance(item_id, str):
+            return None
+        calls.setdefault(item_id, kind)
+    return dict(Counter(calls.values()))
 
 
 def _deadline_exit_code(

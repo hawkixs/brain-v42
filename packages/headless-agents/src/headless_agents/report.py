@@ -60,7 +60,13 @@ def step_dir_name(index: int, slot: str, role: str) -> str:
 
 
 def step_entry(
-    *, index: int, slot: str, role: str, step_dir: str, result: RunResult
+    *,
+    index: int,
+    slot: str,
+    role: str,
+    step_dir: str,
+    result: RunResult,
+    tools: Mapping[str, int] | None = None,
 ) -> dict[str, object]:
     return {
         "index": index,
@@ -74,8 +80,8 @@ def step_entry(
         "duration_seconds": result.duration_seconds,
         "tokens": asdict(result.tokens) if result.tokens is not None else None,
         "cost_usd": result.cost_usd,
-        # Tool counters arrive in lot 2 (§3.11): not measured is null.
-        "tools": None,
+        # Spec §3.11: the rail's own names; None when the rail could not measure.
+        "tools": dict(tools) if tools is not None else None,
         "verdict": None,
     }
 

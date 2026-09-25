@@ -36,7 +36,7 @@ from .profile import CapabilityProfile, Credentials, McpServer, Workspace, mcp_n
 from .proofs import CLI_RAILS, confinement, isolation_label, isolation_ok
 from .providers.claude import MAX_APPEND_SYSTEM_PROMPT_BYTES
 from .providers.openai_compat import GENERIC_NAME
-from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes, probe
+from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes, probe, tool_counts
 from .repo import RepoError, RepoIdentity, discover
 from .report import RUN_JSON, new_report, step_dir_name, step_entry, with_step, write_report
 from .result import RunResult
@@ -611,6 +611,7 @@ def _execute_write(
                 role=role.name,
                 step_dir=f"steps/{step_name}",
                 result=outcome.final,
+                tools=tool_counts(outcome.final),
             ),
         )
     report.update(
@@ -761,7 +762,12 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         report = with_step(
             report,
             step_entry(
-                index=1, slot="run", role=role.name, step_dir=f"steps/{step_name}", result=final
+                index=1,
+                slot="run",
+                role=role.name,
+                step_dir=f"steps/{step_name}",
+                result=final,
+                tools=tool_counts(final),
             ),
         )
         status = "answered" if final.exit_code == 0 else "failed"

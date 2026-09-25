@@ -1,10 +1,11 @@
-"""The facade: providers by name, a zero-quota probe, and per-provider prompt limits.
+"""The facade: providers by name, a zero-quota probe, per-provider prompt limits, tool counts.
 
 A consumer that dispatches on a provider name through its own ``if/elif``
 rebuilds this module, and drifts from it the day a rail is added. It asks
 here instead: :func:`get_provider` for the rail, :func:`probe` to know whether
 the rail can run on this machine at all, :func:`max_prompt_bytes` for the
-argv rails' limit -- never a hard-coded copy of it.
+argv rails' limit -- never a hard-coded copy of it -- and :func:`tool_counts`
+for the tool calls a run made, read from its rail's own event log.
 
 :func:`probe` costs no quota: for a CLI rail it looks for the executable and
 asks for its ``--version``; for an HTTP provider it checks that the key
@@ -21,16 +22,21 @@ from collections.abc import Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Final
 
 from .protocol import AgentProvider
 from .providers.agy import MAX_PROMPT_BYTES as AGY_MAX_PROMPT_BYTES
 from .providers.agy import AgyProvider
+from .providers.agy import count_tools as agy_tools
 from .providers.claude import ClaudeProvider
 from .providers.codex import CodexProvider
+from .providers.codex import count_tools as codex_tools
 from .providers.openai_compat import GENERIC_NAME, PRESETS, OpenAICompatProvider
 from .providers.opencode import MAX_PROMPT_BYTES as OPENCODE_MAX_PROMPT_BYTES
 from .providers.opencode import OpenCodeProvider
+from .providers.opencode import count_tools as opencode_tools
+from .result import RunResult
 
 _FACTORIES: Final[Mapping[str, Callable[[], AgentProvider]]] = {
     "claude": ClaudeProvider,
@@ -91,6 +97,29 @@ def get_provider(name: str) -> AgentProvider:
 def max_prompt_bytes(name: str) -> int | None:
     """The largest prompt, in UTF-8 bytes, the rail accepts; ``None`` when unbounded."""
     return _MAX_PROMPT_BYTES[_known(name)]
+
+
+#: The rails whose own event log counts their tool calls (spec §3.11). claude
+#: is not here: its counts stay ``None`` until a live test proves its
+#: telemetry complete at exit (plan P3).
+_TOOL_COUNTERS: Final[Mapping[str, Callable[[Path | None], dict[str, int] | None]]] = {
+    "codex": codex_tools,
+    "opencode": opencode_tools,
+    "agy": agy_tools,
+}
+
+
+def tool_counts(result: RunResult) -> dict[str, int] | None:
+    """The tool calls of ``result``'s run, by the rail's own names (spec 0.5.0 §3.11).
+
+    ``{}`` for an HTTP provider -- it has no tools; ``None`` -- not measured --
+    for claude (plan P3) and for a rail whose event log cannot be read whole.
+    """
+    name = _known(result.provider)
+    if name in HTTP_PROVIDER_NAMES:
+        return {}
+    counter = _TOOL_COUNTERS.get(name)
+    return None if counter is None else counter(result.events_log)
 
 
 def _probe_http(name: str, environ: Mapping[str, str]) -> Probe:

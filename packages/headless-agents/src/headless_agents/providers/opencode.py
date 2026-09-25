@@ -73,6 +73,7 @@ import os
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
@@ -84,6 +85,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
+from ..event_log import read_events
 from ..procgroup import preexec_for, spawn_watched
 from ..profile import CapabilityProfile, McpServer, Workspace
 from ..result import RunResult, TokenUsage
@@ -469,6 +471,42 @@ def write_tool_started(events_log: Path, *, mcp: McpServer | None = None) -> boo
     Fail-closed the same way: an absent or unreadable stream answers ``True``.
     """
     return _any_event_fail_closed(events_log, lambda event: _is_write_tool_use(event, mcp=mcp))
+
+
+def count_tools(events_log: Path | None) -> dict[str, int] | None:
+    """Tool calls in this ``--format json`` event stream, by ``part.tool`` (spec 0.5.0 §3.11).
+
+    opencode writes one ``tool_use`` event per call once it settles; a part
+    seen twice is counted once, by ``part.id`` (plan P2). Because a call is
+    logged only once it settles, a step cut before its ``step_finish`` -- a
+    provider killed mid-call -- may hold a call the log never shows: that count
+    is not measured (final review of lot 2 PR A; measured 2026-09-25, every one
+    of 149 completed opencode logs ends its last step with a ``step_finish``).
+    ``None`` too when the stream cannot be read whole, or names a tool part
+    with no id or tool: not measured, never a partial count.
+    """
+    events = read_events(events_log)
+    if events is None:
+        return None
+    calls: dict[str, str] = {}
+    step_open = False
+    for event in events:
+        kind = event.get("type")
+        if kind == "step_start":
+            step_open = True
+        elif kind == "step_finish":
+            step_open = False
+        if kind != "tool_use":
+            continue
+        part = event.get("part")
+        tool = part.get("tool") if isinstance(part, dict) else None
+        part_id = part.get("id") if isinstance(part, dict) else None
+        if not isinstance(tool, str) or not isinstance(part_id, str):
+            return None
+        calls.setdefault(part_id, tool)
+    if step_open:
+        return None
+    return dict(Counter(calls.values()))
 
 
 def _unwrap_fence(report: str) -> str:
