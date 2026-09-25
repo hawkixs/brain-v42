@@ -16,6 +16,7 @@ import pytest
 
 from headless_agents.engine import Overrides, Request, UsageError, plan
 from headless_agents.registry import max_prompt_bytes
+from headless_agents.runs import Registry
 from headless_agents.templates import implement_prompt
 
 
@@ -37,6 +38,15 @@ class Env:
         self.config.mkdir(parents=True, exist_ok=True)
         (self.config / "mcp.toml").write_text(text)
 
+    @property
+    def state(self) -> Path:
+        return (self.home / ".local" / "state" / "ha").resolve()
+
+    def register(self, run_id: str, *, target: dict[str, str], lineage: str | None) -> None:
+        Registry(self.state, runs_root=self.home / ".cache" / "ha" / "runs").create(
+            run_id, run_dir=None, target=target, repository=self.cwd, lineage=lineage
+        )
+
     def request(
         self,
         target: str,
@@ -47,6 +57,7 @@ class Env:
         base: str | None = None,
         repo: Path | None = None,
         run_dir: Path | None = None,
+        continue_run: str | None = None,
     ) -> Request:
         return Request(
             target=target,
@@ -56,6 +67,7 @@ class Env:
             base=base,
             repo=repo,
             run_dir=run_dir,
+            continue_run=continue_run,
             cwd=self.cwd,
             environ={"PATH": "/usr/bin:/bin", "HOME": str(self.home), **self.environ},
             home=self.home,
@@ -237,6 +249,11 @@ def test_a_workflows_file_linking_outside_the_config_dir_is_a_usage_error(
 # ── a workflow target (lot 3) ──────────────────────────────────────────────
 
 
+RUN = "20260926T100000-aaaaaaaa"
+OWNER = "20260926T090000-bbbbbbbb"
+IMPLEMENT = {"kind": "workflow", "name": "build", "shape": "implement"}
+
+
 def _workflows(env: Env) -> None:
     env.roles(
         '[implementer]\nprovider = "codex"\nwrite = true\n\n[reviewer]\nprovider = "claude"\n'
@@ -315,3 +332,59 @@ def test_an_unknown_target_lists_the_workflows_too(env: Env) -> None:
     _workflows(env)
     with pytest.raises(UsageError, match=r"workflows, roles and providers: .*\bbuild\b"):
         plan(env.request("nobody", "task"))
+
+
+def test_continue_needs_an_implement_workflow_target(env: Env) -> None:
+    _workflows(env)
+    with pytest.raises(UsageError, match="--continue needs an implement workflow"):
+        plan(env.request("codex", "task", continue_run=RUN))
+
+
+def test_continue_and_base_exclude_each_other(env: Env) -> None:
+    _workflows(env)
+    with pytest.raises(UsageError, match="--base and --continue exclude each other"):
+        plan(env.request("build", "task", base="main", continue_run=RUN))
+
+
+@pytest.mark.parametrize(("run_id", "rule"), [("nope", "not a run id"), (RUN, f"no run {RUN}")])
+def test_continue_refuses_what_names_no_registered_run(env: Env, run_id: str, rule: str) -> None:
+    _workflows(env)
+    with pytest.raises(UsageError, match=rule):
+        plan(env.request("build", "task", continue_run=run_id))
+
+
+def test_continue_refuses_an_unreadable_entry(env: Env) -> None:
+    _workflows(env)
+    (env.state / "runs").mkdir(parents=True)
+    (env.state / "runs" / f"{RUN}.json").write_text("{not json")
+    with pytest.raises(UsageError, match="recover it by hand"):
+        plan(env.request("build", "task", continue_run=RUN))
+
+
+@pytest.mark.parametrize(
+    ("target", "lineage"),
+    [
+        ({"kind": "provider", "name": "codex"}, None),
+        ({"kind": "role", "name": "implementer"}, RUN),
+        ({"kind": "workflow", "name": "check", "shape": "review"}, None),
+    ],
+    ids=["read-only-run", "role-write-run", "review-run"],
+)
+def test_continue_refuses_a_run_that_is_not_an_implement_run(
+    env: Env, target: dict[str, str], lineage: str | None
+) -> None:
+    """§3.6: only a member of an implement lineage can be continued."""
+    _workflows(env)
+    env.register(RUN, target=target, lineage=lineage)
+    with pytest.raises(UsageError, match=f"--continue {RUN}: not an implement run"):
+        plan(env.request("build", "task", continue_run=RUN))
+
+
+def test_continue_names_the_run_and_the_lineage_it_joins(
+    env: Env, no_subprocess: list[object]
+) -> None:
+    """Read from the registry only: plan() starts no subprocess (§3.8.2)."""
+    _workflows(env)
+    env.register(RUN, target=IMPLEMENT, lineage=OWNER)
+    planned = plan(env.request("build", "Fix it.", continue_run=RUN))
+    assert planned.continues == RUN and planned.joins == OWNER

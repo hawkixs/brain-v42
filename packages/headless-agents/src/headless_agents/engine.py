@@ -110,6 +110,8 @@ class Request:
     cwd: Path
     environ: Mapping[str, str]
     home: Path
+    #: ``--continue RUN_ID``: an implement run whose lineage this run joins (§3.6).
+    continue_run: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +129,10 @@ class Plan:
     workflow: Workflow | None = None
     #: The task as given, written to ``prompt.md`` (§3.10); ``None`` means ``prompt``.
     task: str | None = None
+    #: The run ``--continue`` names, and the owner of the lineage it joins (§3.6),
+    #: both read from the registry; ``execute`` checks them again under the lock.
+    continues: str | None = None
+    joins: str | None = None
 
 
 def operator_environment(environ: Mapping[str, str]) -> dict[str, str]:
@@ -384,6 +390,34 @@ _OVERRIDE_FLAGS: Final[Mapping[str, str]] = {
 }
 
 
+def _continued_lineage(run_id: str, *, state: Path, home: Path) -> str:
+    """The owner of the lineage ``--continue RUN_ID`` joins, read from the registry.
+
+    No git and no lineage state here (§3.8.2): only the run's registry entry,
+    which must name an ``implement`` run -- a member of an ``implement``
+    lineage (§3.6). ``execute`` checks it again, then the lineage itself,
+    under the lineage lock.
+    """
+    registry = Registry(state, runs_root=runs_root(home))
+    try:
+        entry = registry.resolve(run_id)
+    except RegistryError as exc:
+        raise UsageError(f"--continue: {exc}") from None
+    except Unknown as exc:
+        raise UsageError(f"--continue {run_id}: {exc}; recover it by hand") from None
+    target = entry.target
+    if (
+        entry.lineage is None
+        or target.get("kind") != "workflow"
+        or target.get("shape") != "implement"
+    ):
+        raise UsageError(
+            f"--continue {run_id}: not an implement run; only an implement run's lineage "
+            "can be continued"
+        )
+    return entry.lineage
+
+
 def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan:
     """A workflow target: its roles run as declared (§3.3), its prompt is a template (§3.7)."""
     given = [
@@ -394,13 +428,17 @@ def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan
     if given:
         raise UsageError(
             f"workflow {workflow.name}: a workflow runs its roles as declared, so "
-            f"{', '.join(given)} is refused; its options are --base, --repo, --json and "
-            "--run-dir"
+            f"{', '.join(given)} is refused; its options are --base, --repo, --json, --run-dir "
+            "and --continue"
         )
     if workflow.implement is None:
         raise UsageError(
             f"workflow {workflow.name}: the review shape is not available in this version of ha; "
             f"run a reviewer role directly (ha run {workflow.review[0]} ...)"
+        )
+    if request.continue_run is not None and request.base is not None:
+        raise UsageError(
+            "--base and --continue exclude each other: a continuation works from its lineage's base"
         )
     role = resolve_role(workflow.implement, config.roles)
     # Validated when workflows.toml was read; the engine checks again (§3.4).
@@ -412,6 +450,13 @@ def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan
     prompt = implement_prompt(task)
     _check_prompt_size(role, prompt, _bundle(role, request, None))
     mcp = _mcp(role, request)
+    run_dir = _run_dir(request)
+    state = state_dir(request.environ, home=request.home)
+    joins = (
+        _continued_lineage(request.continue_run, state=state, home=request.home)
+        if request.continue_run is not None
+        else None
+    )
     return Plan(
         request=request,
         role=role,
@@ -419,10 +464,12 @@ def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan
         prompt=prompt,
         mcp=mcp,
         environment=_environment(request.environ, mcp),
-        run_dir=_run_dir(request),
-        state=state_dir(request.environ, home=request.home),
+        run_dir=run_dir,
+        state=state,
         workflow=workflow,
         task=task,
+        continues=request.continue_run,
+        joins=joins,
     )
 
 
@@ -432,6 +479,8 @@ def plan(request: Request) -> Plan:
     workflow = config.workflows.get(request.target)
     if workflow is not None:
         return _plan_workflow(request, workflow, config)
+    if request.continue_run is not None:
+        raise UsageError("--continue needs an implement workflow as the target")
     declared, profiles = config.roles, config.profiles
     if request.target not in declared and request.target not in PROVIDER_NAMES:
         known = sorted({*config.workflows, *declared, *PROVIDER_NAMES})
@@ -616,13 +665,16 @@ def _admit(
     target: Mapping[str, str],
     repository: Path,
     write: bool = False,
+    joins: str | None = None,
+    continues: str | None = None,
     providers: Sequence[str] = (),
 ) -> Entry:
     """Mint an id, take its lifecycle lock, then publish its entry (§3.8.3 step 1).
 
     A write run's entry names its lineage -- the one it starts, owned by its
-    own id -- so its status lives in the lineage state only (§3.8.1).
-    ``providers`` is a continuation record the report copies (§3.10).
+    own id, or the one it ``joins`` as a continuation -- so its status lives in
+    the lineage state only (§3.8.1). ``continues`` and ``providers`` are the
+    continuation records the report copies (§3.10).
 
     The lock comes first: an entry is never visible with a free lock before
     its run starts, so ``ha clean`` cannot forget a run that is being admitted
@@ -653,7 +705,8 @@ def _admit(
                     run_dir=run_dir,
                     target=target,
                     repository=repository,
-                    lineage=run_id if write else None,
+                    lineage=joins if joins is not None else (run_id if write else None),
+                    continues=continues,
                     providers=providers,
                 )
             except FileExistsError:
@@ -741,6 +794,8 @@ def _execute_write(
             run_links=run_links,
             say=say,
             unconfined=unconfined,
+            joins=plan.joins,
+            named=plan.continues,
         )
     except write_flow.WriteRefused as exc:
         _refused(registry, entry)
@@ -802,6 +857,11 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
     repository = identity.work_tree if identity is not None else start
     if role.write and identity is None:
         raise UsageError(f"a write run needs a git repository; {start} is not in one")
+    if plan.continues is not None:
+        # §3.8.2: what plan() read from the registry is read again, before anything
+        # is created; the lineage itself is checked under its lock (write_flow).
+        if _continued_lineage(plan.continues, state=plan.state, home=request.home) != plan.joins:
+            raise UsageError(f"--continue {plan.continues}: its lineage changed since the plan")
 
     runs = runs_root(request.home)
     registry = Registry(plan.state, runs_root=runs)
@@ -830,6 +890,8 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 target=target,
                 repository=repository,
                 write=role.write,
+                joins=plan.joins,
+                continues=plan.continues,
                 providers=role.providers,
             )
         except (LockTimeout, RegistryError) as exc:
