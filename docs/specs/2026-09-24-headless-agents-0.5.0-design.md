@@ -402,8 +402,11 @@ What an agent can write decides what `ha` must guard, and 0.4.0 measured it per 
   server, measured on claude 2.1.282, Brain learning 5ffb9e1b; `--bare` breaks OAuth).
   What still loads under that isolation is built into claude (bundled skills, the
   `agents-md` and `telemetry` built-in plugins, the default agents); account-synced
-  plugins are downloaded but not loaded (measured the same day). codex (ephemeral
-  `CODEX_HOME`, `--ignore-user-config`) and agy (ephemeral `HOME`) already isolate;
+  plugins are downloaded but not loaded (measured the same day). codex runs on an
+  ephemeral `CODEX_HOME` holding only its `auth.json`, **in every mode** (amended
+  2026-09-25, operator decision Q80 = a: the live proof measured that a codex run without a
+  workspace, on the real `CODEX_HOME`, loads the operator's `~/.codex/AGENTS.md` despite
+  `--ignore-user-config`, Brain learning e911d703); agy (ephemeral `HOME`) already isolates;
   opencode is checked by the same proof. Like confinement, this is **proven per rail**
   by a `live` test (4) — a marker planted in each of those places must neither reach the
   model nor run — and a rail without the proof is refused as an executor, not merely
@@ -1024,9 +1027,10 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   (spec 0.4.0 §6) are unaffected. A consumer that reads `context[].scope` sees `role`
   only on a run it gave role instructions to.
 - **The Dream** calls the providers directly: unaffected except that its claude runs get
-  a per-run `HOME` and `CLAUDE_CONFIG_DIR` (3.8.0) and stop loading the operator's
-  customisations — the intended fix — while keeping their Brain MCP server; its golden
-  fixtures are unchanged.
+  a per-run `HOME` and `CLAUDE_CONFIG_DIR` and its codex runs an ephemeral `CODEX_HOME`
+  (3.8.0), so neither loads the operator's customisations any more — the intended fix —
+  while both keep their Brain MCP server; its golden fixtures are unchanged (the
+  override happens inside the rails, after the environment they pin is built).
 - **The operator:** `models.toml` and `mcp.toml` keep working as they are. `roles.toml`
   and `workflows.toml` are new; the README shows a starting set. Writing them is where the
   provisional configuration of decision c4f1ea03 gets reviewed.
