@@ -21,6 +21,8 @@ from pathlib import Path
 import pytest
 
 from headless_agents import cli, engine, locks
+from headless_agents.proofs import CLI_RAILS, record_proof
+from headless_agents.registry import Probe
 from headless_agents.result import RunResult
 from headless_agents.run_record import record, run_id_of
 from headless_agents.runs import Registry
@@ -112,6 +114,17 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _World:
         return fakes.setdefault(name, _Fake(name))
 
     monkeypatch.setattr(engine, "get_provider", fake_provider)
+
+    # The executor gate (spec §3.8.0, Task 15b): every fake CLI rail has a
+    # passing isolation proof for the version the faked probe reports.
+    monkeypatch.setattr(
+        engine,
+        "probe",
+        lambda name, **_: Probe(available=True, detail="fake", version=f"{name} 1.0"),
+    )
+    state = (home / ".local" / "state" / "ha").resolve()
+    for rail in CLI_RAILS:
+        record_proof(state, rail, version=f"{rail} 1.0", isolation=True, today="2026-09-25")
     environ = {
         "PATH": "/usr/bin:/bin",
         "HOME": str(home),
@@ -464,12 +477,14 @@ def test_roles_lists_the_declared_roles_resolved(world: _World) -> None:
     code, out, _ = world.run("roles", "--json")
     assert code == 0
     rows = {row["name"]: row for row in json.loads(out)}
-    assert rows["reviewer"]["links"] == [{"provider": "codex", "model": "codex-default"}]
+    assert rows["reviewer"]["links"] == [
+        {"provider": "codex", "model": "codex-default", "isolation": "isolated (2026-09-25)"}
+    ]
     assert rows["reviewer"]["effort"] == "high"
     assert rows["reviewer"]["instructions_bytes"] == 3
-    assert rows["impl"]["links"] == [
-        {"provider": "opencode", "model": "m1"},
-        {"provider": "codex", "model": "codex-default"},
+    assert [(link["provider"], link["model"]) for link in rows["impl"]["links"]] == [
+        ("opencode", "m1"),
+        ("codex", "codex-default"),
     ]
     assert rows["impl"]["write"] is True and rows["impl"]["context"] == "full"
     code, out, _ = world.run("roles")
@@ -620,6 +635,7 @@ def test_the_readme_synopsis_uses_the_new_grammar() -> None:
 # ── Review Focus 5: Ctrl-C through a real ha and a real provider ─────────────
 
 _FAKE_CLAUDE = """#!/bin/sh
+if [ "$1" = "--version" ]; then echo "fake-claude 9.9"; exit 0; fi
 echo $$ > "{pid_file}"
 exec sleep 30
 """
@@ -639,6 +655,13 @@ def test_an_interrupted_ha_kills_its_provider_and_exits_130(tmp_path: Path) -> N
     fake.chmod(0o755)
     cwd = tmp_path / "work"
     cwd.mkdir()
+    record_proof(
+        (home / ".local" / "state" / "ha").resolve(),
+        "claude",
+        version="fake-claude 9.9",
+        isolation=True,
+        today="2026-09-25",
+    )
     env = {
         "PATH": f"{bin_dir}:/usr/bin:/bin",
         "HOME": str(home),
@@ -682,3 +705,14 @@ def test_an_interrupted_ha_kills_its_provider_and_exits_130(tmp_path: Path) -> N
     assert registry.effective_status(entry, None) == "incomplete"
     assert locks.is_free(registry.lifecycle_lock(entry.run_id))
     assert locks.is_free(state / "unconfined.lock")
+
+
+def test_roles_shows_each_links_isolation(world: _World) -> None:
+    world.roles('[r]\nchain = ["codex", "mistral"]\n')
+    code, out, _ = world.run("roles", "--json")
+    assert code == 0
+    (row,) = json.loads(out)
+    assert [link["isolation"] for link in row["links"]] == [
+        "isolated (2026-09-25)",
+        "not needed",
+    ]

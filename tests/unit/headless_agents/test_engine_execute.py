@@ -13,6 +13,8 @@ import pytest
 
 from headless_agents import engine, locks
 from headless_agents.engine import Overrides, Request, UsageError, execute, plan
+from headless_agents.proofs import CLI_RAILS, proof_path, record_proof
+from headless_agents.registry import Probe
 from headless_agents.result import RunResult
 from headless_agents.run_record import record, run_id_of
 from headless_agents.runs import Registry
@@ -108,6 +110,17 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
         return fakes.setdefault(name, _Fake(name))
 
     monkeypatch.setattr(engine, "get_provider", provider)
+
+    # The executor gate (spec §3.8.0, Task 15b): every fake CLI rail has a
+    # passing isolation proof for the version the faked probe reports.
+    monkeypatch.setattr(
+        engine,
+        "probe",
+        lambda name, **_: Probe(available=True, detail="fake", version=f"{name} 1.0"),
+    )
+    state = (home / ".local" / "state" / "ha").resolve()
+    for rail in CLI_RAILS:
+        record_proof(state, rail, version=f"{rail} 1.0", isolation=True, today="2026-09-25")
     return World(home=home, repo=repo, fakes=fakes)
 
 
@@ -244,4 +257,48 @@ def test_outside_a_repository_the_cwd_is_the_workspace(world: World, tmp_path: P
     # /tmp may itself sit inside a repository on some hosts: the workspace is the
     # work tree discovered from the cwd, or the cwd when there is none.
     assert spec.profile.workspace.path in {lonely.resolve(), *(p for p in lonely.resolve().parents)}
+    assert outcome.exit_code == 0
+
+
+# ── the executor gate: isolation proven per rail (spec §3.8.0, Task 15b) ─────
+
+
+def test_a_rail_without_an_isolation_proof_is_refused(world: World) -> None:
+    proof_path(world.state, "codex").unlink()
+    with pytest.raises(UsageError, match=r"codex codex 1\.0 has no passing isolation proof"):
+        world.run("codex")
+    assert "codex" not in world.fakes
+    (entry,) = (world.state / "runs").glob("*.json")
+    assert world.registry().resolve(entry.stem).status == "failed"
+
+
+def test_the_refusal_names_the_command_that_records_a_proof(world: World) -> None:
+    proof_path(world.state, "codex").unlink()
+    with pytest.raises(UsageError, match="test_proofs_live.py"):
+        world.run("codex")
+
+
+def test_a_proof_of_another_version_refuses(world: World) -> None:
+    record_proof(world.state, "codex", version="codex 0.9", isolation=True, today="2026-09-01")
+    with pytest.raises(UsageError, match="isolation proof"):
+        world.run("codex")
+
+
+def test_a_failed_proof_refuses(world: World) -> None:
+    record_proof(world.state, "codex", version="codex 1.0", isolation=False, today="2026-09-25")
+    with pytest.raises(UsageError, match="failed"):
+        world.run("codex")
+
+
+def test_a_chain_with_one_unproven_link_runs_no_link(world: World) -> None:
+    """Fault tolerance must not route a run onto an unproven executor."""
+    world.roles('[r]\nchain = ["codex", "claude"]\n')
+    proof_path(world.state, "claude").unlink()
+    with pytest.raises(UsageError, match="claude"):
+        world.run("r")
+    assert not world.fakes
+
+
+def test_an_http_provider_needs_no_proof(world: World) -> None:
+    outcome = world.run("mistral", overrides=Overrides(model="mistral-small-latest"))
     assert outcome.exit_code == 0

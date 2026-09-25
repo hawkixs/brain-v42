@@ -33,9 +33,10 @@ from .context import ContextBundle, ContextLevel, resolve_context, role_instruct
 from .locks import LockTimeout, Rank, held
 from .mcp_profiles import PROFILES_FILE_NAME, McpProfileError, load_profiles, mcp_server
 from .profile import CapabilityProfile, Credentials, McpServer, Workspace, mcp_no_proxy_hosts
+from .proofs import CLI_RAILS, isolation_label, isolation_ok
 from .providers.claude import MAX_APPEND_SYSTEM_PROMPT_BYTES
 from .providers.openai_compat import GENERIC_NAME
-from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes
+from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes, probe
 from .repo import RepoError, discover
 from .report import RUN_JSON, new_report, step_dir_name, step_entry, with_step, write_report
 from .result import RunResult
@@ -152,7 +153,20 @@ def describe_roles(environ: Mapping[str, str], home: Path) -> list[dict[str, obj
                 )[link.provider]
             except ModelsError:
                 model = None
-            links.append({"provider": link.provider, "model": model})
+            version = (
+                _installed_version(link.provider, home, environ)
+                if link.provider in CLI_RAILS
+                else None
+            )
+            links.append(
+                {
+                    "provider": link.provider,
+                    "model": model,
+                    "isolation": isolation_label(
+                        state_dir(environ, home=home), link.provider, version
+                    ),
+                }
+            )
         rows.append(
             {
                 "name": role.name,
@@ -433,6 +447,31 @@ def _run_links(
     return final
 
 
+def _installed_version(provider: str, home: Path, environ: Mapping[str, str]) -> str | None:
+    return probe(provider, executable=executable_for(provider, home), environ=environ).version
+
+
+def _check_isolation(plan: Plan) -> None:
+    """Refuse a CLI rail without a passing isolation proof for its version (§3.8.0).
+
+    Every link is checked before any runs: fault tolerance must not route a run
+    onto an unproven executor.
+    """
+    for provider in plan.role.providers:
+        if provider not in CLI_RAILS:
+            continue
+        version = _installed_version(provider, plan.request.home, plan.environment)
+        if isolation_ok(plan.state, provider, version):
+            continue
+        label = isolation_label(plan.state, provider, version)
+        raise UsageError(
+            f"{provider} {version or '(version unknown)'} has no passing isolation proof "
+            f"({label}): a rail that may load the operator's configuration is refused. "
+            f"Record a proof with: HA_LIVE=1 pytest -m live "
+            f'tests/live/headless_agents/test_proofs_live.py -k "isolation and {provider}"'
+        )
+
+
 def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
     """Run a planned one-step read-only run under its locks, and record it.
 
@@ -494,6 +533,12 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
             raise UsageError(
                 "an unconfined write is running: nothing ran; retry once it has ended"
             ) from None
+
+        try:
+            _check_isolation(plan)
+        except UsageError:
+            registry.set_status(entry.run_id, "failed")
+            raise
 
         bundle = _bundle(role, request, identity.work_tree if identity is not None else None)
         try:
