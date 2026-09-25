@@ -146,6 +146,7 @@ markers = [
     # into the default run would make it green by absence everywhere it matters.
     "boundary_host: replays the tracked network boundary against the local host; excluded by default, run with -m boundary_host",
     "live: spends real provider quota on this machine; excluded by default, run with -m live",
+    "real_watcher: starts a real headless-agents process-group watcher (unit tests of procgroup only)",
 ]
 pythonpath = ["src"]
 # The net that holds whatever the cause. Twice, CI produced THIRTY MINUTES of

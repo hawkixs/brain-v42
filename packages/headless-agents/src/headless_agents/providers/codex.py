@@ -30,7 +30,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
-from ..procgroup import preexec_for, watch_group
+from ..procgroup import preexec_for, spawn_watched
 from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
@@ -843,7 +843,7 @@ def run_codex(
             if run_environment is not None:
                 popen_kwargs["env"] = run_environment
             try:
-                process = subprocess.Popen(
+                process, lifeline = spawn_watched(
                     command,
                     stdin=subprocess.PIPE,
                     stdout=events_stream,
@@ -859,7 +859,6 @@ def run_codex(
                 # Codex did not even start: nothing could have been written.
                 return PROVIDER_FALLBACK_EXIT_CODE
 
-            lifeline = watch_group(process.pid)
             try:
                 process.communicate(input=prompt, timeout=remaining)
             except subprocess.TimeoutExpired:

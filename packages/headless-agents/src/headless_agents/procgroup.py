@@ -29,12 +29,13 @@ from __future__ import annotations
 
 import ctypes
 import os
+import select
 import signal
 import subprocess
 import sys
 from collections.abc import Callable
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 PR_SET_PDEATHSIG: Final = 1
 _FAILURE_NOTE: Final = (
@@ -84,11 +85,18 @@ def preexec_for(parent_pid: int) -> Callable[[], None]:
 
 
 _REAPER: Final = Path(__file__).with_name("_reaper.py")
+#: How long a new watcher may take to say it is running before the spawn fails.
+WATCHER_START_SECONDS: Final = 5.0
+# The real Popen, taken at import: a test that fakes ``subprocess.Popen`` for a
+# rail must not also fake the watcher (tests/unit/conftest.py keeps real
+# watchers out of such tests altogether).
+_POPEN: Final = subprocess.Popen
 
 
 class Lifeline:
-    """The write end of a watcher's pipe: holding it open keeps the group alive.
+    """The write end of a watcher's pipe: while it is open, the group lives.
 
+    :meth:`attach` names the group to guard once the provider exists;
     :meth:`release` tells the watcher the run ended normally. If ``ha`` dies
     instead, the kernel closes this end and the watcher kills the group.
     """
@@ -96,6 +104,15 @@ class Lifeline:
     def __init__(self, write_fd: int | None, watcher: subprocess.Popen[bytes] | None) -> None:
         self._write_fd = write_fd
         self._watcher = watcher
+
+    @classmethod
+    def unwatched(cls) -> Lifeline:
+        """A lifeline with no watcher behind it (tests with a fake provider)."""
+        return cls(None, None)
+
+    def attach(self, pgid: int) -> None:
+        if self._write_fd is not None:
+            os.write(self._write_fd, f"{pgid}\n".encode("ascii"))
 
     def release(self) -> None:
         if self._write_fd is not None:
@@ -114,35 +131,66 @@ class Lifeline:
             self._watcher = None
 
 
-def watch_group(pgid: int) -> Lifeline:
-    """Start a watcher that kills process group ``pgid`` if this process dies.
+def start_watcher() -> Lifeline:
+    """Start a group watcher and wait until it runs; :class:`OSError` otherwise.
 
-    ``PR_SET_PDEATHSIG`` reaches a provider's direct child only; its
-    descendants -- a CLI's workers, a shell command the agent started -- would
-    otherwise outlive a killed ``ha`` and keep writing after its locks died
-    (operator decision Q75 = a). The watcher runs in its own session, outside
-    the group it guards. A group that does not exist needs none.
+    The watcher runs in its own session, outside the group it will guard, and
+    holds the read end of a pipe only this process writes. It reports ``r`` on
+    a second pipe once it runs: a provider is never started before its watcher
+    is (codex review of PR #206, round 3).
     """
+    life_read, life_write = os.pipe()
+    ready_read, ready_write = os.pipe()
     try:
-        os.killpg(pgid, 0)
-    except (ProcessLookupError, PermissionError):
-        return Lifeline(None, None)
-    read_fd, write_fd = os.pipe()
-    try:
-        watcher = subprocess.Popen(
-            [sys.executable, "-I", str(_REAPER), str(read_fd), str(pgid)],
-            pass_fds=(read_fd,),
+        watcher = _POPEN(
+            [sys.executable, "-I", str(_REAPER), str(life_read), str(ready_write)],
+            pass_fds=(life_read, ready_write),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=True,
         )
     except OSError:
-        os.close(write_fd)
-        return Lifeline(None, None)
+        for fd in (life_read, life_write, ready_read, ready_write):
+            os.close(fd)
+        raise
+    os.close(life_read)
+    os.close(ready_write)
+    try:
+        readable, _, _ = select.select([ready_read], [], [], WATCHER_START_SECONDS)
+        ready = os.read(ready_read, 1) if readable else b""
     finally:
-        os.close(read_fd)
-    return Lifeline(write_fd, watcher)
+        os.close(ready_read)
+    if ready != b"r":
+        os.close(life_write)
+        watcher.kill()
+        watcher.wait()
+        raise OSError(f"the process-group watcher did not start ({_REAPER})")
+    return Lifeline(life_write, watcher)
 
 
-__all__ = ["PR_SET_PDEATHSIG", "Lifeline", "preexec_for", "watch_group"]
+def spawn_watched(
+    command: list[str], **popen_kwargs: Any
+) -> tuple[subprocess.Popen[Any], Lifeline]:
+    """Start ``command`` under a group watcher; fail closed without one.
+
+    ``PR_SET_PDEATHSIG`` reaches a provider's direct child only; its
+    descendants -- a CLI's workers, a shell command the agent started -- would
+    otherwise outlive a killed ``ha`` and keep writing after its locks died
+    (operator decision Q75 = a). The watcher starts first; the provider stays
+    this process's direct child, in its own session, so ``Popen``'s semantics
+    are unchanged. Left open: ``ha`` killed between the provider's start and
+    :meth:`Lifeline.attach` -- a single write -- leaves the watcher nothing to
+    guard, and only ``PR_SET_PDEATHSIG`` then applies.
+    """
+    lifeline = start_watcher()
+    try:
+        process = subprocess.Popen(command, **popen_kwargs)
+    except BaseException:
+        lifeline.release()
+        raise
+    lifeline.attach(process.pid)
+    return process, lifeline
+
+
+__all__ = ["PR_SET_PDEATHSIG", "Lifeline", "preexec_for", "spawn_watched", "start_watcher"]
