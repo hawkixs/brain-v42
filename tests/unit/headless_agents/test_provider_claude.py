@@ -925,3 +925,73 @@ class TestTheGroupIsWatched:
         with pytest.raises(KeyboardInterrupt):
             _run(tmp_path)
         assert log == ["start", ("watch", fake.pid), "release"]
+
+
+class TestTheWriteBackIsSerialised:
+    """Codex review of #206 (round 4): two concurrent claude runs that both
+    rotated the login must not both see the real file "unchanged" and overwrite
+    each other. The compare-and-replace holds an exclusive lock beside the file."""
+
+    _HOLD = """
+import fcntl, os, pathlib, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+pathlib.Path(sys.argv[2]).write_text("ok")
+time.sleep(float(sys.argv[3]))
+"""
+
+    def test_the_write_back_waits_for_the_credentials_lock(
+        self, tmp_path: Path, _operator_home: Path
+    ) -> None:
+        import subprocess
+        import sys
+        import time
+
+        real = _operator_home / ".claude" / ".credentials.json"
+        real_at_build = real.read_bytes()
+        ephemeral = tmp_path / "ephemeral.json"
+        rotated = {"accessToken": "at-2", "refreshToken": "rt-2"}
+        ephemeral.write_text(json.dumps({"claudeAiOauth": rotated}))
+        lock = claude.credentials_lock_path(real)
+        assert lock.parent == real.parent
+        ready = tmp_path / "ready"
+        holder = subprocess.Popen([sys.executable, "-c", self._HOLD, str(lock), str(ready), "1.0"])
+        try:
+            while not ready.exists():
+                time.sleep(0.02)
+            start = time.monotonic()
+            claude._persist_rotated_oauth(
+                ephemeral=ephemeral,
+                real=real,
+                real_at_build=real_at_build,
+                copied=_OAUTH,
+                raw_log=tmp_path / "raw.log",
+            )
+            waited = time.monotonic() - start
+        finally:
+            holder.wait()
+        assert waited >= 0.7, "the compare-and-replace ran without the lock"
+        assert json.loads(real.read_text())["claudeAiOauth"] == rotated
+
+    def test_a_second_concurrent_rotation_does_not_overwrite_the_first(
+        self, tmp_path: Path, _operator_home: Path
+    ) -> None:
+        """Two runs copied the same file; the first write-back wins, the second
+        sees the file changed and leaves it -- under the lock, in either order."""
+        real = _operator_home / ".claude" / ".credentials.json"
+        real_at_build = real.read_bytes()
+        first, second = tmp_path / "first.json", tmp_path / "second.json"
+        first.write_text(json.dumps({"claudeAiOauth": {"accessToken": "a1", "refreshToken": "r1"}}))
+        second.write_text(
+            json.dumps({"claudeAiOauth": {"accessToken": "a2", "refreshToken": "r2"}})
+        )
+        for ephemeral in (first, second):
+            claude._persist_rotated_oauth(
+                ephemeral=ephemeral,
+                real=real,
+                real_at_build=real_at_build,
+                copied=_OAUTH,
+                raw_log=tmp_path / "raw.log",
+            )
+        assert json.loads(real.read_text())["claudeAiOauth"]["accessToken"] == "a1"
+        assert "changed meanwhile" in (tmp_path / "raw.log").read_text()
