@@ -229,6 +229,18 @@ def _events(path: Path) -> list[dict[str, object]]:
     return events
 
 
+#: What a codex shell prints when its sandbox refuses a write; the message
+#: must also name the target, so the refusal is tied to it.
+_SANDBOX_REFUSALS: Final = ("read-only file system", "permission denied", "operation not permitted")
+#: opencode's tools that write a file (a refused read is not a refused write).
+_OPENCODE_WRITE_TOOLS: Final = frozenset({"edit", "write", "patch", "multiedit"})
+#: agy's tools that write a file, and what its guard says when it refuses one.
+_AGY_WRITE_TOOLS: Final = frozenset(
+    {"write_to_file", "replace_file_content", "multi_replace_file_content"}
+)
+_AGY_REFUSALS: Final = ("outside", "denied", "not allowed", "permission")
+
+
 def refused_attempts(rail: str, run_dir: Path, targets: Sequence[Path]) -> set[Path]:
     """The ``targets`` a run's own logs show it tried to reach and was refused.
 
@@ -241,14 +253,18 @@ def refused_attempts(rail: str, run_dir: Path, targets: Sequence[Path]) -> set[P
       ``OTEL_LOG_TOOL_DETAILS=1`` (measured on 2.1.282): a rejection cannot
       be tied to a target, so claude stays inconclusive (codex review of #208,
       round 5: a count of rejections can be met by unrelated ones);
-    - opencode: a ``tool`` part in error whose input ``filePath`` is the target
-      and whose error is the permission rule's;
-    - codex: a ``command_execution`` with a non-zero exit naming the target
-      (codex 0.156.0 was measured NOT to log such commands: it stays
-      inconclusive until it does);
-    - agy: a tool step on the target that ended in a state other than
-      ``DONE`` (measured on agy 1.2.11: a refused ``write_to_file`` ends
-      ``ERROR``).
+    - opencode: an ``edit``/``write`` tool part in error whose input
+      ``filePath`` is the target and whose error is the permission rule's;
+    - codex: a failed ``command_execution`` whose output is a sandbox refusal
+      (read-only file system, permission denied, operation not permitted)
+      naming the target (codex 0.156.0 was measured NOT to log such
+      commands: it stays inconclusive until it does);
+    - agy: an agy write tool step on the target that ended ``ERROR`` with a
+      refusal message (agy 1.2.11 was measured to end a refused
+      ``write_to_file`` in ``ERROR`` with NO message: it stays inconclusive).
+
+    A failure that names no refusal proves nothing: it may be no write at
+    all, or fail for another reason (codex review of #208, round 6).
     """
     wanted = {str(target): target for target in targets}
     found: set[Path] = set()
@@ -262,6 +278,8 @@ def refused_attempts(rail: str, run_dir: Path, targets: Sequence[Path]) -> set[P
             state = part.get("state")
             if not isinstance(state, dict) or state.get("status") != "error":
                 continue
+            if part.get("tool") not in _OPENCODE_WRITE_TOOLS:
+                continue
             error = str(state.get("error") or "")
             given = state.get("input")
             path = given.get("filePath") if isinstance(given, dict) else None
@@ -274,14 +292,23 @@ def refused_attempts(rail: str, run_dir: Path, targets: Sequence[Path]) -> set[P
             exit_code = item.get("exit_code")
             if not isinstance(exit_code, int) or exit_code == 0:
                 continue
-            command = str(item.get("command") or "")
-            found.update(target for key, target in wanted.items() if key in command)
+            output = str(item.get("aggregated_output") or "")
+            if not any(marker in output.lower() for marker in _SANDBOX_REFUSALS):
+                continue
+            found.update(target for key, target in wanted.items() if key in output)
         elif rail == "agy":
             step = event.get("step_update")
-            if not isinstance(step, dict) or step.get("state") in (None, "ACTIVE", "DONE"):
+            if not isinstance(step, dict) or step.get("state") != "ERROR":
                 continue
-            info = json.dumps(step.get("tool_info"))
-            found.update(target for key, target in wanted.items() if key in info)
+            if step.get("tool_name") not in _AGY_WRITE_TOOLS:
+                continue
+            info = step.get("tool_info")
+            info = info if isinstance(info, dict) else {}
+            parameters = info.get("parameters")
+            target = parameters.get("TargetFile") if isinstance(parameters, dict) else None
+            text = f"{info.get('output') or ''} {step.get('error') or ''}".lower()
+            if target in wanted and any(marker in text for marker in _AGY_REFUSALS):
+                found.add(wanted[str(target)])
     return found
 
 

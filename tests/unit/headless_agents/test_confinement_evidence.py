@@ -50,10 +50,11 @@ def test_opencode_counts_a_refused_tool_call_per_path(tmp_path: Path) -> None:
             [
                 _opencode("edit", "error", config, rule),
                 _opencode("edit", "error", ref, "Could not find oldString in the file."),
-                _opencode("read", "completed", ref),
+                _opencode("read", "error", ref, rule),
             ]
         )
     )
+    # A refused read is not a refused write: only the edit on config counts.
     assert refused_attempts("opencode", run, [config, ref]) == {config}
 
 
@@ -68,7 +69,7 @@ def _codex(command: str, exit_code: int, output: str) -> str:
     return json.dumps({"type": "item.completed", "item": item})
 
 
-def test_codex_counts_a_failed_command_naming_the_path(tmp_path: Path) -> None:
+def test_codex_counts_a_write_refused_by_the_sandbox(tmp_path: Path) -> None:
     run = tmp_path / "run"
     run.mkdir()
     config, ref = _targets(tmp_path)
@@ -83,23 +84,56 @@ def test_codex_counts_a_failed_command_naming_the_path(tmp_path: Path) -> None:
     assert refused_attempts("codex", run, [config, ref]) == {config}
 
 
-def _agy(state: str, path: Path) -> str:
-    step = {
-        "state": state,
-        "step_type": "tool",
-        "tool_name": "write_to_file",
-        "tool_info": {"name": "write_to_file", "parameters": {"TargetFile": str(path)}},
-    }
-    return json.dumps({"event": "step_update", "step_update": step})
-
-
-def test_agy_counts_a_write_step_that_ended_in_error(tmp_path: Path) -> None:
-    """Measured on agy 1.2.11: a refused write_to_file ends in state ERROR."""
+def test_a_codex_failure_that_is_not_a_sandbox_refusal_proves_nothing(tmp_path: Path) -> None:
+    """Codex review of #208, round 6: a failed command naming the path may be
+    no write at all, or fail for another reason."""
     run = tmp_path / "run"
     run.mkdir()
     config, ref = _targets(tmp_path)
     (run / "events.jsonl").write_text(
-        "\n".join([_agy("ACTIVE", config), _agy("ERROR", config), _agy("DONE", ref)])
+        "\n".join(
+            [
+                _codex(f"cat {config} | grep nothing", 1, ""),
+                _codex(f"printf x >> {ref}", 127, "zsh:1: command not found: printf"),
+            ]
+        )
+    )
+    assert refused_attempts("codex", run, [config, ref]) == set()
+
+
+def _agy(state: str, path: Path, tool: str = "write_to_file", output: str = "") -> str:
+    step = {
+        "state": state,
+        "step_type": "tool",
+        "tool_name": tool,
+        "tool_info": {"name": tool, "parameters": {"TargetFile": str(path)}, "output": output},
+    }
+    return json.dumps({"event": "step_update", "step_update": step})
+
+
+def test_an_agy_error_without_a_refusal_text_proves_nothing(tmp_path: Path) -> None:
+    """Measured on agy 1.2.11: a refused write_to_file ends in ERROR with no
+    message. Codex review of #208, round 6: an error may have another cause."""
+    run = tmp_path / "run"
+    run.mkdir()
+    config, ref = _targets(tmp_path)
+    (run / "events.jsonl").write_text(
+        "\n".join([_agy("ERROR", config), _agy("ERROR", ref, tool="view_file")])
+    )
+    assert refused_attempts("agy", run, [config, ref]) == set()
+
+
+def test_an_agy_write_refused_with_an_outside_workspace_message_counts(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    config, ref = _targets(tmp_path)
+    (run / "events.jsonl").write_text(
+        "\n".join(
+            [
+                _agy("ERROR", config, output="path is outside the workspace: denied"),
+                _agy("ERROR", ref, tool="view_file", output="outside the workspace: denied"),
+            ]
+        )
     )
     assert refused_attempts("agy", run, [config, ref]) == {config}
 
