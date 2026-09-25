@@ -509,6 +509,84 @@ def test_roles_without_a_file_lists_nothing(world: _World) -> None:
     assert code == 0 and json.loads(out) == []
 
 
+# ── ha workflows (lot 3) ───────────────────────────────────────────────────
+
+_WORKFLOW_ROLES = (
+    '[implementer]\nchain = ["opencode", "codex"]\nwrite = true\n\n[judge]\nprovider = "claude"\n'
+)
+_WORKFLOWS = (
+    '[build]\nshape = "implement"\nimplement = "implementer"\n\n'
+    '[duo]\nshape = "review"\nreview = ["codex", "agy"]\njudge = "judge"\n'
+)
+
+
+def _workflows(world: _World, text: str) -> None:
+    (world.home / ".config" / "ha" / "workflows.toml").write_text(text)
+
+
+def test_workflows_json_lists_each_slot_with_its_roles_providers(world: _World) -> None:
+    world.roles(_WORKFLOW_ROLES)
+    _workflows(world, _WORKFLOWS)
+    code, out, _ = world.run("workflows", "--json")
+    assert code == 0
+    assert json.loads(out) == [
+        {
+            "name": "build",
+            "shape": "implement",
+            "slots": [
+                {"slot": "implement", "role": "implementer", "providers": ["opencode", "codex"]}
+            ],
+        },
+        {
+            "name": "duo",
+            "shape": "review",
+            "slots": [
+                {"slot": "review", "role": "codex", "providers": ["codex"]},
+                {"slot": "review", "role": "agy", "providers": ["agy"]},
+                {"slot": "judge", "role": "judge", "providers": ["claude"]},
+            ],
+        },
+    ]
+
+
+def test_workflows_prints_one_line_per_workflow(world: _World) -> None:
+    world.roles(_WORKFLOW_ROLES)
+    _workflows(world, _WORKFLOWS)
+    code, out, _ = world.run("workflows")
+    assert code == 0
+    assert out.splitlines() == [
+        "build                implement  implement: implementer (opencode, codex)",
+        "duo                  review     review: codex (codex), agy (agy); judge: judge (claude)",
+    ]
+
+
+def test_workflows_without_a_file_lists_nothing(world: _World) -> None:
+    code, out, _ = world.run("workflows", "--json")
+    assert code == 0 and json.loads(out) == []
+
+
+def test_workflows_on_an_invalid_file_exits_2_naming_the_problem(world: _World) -> None:
+    _workflows(world, '[build]\nshape = "implement"\nimplement = "codex"\n')
+    code, _, err = world.run("workflows")
+    assert code == 2
+    assert "workflows.toml: [build] the implement slot needs a role with write = true" in err
+
+
+def test_an_invalid_workflows_file_refuses_a_provider_run(world: _World) -> None:
+    """§3.2: validation happens before anything runs, whatever the target."""
+    _workflows(world, '[codex]\nshape = "review"\nreview = "claude"\n')
+    code, _, err = world.run("run", "codex", "task")
+    assert code == 2 and "collides with a provider" in err
+    assert "codex" not in world.fakes
+
+
+def test_the_readme_synopsis_lists_ha_workflows() -> None:
+    readme = (
+        Path(__file__).resolve().parents[3] / "packages" / "headless-agents" / "README.md"
+    ).read_text(encoding="utf-8")
+    assert "ha workflows [--json]" in readme
+
+
 # ── ha runs / ha clean ─────────────────────────────────────────────────────
 
 

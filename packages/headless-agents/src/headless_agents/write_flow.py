@@ -477,6 +477,8 @@ def _publish(
     commits: Sequence[tuple[str, MadeBy]],
     compromised: str | None,
 ) -> None:
+    # Every commit carries every link of the role: the engine's commit holds the
+    # agent's work, and the vendor rule reads it from here (§3.8.4 step 4, §3.10).
     providers = write.plan.role.providers
     for sha, made_by in commits:
         try:
@@ -486,7 +488,7 @@ def _publish(
                 run_id=write.run_id,
                 lineage=write.run_id,
                 made_by=made_by,
-                providers=providers if made_by != "engine" else [],
+                providers=providers,
             )
         except FileExistsError:
             pass
@@ -697,10 +699,12 @@ def run_write_step(
                 f"{step_dir / COMMIT_LOG}; the lineage is compromised"
             )
             return _outcome(1, "failed", reason, write, commits=commits, head=head, final=final)
-        status = "failed" if failed_step else "committed"
-        _publish(write, status=status, commits=commits, compromised=None)
+        # The patch before the publication: after the lineage rename only the report is
+        # left to rebuild (§3.8.3 step 9), and change.patch cannot be rebuilt from it.
         code, patch, _ = write.git(write.worktree, ["diff", "--binary", base, "HEAD"])
         (run_dir / PATCH_FILE).write_text(patch, encoding="utf-8", errors="replace")
+        status = "failed" if failed_step else "committed"
+        _publish(write, status=status, commits=commits, compromised=None)
         if failed_step:
             return _outcome(
                 1, "failed", "step_failed", write, commits=commits, head=head, final=final

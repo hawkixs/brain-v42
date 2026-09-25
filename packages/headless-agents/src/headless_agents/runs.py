@@ -14,7 +14,7 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -30,6 +30,8 @@ FINAL_STATUSES: Final = frozenset(
 #: or a final status. ``incomplete`` is derived from the lifecycle lock, never stored.
 STORED_STATUSES: Final = FINAL_STATUSES | {"running"}
 MINT_ATTEMPTS: Final = 100
+#: A key absent from an entry: never a value ``ha`` writes, so it reads as malformed.
+_MISSING: Final = object()
 
 
 class RegistryError(ValueError):
@@ -45,6 +47,11 @@ class Entry:
     lineage: str | None
     status: str | None
     cleaned_at: str | None
+    #: The run ``--continue`` named, for a continuation; ``None`` otherwise (§3.6, §3.10).
+    continues: str | None
+    #: The providers of every link of the run's role, as it ran: a write run's
+    #: ``implement_providers`` in its report (§3.10).
+    providers: tuple[str, ...]
 
 
 def _optional_path(value: object) -> Path | None:
@@ -89,11 +96,15 @@ class Registry:
         target: Mapping[str, str],
         repository: Path | None,
         lineage: str | None,
+        continues: str | None = None,
+        providers: Sequence[str] = (),
     ) -> Entry:
         """Create the entry of ``run_id`` once; ``FileExistsError`` when it is taken.
 
         The engine calls this while holding the id's lifecycle lock, so no
         registered run is ever seen with a free lock before it starts (§3.8.3).
+        ``continues`` and ``providers`` are the continuation records of §3.10:
+        their one authority is this entry, written once, never the report.
         """
         path = run_dir if run_dir is not None else self.runs_root / run_id
         document: dict[str, object] = {
@@ -105,6 +116,8 @@ class Registry:
             "status": "running",
             "cleaned_at": None,
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "continues": continues,
+            "providers": list(providers),
         }
         create_once(self._path(run_id), document)
         return self._entry(document, self._path(run_id))
@@ -158,6 +171,17 @@ class Registry:
         created_at = document.get("created_at")
         if not isinstance(created_at, str) or not created_at:
             raise Unknown(f"{path}: created_at is malformed")
+        continues = document.get("continues", _MISSING)
+        if continues is not None and (
+            not isinstance(continues, str) or not RUN_ID_PATTERN.fullmatch(continues)
+        ):
+            raise Unknown(f"{path}: continues is malformed")
+        if continues is not None and document.get("lineage") is None:
+            # A continuation joins a lineage by definition (§3.6).
+            raise Unknown(f"{path}: continues names a run, but the entry has no lineage")
+        providers = document.get("providers")
+        if not isinstance(providers, list) or not all(isinstance(p, str) and p for p in providers):
+            raise Unknown(f"{path}: providers is malformed")
         return Entry(
             run_id=str(document["run_id"]),
             run_dir=Path(run_dir),
@@ -166,6 +190,8 @@ class Registry:
             lineage=_optional_str(document.get("lineage")),
             status=status,
             cleaned_at=_optional_str(document.get("cleaned_at")),
+            continues=continues,
+            providers=tuple(providers),
         )
 
     def run_ids(self) -> list[str]:

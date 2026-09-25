@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -90,6 +91,7 @@ class Home:
             target={"kind": "role", "name": "implementer"},
             repository=self.root / "repo",
             lineage=RUN,
+            providers=("opencode", "codex"),
         )
         entry.run_dir.mkdir(parents=True)
         lineages.create(
@@ -203,14 +205,49 @@ def test_a_report_never_supplies_what_a_later_lots_state_record_owns(home: Home)
         "verdict": "APPROVE",
         "vendor_check": {"commits": [], "authors": ["codex"], "reviewers": {}},
         "cleanup": {"status": "done"},
-        "continues": OTHER,
         "findings_from": OTHER,
-        "implement_providers": ["codex"],
     }
     assert set(forged) == set(show.LATER_AUTHORITIES)
     home.read_only(**forged)
     report = home.rebuild().report
     assert all(report[key] is None for key in forged)
+
+
+CONTINUATION = "20260925T140000-ef56ab12"
+
+
+def test_a_write_runs_providers_come_from_its_entry_not_the_report(home: Home) -> None:
+    """Lot 3: implement_providers and continues copy the entry's continuation records (§3.10)."""
+    home.write_run(implement_providers=["forged"], continues=OTHER)
+    report = home.rebuild().report
+    assert report["implement_providers"] == ["opencode", "codex"]
+    assert report["continues"] is None
+
+
+def test_a_continuation_is_shown_with_the_run_it_continued(home: Home) -> None:
+    home.write_run()
+    home.registry().create(
+        CONTINUATION,
+        run_dir=None,
+        target={"kind": "workflow", "name": "build", "shape": "implement"},
+        repository=home.root / "repo",
+        lineage=RUN,
+        continues=RUN,
+        providers=("codex",),
+    )
+    current = lineages.load(home.state, RUN)
+    lineages.save(
+        home.state, replace(current, members={**current.members, CONTINUATION: "committed"})
+    )
+    report = home.rebuild(CONTINUATION).report
+    assert report["continues"] == RUN and report["lineage"] == RUN
+    assert report["implement_providers"] == ["codex"] and report["status"] == "committed"
+
+
+def test_a_run_outside_any_lineage_has_no_continuation_records(home: Home) -> None:
+    home.read_only(continues=OTHER, implement_providers=["forged"])
+    report = home.rebuild().report
+    assert report["continues"] is None and report["implement_providers"] is None
 
 
 def test_a_write_run_is_rebuilt_from_its_lineage_and_provenance(home: Home) -> None:
