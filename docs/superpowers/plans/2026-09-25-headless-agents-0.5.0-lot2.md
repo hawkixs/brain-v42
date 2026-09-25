@@ -68,7 +68,7 @@ lot 1 left to this one.
 | P3 | claude's counts stay `null` in lot 2: the facade wires no counter for it. The live telemetry measurement that could publish them (§4 `live`) ships with the live suite of lot 5, together with its counter and the proof that gates it. | §3.11: "`null` until a `live` test proves the telemetry complete at exit". Measured 2026-09-25: no recorded claude OTEL log with a `claude_code.tool_result` record exists on the operator's machine (none in the Dream's `.otel.log` files, none in `~/.cache/ha/runs`), so a counter written now could only be tested against a synthetic format. |
 | P4 | Codex item types that are not tool calls: `agent_message`, `reasoning`, `error`. Every other item type is a tool call, counted under its own type name. | §3.11 excludes messages and reasoning; an `error` item is neither a call nor a message. Item types observed in 507 recorded codex logs: `agent_message`, `command_execution`, `mcp_tool_call`; §3.11 also names `file_change`. |
 | P5 | `ha show` reads a write run's diffstat from its run directory's `change.patch` (display only) and runs no git; `ha runs` runs none either. | §3.8.5: every entry point checks the quarantines before its first git command. A display command that runs none needs no such check, and a quarantined repository's runs stay readable. |
-| P6 | `ha show` rebuilds from the state: `run_id`, `target` and `repository` from the registry entry; `status` from the entry, or from the lineage state for a write run, with `running`/`incomplete` from the lifecycle lock; for a write run, `lineage`, `branch` and `base` from the lineage state and `commits` from the provenance records naming the run. The fields whose authority is a state record that a later lot introduces are `null`, never taken from `run.json`: `verdict` and `vendor_check` (a review's result in `<state>/reviews/`, §3.8.1 and §3.8.6), `continues`, `findings_from` and `implement_providers` (§3.10: "copy what the state directory records"), and `cleanup` (a review's; `null` on every other run, §3.10). Lot 4 reads the review result when it ships its writer, lot 3 the continuation records. Every other field is display data, taken from `run.json` when its `run_id` is the run's own and `null` otherwise. What it could not show as written is named on stderr; `--json` prints the rebuilt document, with `RUN_KEYS` exactly. An unreadable registry entry, lineage state or provenance record — or a readable lineage that does not list the run — reads `unknown` and exits `1`; `ha runs` applies the same rule to its rows (Task 8). | §3.8.1: one authority per fact, unknown "never as empty", and a report "never read back to decide anything"; §3.8.3 step 9: "after both, only a stale report, rebuilt from the state by `ha show`". A write's lineage is created with its first member already listed (`write_flow._intent`), so a lineage silent about a run it owns is never a run in progress. (Codex review of this plan, round 1.) Reading `<state>/reviews/` now would fix the format of a file nothing writes before lot 4, whose spec defines it with its writer; a report-supplied `vendor_check` would be the forged proof §3.8.6 exists to prevent. (Codex review of this plan, round 2.) |
+| P6 | `ha show` rebuilds from the state: `run_id`, `target` and `repository` from the registry entry; `status` from the entry, or from the lineage state for a write run, with `running`/`incomplete` from the lifecycle lock; for a write run, `lineage`, `branch` and `base` from the lineage state and `commits` from the provenance records naming the run. The fields whose authority is a state record that a later lot introduces are `null`, never taken from `run.json`: `verdict` and `vendor_check` (a review's result in `<state>/reviews/`, §3.8.1 and §3.8.6), `continues`, `findings_from` and `implement_providers` (§3.10: "copy what the state directory records"), and `cleanup` (a review's; `null` on every other run, §3.10). Lot 4 reads the review result when it ships its writer, lot 3 the continuation records. Every other field is display data, taken from `run.json` when its `run_id` is the run's own and `null` otherwise. What it could not show as written is named on stderr; `--json` prints the rebuilt document, with `RUN_KEYS` exactly. An unreadable or malformed registry entry (a well-formed JSON object missing or mistyping a field included: `Registry.resolve` raises `Unknown` for it, never `KeyError`), an unreadable lineage state or provenance record — or a readable lineage that does not list the run — reads `unknown` and exits `1`; `ha runs` applies the same rule to its rows (Task 8). | §3.8.1: one authority per fact, unknown "never as empty", and a report "never read back to decide anything"; §3.8.3 step 9: "after both, only a stale report, rebuilt from the state by `ha show`". A write's lineage is created with its first member already listed (`write_flow._intent`), so a lineage silent about a run it owns is never a run in progress. (Codex review of this plan, round 1.) Reading `<state>/reviews/` now would fix the format of a file nothing writes before lot 4, whose spec defines it with its writer; a report-supplied `vendor_check` would be the forged proof §3.8.6 exists to prevent. (Codex review of this plan, round 2.) |
 | P7 | `ha runs --json` stays a JSON list of run rows (lot 1's shape); each row gains `task`, `cost_usd` and `cost_complete` and keeps `text`. The active quarantines come first in text mode and, with `--json`, on stderr, one `ha: quarantine …` line each. | A list stays readable by lot 1's callers and tests. A quarantine is an operator alert, and every entry point it refuses already names it. |
 | P8 | Column widths of `ha show`'s step table are computed per table (the widest cell, cells two spaces apart); the example of §3.10 is a layout, not a byte-level contract. | Role names reach 64 characters and model labels vary (`opencode-go/deepseek-v4.1-flash`): fixed widths would misalign or truncate. |
 | P9 | Lot 2 ships as two pull requests: A (Tasks 1–5, counters) and B (Tasks 6–8, `ha show` and `ha runs`). | The counters touch three rails and the engine; `ha show` and `ha runs` touch the display side only: each is reviewed on its own. |
@@ -893,8 +893,11 @@ git commit -m "feat(headless-agents): run.json records each step's tool counts"
 - Modify: `packages/headless-agents/src/headless_agents/report.py` (`PROMPT_FILE`)
 - Modify: `packages/headless-agents/src/headless_agents/engine.py` (write `prompt.md` through `PROMPT_FILE`)
 - Modify: `packages/headless-agents/src/headless_agents/provenance.py` (`of_run`)
+- Modify: `packages/headless-agents/src/headless_agents/runs.py` (`Registry._entry` validates
+  the entry; `resolve` raises `Unknown` on a malformed one)
 - Create: `packages/headless-agents/src/headless_agents/show.py`
 - Create: `tests/unit/headless_agents/test_show.py`
+- Modify: `tests/unit/headless_agents/test_runs.py`, `tests/unit/headless_agents/test_cli.py`
 
 **Interfaces:**
 - Consumes: `runs.Registry` (`resolve`, `effective_status`), `lineage.load`,
@@ -905,6 +908,10 @@ git commit -m "feat(headless-agents): run.json records each step's tool counts"
 ```python
 # report.py
 PROMPT_FILE: Final = "prompt.md"
+# runs.py -- resolve() raises Unknown, never KeyError, on a well-formed JSON entry whose
+# run_dir is missing or not a non-empty string, whose target is not an object, or whose
+# repository, lineage, status or cleaned_at is neither a string nor null
+Registry._entry(document: Mapping[str, object], path: Path) -> Entry
 # provenance.py
 def of_run(state: Path, run_id: str) -> tuple[list[dict[str, object]], list[Path]]
     # the records naming run_id, and the record files that cannot be read
@@ -1145,6 +1152,17 @@ def test_an_unreadable_registry_entry_is_unknown(home: Home) -> None:
     assert shown.report["status"] == "unknown" and shown.unknown is True
 
 
+def test_a_malformed_registry_entry_is_unknown(home: Home) -> None:
+    """Codex review of this plan (round 3): valid JSON without its run_dir raised KeyError."""
+    home.read_only()
+    path = home.state / "runs" / f"{RUN}.json"
+    document = json.loads(path.read_text())
+    del document["run_dir"]
+    path.write_text(json.dumps(document))
+    shown = home.rebuild()
+    assert shown.report["status"] == "unknown" and shown.unknown is True
+
+
 @pytest.mark.parametrize(
     ("run_id", "needle"),
     [("nope", "not a run id"), ("20260925T000000-00000000", "no run 20260925T000000-00000000")],
@@ -1179,10 +1197,76 @@ def test_the_diffstat_counts_lines_inside_hunks_only(home: Home) -> None:
     assert home.rebuild().diffstat == show.Diffstat(insertions=3, deletions=1, files=1)
 ```
 
+  In `test_runs.py` (it already imports `json`, `pytest`, `Path`, `Unknown` and the
+  registry names), add:
+
+```python
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"run_dir": None},
+        {"run_dir": ""},
+        {"run_dir": 7},
+        {"target": "codex"},
+        {"repository": 1},
+        {"lineage": 5},
+        {"status": ["answered"]},
+        {"cleaned_at": 0},
+    ],
+)
+def test_a_well_formed_entry_with_a_malformed_field_is_unknown(
+    tmp_path: Path, broken: dict[str, object]
+) -> None:
+    """Codex review of the lot 2 plan (round 3): read() vouches for the JSON and the id
+    only; a missing or mistyped field escaped resolve() as KeyError."""
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    run_id = "20260925T000000-eeeeeeee"
+    registry.create(
+        run_id, run_dir=None, target={"kind": "provider", "name": "codex"},
+        repository=None, lineage=None,
+    )
+    path = tmp_path / "state" / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    document.update(broken)
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown):
+        registry.resolve(run_id)
+
+
+def test_an_entry_without_its_run_dir_is_unknown(tmp_path: Path) -> None:
+    run_id = "20260925T000000-eeeeeeee"
+    (tmp_path / "state" / "runs").mkdir(parents=True)
+    (tmp_path / "state" / "runs" / f"{run_id}.json").write_text(
+        json.dumps({"run_id": run_id, "status": "answered"})
+    )
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    with pytest.raises(Unknown, match="run_dir"):
+        registry.resolve(run_id)
+```
+
+  In `test_cli.py`, add:
+
+```python
+def test_runs_and_clean_survive_a_malformed_registry_entry(world: _World) -> None:
+    """Codex review of the lot 2 plan (round 3): lot 1 crashed here with a KeyError."""
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    path = world.state / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    del document["run_dir"]
+    path.write_text(json.dumps(document))
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert code == 0 and row["status"] == "unknown"
+    code, _, err = world.run("clean", run_id)
+    assert code == 1 and "recover it by hand" in err
+```
+
 - [ ] **Step 2: Run to verify they fail**
 
-Run: `.venv/bin/pytest tests/unit/headless_agents/test_show.py -v`
-Expected: FAIL — `ImportError: cannot import name 'show' from 'headless_agents'`.
+Run: `.venv/bin/pytest tests/unit/headless_agents/test_show.py tests/unit/headless_agents/test_runs.py tests/unit/headless_agents/test_cli.py -v -k "show or malformed or run_dir or survive"`
+Expected: FAIL — `ImportError: cannot import name 'show' from 'headless_agents'`, and
+`KeyError: 'run_dir'` out of `Registry.resolve` in the registry and CLI tests.
 
 - [ ] **Step 3: Implement.** In `report.py`, add `PROMPT_FILE: Final = "prompt.md"` under
   `RUN_JSON` and to `__all__`; in `engine.py`, import it with the other report names and
@@ -1213,6 +1297,43 @@ def of_run(state: Path, run_id: str) -> tuple[list[dict[str, object]], list[Path
             found.append(document)
     return found, unreadable
 ```
+
+  In `runs.py`, import `Unknown` from `.state` beside `create_once, publish, read`; call
+  `self._entry(document, self._path(run_id))` in `create` and
+  `self._entry(read(path, expect_id=("run_id", run_id)), path)` in `resolve`; and replace
+  `_entry` with:
+
+```python
+    @staticmethod
+    def _entry(document: Mapping[str, object], path: Path) -> Entry:
+        """The entry ``document`` states; :class:`Unknown` when a field is missing or ill-typed.
+
+        ``read`` vouches for the JSON and the id only: a well-formed object without its
+        ``run_dir`` escaped as ``KeyError`` and crashed ``ha runs`` and ``ha clean``
+        (codex review of the lot 2 plan, round 3). Unknown is never empty (§3.8.1).
+        """
+        run_dir, target = document.get("run_dir"), document.get("target")
+        if not isinstance(run_dir, str) or not run_dir:
+            raise Unknown(f"{path}: run_dir is malformed")
+        if not isinstance(target, dict):
+            raise Unknown(f"{path}: target is malformed")
+        for key in ("repository", "lineage", "status", "cleaned_at"):
+            value = document.get(key)
+            if value is not None and not isinstance(value, str):
+                raise Unknown(f"{path}: {key} is malformed")
+        return Entry(
+            run_id=str(document["run_id"]),
+            run_dir=Path(run_dir),
+            repository=_optional_path(document.get("repository")),
+            target={str(k): str(v) for k, v in target.items()},
+            lineage=_optional_str(document.get("lineage")),
+            status=_optional_str(document.get("status")),
+            cleaned_at=_optional_str(document.get("cleaned_at")),
+        )
+```
+
+  `engine.clean` and `cli._registered_row` already catch `Unknown` ("recover it by hand",
+  exit `1`; a row `unknown`): no other caller changes.
 
   Create `packages/headless-agents/src/headless_agents/show.py`:
 
@@ -1431,12 +1552,15 @@ __all__ = [
 
 - [ ] **Step 4: Run to verify they pass**
 
-Run: `.venv/bin/pytest tests/unit/headless_agents/test_show.py tests/unit/headless_agents/test_engine_execute.py -v`
-Expected: PASS.
+Run: `.venv/bin/pytest tests/unit/headless_agents -q`
+Expected: PASS — the new tests, and lot 1's registry, engine and CLI tests unchanged.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Commit** (two commits: the registry fix stands on its own)
 
 ```bash
+git add packages/headless-agents/src/headless_agents/runs.py \
+  tests/unit/headless_agents/test_runs.py tests/unit/headless_agents/test_cli.py
+git commit -m "fix(headless-agents): a malformed registry entry is unknown, not a KeyError"
 git add packages/headless-agents/src/headless_agents/show.py \
   packages/headless-agents/src/headless_agents/provenance.py \
   packages/headless-agents/src/headless_agents/report.py \
