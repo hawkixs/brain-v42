@@ -9,8 +9,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from headless_agents.event_log import read_events
 from headless_agents.providers import agy, codex, opencode
+from headless_agents.registry import HTTP_PROVIDER_NAMES, UnknownProvider, tool_counts
+from headless_agents.result import RunResult
 
 FIXTURES = Path(__file__).parent / "fixtures" / "tool_counts"
 
@@ -232,3 +236,54 @@ def test_agy_without_a_conversation_id_is_not_measured(tmp_path: Path) -> None:
         },
     )
     assert agy.count_tools(anonymous) is None
+
+
+# ── the facade ──────────────────────────────────────────────────────────────
+
+
+def _result(provider: str, events_log: Path | None, raw_log: Path | None = None) -> RunResult:
+    return RunResult(
+        exit_code=0,
+        provider=provider,
+        model="m",
+        report_path=None,
+        events_log=events_log,
+        raw_log=raw_log,
+        tokens=None,
+        duration_seconds=1.0,
+        tool_call_completed=False,
+    )
+
+
+def test_the_facade_reaches_each_rails_counter() -> None:
+    assert tool_counts(_result("codex", FIXTURES / "codex.events.jsonl")) == {
+        "command_execution": 4
+    }
+    assert tool_counts(_result("opencode", FIXTURES / "opencode.events.jsonl")) == {
+        "grep": 1,
+        "glob": 1,
+    }
+    assert tool_counts(_result("agy", FIXTURES / "agy.events.jsonl")) == {
+        "call_mcp_tool": 1,
+        "view_file": 1,
+        "run_command": 1,
+    }
+
+
+@pytest.mark.parametrize("provider", sorted(HTTP_PROVIDER_NAMES))
+def test_an_http_provider_has_no_tools(provider: str) -> None:
+    assert tool_counts(_result(provider, None)) == {}
+
+
+def test_claude_is_not_measured_even_with_telemetry(tmp_path: Path) -> None:
+    """Plan P3: null until a live test proves its telemetry complete at exit."""
+    raw = tmp_path / "raw.log"
+    raw.write_text(
+        'body: "claude_code.tool_result"\nattributes: { tool_name: "Read", success: "true" }\n'
+    )
+    assert tool_counts(_result("claude", tmp_path / "events.jsonl", raw)) is None
+
+
+def test_an_unknown_provider_is_refused() -> None:
+    with pytest.raises(UnknownProvider):
+        tool_counts(_result("nope", None))
