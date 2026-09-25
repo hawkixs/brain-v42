@@ -77,9 +77,9 @@ task. The lot 1 and lot 2 plans (`docs/superpowers/plans/2026-09-25-headless-age
 |---|---|---|
 | P1 | `workflows.py`: `load_workflows(path, *, roles) -> dict[str, Workflow]` validates both shapes of §3.2 and refuses with lot 1's format, `{file}: [{entry}] {rule}`, first refusal first, as `roles.load_roles` does. A slot names a declared role or a provider (its implicit role). A workflow name collides with no provider and no role of `roles.toml`. | §3.2: "Validation follows the roles' rules (exit `2`)"; §3.1: "Role, workflow and provider names are disjoint". One refusal style across the two files. |
 | P2 | A `review` workflow is validated, listed by `ha workflows`, and refused by `ha run` (exit `2`) until lot 4, naming the reviewer role a session can run directly. | §5 item 4: "no lot ever exposes a review that does not enforce the rule"; refusing the whole `workflows.toml` instead would break every run of an operator who declares a review ahead of time. §3.8.4: a session that wants an unconstrained review "runs a reviewer role directly". |
-| P3 | `engine.load_config()` reads `roles.toml`, `mcp.toml` and `workflows.toml` as one validated `Config` for every `ha run`, whatever its target (an invalid `workflows.toml` refuses `ha run codex` too); `models.toml` stays read per link. `ha workflows [--json]` lists each workflow's shape and its slots, each slot with its role and that role's providers (every link). | §3.1 and §3.2: validation "before anything runs"; §3.4: "`load_config()` reads and validates the four configuration files". The providers per slot are what a session needs to reason about the vendor rule of lot 4. |
+| P3 | `engine.load_config()` reads `roles.toml`, `mcp.toml` and `workflows.toml` as one validated `Config` for every `ha run`, whatever its target (an invalid `workflows.toml` refuses `ha run codex` too); `models.toml` stays read per link. `ha workflows [--json]` lists each workflow's shape and its slots, each slot with its role and that role's providers (every link). | §3.1 and §3.2: validation "before anything runs"; §3.4: "`load_config()` reads and validates the four configuration files" — the fourth, `models.toml`, is still validated by `plan()` before anything runs, but only when a link needs it (`cli_models.models_for`, lot 1): reading it eagerly would make a broken `models.toml` refuse a run that names its model (`-m`, `provider:model`, a role's `model`), which 0.4.0 runs, while §6 says "`models.toml` and `mcp.toml` keep working as they are" (codex review of this plan, round 1). The providers per slot are what a session needs to reason about the vendor rule of lot 4. |
 | P4 | A workflow target: any role override (`-m`, `--effort`, `--timeout`, `--context`, `--context-parents`, `--mcp`, `--write`, `--shell`, `--base-url`, `--key-env`) refused by `plan()` with exit `2`, naming it. The provider gets `templates.implement_prompt(task)`; `prompt.md` keeps the task as given; the size check counts the template. | §3.3: "A workflow target accepts no capability override"; §3.4: the gate is the engine's, the CLI's parsing enforces nothing; §3.10: "`prompt.md` the task, as given"; §3.4: the size refused is the prompt the provider gets. |
-| P5 | The continuation records behind `continues` and `implement_providers` (§3.10) are two keys of the registry entry, written once by `Registry.create`: `continues` (the run `--continue` named, or `null`) and `providers` (every link of the run's role). `Registry._entry` requires both, as it requires every key `create` writes since lot 2. `run.json` copies them for a write run; `ha show` reads them from the entry, never from the report; lot 2's `LATER_AUTHORITIES` shrinks to `verdict`, `vendor_check`, `cleanup` and `findings_from`. | §3.8.1: the registry entry holds a run's identity; both facts are fixed at admission and never change. Measured 2026-09-25: the operator's state directory holds `proofs/` only — no registry entry exists that the new required keys would make unknown. |
+| P5 | The continuation records behind `continues` and `implement_providers` (§3.10) are two keys of the registry entry, written once by `Registry.create`: `continues` (the run `--continue` named, or `null`) and `providers` (every link of the run's role). `Registry._entry` requires both, as it requires every key `create` writes since lot 2. `run.json` copies them for a write run; `ha show` reads them from the entry, never from the report; lot 2's `LATER_AUTHORITIES` shrinks to `verdict`, `vendor_check`, `cleanup` and `findings_from`. | §3.8.1: the registry entry holds a run's identity; both facts are fixed at admission and never change. Measured 2026-09-25: the operator's state directory holds `proofs/` only — no registry entry exists that the new required keys would make unknown. None can exist elsewhere: the registry arrived with lot 1, 0.5.0 is not tagged, and lots 1 to 5 ship in that one tag (§5), so no released `ha` ever wrote an entry without these keys (codex review of this plan, round 1). |
 | P6 | An engine commit's provenance records every link of the role, as agent and hook commits already do. Lot 1 recorded `providers: []` for it (`write_flow._publish`, pinned by `test_a_committed_write`): that test is updated to the spec's expectation. | §3.8.4 step 4: "A commit with provenance takes its recorded providers", and the §3.10 `vendor_check` example records an engine commit with the implementer's two providers. With `[]`, lot 4's vendor rule would let a reviewer share the implementer's vendor. |
 | P7 | `--continue RUN_ID` is resolved by `plan()` from the registry only: not a run id, no such run, an unreadable entry, or a run that is not an `implement` run (its target a `workflow` of shape `implement`, with a lineage) → exit `2`; `--base` with `--continue` → exit `2`; `--continue` on any other target → exit `2`. `execute()` reads the entry again before it creates anything. | §3.8.2: "resolves run ids through the registry", early refusals "re-checked there"; §3.6: a continuation works "from its `base`". A run dir created before the re-check would outlive a refused run (lot 1: a run that never started leaves nothing behind). |
 | P8 | Under the lineage lock, `write_flow` checks the continued lineage from the state: known; a pending write stale (this process holds the lock) → `unfinalized_write`, repository quarantine, refused, as `check_repository` does for any other lineage; not compromised; listing the named run; same repository (common dir); its worktree still on disk. The continuation takes the lineage registry lock **shared** (it creates no lineage). Its intent adds it as a member and the pending write in one `save`. | §3.6: the refusals "from the state, before any git command"; §3.8.3 step 1: "no stale pending write in any lineage of the repository"; §3.8.2: "enumerating lineages to decide anything holds it shared". |
@@ -2516,6 +2516,13 @@ def _run_dirs(world: World) -> list[str]:
     return sorted(path.name for path in (world.home / ".cache" / "ha" / "runs").iterdir())
 
 
+def _assert_no_trace(world: World, first: str) -> None:
+    """A refused continuation leaves no run behind: no entry, no directory, no agent run."""
+    assert world.registry().run_ids() == [first]
+    assert _run_dirs(world) == [first]
+    assert len(world.agent.specs) == 1
+
+
 def test_a_continuation_commits_on_the_lineages_branch(world: World) -> None:
     first = _first(world)
     second = _continue(world, first.run_id)
@@ -2591,6 +2598,7 @@ def test_a_worktree_off_its_branch_refuses_the_continuation(world: World) -> Non
     with pytest.raises(UsageError, match="is not on its branch"):
         _continue(world, first.run_id)
     assert lineage.load(world.state, first.run_id).pending is None
+    _assert_no_trace(world, first.run_id)
 
 
 def test_a_continuation_from_inside_its_worktree_is_admitted(world: World) -> None:
@@ -2615,6 +2623,7 @@ def test_a_continuation_from_another_repository_is_refused(world: World, tmp_pat
     _git(other, "init", "-q", "-b", "main")
     with pytest.raises(UsageError, match="belongs to"):
         _continue(world, first.run_id, cwd=other)
+    _assert_no_trace(world, first.run_id)
 
 
 def test_a_continuation_refused_before_admission_creates_no_run_dir(
@@ -2636,6 +2645,7 @@ def test_a_compromised_lineage_refuses_the_continuation(world: World) -> None:
     lineage.save(world.state, replace(current, compromised="agent_moved_head"))
     with pytest.raises(UsageError, match=r"compromised \(agent_moved_head\)"):
         _continue(world, first.run_id)
+    _assert_no_trace(world, first.run_id)
 
 
 def test_an_unreadable_lineage_refuses_the_continuation(world: World) -> None:
