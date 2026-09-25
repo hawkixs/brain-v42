@@ -15,6 +15,8 @@ from pathlib import Path
 import pytest
 
 from headless_agents.engine import Overrides, Request, UsageError, plan
+from headless_agents.registry import max_prompt_bytes
+from headless_agents.templates import implement_prompt
 
 
 @dataclass
@@ -210,3 +212,106 @@ def test_a_roles_file_linking_outside_the_config_dir_is_a_usage_error(
     (env.config / "roles.toml").symlink_to(planted)
     with pytest.raises(UsageError, match="outside the configuration directory"):
         plan(env.request("codex", "task"))
+
+
+def test_an_invalid_workflows_file_refuses_every_target(env: Env) -> None:
+    """§3.2: validated before anything runs, whatever the target -- a provider's included."""
+    (env.config / "workflows.toml").write_text(
+        '[build]\nshape = "implement"\nimplement = "codex"\n'
+    )
+    with pytest.raises(UsageError, match=r"workflows\.toml: \[build\] the implement slot needs"):
+        plan(env.request("codex", "task"))
+
+
+def test_a_workflows_file_linking_outside_the_config_dir_is_a_usage_error(
+    env: Env, tmp_path: Path
+) -> None:
+    """§3.3: a workflows.toml shipped in a repository could name a write role."""
+    planted = tmp_path / "repo-workflows.toml"
+    planted.write_text('[build]\nshape = "review"\nreview = "codex"\n')
+    (env.config / "workflows.toml").symlink_to(planted)
+    with pytest.raises(UsageError, match="outside the configuration directory"):
+        plan(env.request("codex", "task"))
+
+
+# ── a workflow target (lot 3) ──────────────────────────────────────────────
+
+
+def _workflows(env: Env) -> None:
+    env.roles(
+        '[implementer]\nprovider = "codex"\nwrite = true\n\n[reviewer]\nprovider = "claude"\n'
+    )
+    (env.config / "workflows.toml").write_text(
+        '[build]\nshape = "implement"\nimplement = "implementer"\n\n'
+        '[check]\nshape = "review"\nreview = "reviewer"\n'
+    )
+
+
+def test_a_workflow_target_plans_its_implement_role_on_the_template(env: Env) -> None:
+    _workflows(env)
+    planned = plan(env.request("build", "Add a flag."))
+    assert planned.workflow is not None and planned.workflow.name == "build"
+    assert planned.role.name == "implementer" and planned.role.write
+    assert planned.task == "Add a flag." and planned.prompt == implement_prompt("Add a flag.")
+
+
+def test_a_role_target_keeps_its_task_as_its_prompt(env: Env) -> None:
+    planned = plan(env.request("codex", "Explain."))
+    assert planned.workflow is None and planned.task == planned.prompt == "Explain."
+
+
+@pytest.mark.parametrize(
+    ("overrides", "flag"),
+    [
+        (Overrides(model="m"), "-m"),
+        (Overrides(effort="high"), "--effort"),
+        (Overrides(timeout=5.0), "--timeout"),
+        (Overrides(context="none"), "--context"),
+        (Overrides(context_parents=True), "--context-parents"),
+        (Overrides(mcp="p"), "--mcp"),
+        (Overrides(write=True), "--write"),
+        (Overrides(shell=True), "--shell"),
+        (Overrides(base_url="http://x"), "--base-url"),
+        (Overrides(key_env="K"), "--key-env"),
+    ],
+)
+def test_a_workflow_target_refuses_every_override(
+    env: Env, overrides: Overrides, flag: str
+) -> None:
+    """§3.3, §3.9: a workflow runs its roles as declared; none of its options is a capability."""
+    _workflows(env)
+    with pytest.raises(UsageError, match=f"runs its roles as declared, so {flag} is refused"):
+        plan(env.request("build", "task", overrides=overrides))
+
+
+def test_a_review_workflow_is_refused_until_its_shape_ships(env: Env) -> None:
+    """Spec §5, lot 4: no lot exposes a review that does not enforce the vendor rule."""
+    _workflows(env)
+    with pytest.raises(UsageError, match=r"review shape is not available.*ha run reviewer"):
+        plan(env.request("check", "task"))
+
+
+def test_an_implement_workflow_needs_a_task(env: Env) -> None:
+    _workflows(env)
+    with pytest.raises(UsageError, match="no prompt"):
+        plan(env.request("build", None, stdin_is_tty=True))
+
+
+def test_the_implement_template_counts_against_the_prompt_limit(env: Env) -> None:
+    """§3.4: the size checked is the prompt the provider gets -- the template around the task."""
+    env.roles('[implementer]\nprovider = "opencode"\nwrite = true\n')
+    (env.config / "workflows.toml").write_text(
+        '[build]\nshape = "implement"\nimplement = "implementer"\n'
+    )
+    limit = max_prompt_bytes("opencode")
+    assert limit is not None
+    task = "x" * (limit - 50)
+    plan(env.request("opencode", task))
+    with pytest.raises(UsageError, match="opencode: the prompt with its context exceeds"):
+        plan(env.request("build", task))
+
+
+def test_an_unknown_target_lists_the_workflows_too(env: Env) -> None:
+    _workflows(env)
+    with pytest.raises(UsageError, match=r"workflows, roles and providers: .*\bbuild\b"):
+        plan(env.request("nobody", "task"))

@@ -29,17 +29,10 @@ from .runs import RUN_ID_PATTERN, Entry, Registry, RegistryError
 from .state import Unknown
 from .write_flow import PATCH_FILE
 
-#: Fields whose one authority is a state record a later lot introduces (plan P6): a
-#: review's result (spec §3.8.1, §3.8.6) and the continuation records (§3.10).
-#: ``ha show`` never takes them from ``run.json``; lots 3 and 4 fill them from the state.
-LATER_AUTHORITIES: Final = (
-    "verdict",
-    "vendor_check",
-    "cleanup",
-    "continues",
-    "findings_from",
-    "implement_providers",
-)
+#: Fields whose one authority is a state record a later lot introduces (lot 2 plan P6):
+#: a review's result (spec §3.8.1, §3.8.6), and the findings a fix reads (§3.6). ``ha
+#: show`` never takes them from ``run.json``; lot 4 fills them from the state.
+LATER_AUTHORITIES: Final = ("verdict", "vendor_check", "cleanup", "findings_from")
 #: What the engine writes for a write run only; a run outside any lineage has none of them.
 _WRITE_FIELDS: Final = ("lineage", "branch", "base", "head", "commits")
 
@@ -212,6 +205,11 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
     )
     # Plan P6: their authority is a state record a later lot adds; run.json never supplies them.
     document.update(dict.fromkeys(LATER_AUTHORITIES))
+    # §3.10: a write run's continuation records, copied from its registry entry.
+    document.update(
+        continues=entry.continues,
+        implement_providers=list(entry.providers) if entry.lineage is not None else None,
+    )
     status: str | None = None
     lineage_status: str | None = None
     if entry.lineage is not None:
@@ -276,6 +274,13 @@ def _measure(value: object) -> float | None:
     except OverflowError:
         return None
     return number if math.isfinite(number) else None
+
+
+def format_diffstat(stat: Diffstat) -> str:
+    """``+120 -14  5 files``: what ``ha show`` and a write's header print (§3.9, §3.10)."""
+    return (
+        f"+{stat.insertions} -{stat.deletions}  {stat.files} file{'' if stat.files == 1 else 's'}"
+    )
 
 
 def format_duration(seconds: object) -> str:
@@ -385,11 +390,7 @@ def render(shown: Shown) -> str:
             f"{count} commit{'' if count == 1 else 's'}"
         )
         if shown.diffstat is not None:
-            stat = shown.diffstat
-            line += (
-                f"  +{stat.insertions} -{stat.deletions}  "
-                f"{stat.files} file{'' if stat.files == 1 else 's'}"
-            )
+            line += f"  {format_diffstat(shown.diffstat)}"
         lines.append(line)
     lines.extend(f"warning {warning}" for warning in shown.warnings)
     steps = report.get("steps")
@@ -412,6 +413,7 @@ __all__ = [
     "NotShown",
     "Shown",
     "format_cost",
+    "format_diffstat",
     "format_duration",
     "format_tokens",
     "format_tools",

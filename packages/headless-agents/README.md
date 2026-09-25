@@ -358,6 +358,7 @@ ha run TARGET [PROMPT | -] [-m MODEL] [--effort E] [--timeout SECONDS]
        [--base-url URL --key-env VAR] [--repo PATH] [--json] [--run-dir DIR]
        [--write [--shell] [--base REF]]
 ha roles [--json]
+ha workflows [--json]
 ha providers [--json]
 ha runs [--limit N] [--json]
 ha show RUN_ID [--json]
@@ -365,10 +366,20 @@ ha clean RUN_ID
 ha --version
 ```
 
-`TARGET` is a provider (`ha run codex "..."`) or a role declared in
-`~/.config/ha/roles.toml`: an executor -- one provider, or a `chain` of them -- with optional
-instructions. `-p` and `--chain` were removed in 0.5.0: the provider is the target, and a
-chain is declared in a role. This section is being rewritten with the 0.5.0 lots.
+`TARGET` is a provider (`ha run codex "..."`), a role declared in
+`~/.config/ha/roles.toml` -- an executor: one provider, or a `chain` of them, with optional
+instructions -- or a workflow declared in `~/.config/ha/workflows.toml`. `-p` and `--chain`
+were removed in 0.5.0: the provider is the target, and a chain is declared in a role. This
+section is being rewritten with the 0.5.0 lots.
+
+- **A workflow** names the roles that fill the slots of a shape coded in the package.
+  `shape = "implement"` takes one role with `write = true` in its `implement` slot: `ha run
+  build "task"` runs it on a new `ha/<run_id>` branch, as a write run, with the task
+  wrapped in the engine's implement prompt, and prints the run id, the branch, the diffstat
+  and the patch path before the agent's text. A workflow runs its roles as declared: `-m`,
+  `--write` and the other role options are refused. `ha workflows` lists what
+  `workflows.toml` declares; `shape = "review"` is validated there and arrives with the
+  vendor rule in a later 0.5.0 lot.
 
 - **Read-only** (default): a CLI rail reads the current repository through a read-only
   workspace (no write tool; no shell, except codex, whose shell is its only read tool and

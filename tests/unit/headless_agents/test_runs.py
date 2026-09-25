@@ -321,3 +321,59 @@ def test_a_target_that_is_not_a_kind_and_a_name_in_text_is_unknown(
     path.write_text(json.dumps(document))
     with pytest.raises(Unknown, match="target"):
         registry.resolve(run_id)
+
+
+def test_create_writes_the_continuation_records(tmp_path: Path) -> None:
+    """Lot 3: the registry entry is the one authority of continues and providers (§3.10)."""
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    owner, run_id = "20260926T090000-dddddddd", "20260926T100000-cccccccc"
+    registry.create(
+        run_id,
+        run_dir=None,
+        target={"kind": "workflow", "name": "build", "shape": "implement"},
+        repository=None,
+        lineage=owner,
+        continues=owner,
+        providers=("opencode", "codex"),
+    )
+    entry = registry.resolve(run_id)
+    assert entry.continues == owner and entry.providers == ("opencode", "codex")
+
+
+@pytest.mark.parametrize("key", ["continues", "providers"])
+def test_an_entry_missing_a_continuation_record_is_unknown(tmp_path: Path, key: str) -> None:
+    registry, run_id, path, document = _entry_document(tmp_path)
+    del document[key]
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match=key):
+        registry.resolve(run_id)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("continues", "nope"),
+        ("continues", 7),
+        ("providers", None),
+        ("providers", "codex"),
+        ("providers", [""]),
+        ("providers", [1]),
+    ],
+)
+def test_a_continuation_record_ha_never_writes_is_unknown(
+    tmp_path: Path, key: str, value: object
+) -> None:
+    registry, run_id, path, document = _entry_document(tmp_path)
+    document[key] = value
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match=key):
+        registry.resolve(run_id)
+
+
+def test_a_continuation_outside_any_lineage_is_unknown(tmp_path: Path) -> None:
+    """A continuation joins a lineage by definition (§3.6): one without is not ha's writing."""
+    registry, run_id, path, document = _entry_document(tmp_path)
+    document["continues"] = "20260926T090000-dddddddd"
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match="has no lineage"):
+        registry.resolve(run_id)
