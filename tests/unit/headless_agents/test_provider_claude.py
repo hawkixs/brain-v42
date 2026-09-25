@@ -658,3 +658,31 @@ class TestBuildCommandPreviewsTheRun:
         assert "--restricted" in command
         preamble = command[command.index("--append-system-prompt") + 1]
         assert str(ws_dir) in preamble
+
+
+class TestTheProviderDiesWithHa:
+    """Spec 0.5.0 §3.8.2: the child gets a death signal, and an interrupted
+    wait kills its process group before the interruption propagates."""
+
+    def test_the_child_is_started_with_the_death_signal_preexec(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0, output="ok\n"))
+        assert _run(tmp_path) == 0
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert callable(kwargs["preexec_fn"])
+        assert kwargs["start_new_session"] is True
+
+    def test_an_interrupted_wait_kills_the_group_and_propagates(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        class _Interrupted(_FakeProcess):
+            def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+                raise KeyboardInterrupt
+
+        fake = _Interrupted(returncode=0)
+        _install(monkeypatch, fake)
+        with pytest.raises(KeyboardInterrupt):
+            _run(tmp_path)
+        assert fake.returncode == -9, "terminate_process_group was not called"

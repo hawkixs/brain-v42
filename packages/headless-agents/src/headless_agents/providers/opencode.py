@@ -84,6 +84,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
+from ..procgroup import preexec_for
 from ..profile import CapabilityProfile, McpServer, Workspace
 from ..result import RunResult, TokenUsage
 from ..run_record import answer_text, record, run_id_of
@@ -862,6 +863,7 @@ def run_opencode(
                     ),
                     text=True,
                     start_new_session=True,
+                    preexec_fn=preexec_for(os.getpid()),
                 )
             except OSError as exc:
                 stderr_stream.write(f"unable to start opencode: {exc}\n")
@@ -874,6 +876,13 @@ def run_opencode(
                 # and then hung. The stream decides, after the kill, whether a
                 # call could even have started -- see _deadline_exit_code.
                 timed_out = True
+            except BaseException:
+                # Ctrl-C reaches ha only (the provider has its own session):
+                # kill the provider's group before the interruption propagates,
+                # or it keeps running -- and writing -- behind ha (spec 0.5.0
+                # §3.8.2).
+                terminate_process_group(process)
+                raise
             else:
                 timed_out = False
 

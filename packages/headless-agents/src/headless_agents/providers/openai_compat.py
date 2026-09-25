@@ -49,6 +49,7 @@ from ..capability import (
     scoped_environment,
     terminate_process_group,
 )
+from ..procgroup import preexec_for
 from ..result import RunResult, TokenUsage
 from ..run_record import record, run_id_of
 from ..spec import RunSpec
@@ -356,6 +357,7 @@ class OpenAICompatProvider:
                     env=self.child_environment(spec, environ),
                     text=True,
                     start_new_session=True,
+                    preexec_fn=preexec_for(os.getpid()),
                 )
             except OSError as exc:
                 _write(
@@ -369,6 +371,13 @@ class OpenAICompatProvider:
                 terminate_process_group(process)
                 _write(stderr_path, f"deadline of {timeout:.1f} s reached\n", append=True)
                 return TIMEOUT_EXIT_CODE, None
+            except BaseException:
+                # Ctrl-C reaches ha only (the provider has its own session):
+                # kill the provider's group before the interruption propagates,
+                # or it keeps running -- and writing -- behind ha (spec 0.5.0
+                # §3.8.2).
+                terminate_process_group(process)
+                raise
         finally:
             if stderr_target is not None:
                 stderr_target.close()

@@ -747,3 +747,29 @@ def test_agy_write_tool_started(tmp_path: Path) -> None:
     log.write_text(json.dumps(view) + "\n")
     assert agy.write_tool_started(log) is False
     assert agy.write_tool_started(tmp_path / "absent.jsonl") is True
+
+
+class TestTheProviderDiesWithHa:
+    """Spec 0.5.0 §3.8.2 (see the claude rail's test of the same name)."""
+
+    def test_the_child_is_started_with_the_death_signal_preexec(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        _run(tmp_path)
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert callable(kwargs["preexec_fn"])
+
+    def test_an_interrupted_wait_kills_the_group_and_propagates(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        class _Interrupted(_FakeProcess):
+            def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+                raise KeyboardInterrupt
+
+        fake = _Interrupted(returncode=0)
+        _install(monkeypatch, fake)
+        with pytest.raises(KeyboardInterrupt):
+            _run(tmp_path)
+        assert fake.returncode == -9, "terminate_process_group was not called"

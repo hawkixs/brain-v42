@@ -1875,3 +1875,33 @@ class TestWriteRunsCloseTheTmpRoots:
         )
 
         assert seen["tmpdir"] == "/x"
+
+
+class TestTheProviderDiesWithHa:
+    """Spec 0.5.0 §3.8.2 (see the claude rail's test of the same name)."""
+
+    def test_the_child_is_started_with_the_death_signal_preexec(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]
+    ) -> None:
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        captured = _install(monkeypatch, fake, logs["report_log"])
+        _run(logs)
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert callable(kwargs["preexec_fn"])
+
+    def test_an_interrupted_wait_kills_the_group_and_propagates(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]
+    ) -> None:
+        killed: list[object] = []
+
+        class _Interrupted(_FakeProcess):
+            def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+                raise KeyboardInterrupt
+
+        fake = _Interrupted(returncode=0, events="", report="")
+        _install(monkeypatch, fake, logs["report_log"])
+        monkeypatch.setattr(codex, "terminate_process_group", killed.append)
+        with pytest.raises(KeyboardInterrupt):
+            _run(logs)
+        assert killed == [fake]

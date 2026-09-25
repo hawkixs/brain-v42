@@ -376,3 +376,38 @@ def test_the_worker_refuses_a_non_http_url_without_opening_it(url: str) -> None:
 
     outcome = _openai_worker.perform({"url": url, "api_key": "k", "body": {}, "timeout": 1.0})
     assert outcome == {"ok": False, "category": "error", "status": None}
+
+
+class _InterruptedWorker:
+    pid = 4242
+    returncode = None
+
+    def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+        raise KeyboardInterrupt
+
+
+def test_the_worker_is_started_with_the_death_signal_preexec(tmp_path, monkeypatch) -> None:
+    """Spec 0.5.0 §3.8.2 (see the claude rail's test of the same name)."""
+    from headless_agents.providers import openai_compat
+
+    captured: dict[str, object] = {}
+
+    def popen(command, **kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        raise OSError("not started")
+
+    monkeypatch.setattr(openai_compat.subprocess, "Popen", popen)
+    OpenAICompatProvider().run(_spec(tmp_path, "http://127.0.0.1:9/v1"))
+    assert callable(captured["preexec_fn"])
+
+
+def test_an_interrupted_worker_wait_kills_the_group_and_propagates(tmp_path, monkeypatch) -> None:
+    from headless_agents.providers import openai_compat
+
+    worker = _InterruptedWorker()
+    killed: list[object] = []
+    monkeypatch.setattr(openai_compat.subprocess, "Popen", lambda command, **kwargs: worker)
+    monkeypatch.setattr(openai_compat, "terminate_process_group", killed.append)
+    with pytest.raises(KeyboardInterrupt):
+        OpenAICompatProvider().run(_spec(tmp_path, "http://127.0.0.1:9/v1"))
+    assert killed == [worker]

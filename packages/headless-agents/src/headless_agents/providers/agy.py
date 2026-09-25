@@ -51,6 +51,7 @@ from ..capability import (
 )
 from ..context import xml_attribute
 from ..guards.agy_workspace import GUARD_CONFIG_NAME
+from ..procgroup import preexec_for
 from ..profile import CapabilityProfile, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
@@ -557,6 +558,7 @@ def run_agy(
                     env=_child_environment(home, ambient, profile),
                     text=True,
                     start_new_session=True,
+                    preexec_fn=preexec_for(os.getpid()),
                 )
             except OSError as exc:
                 stderr_stream.write(f"unable to start agy: {exc}\n")
@@ -569,6 +571,13 @@ def run_agy(
                 # and then hung. The stream decides, after the kill, whether a
                 # call could even have started.
                 timed_out = True
+            except BaseException:
+                # Ctrl-C reaches ha only (the provider has its own session):
+                # kill the provider's group before the interruption propagates,
+                # or it keeps running -- and writing -- behind ha (spec 0.5.0
+                # §3.8.2).
+                terminate_process_group(process)
+                raise
             else:
                 timed_out = False
 

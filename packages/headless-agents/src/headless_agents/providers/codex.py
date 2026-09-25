@@ -30,6 +30,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
+from ..procgroup import preexec_for
 from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
@@ -850,6 +851,7 @@ def run_codex(
                     cwd=runtime_dir,
                     text=True,
                     start_new_session=True,
+                    preexec_fn=preexec_for(os.getpid()),
                     **popen_kwargs,
                 )
             except OSError as exc:
@@ -865,6 +867,13 @@ def run_codex(
                 # and then hung. The stream decides, after the kill, whether a
                 # call could even have started -- see _deadline_exit_code.
                 timed_out = True
+            except BaseException:
+                # Ctrl-C reaches ha only (the provider has its own session):
+                # kill the provider's group before the interruption propagates,
+                # or it keeps running -- and writing -- behind ha (spec 0.5.0
+                # §3.8.2).
+                terminate_process_group(process)
+                raise
             else:
                 timed_out = False
 

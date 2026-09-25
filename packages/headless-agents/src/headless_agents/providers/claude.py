@@ -30,6 +30,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
+from ..procgroup import preexec_for
 from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
@@ -270,6 +271,7 @@ def run_claude(
                     env=child_environment,
                     text=True,
                     start_new_session=True,
+                    preexec_fn=preexec_for(os.getpid()),
                 )
             except OSError as exc:
                 raw_stream.write(f"unable to start Claude: {exc}\n")
@@ -291,6 +293,13 @@ def run_claude(
                 # TIMEOUT_REPLAYABLE_EXIT_CODE on a stream that never started;
                 # claude keeps the plain 124. Never a switchover here.
                 return TIMEOUT_EXIT_CODE
+            except BaseException:
+                # Ctrl-C reaches ha only (the provider has its own session):
+                # kill the provider's group before the interruption propagates,
+                # or it keeps running -- and writing -- behind ha (spec 0.5.0
+                # §3.8.2).
+                terminate_process_group(process)
+                raise
 
     exit_code = int(process.returncode or 0)
     if exit_code == 0:
