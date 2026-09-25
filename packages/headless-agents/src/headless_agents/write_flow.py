@@ -477,6 +477,8 @@ def _publish(
     commits: Sequence[tuple[str, MadeBy]],
     compromised: str | None,
 ) -> None:
+    # Every commit carries every link of the role: the engine's commit holds the
+    # agent's work, and the vendor rule reads it from here (§3.8.4 step 4, §3.10).
     providers = write.plan.role.providers
     for sha, made_by in commits:
         try:
@@ -486,7 +488,7 @@ def _publish(
                 run_id=write.run_id,
                 lineage=write.run_id,
                 made_by=made_by,
-                providers=providers if made_by != "engine" else [],
+                providers=providers,
             )
         except FileExistsError:
             pass

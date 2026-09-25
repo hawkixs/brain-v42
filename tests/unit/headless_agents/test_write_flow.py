@@ -198,7 +198,7 @@ def test_a_committed_write(world: World) -> None:
         "run_id": run_id,
         "lineage": run_id,
         "made_by": "engine",
-        "providers": [],
+        "providers": ["codex"],
     }
     assert world.registry().resolve(run_id).lineage == run_id
     patch = (outcome.run_dir / write_flow.PATCH_FILE).read_text()
