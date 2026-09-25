@@ -76,6 +76,7 @@ import time
 from collections import Counter
 from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Final
 
 from ..capability import (
     INVALID_USAGE_EXIT_CODE,
@@ -136,7 +137,8 @@ MACHINE_TOOLS = (
 # Every switch that keeps a run from reading the operator's world or the
 # network: no project ``opencode.json``, no ``~/.claude`` skills or CLAUDE.md,
 # no external skills, no plugins, no update check, no models.dev fetch (the
-# bundled snapshot answered on 1.18.30), no session sharing, no LSP download.
+# operator's cached catalogue is read instead, see models_catalogue), no session
+# sharing, no LSP download.
 ISOLATION_ENVIRONMENT: Mapping[str, str] = {
     "OPENCODE_DISABLE_PROJECT_CONFIG": "1",
     "OPENCODE_DISABLE_CLAUDE_CODE": "1",
@@ -264,6 +266,24 @@ def build_opencode_command(
         command.extend(("--title", title))
     command.append(prompt)
     return command
+
+
+#: The operator's models.dev catalogue, as their own opencode caches it.
+MODELS_CATALOGUE: Final = ".cache/opencode/models.json"
+
+
+def models_catalogue(real_home: Path) -> Path | None:
+    """The operator's models.dev catalogue, when there is one (decision 53529254).
+
+    The run's HOME is ephemeral and ``OPENCODE_DISABLE_MODELS_FETCH`` keeps it off
+    the network, so opencode knew only the catalogue bundled in its binary: a model
+    newer than the binary failed with the server's "Unexpected server error"
+    (ticket df909ffb, measured on opencode 1.18.30). The catalogue is public,
+    read-only data, never a credential: reading it keeps the run offline and new
+    models usable as soon as the operator's opencode knows them.
+    """
+    path = real_home / MODELS_CATALOGUE
+    return path if path.is_file() else None
 
 
 def runtime_cache_present(real_home: Path) -> bool:
@@ -757,6 +777,7 @@ def _child_environment(
     *,
     bearer: str | None,
     workspace: Workspace | None = None,
+    models_catalogue: Path | None = None,
 ) -> dict[str, str]:
     child = {
         "HOME": str(home),
@@ -767,6 +788,8 @@ def _child_environment(
         **ISOLATION_ENVIRONMENT,
         "OPENCODE_CONFIG_CONTENT": json.dumps(opencode_config(profile.mcp, workspace)),
     }
+    if models_catalogue is not None:
+        child["OPENCODE_MODELS_PATH"] = str(models_catalogue)
     if profile.mcp is not None and bearer is not None:
         child[profile.mcp.bearer_env_var] = bearer
     for name in profile.environment_passthrough:
@@ -897,7 +920,12 @@ def run_opencode(
                     stderr=stderr_stream,
                     cwd=workspace.path if workspace is not None else home,
                     env=_child_environment(
-                        home, ambient, profile, bearer=bearer, workspace=workspace
+                        home,
+                        ambient,
+                        profile,
+                        bearer=bearer,
+                        workspace=workspace,
+                        models_catalogue=models_catalogue(source_home),
                     ),
                     text=True,
                     start_new_session=True,
