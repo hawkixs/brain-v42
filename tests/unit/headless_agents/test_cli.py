@@ -355,11 +355,12 @@ def test_the_removed_options_say_what_replaced_them(
     assert "roles.toml" in err or "TARGET" in err
 
 
-def test_write_runs_are_refused_in_this_build(world: _World) -> None:
-    """Plan decision P5: write runs return with the spec §3.8.3 protocol."""
+def test_a_write_run_reaches_the_write_protocol(world: _World) -> None:
+    """Plan Task 22: no more P5 refusal; the write flow runs (here a repository
+    with no commit, so preparation cannot resolve the base)."""
     code, _, err = world.run("run", "codex", "--write", "go")
-    assert code == 2 and "write runs are not available" in err
-    assert not world.fakes
+    assert "not available" not in err
+    assert code == 1 and "cannot resolve --base" in err
 
 
 # ── roles: declared targets, chains ─────────────────────────────────────────
@@ -478,7 +479,12 @@ def test_roles_lists_the_declared_roles_resolved(world: _World) -> None:
     assert code == 0
     rows = {row["name"]: row for row in json.loads(out)}
     assert rows["reviewer"]["links"] == [
-        {"provider": "codex", "model": "codex-default", "isolation": "isolated (2026-09-25)"}
+        {
+            "provider": "codex",
+            "model": "codex-default",
+            "isolation": "isolated (2026-09-25)",
+            "confinement": None,
+        }
     ]
     assert rows["reviewer"]["effort"] == "high"
     assert rows["reviewer"]["instructions_bytes"] == 3
@@ -705,6 +711,21 @@ def test_an_interrupted_ha_kills_its_provider_and_exits_130(tmp_path: Path) -> N
     assert registry.effective_status(entry, None) == "incomplete"
     assert locks.is_free(registry.lifecycle_lock(entry.run_id))
     assert locks.is_free(state / "unconfined.lock")
+
+
+def test_roles_shows_each_write_links_confinement(world: _World) -> None:
+    from headless_agents.proofs import record_proof
+
+    record_proof(world.state, "codex", version="codex 1.0", confinement=True, today="2026-09-25")
+    world.roles('[w]\nchain = ["codex", "claude"]\nwrite = true\n[r]\nprovider = "codex"\n')
+    code, out, _ = world.run("roles", "--json")
+    assert code == 0
+    rows = {row["name"]: row for row in json.loads(out)}
+    assert [link["confinement"] for link in rows["w"]["links"]] == [
+        "confined (2026-09-25)",
+        "unconfined",
+    ]
+    assert [link["confinement"] for link in rows["r"]["links"]] == [None]
 
 
 def test_roles_shows_each_links_isolation(world: _World) -> None:

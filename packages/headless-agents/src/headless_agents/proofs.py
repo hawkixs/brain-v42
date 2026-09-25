@@ -20,6 +20,9 @@ cannot be read counts as none.
 
 from __future__ import annotations
 
+import os
+import subprocess
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +31,10 @@ from typing import Final
 from .state import Unknown, publish, read_optional
 
 CLI_RAILS: Final = ("claude", "codex", "agy", "opencode")
+
+#: A root codex's sandbox treats as writable: a confinement probe plants a
+#: repository under it, in a fresh ``mkdtemp`` directory the live test removes.
+_SYSTEM_TMP: Final = Path("/tmp")  # nosec B108 - a probe target root, never a fixed path written to
 
 
 @dataclass(frozen=True)
@@ -126,6 +133,79 @@ def isolation_ok(state: Path, rail: str, version: str | None) -> bool:
     )
 
 
+def confinement(state: Path, rail: str, version: str | None) -> tuple[str, str | None]:
+    """``("confined", date)`` only for a passing record of exactly this version.
+
+    Anything else is ``("unconfined", date-or-None)``: a failed record keeps its
+    date, a missing one or one for another version has none. The caller adds
+    the fixed rule: a ``shell`` role on claude, opencode or agy is always
+    unconfined (decision 13).
+    """
+    record = read_proof(state, rail)
+    if record is None or record.version != version or record.confinement is None:
+        return "unconfined", None
+    if record.confinement.passed:
+        return "confined", record.confinement.date
+    return "unconfined", record.confinement.date
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(  # noqa: S603 - argv list, no shell
+        ["git", "-C", str(cwd), *args],
+        check=True,
+        capture_output=True,
+        env={
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "HOME": str(cwd),
+            "GIT_AUTHOR_NAME": "ha",
+            "GIT_AUTHOR_EMAIL": "ha@proof.invalid",
+            "GIT_COMMITTER_NAME": "ha",
+            "GIT_COMMITTER_EMAIL": "ha@proof.invalid",
+        },
+    )
+
+
+def _repository(path: Path) -> Path:
+    path.mkdir(parents=True)
+    _git(path, "init", "-q", "-b", "main")
+    (path / "file.txt").write_text("planted\n")
+    _git(path, "add", "file.txt")
+    _git(path, "commit", "-q", "-m", "planted")
+    return path
+
+
+def plant_confinement_targets(root: Path, rail: str) -> dict[str, Path]:
+    """What a confined write must not be able to write, planted for a live proof.
+
+    ``workspace`` is a linked worktree of ``root/repo``, as the engine gives a
+    write role; the targets are the repository's common git dir ``config`` and
+    a ref, a copy of an operator git configuration, and -- for codex, whose
+    sandbox treats them as writable roots -- one repository under ``/tmp`` and
+    one under ``$TMPDIR``.
+    """
+    repository = _repository(root / "repo")
+    workspace = root / "wt"
+    _git(repository, "worktree", "add", "-q", "-b", "ha/proof", str(workspace), "main")
+    operator = root / "operator-home" / ".gitconfig"
+    operator.parent.mkdir(parents=True)
+    operator.write_text("[user]\n\tname = operator\n")
+    targets = {
+        "workspace": workspace,
+        "common_config": repository / ".git" / "config",
+        "ref": repository / ".git" / "refs" / "heads" / "main",
+        "operator_gitconfig": operator,
+    }
+    if rail == "codex":
+        for label, base in (
+            ("tmp", _SYSTEM_TMP),
+            ("tmpdir", Path(os.environ.get("TMPDIR") or tempfile.gettempdir())),
+        ):
+            holder = Path(tempfile.mkdtemp(prefix="ha-confinement-", dir=base))
+            targets[f"tmp_repo_{label}"] = _repository(holder / "repo") / "file.txt"
+    return targets
+
+
 def isolation_label(state: Path, rail: str, version: str | None) -> str:
     """How ``ha roles`` shows a rail's isolation."""
     if rail not in CLI_RAILS:
@@ -143,6 +223,8 @@ __all__ = [
     "CLI_RAILS",
     "Proof",
     "ProofRecord",
+    "confinement",
+    "plant_confinement_targets",
     "isolation_label",
     "isolation_ok",
     "proof_path",

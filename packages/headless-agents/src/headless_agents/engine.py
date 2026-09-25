@@ -33,7 +33,7 @@ from .context import ContextBundle, ContextLevel, resolve_context, role_instruct
 from .locks import LockTimeout, Rank, held
 from .mcp_profiles import PROFILES_FILE_NAME, McpProfileError, load_profiles, mcp_server
 from .profile import CapabilityProfile, Credentials, McpServer, Workspace, mcp_no_proxy_hosts
-from .proofs import CLI_RAILS, isolation_label, isolation_ok
+from .proofs import CLI_RAILS, confinement, isolation_label, isolation_ok
 from .providers.claude import MAX_APPEND_SYSTEM_PROMPT_BYTES
 from .providers.openai_compat import GENERIC_NAME
 from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes, probe
@@ -48,13 +48,6 @@ from .state import Unknown
 from .workspace import prepend
 
 ROLES_FILE_NAME: Final = "roles.toml"
-
-#: Plan decision P5: every merged state of main keeps the spec's guarantees, so
-#: write runs are refused until the write protocol of §3.8.3 is merged.
-WRITE_NOT_AVAILABLE: Final = (
-    "write runs are not available in this build: the write protocol of spec §3.8.3 "
-    "is not merged yet"
-)
 
 # A Claude Code session that launches ``ha`` must not leak into a nested
 # ``claude -p``: the child would no longer be the run the rail ships.
@@ -158,13 +151,19 @@ def describe_roles(environ: Mapping[str, str], home: Path) -> list[dict[str, obj
                 if link.provider in CLI_RAILS
                 else None
             )
+            state = state_dir(environ, home=home)
+            confined: str | None = None
+            if role.write:
+                label, date = confinement(state, link.provider, version)
+                if role.shell and link.provider in _UNSANDBOXED_SHELL_RAILS:
+                    label, date = "unconfined", None
+                confined = f"{label} ({date})" if label == "confined" else label
             links.append(
                 {
                     "provider": link.provider,
                     "model": model,
-                    "isolation": isolation_label(
-                        state_dir(environ, home=home), link.provider, version
-                    ),
+                    "isolation": isolation_label(state, link.provider, version),
+                    "confinement": confined,
                 }
             )
         rows.append(
@@ -281,8 +280,6 @@ def plan(request: Request) -> Plan:
         raise UsageError(f"{request.target}: {rule}")
     if request.base is not None and not role.write:
         raise UsageError("--base needs a write run: the role's write, or --write")
-    if role.write:
-        raise UsageError(WRITE_NOT_AVAILABLE)
 
     links = tuple((link.provider, link.model) for link in role.links)
     try:
@@ -535,11 +532,22 @@ _UNSANDBOXED_SHELL_RAILS: Final = frozenset({"claude", "opencode", "agy"})
 def write_is_unconfined(plan: Plan) -> bool:
     """Whether a write takes the unconfined path of §3.8.3 (plan Tasks 20, 22).
 
-    An unconfined write holds the unconfined lock exclusively, publishes its
-    intent, and has its worktree's ``HEAD`` reflog read for agent commits.
+    Any link on a rail without a passing confinement proof for its installed
+    version, whatever the rail, codex included; or a ``shell`` role on a rail
+    whose shell is unsandboxed. One unconfined link sends the whole write down
+    the unconfined path: it holds the unconfined lock exclusively, publishes
+    its intent, and has its worktree's ``HEAD`` reflog read for agent commits.
     """
     role = plan.role
-    return role.shell and any(provider in _UNSANDBOXED_SHELL_RAILS for provider in role.providers)
+    if role.shell and any(provider in _UNSANDBOXED_SHELL_RAILS for provider in role.providers):
+        return True
+    for provider in role.providers:
+        if provider not in CLI_RAILS:
+            continue
+        version = _installed_version(provider, plan.request.home, plan.environment)
+        if confinement(plan.state, provider, version)[0] != "confined":
+            return True
+    return False
 
 
 def _refused(registry: Registry, entry: Entry) -> None:
@@ -855,7 +863,6 @@ __all__ = [
     "execute",
     "executable_for",
     "runs_root",
-    "WRITE_NOT_AVAILABLE",
     "Overrides",
     "Plan",
     "Request",

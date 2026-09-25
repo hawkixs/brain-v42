@@ -356,6 +356,7 @@ uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@
 ha run TARGET [PROMPT | -] [-m MODEL] [--effort E] [--timeout SECONDS]
        [--context full|global|none] [--context-parents] [--mcp PROFILE]
        [--base-url URL --key-env VAR] [--repo PATH] [--json] [--run-dir DIR]
+       [--write [--shell] [--base REF]]
 ha roles [--json]
 ha providers [--json]
 ha runs [--limit N] [--json]
@@ -366,20 +367,28 @@ ha --version
 `TARGET` is a provider (`ha run codex "..."`) or a role declared in
 `~/.config/ha/roles.toml`: an executor -- one provider, or a `chain` of them -- with optional
 instructions. `-p` and `--chain` were removed in 0.5.0: the provider is the target, and a
-chain is declared in a role. This section is being rewritten with the 0.5.0 lots; write
-runs (`--write`, `--shell`, `--base`) are not available in this build.
+chain is declared in a role. This section is being rewritten with the 0.5.0 lots.
 
 - **Read-only** (default): a CLI rail reads the current repository through a read-only
   workspace (no write tool; no shell, except codex, whose shell is its only read tool and
   runs inside its read-only OS sandbox); an HTTP provider runs without one. Context defaults
   to `global` (the user-level `~/.claude/CLAUDE.md`); `--context full` adds the
   repository's `CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, even ignored ones.
-- **`--write`**: `git worktree add ~/.cache/ha/runs/<run_id>/wt -b ha/<run_id> <base>`, the
-  agent edits there (context `full` by default), then the change is committed on
-  `ha/<run_id>` as `chore(ha): <run_id> via <provider>/<model>` with the repository's hooks
-  running. Branch, diffstat, patch path and the agent's text are printed. **It never
+- **`--write`** (a role's `write = true`): the write protocol of spec §3.8.3. Under its
+  locks, and before any git command, the run is refused while a quarantine covers the
+  repository or the operator, or another write of the repository died unfinished. Then
+  `git worktree add ~/.cache/ha/runs/<run_id>/wt -b ha/<run_id> <base>` with hooks off, the
+  agent edits there (context `full` by default), and the change is committed on
+  `ha/<run_id>` as `chore(ha): <run_id> implement via <provider>/<model>` (`residue` after
+  a failed step) with the repository's hooks running for that commit only. Every commit
+  is recorded with who made it (engine, agent or hook) in the state directory. Branch,
+  patch path and the agent's text are printed; exit `5` when nothing changed. **It never
   merges**: read the diff, integrate, or `ha clean`. If the `.git` tripwire fired, no git
-  command runs at all and the worktree is kept for inspection. codex needs no `--shell`
+  command runs at all, the lineage is compromised or the repository or operator
+  quarantined, and the worktree is kept for inspection; `ha clean` then refuses until
+  the operator recovers it by hand. A write role on a rail without a passing
+  confinement proof for its installed version is serialised against every other run
+  (`ha roles` shows `confined` or `unconfined`). codex needs no `--shell`
   here: it reads files only through its shell, which is always on and stays inside its OS
   sandbox; `--shell` arms the unconfined shell of the other rails.
 - **A role's `chain = ["codex:gpt-6-luna", "claude:sonnet"]`** walks the list on exit codes `3` and `4`

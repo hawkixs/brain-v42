@@ -5,10 +5,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from headless_agents.proofs import (
     CLI_RAILS,
+    confinement,
     isolation_label,
     isolation_ok,
+    plant_confinement_targets,
     proof_path,
     read_proof,
     record_proof,
@@ -82,3 +86,51 @@ def test_the_record_is_a_plain_document(tmp_path: Path) -> None:
         "isolation": {"passed": True, "date": "2026-09-25"},
         "confinement": None,
     }
+
+
+def test_a_passing_confinement_proof_for_this_version_is_confined(tmp_path: Path) -> None:
+    record_proof(tmp_path, "codex", version="codex 1", confinement=True, today="2026-09-25")
+    assert confinement(tmp_path, "codex", "codex 1") == ("confined", "2026-09-25")
+
+
+def test_a_failed_confinement_proof_is_unconfined_with_its_date(tmp_path: Path) -> None:
+    record_proof(tmp_path, "codex", version="codex 1", confinement=False, today="2026-09-25")
+    assert confinement(tmp_path, "codex", "codex 1") == ("unconfined", "2026-09-25")
+
+
+def test_a_confinement_proof_of_another_version_is_unconfined(tmp_path: Path) -> None:
+    record_proof(tmp_path, "codex", version="codex 1", confinement=True, today="2026-09-25")
+    assert confinement(tmp_path, "codex", "codex 2") == ("unconfined", None)
+
+
+def test_no_confinement_proof_is_unconfined(tmp_path: Path) -> None:
+    record_proof(tmp_path, "codex", version="codex 1", isolation=True, today="2026-09-25")
+    assert confinement(tmp_path, "codex", "codex 1") == ("unconfined", None)
+    assert confinement(tmp_path, "claude", "claude 1") == ("unconfined", None)
+
+
+def test_the_confinement_targets_are_planted_outside_the_workspace(tmp_path: Path) -> None:
+    targets = plant_confinement_targets(tmp_path / "claude", "claude")
+    workspace = targets["workspace"]
+    assert (workspace / ".git").is_file(), "the workspace is a linked worktree"
+    for name in ("common_config", "ref", "operator_gitconfig"):
+        assert targets[name].is_file(), name
+        assert not targets[name].is_relative_to(workspace), name
+    assert not any(name.startswith("tmp_repo") for name in targets)
+
+
+def test_codex_gets_a_repository_under_each_root_it_treats_as_writable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tmpdir = tmp_path / "tmpdir"
+    tmpdir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(tmpdir))
+    targets = plant_confinement_targets(tmp_path / "codex", "codex")
+    try:
+        assert targets["tmp_repo_tmp"].is_file()
+        assert targets["tmp_repo_tmp"].is_relative_to(Path("/tmp"))
+        assert targets["tmp_repo_tmpdir"].is_relative_to(tmpdir)
+    finally:
+        import shutil
+
+        shutil.rmtree(targets["tmp_repo_tmp"].parent.parent, ignore_errors=True)

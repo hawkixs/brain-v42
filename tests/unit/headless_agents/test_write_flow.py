@@ -3,8 +3,8 @@
 The provider is a fake that edits its workspace like an agent would; the
 worktree, the engine commit, the repository's hooks, the tripwire, the
 lineage state, provenance and quarantines are the real code and a real git.
-The P5 refusal of write runs in ``plan()`` stays until plan Task 22, so a
-write plan is built here from a read-only one with ``write=True``.
+A write plan is built here from a read-only one with ``write=True``, so each
+test names its role's capabilities itself.
 """
 
 from __future__ import annotations
@@ -142,7 +142,9 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
     )
     state = (home / ".local" / "state" / "ha").resolve()
     for rail in CLI_RAILS:
-        record_proof(state, rail, version=f"{rail} 1.0", isolation=True, today="2026-09-25")
+        record_proof(
+            state, rail, version=f"{rail} 1.0", isolation=True, confinement=True, today="2026-09-25"
+        )
     world = World(home=home, repo=repo, agent=agent)
     real_git = write_flow.git
 
@@ -956,3 +958,67 @@ def test_clean_takes_its_locks_in_order_and_releases_the_registry_before_git(
     ]
     assert events.index("release LINEAGE_REGISTRY") < events.index("git")
     assert events.index("quarantine check") < events.index("release LINEAGE_REGISTRY")
+
+
+# ── classification by the confinement proofs (plan Task 22) ────────────────
+
+
+def _unconfined_lock_mode(world: World, monkeypatch: pytest.MonkeyPatch) -> str:
+    events = _instrument(world, monkeypatch)
+    world.agent.edit = _edit_app
+    world.write()
+    (taken,) = [e for e in events if e.startswith("lock UNCONFINED")]
+    return taken.split()[-1]
+
+
+def test_a_confined_write_role_takes_the_confined_path(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert _unconfined_lock_mode(world, monkeypatch) == "sh"
+
+
+@pytest.mark.parametrize(
+    "proof",
+    [
+        {"confinement": False},
+        {"version": "codex 0.9", "confinement": True},
+        {"isolation": True},
+    ],
+    ids=["failed", "another-version", "missing"],
+)
+def test_a_codex_write_without_a_confinement_proof_is_unconfined(
+    world: World, monkeypatch: pytest.MonkeyPatch, proof: dict[str, object]
+) -> None:
+    """Although it has no shell: a write role on an unproven rail takes the
+    unconfined path -- exclusive lock, intent, reflog attribution."""
+    from headless_agents.proofs import proof_path
+
+    proof_path(world.state, "codex").unlink()
+    fields = {"version": "codex 1.0", "isolation": True, **proof}
+    record_proof(world.state, "codex", today="2026-09-25", **fields)  # type: ignore[arg-type]
+    if fields["version"] != "codex 1.0":
+        record_proof(world.state, "codex", version="codex 1.0", isolation=True, today="2026-09-25")
+    assert _unconfined_lock_mode(world, monkeypatch) == "ex"
+
+
+def test_the_cli_prints_the_branch_and_the_patch_of_a_committed_write(world: World) -> None:
+    import io as _io
+
+    from headless_agents import cli
+
+    world.agent.edit = _edit_app
+    out, err = _io.StringIO(), _io.StringIO()
+    code = cli.main(
+        ["run", "codex", "--write", "go"],
+        environ={"PATH": os.environ["PATH"], "HOME": str(world.home)},
+        stdin=_io.StringIO(),
+        stdout=out,
+        stderr=err,
+        cwd=world.repo,
+        home=world.home,
+    )
+    assert code == 0, err.getvalue()
+    (run_id,) = world.registry().run_ids()
+    text = out.getvalue()
+    assert f"branch: ha/{run_id}" in text
+    assert "patch: " in text and "I changed things" in text
