@@ -1022,3 +1022,33 @@ def test_the_cli_prints_the_branch_and_the_patch_of_a_committed_write(world: Wor
     text = out.getvalue()
     assert f"branch: ha/{run_id}" in text
     assert "patch: " in text and "I changed things" in text
+
+
+def test_an_unconfined_write_whose_reflog_was_rewritten_stays_uncertain(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review of #208 (round 2): an agent that commits, resets and then
+    empties the worktree's HEAD reflog leaves commits no witness can name. The
+    write is not published as final with an incomplete record: its pending
+    write and intent stay, so the next admission quarantines the operator."""
+
+    def commit_hide_and_wipe(root: Path) -> None:
+        _edit_app(root)
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "--no-verify", "-m", "hidden")
+        _git(root, "reset", "-q", "--hard", "HEAD~1")
+        git_dir = Path(_git(root, "rev-parse", "--absolute-git-dir").strip())
+        (git_dir / "logs" / "HEAD").write_text("")
+
+    unconfined.agent.edit = commit_hide_and_wipe
+    outcome = unconfined.write()
+    assert outcome.exit_code == 1
+    assert outcome.report["failure_reason"] == "reflog_rewritten"
+    state = lineage.load(unconfined.state, outcome.run_id)
+    assert state.compromised == "reflog_rewritten" and state.pending is not None
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+
+    monkeypatch.setattr(engine, "write_is_unconfined", lambda planned: False)
+    unconfined.agent.edit = _edit_app
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()

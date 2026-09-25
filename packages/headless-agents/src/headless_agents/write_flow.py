@@ -95,6 +95,7 @@ class _Write:
     worktree: Path = field(init=False)
     branch: str = field(init=False)
     git_dir: Path | None = None
+    reflog_start: tuple[bytes | None, ...] = ()
     lineage: LineageState | None = None
 
     def __post_init__(self) -> None:
@@ -344,18 +345,40 @@ def _head(write: _Write) -> str | None:
 # ── step 4: start point ────────────────────────────────────────────────────
 
 
-def _head_reflog(write: _Write) -> list[str] | None:
-    """The worktree's ``HEAD`` reflog, newest first; ``None`` when unreadable."""
-    code, out, _ = write.git(write.worktree, ["reflog", "show", "--format=%H", "HEAD"])
-    return out.split() if code == 0 else None
+def _reflog_files(write: _Write) -> tuple[Path, ...]:
+    """The worktree's ``HEAD`` log and the branch's log, where git appends every move.
+
+    Read as files, not through ``git reflog``: an emptied ``HEAD`` log makes
+    ``git reflog show HEAD`` of a linked worktree fall back to another log,
+    so a count through git cannot tell a rewrite (codex review of #208, r2).
+    """
+    git_dir = write.git_dir or write.worktree / ".git"
+    return (
+        git_dir / "logs" / "HEAD",
+        write.identity.common_dir / "logs" / "refs" / "heads" / write.branch,
+    )
+
+
+def _read_log(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except OSError:
+        return None
 
 
 def _start_point(write: _Write, tip: str) -> None:
-    """Step 4: the branch tip and, for an unconfined write, the ``HEAD`` reflog position."""
+    """Step 4: the branch tip and, for an unconfined write, the reflogs' start.
+
+    The logs' bytes are kept for step 7 (they only ever grow); the lineage
+    records the ``HEAD`` log's length.
+    """
     pending = write.current.pending
     assert pending is not None, "the intent records the pending write"
-    reflog = _head_reflog(write) if write.unconfined else None
-    start_reflog = len(reflog) if reflog is not None else None
+    start_reflog: int | None = None
+    if write.unconfined:
+        write.reflog_start = tuple(_read_log(path) for path in _reflog_files(write))
+        head_log = write.reflog_start[0]
+        start_reflog = len(head_log) if head_log is not None else None
     write.save(
         replace(
             write.current,
@@ -364,20 +387,24 @@ def _start_point(write: _Write, tip: str) -> None:
     )
 
 
-def _reflog_gained(write: _Write, tip: str) -> tuple[bool, list[str]]:
-    """``(moved, commits)`` the ``HEAD`` reflog gained since the start point, oldest first.
+def _reflog_gained(write: _Write, tip: str) -> tuple[bool, bool, list[str]]:
+    """``(moved, rewritten, commits)``: what the reflogs gained since the start point.
 
-    A reflog shorter than at the start point, or unreadable, was rewritten:
-    it counts as a movement although no commit can be named.
+    ``rewritten`` when a log is gone, unreadable, or no longer begins with the
+    bytes it held at the start point: commits may have appeared that no
+    witness can name. ``commits`` are the new object ids of the appended
+    entries, oldest first.
     """
-    pending = write.current.pending
-    start = pending.start_reflog if pending is not None else None
-    reflog = _head_reflog(write)
-    if start is None or reflog is None or len(reflog) < start:
-        return True, []
-    gained = list(reversed(reflog[: len(reflog) - start]))
-    commits = [sha for sha in dict.fromkeys(gained) if sha != tip]
-    return bool(gained) and bool(commits), commits
+    commits: list[str] = []
+    for path, before in zip(_reflog_files(write), write.reflog_start, strict=True):
+        now = _read_log(path)
+        if before is None or now is None or not now.startswith(before):
+            return True, True, []
+        for line in now[len(before) :].decode("utf-8", "replace").splitlines():
+            fields = line.split(" ", 2)
+            if len(fields) >= 2 and fields[1] != tip and fields[1] not in commits:
+                commits.append(fields[1])
+    return bool(commits), False, commits
 
 
 # ── steps 6 to 8 ───────────────────────────────────────────────────────────
@@ -599,7 +626,41 @@ def run_write_step(
             return _outcome(1, "failed", "tripwire", write, final=final)
 
         head, moved_tip = _head(write), _tip(write)
-        reflog_moved, reflog_commits = _reflog_gained(write, tip) if unconfined else (False, [])
+        reflog_moved, rewritten, reflog_commits = (
+            _reflog_gained(write, tip) if unconfined else (False, False, [])
+        )
+        if rewritten:
+            # No witness can name what appeared: never published as final. The
+            # pending write and the intent stay, so the next admission finds
+            # them stale and quarantines the operator (§3.8.3 steps 1 and 6).
+            found = _new_commits(write, tip, [head, moved_tip])
+            for sha in found:
+                try:
+                    provenance.record(
+                        state,
+                        sha,
+                        run_id=run_id,
+                        lineage=run_id,
+                        made_by="agent",
+                        providers=plan.role.providers,
+                    )
+                except FileExistsError:
+                    pass
+            _compromise(write, "reflog_rewritten")
+            say(
+                "the worktree's reflog was rewritten during an unconfined write: the lineage "
+                "is compromised and left uncertain; recover it by hand"
+            )
+            commits_found: list[tuple[str, MadeBy]] = [(sha, "agent") for sha in found]
+            return _outcome(
+                1,
+                "failed",
+                "reflog_rewritten",
+                write,
+                commits=commits_found,
+                head=head,
+                final=final,
+            )
         if head != tip or moved_tip != tip or reflog_moved:
             found = _new_commits(write, tip, [head, moved_tip])
             found += [sha for sha in reflog_commits if sha not in found]
