@@ -411,3 +411,26 @@ def test_an_interrupted_worker_wait_kills_the_group_and_propagates(tmp_path, mon
     with pytest.raises(KeyboardInterrupt):
         OpenAICompatProvider().run(_spec(tmp_path, "http://127.0.0.1:9/v1"))
     assert killed == [worker]
+
+
+class _RecordedLifeline:
+    def __init__(self, pgid: int, log: list[object]) -> None:
+        log.append(("watch", pgid))
+        self._log = log
+
+    def release(self) -> None:
+        self._log.append("release")
+
+
+def test_the_worker_group_is_watched_and_released(tmp_path, monkeypatch) -> None:
+    """Operator decision Q75=a (see the claude rail's test of the same name)."""
+    from headless_agents.providers import openai_compat
+
+    log: list[object] = []
+    worker = _InterruptedWorker()
+    monkeypatch.setattr(openai_compat, "watch_group", lambda pgid: _RecordedLifeline(pgid, log))
+    monkeypatch.setattr(openai_compat.subprocess, "Popen", lambda command, **kwargs: worker)
+    monkeypatch.setattr(openai_compat, "terminate_process_group", lambda process: None)
+    with pytest.raises(KeyboardInterrupt):
+        OpenAICompatProvider().run(_spec(tmp_path, "http://127.0.0.1:9/v1"))
+    assert log == [("watch", worker.pid), "release"]

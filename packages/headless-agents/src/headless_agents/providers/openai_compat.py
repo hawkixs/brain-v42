@@ -49,7 +49,7 @@ from ..capability import (
     scoped_environment,
     terminate_process_group,
 )
-from ..procgroup import preexec_for
+from ..procgroup import preexec_for, watch_group
 from ..result import RunResult, TokenUsage
 from ..run_record import record, run_id_of
 from ..spec import RunSpec
@@ -365,6 +365,7 @@ class OpenAICompatProvider:
                 )
                 # Nothing was sent: the next link may run.
                 return PROVIDER_FALLBACK_EXIT_CODE, None
+            lifeline = watch_group(process.pid)
             try:
                 stdout, _ = process.communicate(input=json.dumps(envelope), timeout=timeout)
             except subprocess.TimeoutExpired:
@@ -378,6 +379,9 @@ class OpenAICompatProvider:
                 # §3.8.2).
                 terminate_process_group(process)
                 raise
+            finally:
+                # Normal end: the watcher leaves without killing (Q75 = a).
+                lifeline.release()
         finally:
             if stderr_target is not None:
                 stderr_target.close()

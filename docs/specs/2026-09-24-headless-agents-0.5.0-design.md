@@ -467,7 +467,10 @@ early refusals `plan()` can give from the registry are re-checked there.
 All locks are `flock` on files opened with `O_CLOEXEC`, so no provider, hook or git
 subprocess inherits one: a lock dies with the `ha` process that took it. A provider is
 started in its own process group with a parent-death signal (Linux `PR_SET_PDEATHSIG`,
-`SIGKILL`), so it does not outlive a killed `ha`. Locks are released by a context manager
+`SIGKILL`), so it does not outlive a killed `ha`; because that signal reaches the direct
+child only, a watcher in its own session holds a pipe from `ha` and kills the provider's
+whole process group when `ha` disappears, however it died, so no descendant keeps writing
+after the locks died (amended 2026-09-25, operator decision Q75 = a). Locks are released by a context manager
 on every exit path. The order is fixed, which excludes a deadlock:
 
 1. the run's own **lifecycle lock**;

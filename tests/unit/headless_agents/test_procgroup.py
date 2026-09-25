@@ -122,6 +122,72 @@ def test_a_failing_prctl_is_reported_and_does_not_abort_the_spawn(
     assert "PR_SET_PDEATHSIG" in log.read_text()
 
 
+_HA_STAND_IN = """
+import os, pathlib, subprocess, sys, time
+from headless_agents.procgroup import preexec_for, watch_group
+out = pathlib.Path(sys.argv[1])
+child = subprocess.Popen(
+    ["sh", "-c", f"sleep 60 & echo $! > {out}/grandchild; wait"],
+    preexec_fn=preexec_for(os.getpid()),
+    start_new_session=True,
+)
+lifeline = watch_group(child.pid)
+(out / "child").write_text(str(child.pid))
+if sys.argv[2] == "release":
+    while not (out / "grandchild").exists():
+        time.sleep(0.02)
+    child.kill()
+    child.wait()
+    lifeline.release()
+    (out / "released").write_text("ok")
+time.sleep(60)
+"""
+
+
+def _read_pid(path: Path) -> int:
+    _wait_for(path)
+    return int(path.read_text().strip())
+
+
+def test_a_grandchild_dies_when_ha_is_killed(tmp_path: Path) -> None:
+    """Operator decision Q75=a: PR_SET_PDEATHSIG reaches the direct child
+    only; the watcher kills the provider's whole group when ha disappears,
+    however it died."""
+    ha = subprocess.Popen([sys.executable, "-c", _HA_STAND_IN, str(tmp_path), "kill"])
+    try:
+        child = _read_pid(tmp_path / "child")
+        grandchild = _read_pid(tmp_path / "grandchild")
+        assert _alive(child) and _alive(grandchild)
+        ha.kill()
+        ha.wait()
+        assert _gone_within(child, seconds=5)
+        assert _gone_within(grandchild, seconds=5)
+    finally:
+        if ha.poll() is None:
+            ha.kill()
+
+
+def test_a_released_lifeline_kills_nothing(tmp_path: Path) -> None:
+    """A normal end writes 'done' before closing: the watcher leaves."""
+    ha = subprocess.Popen([sys.executable, "-c", _HA_STAND_IN, str(tmp_path), "release"])
+    grandchild: int | None = None
+    try:
+        grandchild = _read_pid(tmp_path / "grandchild")
+        _wait_for(tmp_path / "released")
+        time.sleep(1.0)
+        assert _alive(grandchild), "a released watcher must not kill the group"
+    finally:
+        ha.kill()
+        ha.wait()
+        if grandchild is not None and _alive(grandchild):
+            os.kill(grandchild, signal.SIGKILL)
+
+
+def test_a_group_that_does_not_exist_needs_no_watcher() -> None:
+    lifeline = procgroup.watch_group(2**22 + 12345)
+    lifeline.release()
+
+
 def test_a_working_prctl_writes_nothing(tmp_path: Path) -> None:
     log = tmp_path / "stderr.log"
     with log.open("w") as stream:

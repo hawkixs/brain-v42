@@ -51,7 +51,7 @@ from ..capability import (
 )
 from ..context import xml_attribute
 from ..guards.agy_workspace import GUARD_CONFIG_NAME
-from ..procgroup import preexec_for
+from ..procgroup import preexec_for, watch_group
 from ..profile import CapabilityProfile, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
@@ -563,6 +563,7 @@ def run_agy(
             except OSError as exc:
                 stderr_stream.write(f"unable to start agy: {exc}\n")
                 return PROVIDER_FALLBACK_EXIT_CODE
+            lifeline = watch_group(process.pid)
             try:
                 process.communicate(timeout=remaining)
             except subprocess.TimeoutExpired:
@@ -580,6 +581,9 @@ def run_agy(
                 raise
             else:
                 timed_out = False
+            finally:
+                # Normal end: the watcher leaves without killing (Q75 = a).
+                lifeline.release()
 
         writable = workspace is not None and workspace.write
         if timed_out:

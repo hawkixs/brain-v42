@@ -645,6 +645,15 @@ def test_a_read_only_run_is_unchanged(tmp_path: Path) -> None:
 - Modify: the `Popen` calls and their waits in `providers/{claude,codex,agy,opencode,openai_compat}.py`
 - Test: `tests/unit/headless_agents/test_procgroup.py`, each rail's test file
 
+> **Amended 2026-09-25 (codex review of PR A, operator decision Q75 = a):** `PR_SET_PDEATHSIG`
+> reaches the direct child only. `procgroup.watch_group(pgid) -> Lifeline` starts a watcher
+> (`python -I _reaper.py <fd> <pgid>`, standard library only, its own session) holding the
+> read end of a pipe whose write end only `ha` holds: end-of-file without a release → the
+> whole group gets `SIGKILL`; `Lifeline.release()` (every rail's `finally`) → the watcher
+> leaves; an empty group → the watcher leaves. The provider stays `ha`'s direct child, so
+> `Popen` semantics (exit codes, `OSError` on a missing executable) are unchanged. Tested
+> with a grandchild outliving a killed `ha`.
+
 **Interfaces:**
 - Produces: `preexec_for(parent_pid: int) -> Callable[[], None]` — the returned function,
   run in the child between fork and exec, calls `prctl(PR_SET_PDEATHSIG, SIGKILL)` through
