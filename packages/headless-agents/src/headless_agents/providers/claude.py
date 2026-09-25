@@ -14,6 +14,7 @@ trade the Codex adapter makes.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import subprocess
@@ -201,6 +202,7 @@ def _effective_timeout(timeout_seconds: float, deadline: float | None) -> float:
 CLAUDE_OAUTH_KEY = "claudeAiOauth"
 _CREDENTIALS_FILE = ".credentials.json"
 _MAX_CREDENTIALS_BYTES = 1 << 20
+_CREDENTIALS_LOCK_SECONDS = 10.0
 _API_KEY_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 
@@ -278,17 +280,41 @@ def _persist_rotated_oauth(
         return
     if entry == copied:
         return
+    # The compare and the replace hold one exclusive lock beside the file, so
+    # two runs that both rotated cannot both see it "unchanged" and overwrite
+    # each other (codex review of PR #206, round 4).
+    lock = os.open(credentials_lock_path(real), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     try:
-        current = real.read_bytes()
-    except OSError:
-        note("rotated during the run but not written back: the real file is gone")
-        return
-    if current != real_at_build:
-        note("rotated during the run but not written back: the real file changed meanwhile")
-        return
-    document = json.loads(current.decode("utf-8"))
-    document[CLAUDE_OAUTH_KEY] = entry
-    _write_private(real, json.dumps(document).encode("utf-8"))
+        deadline = time.monotonic() + _CREDENTIALS_LOCK_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    note(
+                        "rotated during the run but not written back: the credentials lock stayed busy"
+                    )
+                    return
+                time.sleep(0.05)
+        try:
+            current = real.read_bytes()
+        except OSError:
+            note("rotated during the run but not written back: the real file is gone")
+            return
+        if current != real_at_build:
+            note("rotated during the run but not written back: the real file changed meanwhile")
+            return
+        document = json.loads(current.decode("utf-8"))
+        document[CLAUDE_OAUTH_KEY] = entry
+        _write_private(real, json.dumps(document).encode("utf-8"))
+    finally:
+        os.close(lock)
+
+
+def credentials_lock_path(real: Path) -> Path:
+    """The lock every ``ha`` run takes to write a rotated login back to ``real``."""
+    return real.with_name(f".{real.name}.ha-lock")
 
 
 def run_claude(
