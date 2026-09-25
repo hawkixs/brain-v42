@@ -572,6 +572,14 @@ def test_workflows_on_an_invalid_file_exits_2_naming_the_problem(world: _World) 
     assert "workflows.toml: [build] the implement slot needs a role with write = true" in err
 
 
+def test_an_invalid_workflows_file_refuses_a_provider_run(world: _World) -> None:
+    """§3.2: validation happens before anything runs, whatever the target."""
+    _workflows(world, '[codex]\nshape = "review"\nreview = "claude"\n')
+    code, _, err = world.run("run", "codex", "task")
+    assert code == 2 and "collides with a provider" in err
+    assert "codex" not in world.fakes
+
+
 def test_the_readme_synopsis_lists_ha_workflows() -> None:
     readme = (
         Path(__file__).resolve().parents[3] / "packages" / "headless-agents" / "README.md"

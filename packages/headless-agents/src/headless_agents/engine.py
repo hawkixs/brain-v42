@@ -36,7 +36,14 @@ from .profile import CapabilityProfile, Credentials, McpServer, Workspace, mcp_n
 from .proofs import CLI_RAILS, confinement, isolation_label, isolation_ok
 from .providers.claude import MAX_APPEND_SYSTEM_PROMPT_BYTES
 from .providers.openai_compat import GENERIC_NAME
-from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes, probe, tool_counts
+from .registry import (
+    HTTP_PROVIDER_NAMES,
+    PROVIDER_NAMES,
+    get_provider,
+    max_prompt_bytes,
+    probe,
+    tool_counts,
+)
 from .repo import RepoError, RepoIdentity, discover
 from .report import (
     PROMPT_FILE,
@@ -53,6 +60,7 @@ from .run_record import RESULT_FILE_NAME
 from .runs import MINT_ATTEMPTS, Entry, Registry, RegistryError, make_run_dir
 from .spec import RunSpec
 from .state import Unknown
+from .templates import implement_prompt
 from .workflows import Workflow, WorkflowsError, load_workflows
 from .workspace import prepend
 
@@ -109,11 +117,16 @@ class Plan:
     request: Request
     role: Role
     models: Mapping[str, str]
+    #: What the provider gets: the task as given, or a template around it (§3.7).
     prompt: str
     mcp: McpServer | None
     environment: dict[str, str]
     run_dir: Path | None
     state: Path
+    #: The workflow a workflow target names; ``None`` for a role or a provider.
+    workflow: Workflow | None = None
+    #: The task as given, written to ``prompt.md`` (§3.10); ``None`` means ``prompt``.
+    task: str | None = None
 
 
 def operator_environment(environ: Mapping[str, str]) -> dict[str, str]:
@@ -322,22 +335,10 @@ def _environment(environ: Mapping[str, str], mcp: McpServer | None) -> dict[str,
     return environment
 
 
-def plan(request: Request) -> Plan:
-    """Resolve ``request`` and apply every gate that needs no git; raise :class:`UsageError`."""
-    declared, profiles = declared_roles(request.environ, request.home)
-    try:
-        role = _with_overrides(resolve_role(request.target, declared), request.overrides)
-    except RolesError as exc:
-        raise UsageError(str(exc)) from None
-    rule = capability_rule(role, profiles)
-    if rule is not None:
-        raise UsageError(f"{request.target}: {rule}")
-    if request.base is not None and not role.write:
-        raise UsageError("--base needs a write run: the role's write, or --write")
-
+def _models(role: Role, request: Request) -> Mapping[str, str]:
     links = tuple((link.provider, link.model) for link in role.links)
     try:
-        models = models_for(
+        return models_for(
             links,
             default=request.overrides.model or "",
             role_model=role.model,
@@ -347,24 +348,70 @@ def plan(request: Request) -> Plan:
     except ModelsError as exc:
         raise UsageError(str(exc)) from None
 
-    prompt = _prompt(request)
+
+def _mcp(role: Role, request: Request) -> McpServer | None:
+    if role.mcp is None:
+        return None
+    try:
+        return mcp_server(role.mcp, environ=request.environ, home=request.home)
+    except McpProfileError as exc:
+        raise UsageError(str(exc)) from None
+
+
+def _run_dir(request: Request) -> Path | None:
+    if request.run_dir is None:
+        return None
+    run_dir = Path(os.path.abspath(request.cwd / request.run_dir))
+    if not run_dir.name:
+        raise UsageError(
+            f"--run-dir {request.run_dir} has no name: a run is named by its directory"
+        )
+    return run_dir
+
+
+#: The ``ha run`` options that override a role (§3.9), by their ``Overrides`` field.
+_OVERRIDE_FLAGS: Final[Mapping[str, str]] = {
+    "model": "-m",
+    "effort": "--effort",
+    "timeout": "--timeout",
+    "context": "--context",
+    "context_parents": "--context-parents",
+    "mcp": "--mcp",
+    "write": "--write",
+    "shell": "--shell",
+    "base_url": "--base-url",
+    "key_env": "--key-env",
+}
+
+
+def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan:
+    """A workflow target: its roles run as declared (§3.3), its prompt is a template (§3.7)."""
+    given = [
+        flag
+        for field, flag in _OVERRIDE_FLAGS.items()
+        if getattr(request.overrides, field) is not None
+    ]
+    if given:
+        raise UsageError(
+            f"workflow {workflow.name}: a workflow runs its roles as declared, so "
+            f"{', '.join(given)} is refused; its options are --base, --repo, --json and "
+            "--run-dir"
+        )
+    if workflow.implement is None:
+        raise UsageError(
+            f"workflow {workflow.name}: the review shape is not available in this version of ha; "
+            f"run a reviewer role directly (ha run {workflow.review[0]} ...)"
+        )
+    role = resolve_role(workflow.implement, config.roles)
+    # Validated when workflows.toml was read; the engine checks again (§3.4).
+    rule = capability_rule(role, config.profiles)
+    if rule is not None:
+        raise UsageError(f"{workflow.name}: {rule}")
+    models = _models(role, request)
+    task = _prompt(request)
+    prompt = implement_prompt(task)
     _check_prompt_size(role, prompt, _bundle(role, request, None))
-
-    mcp: McpServer | None = None
-    if role.mcp is not None:
-        try:
-            mcp = mcp_server(role.mcp, environ=request.environ, home=request.home)
-        except McpProfileError as exc:
-            raise UsageError(str(exc)) from None
-
-    run_dir: Path | None = None
-    if request.run_dir is not None:
-        run_dir = Path(os.path.abspath(request.cwd / request.run_dir))
-        if not run_dir.name:
-            raise UsageError(
-                f"--run-dir {request.run_dir} has no name: a run is named by its directory"
-            )
-
+    mcp = _mcp(role, request)
     return Plan(
         request=request,
         role=role,
@@ -372,8 +419,46 @@ def plan(request: Request) -> Plan:
         prompt=prompt,
         mcp=mcp,
         environment=_environment(request.environ, mcp),
-        run_dir=run_dir,
+        run_dir=_run_dir(request),
         state=state_dir(request.environ, home=request.home),
+        workflow=workflow,
+        task=task,
+    )
+
+
+def plan(request: Request) -> Plan:
+    """Resolve ``request`` and apply every gate that needs no git; raise :class:`UsageError`."""
+    config = load_config(request.environ, request.home)
+    workflow = config.workflows.get(request.target)
+    if workflow is not None:
+        return _plan_workflow(request, workflow, config)
+    declared, profiles = config.roles, config.profiles
+    if request.target not in declared and request.target not in PROVIDER_NAMES:
+        known = sorted({*config.workflows, *declared, *PROVIDER_NAMES})
+        raise UsageError(
+            f"unknown target {request.target!r}; workflows, roles and providers: {', '.join(known)}"
+        )
+    role = _with_overrides(resolve_role(request.target, declared), request.overrides)
+    rule = capability_rule(role, profiles)
+    if rule is not None:
+        raise UsageError(f"{request.target}: {rule}")
+    if request.base is not None and not role.write:
+        raise UsageError("--base needs a write run: the role's write, or --write")
+
+    models = _models(role, request)
+    prompt = _prompt(request)
+    _check_prompt_size(role, prompt, _bundle(role, request, None))
+    mcp = _mcp(role, request)
+    return Plan(
+        request=request,
+        role=role,
+        models=models,
+        prompt=prompt,
+        mcp=mcp,
+        environment=_environment(request.environ, mcp),
+        run_dir=_run_dir(request),
+        state=state_dir(request.environ, home=request.home),
+        task=prompt,
     )
 
 
