@@ -711,21 +711,22 @@ def _execute_write(
     identity: RepoIdentity,
     start: Path,
     report: dict[str, object],
+    slot: str,
     step_name: str,
     started: float,
     unconfined: bool,
     say: Callable[[str], None],
 ) -> Outcome:
-    """A role write run: the §3.8.3 protocol, then its report."""
+    """A write run -- a role's, or an ``implement`` workflow's: §3.8.3, then its report."""
     role, run_dir = plan.role, entry.run_dir
     step_dir = run_dir / "steps" / step_name
 
     def run_links(workspace: Workspace, directory: Path) -> RunResult:
-        say(f"step 1 run {role.name}: started")
+        say(f"step 1 {slot} {role.name}: started")
         final = _run_links(
             plan, bundle, run_id=entry.run_id, step_dir=directory, workspace=workspace, say=say
         )
-        say(f"step 1 run {role.name}: exit {final.exit_code}")
+        say(f"step 1 {slot} {role.name}: exit {final.exit_code}")
         return final
 
     try:
@@ -749,7 +750,7 @@ def _execute_write(
             report,
             step_entry(
                 index=1,
-                slot="run",
+                slot=slot,
                 role=role.name,
                 step_dir=f"steps/{step_name}",
                 result=outcome.final,
@@ -781,15 +782,16 @@ def _execute_write(
 
 
 def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
-    """Run a planned one-step read-only run under its locks, and record it.
+    """Run a planned one-step run -- a role's, or an ``implement`` workflow's -- under its
+    locks, and record it.
 
     In order: identify the repository from the filesystem (no git, plan
     decision P2); mint the run, hold its lifecycle lock, then register it; take
     the unconfined lock shared (§3.8.2); build the real context bundle and
-    check the prompt size again; run the role's chain in ``steps/01-run-<role>``;
-    write ``run.json`` and the registry status. An interruption propagates
-    with every lock released and the status left non-final, so the run reads
-    ``incomplete``.
+    check the prompt size again; run the role's chain in
+    ``steps/01-<slot>-<role>``; write ``run.json`` and the registry status. An
+    interruption propagates with every lock released and the status left
+    non-final, so the run reads ``incomplete``.
     """
     request, role = plan.request, plan.role
     start = request.repo.resolve() if request.repo is not None else request.cwd.resolve()
@@ -811,7 +813,13 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
             make_run_dir(plan.run_dir, forbidden=forbidden)
         except RegistryError as exc:
             raise UsageError(str(exc)) from None
-    target = {"kind": "provider" if role.implicit else "role", "name": role.name}
+    workflow = plan.workflow
+    if workflow is not None:
+        target = {"kind": "workflow", "name": workflow.name, "shape": workflow.shape}
+        slot: str = workflow.shape
+    else:
+        target = {"kind": "provider" if role.implicit else "role", "name": role.name}
+        slot = "run"
 
     with ExitStack() as held_locks:
         try:
@@ -868,7 +876,9 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
 
         started = time.monotonic()
         run_dir = entry.run_dir
-        (run_dir / PROMPT_FILE).write_text(plan.prompt, encoding="utf-8")
+        # §3.10: prompt.md is the task as given; the provider gets its template around it.
+        task = plan.task if plan.task is not None else plan.prompt
+        (run_dir / PROMPT_FILE).write_text(task, encoding="utf-8")
         report = new_report(
             run_id=entry.run_id,
             target=target,
@@ -877,7 +887,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
             started_at=_utc_now(),
         )
         write_report(run_dir, report)
-        step_name = step_dir_name(1, "run", role.name)
+        step_name = step_dir_name(1, slot, role.name)
         step_dir = run_dir / "steps" / step_name
         if role.write:
             assert identity is not None
@@ -890,6 +900,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 identity=identity,
                 start=start,
                 report=report,
+                slot=slot,
                 step_name=step_name,
                 started=started,
                 say=say,

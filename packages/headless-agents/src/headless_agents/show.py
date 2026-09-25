@@ -276,6 +276,13 @@ def _measure(value: object) -> float | None:
     return number if math.isfinite(number) else None
 
 
+def format_diffstat(stat: Diffstat) -> str:
+    """``+120 -14  5 files``: what ``ha show`` and a write's header print (§3.9, §3.10)."""
+    return (
+        f"+{stat.insertions} -{stat.deletions}  {stat.files} file{'' if stat.files == 1 else 's'}"
+    )
+
+
 def format_duration(seconds: object) -> str:
     """``45s``, ``2m40s``, ``1h02m``; ``-`` when not measured."""
     measured = _measure(seconds)
@@ -383,11 +390,7 @@ def render(shown: Shown) -> str:
             f"{count} commit{'' if count == 1 else 's'}"
         )
         if shown.diffstat is not None:
-            stat = shown.diffstat
-            line += (
-                f"  +{stat.insertions} -{stat.deletions}  "
-                f"{stat.files} file{'' if stat.files == 1 else 's'}"
-            )
+            line += f"  {format_diffstat(shown.diffstat)}"
         lines.append(line)
     lines.extend(f"warning {warning}" for warning in shown.warnings)
     steps = report.get("steps")
@@ -410,6 +413,7 @@ __all__ = [
     "NotShown",
     "Shown",
     "format_cost",
+    "format_diffstat",
     "format_duration",
     "format_tokens",
     "format_tools",

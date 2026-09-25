@@ -2,7 +2,7 @@
 
 .. code-block:: text
 
-    ha run TARGET [PROMPT | -] [options]     TARGET: a role or a provider
+    ha run TARGET [PROMPT | -] [options]     TARGET: a workflow, a role or a provider
     ha roles [--json]
     ha workflows [--json]
     ha providers [--json]
@@ -33,6 +33,7 @@ from . import quarantine, show
 from .capability import INVALID_USAGE_EXIT_CODE
 from .config_paths import state_dir
 from .engine import (
+    Outcome,
     Overrides,
     Request,
     UsageError,
@@ -48,7 +49,15 @@ from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, 
 from .report import RUN_JSON
 from .run_record import RESULT_FILE_NAME
 from .runs import Registry, RegistryError
-from .show import format_cost, format_duration, load_json, read_run_dir, read_task
+from .show import (
+    format_cost,
+    format_diffstat,
+    format_duration,
+    load_json,
+    read_diffstat,
+    read_run_dir,
+    read_task,
+)
 from .state import Unknown
 from .write_flow import PATCH_FILE
 
@@ -69,10 +78,18 @@ exit codes of a run (a role or a provider):
   124 timeout
   130 interrupted (Ctrl-C); the run reads incomplete
 
+exit codes of a workflow (implement):
+  0 committed
+  5 the implementation changed nothing
+  1 a step failed (its residue committed), the tripwire fired, HEAD moved or a hook
+    refused; the step's own code is in run.json
+  2 invalid usage or configuration; nothing ran
+  130 interrupted (Ctrl-C); the run reads incomplete
+
 examples:
   ha run codex -m gpt-6-luna "Explain what this repository does."
   ha run reviewer-codex - < task.md
-  ha run claude --context full --json "Summarise the open TODOs." > run.json
+  ha run build "Add a --verbose flag to the CLI."
 """
 
 
@@ -111,11 +128,14 @@ def _parser() -> argparse.ArgumentParser:
 
     run = commands.add_parser(
         "run",
-        help="run one task on a role or a provider",
+        help="run one task on a workflow, a role or a provider",
         epilog=_RUN_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    run.add_argument("target", help="a role declared in roles.toml, or a provider name")
+    run.add_argument(
+        "target",
+        help="a workflow of workflows.toml, a role of roles.toml, or a provider name",
+    )
     run.add_argument(
         "prompt", nargs="?", help="the task; '-' reads stdin; absent reads a piped stdin"
     )
@@ -213,6 +233,18 @@ def _prompt(args: argparse.Namespace, io: Io) -> tuple[str | None, bool]:
     return (None if is_tty else io.stdin.read()), is_tty
 
 
+def _write_header(outcome: Outcome, branch: str) -> str:
+    """What a write prints before its text (§3.9): the run id -- what ``--continue``
+    takes -- the branch, the diffstat of ``change.patch`` and its path. No git: the
+    patch the engine saved is read."""
+    stat = read_diffstat(outcome.run_dir)
+    return (
+        f"run: {outcome.run_id}\nbranch: {branch}\n"
+        f"diffstat: {format_diffstat(stat) if stat is not None else '-'}\n"
+        f"patch: {outcome.run_dir / PATCH_FILE}\n\n"
+    )
+
+
 def _run(args: argparse.Namespace, io: Io) -> int:
     if args.provider is not None:
         raise UsageError(
@@ -253,11 +285,12 @@ def _run(args: argparse.Namespace, io: Io) -> int:
     branch = outcome.report.get("branch")
     if args.json:
         io.stdout.write(json.dumps(outcome.report, ensure_ascii=False, indent=2) + "\n")
-    elif outcome.exit_code == 0 and outcome.final is not None and outcome.final.text:
+    elif outcome.exit_code == 0 and outcome.final is not None:
         if isinstance(branch, str):
-            io.stdout.write(f"branch: {branch}\npatch: {outcome.run_dir / PATCH_FILE}\n\n")
+            io.stdout.write(_write_header(outcome, branch))
         text = outcome.final.text
-        io.stdout.write(text if text.endswith("\n") else text + "\n")
+        if text:
+            io.stdout.write(text if text.endswith("\n") else text + "\n")
     if outcome.exit_code != 0:
         provider = outcome.final.provider if outcome.final is not None else args.target
         io.say(
