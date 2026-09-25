@@ -169,3 +169,25 @@ def test_an_existing_run_dir_is_refused(tmp_path: Path) -> None:
 def test_a_new_run_dir_is_created_with_its_parents(tmp_path: Path) -> None:
     make_run_dir(tmp_path / "a" / "b" / "run", forbidden=_roots(tmp_path))
     assert (tmp_path / "a" / "b" / "run").is_dir()
+
+
+def test_a_run_dir_that_lands_in_a_forbidden_tree_after_creation_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review of #207: the check before creation is re-done on the created
+    directory's canonical path, so a path component swapped for a symlink in
+    between cannot land the run inside the repository."""
+    roots = _roots(tmp_path)
+    outside = tmp_path / "outside"
+    real_mkdir = Path.mkdir
+
+    def swap_then_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        if self == outside:
+            self.symlink_to(roots["the repository"], target_is_directory=True)
+            return
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "mkdir", swap_then_mkdir)
+    with pytest.raises(RegistryError, match="the repository"):
+        make_run_dir(outside / "mine", forbidden=roots)
+    assert not (roots["the repository"] / "mine").exists(), "the stray directory is removed"

@@ -165,6 +165,13 @@ def make_run_dir(run_dir: Path, *, forbidden: Mapping[str, Path]) -> None:
         os.mkdir(target, 0o700)
     except FileExistsError:
         raise RegistryError(f"--run-dir {run_dir} already exists; a run needs a new one") from None
+    # Checked again on what was actually created: a path component swapped for a
+    # symbolic link between the check and the creation (codex review of #207).
+    created = target.resolve()
+    for label, root in forbidden.items():
+        if created.is_relative_to(root.resolve()):
+            os.rmdir(created)
+            raise RegistryError(f"--run-dir {run_dir} resolved inside {label} ({root})")
 
 
 __all__ = ["FINAL_STATUSES", "RUN_ID_PATTERN", "Entry", "Registry", "RegistryError", "make_run_dir"]

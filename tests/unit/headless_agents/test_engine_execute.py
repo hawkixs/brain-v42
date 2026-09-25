@@ -302,3 +302,23 @@ def test_a_chain_with_one_unproven_link_runs_no_link(world: World) -> None:
 def test_an_http_provider_needs_no_proof(world: World) -> None:
     outcome = world.run("mistral", overrides=Overrides(model="mistral-small-latest"))
     assert outcome.exit_code == 0
+
+
+def test_a_lifecycle_lock_not_obtained_leaves_no_entry_and_no_directory(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review of #207: a run that never started must not stay registered."""
+    real_held = engine.held
+
+    def busy(path, *, rank, **kwargs):  # type: ignore[no-untyped-def]
+        if rank is locks.Rank.LIFECYCLE:
+            raise locks.LockTimeout("the lifecycle lock: busy")
+        return real_held(path, rank=rank, **kwargs)
+
+    monkeypatch.setattr(engine, "held", busy)
+    with pytest.raises(UsageError, match="lifecycle"):
+        world.run("codex")
+    assert not list((world.state / "runs").glob("*.json"))
+    runs_root = world.home / ".cache" / "ha" / "runs"
+    assert not runs_root.exists() or not any(runs_root.iterdir())
+    assert "codex" not in world.fakes

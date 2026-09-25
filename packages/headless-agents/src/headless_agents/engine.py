@@ -509,15 +509,21 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         entry.run_dir.mkdir(parents=True, mode=0o700)
 
     with ExitStack() as held_locks:
-        held_locks.enter_context(
-            held(
-                registry.lifecycle_lock(entry.run_id),
-                rank=Rank.LIFECYCLE,
-                exclusive=True,
-                wait=None,
-                what=f"the lifecycle lock of {entry.run_id}",
+        try:
+            held_locks.enter_context(
+                held(
+                    registry.lifecycle_lock(entry.run_id),
+                    rank=Rank.LIFECYCLE,
+                    exclusive=True,
+                    wait=None,
+                    what=f"the lifecycle lock of {entry.run_id}",
+                )
             )
-        )
+        except LockTimeout as exc:
+            # A run that never started leaves nothing behind (codex review of #207).
+            shutil.rmtree(entry.run_dir, ignore_errors=True)
+            registry.forget(entry.run_id)
+            raise UsageError(f"{exc}: nothing ran") from None
         try:
             held_locks.enter_context(
                 held(
