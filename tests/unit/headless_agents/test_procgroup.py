@@ -123,15 +123,14 @@ def test_a_failing_prctl_is_reported_and_does_not_abort_the_spawn(
 
 
 _HA_STAND_IN = """
-import os, pathlib, subprocess, sys, time
-from headless_agents.procgroup import preexec_for, watch_group
+import os, pathlib, sys, time
+from headless_agents.procgroup import preexec_for, spawn_watched
 out = pathlib.Path(sys.argv[1])
-child = subprocess.Popen(
+child, lifeline = spawn_watched(
     ["sh", "-c", f"sleep 60 & echo $! > {out}/grandchild; wait"],
     preexec_fn=preexec_for(os.getpid()),
     start_new_session=True,
 )
-lifeline = watch_group(child.pid)
 (out / "child").write_text(str(child.pid))
 if sys.argv[2] == "release":
     while not (out / "grandchild").exists():
@@ -149,6 +148,7 @@ def _read_pid(path: Path) -> int:
     return int(path.read_text().strip())
 
 
+@pytest.mark.real_watcher
 def test_a_grandchild_dies_when_ha_is_killed(tmp_path: Path) -> None:
     """Operator decision Q75=a: PR_SET_PDEATHSIG reaches the direct child
     only; the watcher kills the provider's whole group when ha disappears,
@@ -167,6 +167,7 @@ def test_a_grandchild_dies_when_ha_is_killed(tmp_path: Path) -> None:
             ha.kill()
 
 
+@pytest.mark.real_watcher
 def test_a_released_lifeline_kills_nothing(tmp_path: Path) -> None:
     """A normal end writes 'done' before closing: the watcher leaves."""
     ha = subprocess.Popen([sys.executable, "-c", _HA_STAND_IN, str(tmp_path), "release"])
@@ -183,9 +184,38 @@ def test_a_released_lifeline_kills_nothing(tmp_path: Path) -> None:
             os.kill(grandchild, signal.SIGKILL)
 
 
-def test_a_group_that_does_not_exist_needs_no_watcher() -> None:
-    lifeline = procgroup.watch_group(2**22 + 12345)
+@pytest.mark.real_watcher
+def test_the_watcher_is_running_before_the_provider_starts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review of #206 (round 3): no window where a provider runs unwatched."""
+    seen: list[bool] = []
+    real_popen = subprocess.Popen
+
+    def popen(command: list[str], **kwargs: object) -> subprocess.Popen[bytes]:
+        with real_popen(["pgrep", "-f", "_reaper.py"], stdout=subprocess.PIPE, text=True) as found:
+            output, _ = found.communicate()
+        seen.append(bool(output.strip()))
+        return real_popen(command, **kwargs)  # type: ignore[call-overload,no-any-return]
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    child, lifeline = procgroup.spawn_watched(["true"], start_new_session=True)
+    child.wait()
     lifeline.release()
+    assert seen == [True]
+
+
+@pytest.mark.real_watcher
+def test_a_watcher_that_cannot_start_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fail closed: no watcher, no provider."""
+    monkeypatch.setattr(procgroup, "_REAPER", tmp_path / "missing_reaper.py")
+    marker = tmp_path / "started"
+    with pytest.raises(OSError, match="watcher"):
+        procgroup.spawn_watched(["touch", str(marker)])
+    time.sleep(0.2)
+    assert not marker.exists(), "the provider must not start without its watcher"
 
 
 def test_a_working_prctl_writes_nothing(tmp_path: Path) -> None:

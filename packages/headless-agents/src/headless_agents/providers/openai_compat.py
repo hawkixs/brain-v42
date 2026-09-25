@@ -49,7 +49,7 @@ from ..capability import (
     scoped_environment,
     terminate_process_group,
 )
-from ..procgroup import preexec_for, watch_group
+from ..procgroup import preexec_for, spawn_watched
 from ..result import RunResult, TokenUsage
 from ..run_record import record, run_id_of
 from ..spec import RunSpec
@@ -349,7 +349,7 @@ class OpenAICompatProvider:
         stderr_target = stderr_path.open("a", encoding="utf-8") if stderr_path is not None else None
         try:
             try:
-                process = subprocess.Popen(
+                process, lifeline = spawn_watched(
                     self.build_command(spec),
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
@@ -365,7 +365,6 @@ class OpenAICompatProvider:
                 )
                 # Nothing was sent: the next link may run.
                 return PROVIDER_FALLBACK_EXIT_CODE, None
-            lifeline = watch_group(process.pid)
             try:
                 stdout, _ = process.communicate(input=json.dumps(envelope), timeout=timeout)
             except subprocess.TimeoutExpired:

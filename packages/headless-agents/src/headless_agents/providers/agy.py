@@ -51,7 +51,7 @@ from ..capability import (
 )
 from ..context import xml_attribute
 from ..guards.agy_workspace import GUARD_CONFIG_NAME
-from ..procgroup import preexec_for, watch_group
+from ..procgroup import preexec_for, spawn_watched
 from ..profile import CapabilityProfile, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
@@ -549,7 +549,7 @@ def run_agy(
             stderr_log.open("w", encoding="utf-8") as stderr_stream,
         ):
             try:
-                process = subprocess.Popen(
+                process, lifeline = spawn_watched(
                     command,
                     stdin=subprocess.DEVNULL,
                     stdout=events_stream,
@@ -563,7 +563,6 @@ def run_agy(
             except OSError as exc:
                 stderr_stream.write(f"unable to start agy: {exc}\n")
                 return PROVIDER_FALLBACK_EXIT_CODE
-            lifeline = watch_group(process.pid)
             try:
                 process.communicate(timeout=remaining)
             except subprocess.TimeoutExpired:

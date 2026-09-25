@@ -30,7 +30,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
-from ..procgroup import preexec_for, watch_group
+from ..procgroup import preexec_for, spawn_watched
 from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
@@ -391,7 +391,7 @@ def run_claude(
         )
         with raw_log.open("a", encoding="utf-8") as raw_stream, answer_context as answer_stream:
             try:
-                process = subprocess.Popen(
+                process, lifeline = spawn_watched(
                     command,
                     stdin=subprocess.PIPE,
                     stdout=raw_stream if answer_stream is None else answer_stream,
@@ -407,7 +407,6 @@ def run_claude(
                 # Claude did not start: nothing could have been written.
                 return PROVIDER_FALLBACK_EXIT_CODE
 
-            lifeline = watch_group(process.pid)
             try:
                 process.communicate(
                     input=prompt, timeout=_effective_timeout(timeout_seconds, deadline)

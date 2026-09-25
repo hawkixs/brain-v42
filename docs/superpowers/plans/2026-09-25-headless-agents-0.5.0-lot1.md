@@ -646,11 +646,15 @@ def test_a_read_only_run_is_unchanged(tmp_path: Path) -> None:
 - Test: `tests/unit/headless_agents/test_procgroup.py`, each rail's test file
 
 > **Amended 2026-09-25 (codex review of PR A, operator decision Q75 = a):** `PR_SET_PDEATHSIG`
-> reaches the direct child only. `procgroup.watch_group(pgid) -> Lifeline` starts a watcher
-> (`python -I _reaper.py <fd> <pgid>`, standard library only, its own session) holding the
-> read end of a pipe whose write end only `ha` holds: end-of-file without a release → the
-> whole group gets `SIGKILL`; `Lifeline.release()` (every rail's `finally`) → the watcher
-> leaves; an empty group → the watcher leaves. The provider stays `ha`'s direct child, so
+> reaches the direct child only. `procgroup.spawn_watched(command, **popen_kwargs) ->
+> (Popen, Lifeline)` first starts a watcher (`python -I _reaper.py <life-fd> <ready-fd>`,
+> standard library only, its own session) and waits for its `r` — no watcher, no provider
+> (`OSError`, the rails' "unable to start" path) — then starts the provider and writes its
+> group id to the watcher. The watcher holds the read end of a pipe whose write end only
+> `ha` holds: end-of-file without a release → the whole group gets `SIGKILL`;
+> `Lifeline.release()` (every rail's `finally`) → the watcher leaves; an empty group → the
+> watcher leaves. Unit tests of rails with a fake `Popen` never start a real watcher
+> (`tests/unit/conftest.py`, marker `real_watcher` to opt in). The provider stays `ha`'s direct child, so
 > `Popen` semantics (exit codes, `OSError` on a missing executable) are unchanged. Tested
 > with a grandchild outliving a killed `ha`.
 

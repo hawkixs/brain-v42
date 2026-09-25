@@ -15,6 +15,7 @@ from typing import Any
 import pytest
 from pydantic import SecretStr
 
+from headless_agents import procgroup
 from headless_agents.capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
@@ -1908,9 +1909,12 @@ class TestTheProviderDiesWithHa:
 
 
 class _RecordedLifeline:
-    def __init__(self, pgid: int, log: list[object]) -> None:
-        log.append(("watch", pgid))
+    def __init__(self, log: list[object]) -> None:
+        log.append("start")
         self._log = log
+
+    def attach(self, pgid: int) -> None:
+        self._log.append(("watch", pgid))
 
     def release(self) -> None:
         self._log.append("release")
@@ -1923,16 +1927,16 @@ class TestTheGroupIsWatched:
 
     def test_the_watcher_is_started_and_released(self, monkeypatch, logs) -> None:  # type: ignore[no-untyped-def]
         log: list[object] = []
-        monkeypatch.setattr(codex, "watch_group", lambda pgid: _RecordedLifeline(pgid, log))
+        monkeypatch.setattr(procgroup, "start_watcher", lambda: _RecordedLifeline(log))
         fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
         monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
         _install(monkeypatch, fake, logs["report_log"])
         _run(logs)
-        assert log == [("watch", fake.pid), "release"]
+        assert log == ["start", ("watch", fake.pid), "release"]
 
     def test_the_watcher_is_released_on_interruption(self, monkeypatch, logs) -> None:  # type: ignore[no-untyped-def]
         log: list[object] = []
-        monkeypatch.setattr(codex, "watch_group", lambda pgid: _RecordedLifeline(pgid, log))
+        monkeypatch.setattr(procgroup, "start_watcher", lambda: _RecordedLifeline(log))
 
         class _Interrupted(_FakeProcess):
             def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
@@ -1943,4 +1947,4 @@ class TestTheGroupIsWatched:
         _install(monkeypatch, fake, logs["report_log"])
         with pytest.raises(KeyboardInterrupt):
             _run(logs)
-        assert log == [("watch", fake.pid), "release"]
+        assert log == ["start", ("watch", fake.pid), "release"]
