@@ -96,7 +96,7 @@ _POPEN: Final = subprocess.Popen
 class Lifeline:
     """The write end of a watcher's pipe: while it is open, the group lives.
 
-    :meth:`attach` names the group to guard once the provider exists;
+    :meth:`child_attach` has the provider's child name its group before exec;
     :meth:`release` tells the watcher the run ended normally. If ``ha`` dies
     instead, the kernel closes this end and the watcher kills the group.
     """
@@ -110,9 +110,28 @@ class Lifeline:
         """A lifeline with no watcher behind it (tests with a fake provider)."""
         return cls(None, None)
 
-    def attach(self, pgid: int) -> None:
-        if self._write_fd is not None:
-            os.write(self._write_fd, f"{pgid}\n".encode("ascii"))
+    def child_attach(self, preexec_fn: Callable[[], None] | None) -> Callable[[], None]:
+        """A ``preexec_fn`` that runs ``preexec_fn``, then names the child's own group.
+
+        It runs in the child after ``setsid`` and before ``exec``: the watcher
+        knows the group before the provider can start any descendant, so ``ha``
+        dying at any point after the fork leaves nothing unwatched (closure
+        round of PR #206). A write that fails -- the watcher is gone -- ends the
+        child before exec: no watcher, no provider.
+        """
+        write_fd = self._write_fd
+
+        def preexec() -> None:
+            if preexec_fn is not None:
+                preexec_fn()
+            if write_fd is None:
+                return
+            try:
+                os.write(write_fd, b"%d\n" % os.getpgid(0))
+            except OSError:
+                os._exit(1)
+
+        return preexec
 
     def release(self) -> None:
         if self._write_fd is not None:
@@ -179,17 +198,17 @@ def spawn_watched(
     otherwise outlive a killed ``ha`` and keep writing after its locks died
     (operator decision Q75 = a). The watcher starts first; the provider stays
     this process's direct child, in its own session, so ``Popen``'s semantics
-    are unchanged. Left open: ``ha`` killed between the provider's start and
-    :meth:`Lifeline.attach` -- a single write -- leaves the watcher nothing to
-    guard, and only ``PR_SET_PDEATHSIG`` then applies.
+    are unchanged. The child names its own group to the watcher before exec
+    (:meth:`Lifeline.child_attach`), so no instant after the fork leaves a
+    descendant the watcher does not know.
     """
     lifeline = start_watcher()
+    popen_kwargs["preexec_fn"] = lifeline.child_attach(popen_kwargs.get("preexec_fn"))
     try:
         process = subprocess.Popen(command, **popen_kwargs)
     except BaseException:
         lifeline.release()
         raise
-    lifeline.attach(process.pid)
     return process, lifeline
 
 

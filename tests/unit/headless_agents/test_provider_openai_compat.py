@@ -419,8 +419,10 @@ class _RecordedLifeline:
         log.append("start")
         self._log = log
 
-    def attach(self, pgid: int) -> None:
-        self._log.append(("watch", pgid))
+    def child_attach(self, preexec_fn: object) -> object:
+        """The provider's child names its own group to the watcher before exec."""
+        self._log.append("child_attach")
+        return preexec_fn
 
     def release(self) -> None:
         self._log.append("release")
@@ -437,4 +439,4 @@ def test_the_worker_group_is_watched_and_released(tmp_path, monkeypatch) -> None
     monkeypatch.setattr(openai_compat, "terminate_process_group", lambda process: None)
     with pytest.raises(KeyboardInterrupt):
         OpenAICompatProvider().run(_spec(tmp_path, "http://127.0.0.1:9/v1"))
-    assert log == ["start", ("watch", worker.pid), "release"]
+    assert log == ["start", "child_attach", "release"]

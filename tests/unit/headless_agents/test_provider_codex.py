@@ -1935,8 +1935,10 @@ class _RecordedLifeline:
         log.append("start")
         self._log = log
 
-    def attach(self, pgid: int) -> None:
-        self._log.append(("watch", pgid))
+    def child_attach(self, preexec_fn: object) -> object:
+        """The provider's child names its own group to the watcher before exec."""
+        self._log.append("child_attach")
+        return preexec_fn
 
     def release(self) -> None:
         self._log.append("release")
@@ -1954,7 +1956,7 @@ class TestTheGroupIsWatched:
         monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
         _install(monkeypatch, fake, logs["report_log"])
         _run(logs)
-        assert log == ["start", ("watch", fake.pid), "release"]
+        assert log == ["start", "child_attach", "release"]
 
     def test_the_watcher_is_released_on_interruption(self, monkeypatch, logs) -> None:  # type: ignore[no-untyped-def]
         log: list[object] = []
@@ -1969,7 +1971,7 @@ class TestTheGroupIsWatched:
         _install(monkeypatch, fake, logs["report_log"])
         with pytest.raises(KeyboardInterrupt):
             _run(logs)
-        assert log == ["start", ("watch", fake.pid), "release"]
+        assert log == ["start", "child_attach", "release"]
 
 
 class TestEveryRunGetsAnEphemeralCodexHome:
