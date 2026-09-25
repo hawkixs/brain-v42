@@ -26,7 +26,7 @@ RUN_ID_PATTERN: Final = re.compile(r"\d{8}T\d{6}-[0-9a-f]{8}")
 FINAL_STATUSES: Final = frozenset(
     {"answered", "failed", "committed", "no_change", "approved", "changes"}
 )
-_MINT_ATTEMPTS: Final = 100
+MINT_ATTEMPTS: Final = 100
 
 
 class RegistryError(ValueError):
@@ -67,6 +67,34 @@ class Registry:
     def lifecycle_lock(self, run_id: str) -> Path:
         return self._entries / f"{run_id}.lock"
 
+    def create(
+        self,
+        run_id: str,
+        *,
+        run_dir: Path | None,
+        target: Mapping[str, str],
+        repository: Path | None,
+        lineage: str | None,
+    ) -> Entry:
+        """Create the entry of ``run_id`` once; ``FileExistsError`` when it is taken.
+
+        The engine calls this while holding the id's lifecycle lock, so no
+        registered run is ever seen with a free lock before it starts (§3.8.3).
+        """
+        path = run_dir if run_dir is not None else self.runs_root / run_id
+        document: dict[str, object] = {
+            "run_id": run_id,
+            "run_dir": str(path),
+            "repository": str(repository) if repository is not None else None,
+            "target": dict(target),
+            "lineage": lineage,
+            "status": "running",
+            "cleaned_at": None,
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        create_once(self._path(run_id), document)
+        return self._entry(document)
+
     def register(
         self,
         *,
@@ -76,25 +104,18 @@ class Registry:
         lineage: str | None,
     ) -> Entry:
         """Mint an id and create its entry; the default run dir is built from that id."""
-        for _ in range(_MINT_ATTEMPTS):
-            run_id = self.mint()
-            path = run_dir if run_dir is not None else self.runs_root / run_id
-            document: dict[str, object] = {
-                "run_id": run_id,
-                "run_dir": str(path),
-                "repository": str(repository) if repository is not None else None,
-                "target": dict(target),
-                "lineage": lineage,
-                "status": "running",
-                "cleaned_at": None,
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            }
+        for _ in range(MINT_ATTEMPTS):
             try:
-                create_once(self._path(run_id), document)
+                return self.create(
+                    self.mint(),
+                    run_dir=run_dir,
+                    target=target,
+                    repository=repository,
+                    lineage=lineage,
+                )
             except FileExistsError:
                 continue
-            return self._entry(document)
-        raise RegistryError(f"could not mint a fresh run id in {_MINT_ATTEMPTS} attempts")
+        raise RegistryError(f"could not mint a fresh run id in {MINT_ATTEMPTS} attempts")
 
     @staticmethod
     def _entry(document: Mapping[str, object]) -> Entry:
@@ -174,4 +195,12 @@ def make_run_dir(run_dir: Path, *, forbidden: Mapping[str, Path]) -> None:
             raise RegistryError(f"--run-dir {run_dir} resolved inside {label} ({root})")
 
 
-__all__ = ["FINAL_STATUSES", "RUN_ID_PATTERN", "Entry", "Registry", "RegistryError", "make_run_dir"]
+__all__ = [
+    "FINAL_STATUSES",
+    "MINT_ATTEMPTS",
+    "RUN_ID_PATTERN",
+    "Entry",
+    "Registry",
+    "RegistryError",
+    "make_run_dir",
+]

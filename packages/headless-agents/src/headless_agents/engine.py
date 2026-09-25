@@ -42,7 +42,7 @@ from .report import RUN_JSON, new_report, step_dir_name, step_entry, with_step, 
 from .result import RunResult
 from .roles import Role, RolesError, capability_rule, load_roles, resolve_role
 from .run_record import RESULT_FILE_NAME
-from .runs import Registry, RegistryError, make_run_dir
+from .runs import MINT_ATTEMPTS, Entry, Registry, RegistryError, make_run_dir
 from .spec import RunSpec
 from .state import Unknown
 from .workspace import prepend
@@ -472,11 +472,57 @@ def _check_isolation(plan: Plan) -> None:
         )
 
 
+def _admit(
+    registry: Registry,
+    held_locks: ExitStack,
+    *,
+    run_dir: Path | None,
+    target: Mapping[str, str],
+    repository: Path,
+) -> Entry:
+    """Mint an id, take its lifecycle lock, then publish its entry (§3.8.3 step 1).
+
+    The lock comes first: an entry is never visible with a free lock before
+    its run starts, so ``ha clean`` cannot forget a run that is being admitted
+    (codex review of #207, round 2). An id whose lock another process holds,
+    or whose entry exists, is taken: mint again. The lock stays on
+    ``held_locks`` until the run ends.
+    """
+    last: LockTimeout | None = None
+    for _ in range(MINT_ATTEMPTS):
+        run_id = registry.mint()
+        with ExitStack() as attempt:
+            try:
+                attempt.enter_context(
+                    held(
+                        registry.lifecycle_lock(run_id),
+                        rank=Rank.LIFECYCLE,
+                        exclusive=True,
+                        wait=None,
+                        what=f"the lifecycle lock of {run_id}",
+                    )
+                )
+            except LockTimeout as exc:
+                last = exc
+                continue
+            try:
+                entry = registry.create(
+                    run_id, run_dir=run_dir, target=target, repository=repository, lineage=None
+                )
+            except FileExistsError:
+                continue
+            held_locks.push(attempt.pop_all())
+            return entry
+    if last is not None:
+        raise last
+    raise RegistryError(f"could not mint a fresh run id in {MINT_ATTEMPTS} attempts")
+
+
 def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
     """Run a planned one-step read-only run under its locks, and record it.
 
     In order: identify the repository from the filesystem (no git, plan
-    decision P2); create and register the run; hold its lifecycle lock, then
+    decision P2); mint the run, hold its lifecycle lock, then register it; take
     the unconfined lock shared (§3.8.2); build the real context bundle and
     check the prompt size again; run the role's chain in ``steps/01-run-<role>``;
     write ``run.json`` and the registry status. An interruption propagates
@@ -502,28 +548,23 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         except RegistryError as exc:
             raise UsageError(str(exc)) from None
     target = {"kind": "provider" if role.implicit else "role", "name": role.name}
-    entry = registry.register(
-        run_dir=plan.run_dir, target=target, repository=repository, lineage=None
-    )
-    if plan.run_dir is None:
-        entry.run_dir.mkdir(parents=True, mode=0o700)
 
     with ExitStack() as held_locks:
         try:
-            held_locks.enter_context(
-                held(
-                    registry.lifecycle_lock(entry.run_id),
-                    rank=Rank.LIFECYCLE,
-                    exclusive=True,
-                    wait=None,
-                    what=f"the lifecycle lock of {entry.run_id}",
-                )
+            entry = _admit(
+                registry,
+                held_locks,
+                run_dir=plan.run_dir,
+                target=target,
+                repository=repository,
             )
-        except LockTimeout as exc:
+        except (LockTimeout, RegistryError) as exc:
             # A run that never started leaves nothing behind (codex review of #207).
-            shutil.rmtree(entry.run_dir, ignore_errors=True)
-            registry.forget(entry.run_id)
+            if plan.run_dir is not None:
+                shutil.rmtree(plan.run_dir, ignore_errors=True)
             raise UsageError(f"{exc}: nothing ran") from None
+        if plan.run_dir is None:
+            entry.run_dir.mkdir(parents=True, mode=0o700)
         try:
             held_locks.enter_context(
                 held(

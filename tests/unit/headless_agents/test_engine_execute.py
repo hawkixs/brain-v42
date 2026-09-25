@@ -322,3 +322,53 @@ def test_a_lifecycle_lock_not_obtained_leaves_no_entry_and_no_directory(
     runs_root = world.home / ".cache" / "ha" / "runs"
     assert not runs_root.exists() or not any(runs_root.iterdir())
     assert "codex" not in world.fakes
+
+
+def test_the_entry_is_published_under_its_lifecycle_lock(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review of #207 (round 2): ``ha clean`` never sees a registered run whose lock is free."""
+    free_at_publication: list[bool] = []
+    real_create = Registry.create
+
+    def spy(self: Registry, run_id: str, **kwargs):  # type: ignore[no-untyped-def]
+        entry = real_create(self, run_id, **kwargs)
+        free_at_publication.append(locks.is_free(self.lifecycle_lock(run_id)))
+        return entry
+
+    monkeypatch.setattr(Registry, "create", spy)
+    assert world.run("codex").exit_code == 0
+    assert free_at_publication == [False]
+
+
+def test_an_id_whose_lifecycle_lock_is_held_is_minted_again(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another process holding the minted id's lock means the id is taken: mint again."""
+    ids = iter(["20260925T000000-aaaaaaaa", "20260925T000000-bbbbbbbb"])
+    monkeypatch.setattr(Registry, "mint", lambda self: next(ids))
+    registry = world.registry()
+    (world.state / "runs").mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, os, sys, time\n"
+            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "print('held', flush=True)\n"
+            "time.sleep(30)\n",
+            str(registry.lifecycle_lock("20260925T000000-aaaaaaaa")),
+        ],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        assert holder.stdout.readline().strip() == "held"
+        outcome = world.run("codex")
+    finally:
+        holder.kill()
+        holder.wait()
+    assert outcome.run_id == "20260925T000000-bbbbbbbb"
+    assert not (world.state / "runs" / "20260925T000000-aaaaaaaa.json").exists()
