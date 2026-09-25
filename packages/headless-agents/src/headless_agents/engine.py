@@ -149,7 +149,8 @@ def _with_overrides(role: Role, overrides: Overrides) -> Role:
         ),
         mcp=overrides.mcp if overrides.mcp is not None else role.mcp,
         write=overrides.write if overrides.write is not None else role.write,
-        shell=overrides.shell if overrides.shell is not None else role.shell,
+        # nosec B604: ``shell`` is a role capability flag, not a subprocess argument.
+        shell=overrides.shell if overrides.shell is not None else role.shell,  # nosec B604
         base_url=overrides.base_url if overrides.base_url is not None else role.base_url,
         key_env=overrides.key_env if overrides.key_env is not None else role.key_env,
     )
