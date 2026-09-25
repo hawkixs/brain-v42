@@ -937,6 +937,22 @@ def test_runs_survives_an_unreadable_quarantine_and_entry(world: _World) -> None
     assert lines[1].startswith(run_id) and "unknown" in lines[1]
 
 
+def test_runs_takes_no_task_from_a_directory_a_later_run_reused(
+    world: _World, tmp_path: Path
+) -> None:
+    """Final review of PR B: the registry refuses only an existing --run-dir, so the same
+    one is allowed once ha clean removed it -- the cleaned run must not show the new task."""
+    custom = tmp_path / "out" / "review"
+    code, out, _ = world.run("run", "codex", "--json", "--run-dir", str(custom), "First task.")
+    first = json.loads(out)["run_id"]
+    world.run("clean", first)
+    code, out, _ = world.run("run", "codex", "--json", "--run-dir", str(custom), "Second task.")
+    assert code == 0
+    code, out, _ = world.run("runs", "--json")
+    tasks = {row["run_id"]: row["task"] for row in json.loads(out)}
+    assert tasks[first] is None and "Second task." in tasks.values()
+
+
 def _strict(name: str) -> object:
     raise AssertionError(f"{name} is not JSON")
 

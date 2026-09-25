@@ -46,7 +46,7 @@ from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, 
 from .report import RUN_JSON
 from .run_record import RESULT_FILE_NAME
 from .runs import Registry, RegistryError
-from .show import format_cost, format_duration, load_json, read_task
+from .show import format_cost, format_duration, load_json, read_run_dir, read_task
 from .state import Unknown
 from .write_flow import PATCH_FILE
 
@@ -312,7 +312,8 @@ def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
     authority (§3.8.1); exit code, duration, cost and answer only from a
     ``run.json`` whose ``run_id`` is this entry's -- a report is display data,
     never trusted to name a run (codex review of #207, round 3); the task from
-    the run's ``prompt.md``."""
+    the run's ``prompt.md``, while its directory is still its own
+    (:func:`headless_agents.show.read_run_dir`)."""
     row: dict[str, object] = {
         "run_id": run_id,
         "target": None,
@@ -339,16 +340,16 @@ def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
             lineage_status = "unknown"
         else:
             lineage_status = members.get(run_id, "unknown")
+    report, own, _ = read_run_dir(entry)
     row.update(
         target=entry.target.get("name"),
         status=lineage_status
         if lineage_status == "unknown"
         else registry.effective_status(entry, lineage_status),
         cleaned=entry.cleaned_at is not None,
-        task=read_task(entry.run_dir),
+        task=read_task(entry.run_dir) if own else None,
     )
-    report = _read_json(entry.run_dir / RUN_JSON)
-    if report is not None and report.get("run_id") == run_id:
+    if report is not None:
         row.update(
             exit_code=report.get("exit_code"),
             duration_seconds=report.get("duration_seconds"),

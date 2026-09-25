@@ -167,6 +167,30 @@ def test_a_report_naming_another_run_is_ignored(home: Home) -> None:
     assert any("names another run" in note for note in shown.notes)
 
 
+def test_a_cleaned_run_takes_nothing_from_its_reused_directory(home: Home) -> None:
+    """Final review of PR B: ha clean sets cleaned_at once the directory is gone, so a later
+    run given the same --run-dir owns whatever stands there now."""
+    run_dir = home.read_only()
+    shutil.rmtree(run_dir)
+    home.registry().set_cleaned(RUN, "2026-09-25T13:00:00Z")
+    run_dir.mkdir()
+    (run_dir / "prompt.md").write_text("Another run's task.\n")
+    (run_dir / "run.json").write_text(json.dumps(home.report(run_id=OTHER, text="theirs")))
+    shown = home.rebuild()
+    assert shown.task is None and shown.report["text"] is None
+    assert any("removed by ha clean at 2026-09-25T13:00:00Z" in note for note in shown.notes)
+
+
+def test_a_report_naming_another_run_disowns_its_directory(home: Home) -> None:
+    """Final review of PR B: prompt.md and change.patch name no run -- beside a report
+    naming another run, they are that run's too."""
+    run_dir = home.write_run(run_id=OTHER)
+    (run_dir / "prompt.md").write_text("Another run's task.\n")
+    (run_dir / "change.patch").write_text("diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n")
+    shown = home.rebuild()
+    assert shown.task is None and shown.diffstat is None
+
+
 def test_identity_comes_from_the_entry_not_the_report(home: Home) -> None:
     home.read_only(target={"kind": "role", "name": "forged"})
     assert home.rebuild().report["target"] == {"kind": "provider", "name": "codex"}

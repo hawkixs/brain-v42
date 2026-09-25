@@ -6,8 +6,10 @@ the run directory. So every fact with an authority in the state comes from the
 state -- identity from the registry entry, the status from the entry or the
 lineage state, a write's lineage, branch, base and commits from the lineage
 state and the provenance records -- and the rest is display data, read from a
-report only when it names this run (plan P6). Nothing here runs git (plan P5);
-the only lock touched is the non-blocking liveness probe of the lifecycle lock.
+report only when it names this run (plan P6), and from the directory's prompt
+and patch only while that directory is still the run's. Nothing here runs git
+(plan P5); the only lock touched is the non-blocking liveness probe of the
+lifecycle lock.
 """
 
 from __future__ import annotations
@@ -123,24 +125,28 @@ def _bare(run_id: str) -> dict[str, object]:
     return document
 
 
-def _usable_report(entry: Entry, notes: list[str]) -> dict[str, object] | None:
-    """The run's ``run.json`` cut to the pinned key set, when it names this run."""
+def read_run_dir(entry: Entry) -> tuple[dict[str, object] | None, bool, str | None]:
+    """What the run's directory says of it: its ``run.json`` cut to the pinned key set when
+    it names this run; whether the directory's other files are this run's; and the note
+    saying why the report is not used.
+
+    ``prompt.md`` and ``change.patch`` name no run. ``ha clean`` sets ``cleaned_at`` once
+    the directory is gone, so what stands there now -- a later run given the same
+    ``--run-dir`` -- is not this run's; a report naming another run disowns its
+    directory the same way (final review of lot 2 PR B).
+    """
     path = entry.run_dir / RUN_JSON
+    if entry.cleaned_at is not None:
+        return None, False, f"removed by ha clean at {entry.cleaned_at}: shown from the state"
     if not path.exists():
-        if entry.cleaned_at is not None:
-            notes.append(f"removed by ha clean at {entry.cleaned_at}: shown from the state")
-        else:
-            notes.append(f"{path} is missing: shown from the state")
-        return None
+        return None, True, f"{path} is missing: shown from the state"
     try:
         document = load_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError):
-        notes.append(f"{path} cannot be read: shown from the state")
-        return None
+        return None, True, f"{path} cannot be read: shown from the state"
     if not isinstance(document, dict) or document.get("run_id") != entry.run_id:
-        notes.append(f"{path} names another run: ignored, shown from the state")
-        return None
-    return {key: document.get(key) for key in RUN_KEYS}
+        return None, False, f"{path} names another run: its directory is ignored"
+    return {key: document.get(key) for key in RUN_KEYS}, True, None
 
 
 def _commits(reported: object, recorded: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
@@ -189,10 +195,10 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
             warnings=(),
             unknown=True,
         )
-    notes: list[str] = []
+    report, own, note = read_run_dir(entry)
+    notes: list[str] = [] if note is None else [note]
     warnings: list[str] = []
     unknown = False
-    report = _usable_report(entry, notes)
     document = dict(report) if report is not None else _bare(run_id)
     document.update(
         run_id=run_id,
@@ -241,8 +247,8 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
     document["status"] = status
     return Shown(
         report=document,
-        task=read_task(entry.run_dir),
-        diffstat=read_diffstat(entry.run_dir) if entry.lineage is not None else None,
+        task=read_task(entry.run_dir) if own else None,
+        diffstat=read_diffstat(entry.run_dir) if own and entry.lineage is not None else None,
         notes=tuple(notes),
         warnings=tuple(warnings),
         unknown=unknown,
@@ -406,6 +412,7 @@ __all__ = [
     "format_tools",
     "load_json",
     "read_diffstat",
+    "read_run_dir",
     "read_task",
     "rebuild",
     "render",
