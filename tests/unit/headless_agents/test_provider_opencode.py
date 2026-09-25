@@ -688,6 +688,29 @@ class TestRunOpenCode:
         assert isinstance(kwargs, dict)
         assert not Path(kwargs["cwd"]).exists()
 
+    def test_the_operators_models_catalogue_is_read_in_place_of_the_bundled_one(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Decision 53529254 (ticket df909ffb): with the fetch disabled and an ephemeral
+        HOME, opencode knew only its bundled catalogue, and a newer model failed with the
+        server's 'Unexpected server error'. The operator's catalogue is read, still offline."""
+        captured = _install(monkeypatch, _FakeProcess(returncode=0, events=GOOD_EVENTS))
+        real_home = _real_home(tmp_path)
+        catalogue = real_home / ".cache/opencode/models.json"
+        catalogue.parent.mkdir(parents=True)
+        catalogue.write_text("{}", encoding="utf-8")
+        assert _run(tmp_path, real_home=real_home) == 0
+        env = captured["kwargs"]["env"]  # type: ignore[index]
+        assert env["OPENCODE_MODELS_PATH"] == str(catalogue)
+        assert env["OPENCODE_DISABLE_MODELS_FETCH"] == "1"
+
+    def test_without_an_operator_catalogue_opencode_keeps_its_bundled_one(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0, events=GOOD_EVENTS))
+        assert _run(tmp_path) == 0
+        assert "OPENCODE_MODELS_PATH" not in captured["kwargs"]["env"]  # type: ignore[index]
+
     def test_a_missing_runtime_cache_is_replayable_elsewhere(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:

@@ -25,6 +25,7 @@ from functools import partial
 from pathlib import Path
 from typing import Final
 
+from .keys import KeysError, preset_key
 from .protocol import AgentProvider
 from .providers.agy import MAX_PROMPT_BYTES as AGY_MAX_PROMPT_BYTES
 from .providers.agy import AgyProvider
@@ -127,9 +128,19 @@ def _probe_http(name: str, environ: Mapping[str, str]) -> Probe:
     if preset is None:
         # The generic provider's URL and key variable are per run (RunSpec.extra).
         return Probe(available=True, detail="configured per run (base_url, key_env)")
-    if environ.get(preset.key_env):
+    try:
+        found = preset_key(name, environ)
+    except KeysError as exc:
+        # A declared key file that cannot be used: unavailable, and the probe says why.
+        return Probe(available=False, detail=str(exc))
+    if found is None:
+        return Probe(
+            available=False,
+            detail=f"{preset.key_env} is not set, and keys.toml declares no file for {name}",
+        )
+    if found.source == "environment":
         return Probe(available=True, detail=f"{preset.key_env} is set")
-    return Probe(available=False, detail=f"{preset.key_env} is not set")
+    return Probe(available=True, detail=f"{preset.key_env} from {found.source}")
 
 
 def _first_nonempty_line(text: str) -> str | None:
