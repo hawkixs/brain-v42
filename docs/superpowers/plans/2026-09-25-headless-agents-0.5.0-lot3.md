@@ -68,8 +68,9 @@ task. The lot 1 and lot 2 plans (`docs/superpowers/plans/2026-09-25-headless-age
   --python 3.12`.
 - Every code and test block below is formatted by `ruff format` and was run as written
   (2026-09-25), on a copy of the package at `0c7feca0`: the Task 1–6 blocks with the PR A
-  test set green (1195 passed), the Task 7–8 blocks with the full lot 3 test set green
-  (1223 passed), `ruff check`, `ruff format --check` and `mypy` clean.
+  test set green (1196 passed), the Task 7–8 blocks with the full lot 3 test set green
+  (1224 passed), `ruff check`, `ruff format --check` and `mypy` clean. Both counts leave
+  out `test_package_boundary.py`, which reads the repository root a package copy lacks.
 
 ## Decisions this plan takes where the spec leaves the choice to it
 
@@ -86,6 +87,7 @@ task. The lot 1 and lot 2 plans (`docs/superpowers/plans/2026-09-25-headless-age
 | P9 | Preparation of a continuation: the worktree clean (`git status --porcelain`), on its lineage's branch (`git symbolic-ref HEAD`), that branch resolving, a base recorded — otherwise refused (exit `2`), the lineage restored as admission read it (its member and pending write gone, and an unconfined intent removed), the run's entry forgotten and its directory removed. The start point is the branch's tip: commits made by hand on the branch are kept, unattributed, and `change.patch` is the lineage's `base..HEAD`. | §3.8.3 step 3: "A continuation checks its worktree is clean (refused otherwise, the pending write cleared: nothing ran)"; §3.6: "Commits made by hand on the branch in between are kept: the diff the next review reads is always `<base>..HEAD`". A worktree switched to another branch would put the continuation's commit where no review of the lineage reads it. |
 | P10 | A write run and an `implement` run print, before their text: `run: <run_id>`, `branch: <branch>`, `diffstat: <+N -M  F files>` read from `change.patch` (no git in `cli.py`), `patch: <path>` — whenever they exit `0`, with or without a text. | §3.9: "preceded by the run id, the branch, the diffstat and the patch path, as 0.4.0 `--write`, so the session can pass the run id to `--run`, `--continue` or `--findings`". Lot 1 printed the branch and the patch only, and only with a text. |
 | P11 | A continuation holds the lineage lock from its admission to the publication of the lineage state — the member's final status and the pending write cleared — as every write of lot 1 does; `run.json` is written by the engine right after, outside it. | §3.8.3 step 9: the lineage rename is "the single point where the write becomes final"; §3.8.1: `run.json` is "a report … never read back to decide anything". A continuation admitted in that window reads the published lineage, so two continuations never write at once (§3.6). |
+| P13 | A write run writes `change.patch` before it publishes its lineage state, not after. Lot 1 wrote it right after `_publish` (`write_flow.run_write_step`): a crash between the two left a write final in its lineage with no patch. | §3.8.3 step 9: after the lineage rename "only a stale report, rebuilt from the state by `ha show`" is left — and `change.patch`, which §3.6 and §3.9 hand to the session, cannot be rebuilt from the state. Found by the codex review of this plan, round 2. |
 | P12 | Lot 3 ships as two pull requests: A (Tasks 1–6: `workflows.toml`, `ha workflows`, the template, a workflow target planned, the continuation records, an `implement` run) and B (Tasks 7–8: `--continue` in the engine, then in the CLI). No `--continue` code path exists before B: `Request.continue_run` arrives with it. | Each leaves `main` whole: after A, `ha run build "task"` works and nothing half-continues; B adds the lineage-joining write on its own. |
 
 ## Review Focus
@@ -125,7 +127,8 @@ packages/headless-agents/src/headless_agents/
                               requires them (P5)
   show.py                MOD  LATER_AUTHORITIES shrinks; continues and implement_providers from
                               the entry (P5); format_diffstat (P10)
-  write_flow.py          MOD  engine commits carry the role's providers (P6); a continuation
+  write_flow.py          MOD  engine commits carry the role's providers (P6); change.patch
+                              written before the publication (P13); a continuation
                               joins its lineage: admission, intent, preparation (P8, P9)
   cli.py                 MOD  ha workflows; the write header (P10); --continue; help
 packages/headless-agents/README.md   MOD  synopsis and a workflow paragraph
@@ -1608,7 +1611,7 @@ git commit -m "feat(headless-agents): the registry records a run's providers and
 ### Task 6: an `implement` run
 
 **Files:**
-- Modify: `packages/headless-agents/src/headless_agents/write_flow.py` (`_publish`)
+- Modify: `packages/headless-agents/src/headless_agents/write_flow.py` (`_publish`, `run_write_step`)
 - Modify: `packages/headless-agents/src/headless_agents/engine.py` (`_execute_write`, `execute`)
 - Modify: `packages/headless-agents/src/headless_agents/show.py` (`format_diffstat`, `render`)
 - Modify: `packages/headless-agents/src/headless_agents/cli.py` (docstring, `_RUN_EPILOG`, the
@@ -1677,7 +1680,62 @@ git add packages/headless-agents/src/headless_agents/write_flow.py tests/unit/he
 git commit -m "fix(headless-agents): an engine commit is attributed to every link of its role"
 ```
 
-- [ ] **Step 3: Write the failing tests of the shape.** Create
+- [ ] **Step 3: `change.patch` before the publication (P13) — failing test first.** In
+  `tests/unit/headless_agents/test_write_flow.py`, before
+  `test_a_new_unconfined_write_finding_a_leftover_intent_is_refused`, add:
+
+```python
+def test_a_write_final_in_its_lineage_already_has_its_patch(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§3.8.3 step 9: after the lineage rename only the report is left to rebuild, so
+    ``change.patch`` is written before it, never after (codex review of the lot 3 plan)."""
+
+    def crash(step: str) -> None:
+        if step == "lineage_published":
+            raise SystemExit("killed")
+
+    monkeypatch.setattr(write_flow, "_crash_after", crash)
+    world.agent.edit = _edit_app
+    with pytest.raises(SystemExit):
+        world.write()
+    (owner,) = lineage.owners(world.state)
+    state = lineage.load(world.state, owner)
+    assert state.members[owner] == "committed"
+    assert "print('v2')" in (state.worktree.parent / write_flow.PATCH_FILE).read_text()
+```
+
+Run: `.venv/bin/pytest tests/unit/headless_agents/test_write_flow.py -q -p no:cacheprovider -k already_has_its_patch`
+Expected: FAIL — `FileNotFoundError` on `change.patch`: the lineage was published first.
+
+In `write_flow.run_write_step`, replace the end of the successful path:
+
+```python
+        status = "failed" if failed_step else "committed"
+        _publish(write, status=status, commits=commits, compromised=None)
+        code, patch, _ = write.git(write.worktree, ["diff", "--binary", base, "HEAD"])
+        (run_dir / PATCH_FILE).write_text(patch, encoding="utf-8", errors="replace")
+```
+
+with:
+
+```python
+        # The patch before the publication: after the lineage rename only the report is
+        # left to rebuild (§3.8.3 step 9), and change.patch cannot be rebuilt from it.
+        code, patch, _ = write.git(write.worktree, ["diff", "--binary", base, "HEAD"])
+        (run_dir / PATCH_FILE).write_text(patch, encoding="utf-8", errors="replace")
+        status = "failed" if failed_step else "committed"
+        _publish(write, status=status, commits=commits, compromised=None)
+```
+
+Run the same test: PASS. Then the gates, and commit:
+
+```bash
+git add packages/headless-agents/src/headless_agents/write_flow.py tests/unit/headless_agents/test_write_flow.py
+git commit -m "fix(headless-agents): a write publishes its lineage only once its patch is written"
+```
+
+- [ ] **Step 4: Write the failing tests of the shape.** Create
   `tests/unit/headless_agents/test_implement.py`:
 
 ```python
@@ -1928,7 +1986,7 @@ def test_ha_show_names_the_workflow_and_its_implement_step(world: World) -> None
     assert lines[3].startswith("  implement  implementer  codex  ")
 ```
 
-- [ ] **Step 4: Run them.**
+- [ ] **Step 5: Run them.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_implement.py -q -p no:cacheprovider`
 Expected: 4 failed, 3 passed. The failures are the missing feature: the run is registered
@@ -1940,7 +1998,7 @@ protocol — `test_an_implement_run_that_changes_nothing_exits_5` and
 `test_a_step_code_stays_the_steps_and_the_workflow_exits_1` (§3.9: "Codes `3`, `4` and `124`
 stay a step's").
 
-- [ ] **Step 5: Implement.** In `engine.py`, replace `_execute_write` and `execute` with:
+- [ ] **Step 6: Implement.** In `engine.py`, replace `_execute_write` and `execute` with:
 
 ```python
 def _execute_write(
@@ -2338,12 +2396,12 @@ section is being rewritten with the 0.5.0 lots.
   vendor rule in a later 0.5.0 lot.
 ```
 
-- [ ] **Step 6: Run them again, then the gates.**
+- [ ] **Step 7: Run them again, then the gates.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_implement.py -q -p no:cacheprovider`
 Expected: `7 passed`; the package suite stays green (`test_run_help_ends_with_the_exit_codes_and_three_examples` included).
 
-- [ ] **Step 7: Commit, then the full suite before PR A is pushed.**
+- [ ] **Step 8: Commit, then the full suite before PR A is pushed.**
 
 ```bash
 git add packages/headless-agents/src/headless_agents/engine.py packages/headless-agents/src/headless_agents/show.py packages/headless-agents/src/headless_agents/cli.py packages/headless-agents/README.md tests/unit/headless_agents/test_implement.py
@@ -3543,10 +3601,12 @@ def run_write_step(
                 f"{step_dir / COMMIT_LOG}; the lineage is compromised"
             )
             return _outcome(1, "failed", reason, write, commits=commits, head=head, final=final)
-        status = "failed" if failed_step else "committed"
-        _publish(write, status=status, commits=commits, compromised=None)
+        # The patch before the publication: after the lineage rename only the report is
+        # left to rebuild (§3.8.3 step 9), and change.patch cannot be rebuilt from it.
         code, patch, _ = write.git(write.worktree, ["diff", "--binary", base, "HEAD"])
         (run_dir / PATCH_FILE).write_text(patch, encoding="utf-8", errors="replace")
+        status = "failed" if failed_step else "committed"
+        _publish(write, status=status, commits=commits, compromised=None)
         if failed_step:
             return _outcome(
                 1, "failed", "step_failed", write, commits=commits, head=head, final=final
