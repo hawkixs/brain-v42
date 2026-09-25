@@ -966,6 +966,25 @@ def test_runs_takes_no_task_from_a_directory_a_later_run_reused(
     assert tasks[first] is None and "Second task." in tasks.values()
 
 
+def test_runs_survives_documents_nested_too_deep_to_parse(world: _World) -> None:
+    """Codex review of PR B (round 2), the same input class: RecursionError, not
+    ValueError, escaped the readers -- one such file broke the whole listing."""
+    deep = "[" * 100_000 + "]" * 100_000
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    first = json.loads(out)["run_id"]
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    second = json.loads(out)["run_id"]
+    (world.registry().resolve(second).run_dir / "run.json").write_text(deep)
+    (world.state / "runs" / f"{first}.json").write_text(deep)
+    legacy = world.home / ".cache" / "ha" / "runs" / "20260920T000000-aaaaaaaa"
+    legacy.mkdir(parents=True)
+    (legacy / "result.json").write_text(deep)
+    code, out, _ = world.run("runs", "--json")
+    rows = {row["run_id"]: row for row in json.loads(out)}
+    assert code == 0 and rows[first]["status"] == "unknown"
+    assert rows[second]["status"] == "answered" and rows[second]["exit_code"] is None
+
+
 def _strict(name: str) -> object:
     raise AssertionError(f"{name} is not JSON")
 

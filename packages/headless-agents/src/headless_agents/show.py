@@ -79,9 +79,14 @@ def load_json(text: str) -> object:
 
     ``json.loads`` accepts ``NaN`` and ``Infinity`` and reads ``1e999`` as infinity,
     and ``json.dumps`` writes them back out as JSON no strict parser reads: one such
-    number in a report broke every listing (final review of lot 2 PR B).
+    number in a report broke every listing (final review of lot 2 PR B). A document
+    nested too deep raises :class:`ValueError` here, as any other that does not parse,
+    not the ``RecursionError`` of ``json.loads`` (codex review of PR B, round 2).
     """
-    return json.loads(text, parse_constant=_not_finite, parse_float=_finite)
+    try:
+        return json.loads(text, parse_constant=_not_finite, parse_float=_finite)
+    except RecursionError:
+        raise ValueError("nested too deep to parse") from None
 
 
 def read_task(run_dir: Path) -> str | None:
@@ -293,7 +298,7 @@ def format_cost(cost: object) -> str:
 
 
 def _thousands(count: object) -> str:
-    if not isinstance(count, int) or isinstance(count, bool):
+    if not isinstance(count, int) or _measure(count) is None:
         return "-"
     if count < 1000:
         return str(count)

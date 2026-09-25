@@ -89,7 +89,8 @@ def read(path: Path, *, expect_id: tuple[str, str] | None = None) -> dict[str, o
         raise Unknown(f"{path}: unreadable ({type(exc).__name__})") from None
     try:
         document = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        # A document nested too deep raises RecursionError, not ValueError.
         raise Unknown(f"{path}: does not parse") from None
     if not isinstance(document, dict):
         raise Unknown(f"{path}: not a JSON object")

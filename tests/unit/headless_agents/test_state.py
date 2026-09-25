@@ -71,6 +71,16 @@ def test_an_unparsable_or_non_object_document_is_unknown(tmp_path: Path, content
         read(path)
 
 
+def test_a_document_nested_too_deep_to_parse_is_unknown(tmp_path: Path) -> None:
+    """Codex review of lot 2 PR B (round 2), the same input class: json.loads raises
+    RecursionError on a document nested too deep, not ValueError -- it escaped read()
+    and crashed ha runs for every run instead of reading one entry unknown."""
+    path = tmp_path / "deep.json"
+    path.write_text("[" * 100_000 + "]" * 100_000)
+    with pytest.raises(Unknown, match="does not parse"):
+        read(path)
+
+
 def test_a_missing_document_is_unknown_to_read(tmp_path: Path) -> None:
     with pytest.raises(Unknown, match="missing"):
         read(tmp_path / "absent.json")

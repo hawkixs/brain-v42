@@ -533,6 +533,21 @@ def test_a_measure_that_is_not_a_finite_number_renders_as_a_dash(value: object) 
     assert show.format_duration(value) == "-" and show.format_cost(value) == "-"
 
 
+def test_a_token_count_too_large_for_a_float_renders_as_a_dash() -> None:
+    """Codex review of PR B (round 2): _thousands divided it as a float and raised."""
+    assert show.format_tokens({"input": 10**400, "output": 3000}) == "in - out 3k"
+
+
+def test_a_report_nested_too_deep_to_parse_cannot_be_read(home: Home) -> None:
+    """Codex review of PR B (round 2), the same input class: json.loads raises
+    RecursionError on a document nested too deep, and it escaped as a crash of ha show."""
+    run_dir = home.read_only()
+    (run_dir / "run.json").write_text("[" * 100_000 + "]" * 100_000)
+    shown = home.rebuild()
+    assert shown.report["status"] == "answered" and shown.task is not None
+    assert any("cannot be read" in note for note in shown.notes)
+
+
 def test_a_number_that_is_not_finite_in_a_report_is_not_measured(home: Home) -> None:
     """Final review of PR B: ``json.loads`` reads NaN and Infinity, and ``1e999`` as
     infinity; ``--json`` wrote them back out as ``NaN``, which a strict parser refuses."""
