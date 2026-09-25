@@ -526,6 +526,36 @@ def test_a_refused_unconfined_continuation_withdraws_its_intent(world: World) ->
     with pytest.raises(UsageError, match="uncommitted changes"):
         _continue(world, first.run_id)
     assert not (world.state / write_flow.UNCONFINED_INTENT).exists()
+    # Opus review of lot 3: the refused run never ran, so it names no unconfined writer --
+    # a phantom entry would attribute every later commit without provenance to it.
+    writers = json.loads((world.state / write_flow.UNCONFINED_WRITERS).read_text())["writers"]
+    assert {writer["run_id"] for writer in writers} <= set(world.registry().run_ids())
+
+
+def test_a_continuation_from_another_repository_quarantines_neither(
+    world: World, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Opus review of lot 3: a --continue run from the wrong directory against a lineage
+    holding a pending write quarantined the CALLER's repository, not the lineage's. The
+    repository check comes first; the pending write is left for the lineage's own next
+    write (§3.8.3 step 1)."""
+    first = _first(world)
+
+    def crash(step: str) -> None:
+        if step == "intent":
+            raise SystemExit("crashed")
+
+    monkeypatch.setattr(write_flow, "_crash_after", crash)
+    with pytest.raises(SystemExit):
+        _continue(world, first.run_id)
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-q", "-b", "main")
+    with pytest.raises(UsageError, match="belongs to"):
+        _continue(world, first.run_id, cwd=other)
+    assert quarantine.check(world.state, (other / ".git").resolve()) is None
+    assert lineage.load(world.state, first.run_id).compromised is None
 
 
 def test_the_cli_continues_a_lineage_and_prints_the_new_run_id(world: World) -> None:

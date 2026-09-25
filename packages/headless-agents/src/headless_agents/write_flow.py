@@ -260,17 +260,21 @@ def _check_continued(write: _Write) -> None:
         current = lineages.load(state, owner)
     except Unknown as exc:
         raise WriteRefused(f"lineage {owner} is unknown ({exc}); nothing ran") from None
-    if current.pending is not None:
-        raise _unfinalized(state, current, write.identity.common_dir)
-    if current.compromised is not None:
-        raise WriteRefused(f"lineage {owner} is compromised ({current.compromised}); nothing ran")
-    if write.named not in current.members:
-        raise WriteRefused(f"{write.named} is not a member of lineage {owner}; nothing ran")
+    # The repository first: from the wrong directory, a stale pending write of this
+    # lineage would otherwise quarantine the caller's repository, an innocent one,
+    # and leave the uncertain one unmarked (Opus review of lot 3). The lineage's own
+    # next write finds that pending write (§3.8.3 step 1).
     if current.common_dir.resolve() != write.identity.common_dir.resolve():
         raise WriteRefused(
             f"lineage {owner} belongs to {current.repository}, not to "
             f"{write.identity.work_tree}; nothing ran"
         )
+    if current.pending is not None:
+        raise _unfinalized(state, current, current.common_dir)
+    if current.compromised is not None:
+        raise WriteRefused(f"lineage {owner} is compromised ({current.compromised}); nothing ran")
+    if write.named not in current.members:
+        raise WriteRefused(f"{write.named} is not a member of lineage {owner}; nothing ran")
     if not current.worktree.is_dir():
         raise WriteRefused(
             f"the worktree of lineage {owner} is gone ({current.worktree}): it was cleaned; "
@@ -422,6 +426,21 @@ def _withdraw(write: _Write) -> None:
     assert write.before is not None, "admission read the lineage"
     write.save(write.before)
     if write.unconfined:
+        # This run never ran: it names no unconfined writer. Left listed, it would make
+        # every later commit without provenance its providers' (Opus review of lot 3).
+        path = write.state / UNCONFINED_WRITERS
+        try:
+            document = read_optional(path)
+        except Unknown:
+            document = None
+        writers = document.get("writers") if document is not None else None
+        if document is not None and isinstance(writers, list):
+            kept = [
+                writer
+                for writer in writers
+                if not (isinstance(writer, dict) and writer.get("run_id") == write.run_id)
+            ]
+            publish(path, {**document, "writers": kept})
         (write.state / UNCONFINED_INTENT).unlink(missing_ok=True)
 
 
