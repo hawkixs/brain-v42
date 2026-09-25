@@ -191,3 +191,133 @@ def test_a_run_dir_that_lands_in_a_forbidden_tree_after_creation_is_refused(
     with pytest.raises(RegistryError, match="the repository"):
         make_run_dir(outside / "mine", forbidden=roots)
     assert not (roots["the repository"] / "mine").exists(), "the stray directory is removed"
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"run_dir": None},
+        {"run_dir": ""},
+        {"run_dir": 7},
+        {"target": "codex"},
+        {"repository": 1},
+        {"lineage": 5},
+        {"status": ["answered"]},
+        {"cleaned_at": 0},
+    ],
+)
+def test_a_well_formed_entry_with_a_malformed_field_is_unknown(
+    tmp_path: Path, broken: dict[str, object]
+) -> None:
+    """Codex review of the lot 2 plan (round 3): read() vouches for the JSON and the id
+    only; a missing or mistyped field escaped resolve() as KeyError."""
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    run_id = "20260925T000000-eeeeeeee"
+    registry.create(
+        run_id,
+        run_dir=None,
+        target={"kind": "provider", "name": "codex"},
+        repository=None,
+        lineage=None,
+    )
+    path = tmp_path / "state" / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    document.update(broken)
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown):
+        registry.resolve(run_id)
+
+
+def test_an_entry_without_its_run_dir_is_unknown(tmp_path: Path) -> None:
+    run_id = "20260925T000000-eeeeeeee"
+    (tmp_path / "state" / "runs").mkdir(parents=True)
+    (tmp_path / "state" / "runs" / f"{run_id}.json").write_text(
+        json.dumps({"run_id": run_id, "status": "answered"})
+    )
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    with pytest.raises(Unknown, match="run_dir"):
+        registry.resolve(run_id)
+
+
+def _entry_document(tmp_path: Path) -> tuple[Registry, str, Path, dict[str, object]]:
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    run_id = "20260925T000000-eeeeeeee"
+    registry.create(
+        run_id,
+        run_dir=None,
+        target={"kind": "provider", "name": "codex"},
+        repository=None,
+        lineage=None,
+    )
+    path = tmp_path / "state" / "runs" / f"{run_id}.json"
+    return registry, run_id, path, json.loads(path.read_text())
+
+
+@pytest.mark.parametrize("key", ["repository", "lineage", "status", "cleaned_at", "created_at"])
+def test_an_entry_missing_a_key_create_writes_is_unknown(tmp_path: Path, key: str) -> None:
+    """Codex review of lot 2 PR B (round 3): a missing status read as null, and a run outside
+    any lineage then took running or incomplete from its lock -- a status its entry never
+    gave (plan P6: a silent authority is no status)."""
+    registry, run_id, path, document = _entry_document(tmp_path)
+    del document[key]
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match=key):
+        registry.resolve(run_id)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("status", None),
+        ("status", "bogus"),
+        ("status", "incomplete"),
+        ("created_at", None),
+        ("created_at", ""),
+        ("repository", ""),
+        ("lineage", ""),
+        ("cleaned_at", ""),
+    ],
+)
+def test_an_entry_holding_what_ha_never_writes_is_unknown(
+    tmp_path: Path, key: str, value: object
+) -> None:
+    """Codex review of lot 2 PR B (round 3): create writes running and the engine a final
+    status -- incomplete is derived, never stored; a timestamp or a lineage is never empty."""
+    registry, run_id, path, document = _entry_document(tmp_path)
+    document[key] = value
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match=key):
+        registry.resolve(run_id)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"kind": [], "name": None},
+        {"kind": "provider", "name": 7},
+        {"kind": "provider"},
+        {"kind": "provider", "name": ""},
+        {"kind": "provider", "name": "codex", "extra": {"x": 1}},
+    ],
+    ids=["not-text", "name-not-text", "no-name", "empty-name", "extra-not-text"],
+)
+def test_a_target_that_is_not_a_kind_and_a_name_in_text_is_unknown(
+    tmp_path: Path, target: dict[str, object]
+) -> None:
+    """Codex review of lot 2 PR B (round 1): _entry turned every target value into text, so
+    {"kind": [], "name": null} showed as a run of target "None" -- an invented identity."""
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    run_id = "20260925T000000-eeeeeeee"
+    registry.create(
+        run_id,
+        run_dir=None,
+        target={"kind": "provider", "name": "codex"},
+        repository=None,
+        lineage=None,
+    )
+    path = tmp_path / "state" / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    document["target"] = target
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match="target"):
+        registry.resolve(run_id)

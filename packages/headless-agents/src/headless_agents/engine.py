@@ -38,7 +38,15 @@ from .providers.claude import MAX_APPEND_SYSTEM_PROMPT_BYTES
 from .providers.openai_compat import GENERIC_NAME
 from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes, probe, tool_counts
 from .repo import RepoError, RepoIdentity, discover
-from .report import RUN_JSON, new_report, step_dir_name, step_entry, with_step, write_report
+from .report import (
+    PROMPT_FILE,
+    RUN_JSON,
+    new_report,
+    step_dir_name,
+    step_entry,
+    with_step,
+    write_report,
+)
 from .result import RunResult
 from .roles import Role, RolesError, capability_rule, load_roles, resolve_role
 from .run_record import RESULT_FILE_NAME
@@ -723,7 +731,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
 
         started = time.monotonic()
         run_dir = entry.run_dir
-        (run_dir / "prompt.md").write_text(plan.prompt, encoding="utf-8")
+        (run_dir / PROMPT_FILE).write_text(plan.prompt, encoding="utf-8")
         report = new_report(
             run_id=entry.run_id,
             target=target,

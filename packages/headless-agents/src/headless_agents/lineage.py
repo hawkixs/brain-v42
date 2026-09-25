@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from .runs import RUN_ID_PATTERN
+from .runs import RUN_ID_PATTERN, STORED_STATUSES
 from .state import Unknown, create_once, publish, read
 
 
@@ -123,8 +123,11 @@ def load(state: Path, owner: str) -> LineageState:
     path = lineage_path(state, owner)
     document = read(path, expect_id=("owner", owner))
     members = document.get("members")
+    # A member's status is one ha stores (codex review of lot 2 PR B, round 4): any
+    # other would read running or incomplete from the lock, a status never given.
     if not isinstance(members, dict) or not all(
-        isinstance(k, str) and isinstance(v, str) for k, v in members.items()
+        isinstance(k, str) and isinstance(v, str) and v in STORED_STATUSES
+        for k, v in members.items()
     ):
         raise Unknown(f"{path}: members are malformed")
     compromised = _optional_str(document.get("compromised"), "compromised", path)

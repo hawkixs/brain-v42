@@ -20,9 +20,10 @@ from pathlib import Path
 
 import pytest
 
-from headless_agents import cli, engine, locks
+from headless_agents import cli, engine, locks, quarantine
 from headless_agents.proofs import CLI_RAILS, record_proof
 from headless_agents.registry import Probe
+from headless_agents.report import RUN_KEYS
 from headless_agents.result import RunResult
 from headless_agents.run_record import record, run_id_of
 from headless_agents.runs import Registry
@@ -811,3 +812,305 @@ def test_runs_reads_a_write_run_status_from_its_lineage(world: _World) -> None:
     code, out, _ = world.run("runs", "--json")
     (row,) = json.loads(out)
     assert row["status"] == "committed"
+
+
+def test_runs_and_clean_survive_a_malformed_registry_entry(world: _World) -> None:
+    """Codex review of the lot 2 plan (round 3): lot 1 crashed here with a KeyError."""
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    path = world.state / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    del document["run_dir"]
+    path.write_text(json.dumps(document))
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert code == 0 and row["status"] == "unknown"
+    code, _, err = world.run("clean", run_id)
+    assert code == 1 and "recover it by hand" in err
+
+
+# ── the complete ha runs (plan Task 8) ─────────────────────────────────────
+
+
+def test_runs_rows_carry_the_task_and_the_cost(world: _World) -> None:
+    world.run("run", "codex", "Explain the layout.\nDetails.")
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["task"] == "Explain the layout."
+    assert {"cost_usd", "cost_complete", "duration_seconds", "text"} <= row.keys()
+
+
+def test_runs_prints_duration_cost_and_the_task(world: _World) -> None:
+    world.run("run", "codex", "Explain the layout.\nDetails.")
+    code, out, _ = world.run("runs")
+    (line,) = out.splitlines()
+    assert code == 0 and "codex" in line and "answered" in line and "exit 0" in line
+    assert line.endswith("  Explain the layout.")
+
+
+def test_runs_cuts_a_long_task(world: _World) -> None:
+    world.run("run", "codex", "x" * 80)
+    code, out, _ = world.run("runs")
+    assert out.rstrip("\n").endswith("x" * 59 + "…")
+
+
+def test_runs_lists_a_legacy_runs_cost(world: _World) -> None:
+    legacy = world.home / ".cache" / "ha" / "runs" / "20260920T000000-aaaaaaaa"
+    legacy.mkdir(parents=True)
+    (legacy / "result.json").write_text(
+        json.dumps(
+            {"provider": "codex", "exit_code": 0, "duration_seconds": 30.0, "cost_usd": 0.12}
+        )
+    )
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["status"] == "legacy" and row["cost_usd"] == 0.12 and row["task"] is None
+
+
+def test_runs_lists_active_quarantines_first(world: _World) -> None:
+    world.run("run", "codex", "go")
+    quarantine.publish(
+        world.state,
+        "operator",
+        reason="tripwire",
+        run_id="20260925T000000-aaaaaaaa",
+        paths=["/x"],
+        common_dir=None,
+    )
+    code, out, _ = world.run("runs")
+    lines = out.splitlines()
+    assert code == 0 and len(lines) == 2
+    assert lines[0].startswith("QUARANTINE operator: tripwire in run 20260925T000000-aaaaaaaa")
+    assert lines[0].endswith("lift it by hand after inspection")
+
+
+def test_runs_json_stays_a_list_and_names_quarantines_on_stderr(world: _World) -> None:
+    quarantine.publish(
+        world.state,
+        "operator",
+        reason="tripwire",
+        run_id="20260925T000000-aaaaaaaa",
+        paths=[],
+        common_dir=None,
+    )
+    code, out, err = world.run("runs", "--json")
+    assert code == 0 and json.loads(out) == []
+    assert "ha: quarantine operator: tripwire" in err
+
+
+def test_runs_reads_a_write_run_its_lineage_does_not_list_as_unknown(world: _World) -> None:
+    """Same rule as ha show (plan P6): a silent authority is no status."""
+    from headless_agents import lineage as lineages
+
+    run_id = "20260925T000000-eeeeeeee"
+    world.registry().create(
+        run_id, run_dir=None, target={"kind": "role", "name": "w"}, repository=None, lineage=run_id
+    )
+    lineages.create(
+        world.state,
+        lineages.LineageState(
+            owner=run_id,
+            repository=world.home,
+            common_dir=world.home / ".git",
+            worktree=world.home / "wt",
+            branch=f"ha/{run_id}",
+            base=None,
+            members={},
+            pending=None,
+            compromised=None,
+        ),
+    )
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["status"] == "unknown"
+
+
+def test_runs_reads_a_lineage_status_ha_never_writes_as_unknown(world: _World) -> None:
+    """Codex review of PR B (round 4): the row read incomplete, from the free lock."""
+    from headless_agents import lineage as lineages
+
+    run_id = "20260925T000000-eeeeeeee"
+    world.registry().create(
+        run_id, run_dir=None, target={"kind": "role", "name": "w"}, repository=None, lineage=run_id
+    )
+    lineages.create(
+        world.state,
+        lineages.LineageState(
+            owner=run_id,
+            repository=world.home,
+            common_dir=world.home / ".git",
+            worktree=world.home / "wt",
+            branch=f"ha/{run_id}",
+            base=None,
+            members={run_id: "bogus"},
+            pending=None,
+            compromised=None,
+        ),
+    )
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert code == 0 and row["status"] == "unknown"
+
+
+def test_runs_survives_an_unreadable_quarantine_and_entry(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    (world.state / "runs" / f"{run_id}.json").write_text("{not json")
+    (world.state / "quarantine").mkdir(parents=True, exist_ok=True)
+    (world.state / "quarantine" / "operator.json").write_text("{not json")
+    code, out, _ = world.run("runs")
+    lines = out.splitlines()
+    assert code == 0 and lines[0].startswith("QUARANTINE unreadable:")
+    assert lines[1].startswith(run_id) and "unknown" in lines[1]
+
+
+def _drop_status(world: _World) -> str:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id: str = json.loads(out)["run_id"]
+    path = world.state / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    del document["status"]
+    path.write_text(json.dumps(document))
+    return run_id
+
+
+def test_runs_reads_an_entry_without_its_status_as_unknown(world: _World) -> None:
+    """Codex review of PR B (round 3): the row read incomplete, from the free lock."""
+    _drop_status(world)
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert code == 0 and row["status"] == "unknown"
+
+
+def test_show_exits_1_on_an_entry_without_its_status(world: _World) -> None:
+    """Codex review of PR B (round 3): ha show exited 0 on a status its entry never gave."""
+    run_id = _drop_status(world)
+    code, out, err = world.run("show", run_id)
+    assert code == 1 and "status is malformed" in err
+    assert out.splitlines()[0] == f"{run_id}  -  exit -  unknown"
+
+
+def test_runs_reads_a_target_that_is_not_text_as_unknown(world: _World) -> None:
+    """Codex review of PR B (round 1): the row named the run's target "None"."""
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    path = world.state / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    document["target"] = {"kind": [], "name": None}
+    path.write_text(json.dumps(document))
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert code == 0 and row["status"] == "unknown" and row["target"] is None
+
+
+def test_runs_takes_no_task_from_a_directory_a_later_run_reused(
+    world: _World, tmp_path: Path
+) -> None:
+    """Final review of PR B: the registry refuses only an existing --run-dir, so the same
+    one is allowed once ha clean removed it -- the cleaned run must not show the new task."""
+    custom = tmp_path / "out" / "review"
+    code, out, _ = world.run("run", "codex", "--json", "--run-dir", str(custom), "First task.")
+    first = json.loads(out)["run_id"]
+    world.run("clean", first)
+    code, out, _ = world.run("run", "codex", "--json", "--run-dir", str(custom), "Second task.")
+    assert code == 0
+    code, out, _ = world.run("runs", "--json")
+    tasks = {row["run_id"]: row["task"] for row in json.loads(out)}
+    assert tasks[first] is None and "Second task." in tasks.values()
+
+
+def test_runs_survives_documents_nested_too_deep_to_parse(world: _World) -> None:
+    """Codex review of PR B (round 2), the same input class: RecursionError, not
+    ValueError, escaped the readers -- one such file broke the whole listing."""
+    deep = "[" * 100_000 + "]" * 100_000
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    first = json.loads(out)["run_id"]
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    second = json.loads(out)["run_id"]
+    (world.registry().resolve(second).run_dir / "run.json").write_text(deep)
+    (world.state / "runs" / f"{first}.json").write_text(deep)
+    legacy = world.home / ".cache" / "ha" / "runs" / "20260920T000000-aaaaaaaa"
+    legacy.mkdir(parents=True)
+    (legacy / "result.json").write_text(deep)
+    code, out, _ = world.run("runs", "--json")
+    rows = {row["run_id"]: row for row in json.loads(out)}
+    assert code == 0 and rows[first]["status"] == "unknown"
+    assert rows[second]["status"] == "answered" and rows[second]["exit_code"] is None
+
+
+def _strict(name: str) -> object:
+    raise AssertionError(f"{name} is not JSON")
+
+
+def test_runs_survives_a_number_that_is_not_finite(world: _World) -> None:
+    """Final review of PR B: json.loads accepts NaN and Infinity -- one such number broke
+    the whole listing (round() raised) and made ``--json`` unreadable to a strict parser."""
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    run_json = world.registry().resolve(run_id).run_dir / "run.json"
+    report = json.loads(run_json.read_text())
+    report["duration_seconds"] = float("nan")
+    run_json.write_text(json.dumps(report))
+    legacy = world.home / ".cache" / "ha" / "runs" / "20260920T000000-aaaaaaaa"
+    legacy.mkdir(parents=True)
+    (legacy / "result.json").write_text(
+        '{"provider": "codex", "exit_code": 0, "duration_seconds": Infinity, "cost_usd": 1e999}'
+    )
+    code, out, _ = world.run("runs")
+    assert code == 0 and len(out.splitlines()) == 2
+    code, out, _ = world.run("runs", "--json")
+    rows = json.loads(out, parse_constant=_strict)
+    assert code == 0 and [row["duration_seconds"] for row in rows] == [None, None]
+
+
+# ── ha show ─────────────────────────────────────────────────────────────────
+
+
+def test_show_renders_a_finished_run(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "Explain the layout.\nDetails.")
+    run_id = json.loads(out)["run_id"]
+    code, out, err = world.run("show", run_id)
+    assert code == 0 and err == ""
+    lines = out.splitlines()
+    assert lines[0] == f"{run_id}  codex  exit 0  answered"
+    assert lines[1] == "task    Explain the layout."
+    assert lines[-2:] == ["--- run ---", "the answer"]
+
+
+def test_show_json_prints_the_rebuilt_report(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    code, out, _ = world.run("show", run_id, "--json")
+    report = json.loads(out)
+    assert code == 0 and list(report) == list(RUN_KEYS) and report["run_id"] == run_id
+
+
+def test_show_of_a_cleaned_run_says_so_and_exits_0(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    world.run("clean", run_id)
+    code, out, err = world.run("show", run_id)
+    assert code == 0 and "removed by ha clean" in err
+    assert out.splitlines()[0] == f"{run_id}  codex  exit -  answered"
+
+
+def test_show_refuses_what_is_not_a_registered_run(world: _World) -> None:
+    code, _, err = world.run("show", "20260925T000000-00000000")
+    assert code == 2 and "no run 20260925T000000-00000000" in err
+
+
+def test_show_names_a_legacy_run(world: _World) -> None:
+    legacy = world.home / ".cache" / "ha" / "runs" / "20260920T000000-aaaaaaaa"
+    legacy.mkdir(parents=True)
+    (legacy / "result.json").write_text(json.dumps({"provider": "codex", "exit_code": 0}))
+    code, _, err = world.run("show", "20260920T000000-aaaaaaaa")
+    assert code == 2 and "0.4.0 run" in err
+
+
+def test_show_exits_1_when_the_state_cannot_be_read(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    (world.state / "runs" / f"{run_id}.json").write_text("{not json")
+    code, out, err = world.run("show", run_id)
+    assert code == 1 and "recover it by hand" in err
+    assert out.splitlines()[0] == f"{run_id}  -  exit -  unknown"

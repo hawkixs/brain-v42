@@ -18,6 +18,8 @@ from .result import RunResult
 from .state import publish
 
 RUN_JSON: Final = "run.json"
+#: The task, as given (spec §3.10): written once at the start of a run.
+PROMPT_FILE: Final = "prompt.md"
 SCHEMA: Final = 1
 RUN_KEYS: Final = (
     "schema", "run_id", "target", "status", "exit_code", "verdict", "text",
@@ -104,6 +106,7 @@ def write_report(run_dir: Path, report: Mapping[str, object]) -> None:
 
 
 __all__ = [
+    "PROMPT_FILE",
     "RUN_JSON",
     "RUN_KEYS",
     "SCHEMA",

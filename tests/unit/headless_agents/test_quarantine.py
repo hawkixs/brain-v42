@@ -152,3 +152,32 @@ def test_a_repository_quarantine_needs_its_common_dir(tmp_path: Path) -> None:
         quarantine.publish(
             tmp_path, "repository", reason="x", run_id=_RUN, paths=[], common_dir=None
         )
+
+
+def test_active_lists_every_quarantine_the_operators_first(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    common = tmp_path / "repo" / ".git"
+    common.mkdir(parents=True)
+    quarantine.publish(
+        state, "repository", reason="tripwire", run_id="r1", paths=["x"], common_dir=common
+    )
+    quarantine.publish(
+        state, "operator", reason="stale unconfined intent", run_id="r2", paths=[], common_dir=None
+    )
+    found = quarantine.active(state)
+    assert [(q["scope"], q["run_id"], q["readable"]) for q in found] == [
+        ("operator", "r2", True),
+        ("repository", "r1", True),
+    ]
+
+
+def test_active_lists_an_unreadable_quarantine(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    (state / "quarantine").mkdir(parents=True)
+    (state / "quarantine" / "operator.json").write_text("{not json")
+    (entry,) = quarantine.active(state)
+    assert entry["readable"] is False and "does not parse" in str(entry["reason"])
+
+
+def test_active_without_a_quarantine_is_empty(tmp_path: Path) -> None:
+    assert quarantine.active(tmp_path / "state") == []

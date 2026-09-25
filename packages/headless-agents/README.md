@@ -360,6 +360,7 @@ ha run TARGET [PROMPT | -] [-m MODEL] [--effort E] [--timeout SECONDS]
 ha roles [--json]
 ha providers [--json]
 ha runs [--limit N] [--json]
+ha show RUN_ID [--json]
 ha clean RUN_ID
 ha --version
 ```

@@ -13,7 +13,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Final, Literal
 
-from .state import create_once, read_optional
+from .state import Unknown, create_once, read, read_optional
 
 MadeBy = Literal["engine", "agent", "hook", "unknown"]
 
@@ -53,4 +53,27 @@ def lookup(state: Path, sha: str) -> dict[str, object] | None:
     return read_optional(_path(state, sha), expect_id=("sha", sha))
 
 
-__all__ = ["MadeBy", "lookup", "record"]
+def of_run(state: Path, run_id: str) -> tuple[list[dict[str, object]], list[Path]]:
+    """Every provenance record naming ``run_id``, and the record files that cannot be read.
+
+    Provenance is keyed by commit, so this scans ``<state>/provenance/``. A
+    record that cannot be read is returned apart, never skipped: it may be one
+    of this run's commits, and unknown is never empty (spec §3.8.1).
+    """
+    directory = state / "provenance"
+    if not directory.is_dir():
+        return [], []
+    found: list[dict[str, object]] = []
+    unreadable: list[Path] = []
+    for path in sorted(directory.glob("*.json")):
+        try:
+            document = read(path, expect_id=("sha", path.stem))
+        except Unknown:
+            unreadable.append(path)
+            continue
+        if document.get("run_id") == run_id:
+            found.append(document)
+    return found, unreadable
+
+
+__all__ = ["MadeBy", "lookup", "of_run", "record"]
