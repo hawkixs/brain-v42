@@ -223,12 +223,151 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
     )
 
 
+_STATUS_WORDS: Final[Mapping[str, str]] = {
+    "no_change": "no change",
+    "changes": "changes requested",
+}
+
+
+def format_duration(seconds: object) -> str:
+    """``45s``, ``2m40s``, ``1h02m``; ``-`` when not measured."""
+    if isinstance(seconds, bool) or not isinstance(seconds, int | float):
+        return "-"
+    whole = round(seconds)
+    if whole < 60:
+        return f"{whole}s"
+    if whole < 3600:
+        return f"{whole // 60}m{whole % 60:02d}s"
+    return f"{whole // 3600}h{whole % 3600 // 60:02d}m"
+
+
+def format_cost(cost: object) -> str:
+    """``$0.12``; ``-`` when not measured."""
+    if isinstance(cost, bool) or not isinstance(cost, int | float):
+        return "-"
+    return f"${cost:.2f}"
+
+
+def _thousands(count: object) -> str:
+    if not isinstance(count, int) or isinstance(count, bool):
+        return "-"
+    if count < 1000:
+        return str(count)
+    if count < 1_000_000:
+        return f"{count // 1000}k"
+    return f"{count / 1_000_000:.1f}M"
+
+
+def format_tokens(tokens: object) -> str:
+    """``in 150k out 3k``; ``-`` when neither side was measured."""
+    if not isinstance(tokens, dict):
+        return "-"
+    given, produced = tokens.get("input"), tokens.get("output")
+    if not isinstance(given, int) and not isinstance(produced, int):
+        return "-"
+    return f"in {_thousands(given)} out {_thousands(produced)}"
+
+
+def format_tools(tools: object) -> str:
+    """``read 25, edit 11``, most used first; ``none`` for ``{}``; ``-`` when not measured."""
+    if not isinstance(tools, dict):
+        return "-"
+    counts = {str(name): count for name, count in tools.items() if isinstance(count, int)}
+    if not counts:
+        return "none"
+    ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return ", ".join(f"{name} {count}" for name, count in ranked)
+
+
+def _dash(value: object) -> str:
+    return "-" if value is None else str(value)
+
+
+def _step_cells(step: Mapping[str, object]) -> list[str]:
+    model, verdict = step.get("model"), step.get("verdict")
+    return [
+        _dash(step.get("slot")),
+        _dash(step.get("role")),
+        _dash(step.get("provider")),
+        model if isinstance(model, str) and model.strip() else "(auto)",
+        _dash(step.get("exit_code")),
+        format_duration(step.get("duration_seconds")),
+        format_tokens(step.get("tokens")),
+        format_cost(step.get("cost_usd")),
+        format_tools(step.get("tools")),
+        verdict if isinstance(verdict, str) else "",
+    ]
+
+
+def _table(rows: Sequence[Sequence[str]]) -> list[str]:
+    """Each column as wide as its widest cell, cells two spaces apart (plan P8)."""
+    if not rows:
+        return []
+    widths = [max(len(row[column]) for row in rows) for column in range(len(rows[0]))]
+    return [
+        (
+            "  " + "  ".join(cell.ljust(width) for cell, width in zip(row, widths, strict=True))
+        ).rstrip()
+        for row in rows
+    ]
+
+
+def render(shown: Shown) -> str:
+    """The text of ``ha show`` (spec §3.10): header, task, head, warnings, steps, final text."""
+    report = shown.report
+    target = report.get("target")
+    name = target.get("name") if isinstance(target, dict) else None
+    status = str(report.get("status"))
+    header = (
+        f"{report.get('run_id')}  {name or '-'}  exit {_dash(report.get('exit_code'))}  "
+        f"{_STATUS_WORDS.get(status, status)}"
+    )
+    reason = report.get("failure_reason")
+    if isinstance(reason, str):
+        header += f" ({reason})"
+    lines = [header, f"task    {shown.task or '-'}"]
+    branch = report.get("branch")
+    if isinstance(branch, str):
+        commits = report.get("commits")
+        count = len(commits) if isinstance(commits, list) else 0
+        head = report.get("head")
+        line = (
+            f"head    {branch} @ {head[:7] if isinstance(head, str) else '-'}  "
+            f"{count} commit{'' if count == 1 else 's'}"
+        )
+        if shown.diffstat is not None:
+            stat = shown.diffstat
+            line += (
+                f"  +{stat.insertions} -{stat.deletions}  "
+                f"{stat.files} file{'' if stat.files == 1 else 's'}"
+            )
+        lines.append(line)
+    lines.extend(f"warning {warning}" for warning in shown.warnings)
+    steps = report.get("steps")
+    rows = (
+        [_step_cells(step) for step in steps if isinstance(step, dict)]
+        if isinstance(steps, list)
+        else []
+    )
+    lines.extend(_table(rows))
+    text = report.get("text")
+    if isinstance(text, str) and text.strip():
+        lines.append(f"--- {rows[-1][0] if rows else 'run'} ---")
+        lines.append(text.rstrip("\n"))
+    return "\n".join(lines) + "\n"
+
+
 __all__ = [
     "LATER_AUTHORITIES",
     "Diffstat",
     "NotShown",
     "Shown",
+    "format_cost",
+    "format_duration",
+    "format_tokens",
+    "format_tools",
     "read_diffstat",
     "read_task",
     "rebuild",
+    "render",
 ]

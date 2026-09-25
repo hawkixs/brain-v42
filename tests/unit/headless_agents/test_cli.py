@@ -23,6 +23,7 @@ import pytest
 from headless_agents import cli, engine, locks
 from headless_agents.proofs import CLI_RAILS, record_proof
 from headless_agents.registry import Probe
+from headless_agents.report import RUN_KEYS
 from headless_agents.result import RunResult
 from headless_agents.run_record import record, run_id_of
 from headless_agents.runs import Registry
@@ -826,3 +827,56 @@ def test_runs_and_clean_survive_a_malformed_registry_entry(world: _World) -> Non
     assert code == 0 and row["status"] == "unknown"
     code, _, err = world.run("clean", run_id)
     assert code == 1 and "recover it by hand" in err
+
+
+# ── ha show ─────────────────────────────────────────────────────────────────
+
+
+def test_show_renders_a_finished_run(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "Explain the layout.\nDetails.")
+    run_id = json.loads(out)["run_id"]
+    code, out, err = world.run("show", run_id)
+    assert code == 0 and err == ""
+    lines = out.splitlines()
+    assert lines[0] == f"{run_id}  codex  exit 0  answered"
+    assert lines[1] == "task    Explain the layout."
+    assert lines[-2:] == ["--- run ---", "the answer"]
+
+
+def test_show_json_prints_the_rebuilt_report(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    code, out, _ = world.run("show", run_id, "--json")
+    report = json.loads(out)
+    assert code == 0 and list(report) == list(RUN_KEYS) and report["run_id"] == run_id
+
+
+def test_show_of_a_cleaned_run_says_so_and_exits_0(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    world.run("clean", run_id)
+    code, out, err = world.run("show", run_id)
+    assert code == 0 and "removed by ha clean" in err
+    assert out.splitlines()[0] == f"{run_id}  codex  exit -  answered"
+
+
+def test_show_refuses_what_is_not_a_registered_run(world: _World) -> None:
+    code, _, err = world.run("show", "20260925T000000-00000000")
+    assert code == 2 and "no run 20260925T000000-00000000" in err
+
+
+def test_show_names_a_legacy_run(world: _World) -> None:
+    legacy = world.home / ".cache" / "ha" / "runs" / "20260920T000000-aaaaaaaa"
+    legacy.mkdir(parents=True)
+    (legacy / "result.json").write_text(json.dumps({"provider": "codex", "exit_code": 0}))
+    code, _, err = world.run("show", "20260920T000000-aaaaaaaa")
+    assert code == 2 and "0.4.0 run" in err
+
+
+def test_show_exits_1_when_the_state_cannot_be_read(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    (world.state / "runs" / f"{run_id}.json").write_text("{not json")
+    code, out, err = world.run("show", run_id)
+    assert code == 1 and "recover it by hand" in err
+    assert out.splitlines()[0] == f"{run_id}  -  exit -  unknown"

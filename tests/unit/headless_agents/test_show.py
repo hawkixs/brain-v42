@@ -286,3 +286,184 @@ def test_the_diffstat_counts_lines_inside_hunks_only(home: Home) -> None:
         "+one more\n"
     )
     assert home.rebuild().diffstat == show.Diffstat(insertions=3, deletions=1, files=1)
+
+
+# ── rendering (spec §3.10; plan P8: column widths per table) ───────────────
+
+HEAD = "1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b"
+
+
+def _shown(
+    report: dict[str, object],
+    *,
+    task: str | None = None,
+    diffstat: show.Diffstat | None = None,
+    warnings: tuple[str, ...] = (),
+) -> show.Shown:
+    return show.Shown(
+        report=report, task=task, diffstat=diffstat, notes=(), warnings=warnings, unknown=False
+    )
+
+
+GOLDEN_READ_ONLY = """\
+20260925T120000-ab12cd34  codex  exit 0  answered
+task    Explain what this repository does.
+  run  codex  codex  gpt-6-luna  0  1m05s  in 12k out 2k  $0.03  command_execution 4, mcp_tool_call 1
+--- run ---
+It is a persistent memory server.
+"""
+
+
+def test_a_read_only_run_renders_as_the_golden_text(home: Home) -> None:
+    report = home.report()
+    rendered = show.render(_shown(report, task="Explain what this repository does."))
+    assert rendered == GOLDEN_READ_ONLY
+
+
+GOLDEN_WRITE = """\
+20260925T120000-ab12cd34  implementer  exit 0  committed
+task    Fix the typo in README.
+head    ha/20260925T120000-ab12cd34 @ 1a2b3c4  1 commit  +3 -1  1 file
+  run  implementer  opencode  opencode-go/deepseek-v4.1-flash  0  3m10s  in 610k out 21k  $0.08  read 25, edit 11, bash 6
+--- run ---
+Fixed the typo.
+"""
+
+
+def test_a_write_run_renders_as_the_golden_text(home: Home) -> None:
+    step = dict(
+        _STEP,
+        role="implementer",
+        provider="opencode",
+        model="opencode-go/deepseek-v4.1-flash",
+        duration_seconds=190.0,
+        tokens={"input": 610000, "output": 21000, "fresh": None, "cached": None, "thinking": None},
+        cost_usd=0.08,
+        tools={"read": 25, "edit": 11, "bash": 6},
+    )
+    report = home.report(
+        target={"kind": "role", "name": "implementer"},
+        status="committed",
+        text="Fixed the typo.\n",
+        branch=f"ha/{RUN}",
+        head=HEAD,
+        commits=[{"sha": HEAD, "made_by": "engine"}],
+        steps=[step],
+    )
+    stat = show.Diffstat(insertions=3, deletions=1, files=1)
+    rendered = show.render(_shown(report, task="Fix the typo in README.", diffstat=stat))
+    assert rendered == GOLDEN_WRITE
+
+
+GOLDEN_UNMEASURED = """\
+20260925T120000-ab12cd34  claude  exit 1  failed
+task    -
+  run  claude  claude  sonnet  1  12s  -  -  -
+"""
+
+
+def test_what_was_not_measured_renders_as_a_dash(home: Home) -> None:
+    step = dict(
+        _STEP,
+        role="claude",
+        provider="claude",
+        model="sonnet",
+        exit_code=1,
+        duration_seconds=12.0,
+        tokens=None,
+        cost_usd=None,
+        tools=None,
+    )
+    report = home.report(
+        target={"kind": "provider", "name": "claude"},
+        status="failed",
+        exit_code=1,
+        text=None,
+        steps=[step],
+    )
+    assert show.render(_shown(report)) == GOLDEN_UNMEASURED
+
+
+GOLDEN_TWO_STEPS = """\
+20260925T120000-ab12cd34  multi-review  exit 6  changes requested
+task    Review this change.
+  review  reviewer-agy  agy     (auto)  0  2m40s  -              -      view_file 9  CHANGES
+  judge   judge         claude  opus    0  1m10s  in 90k out 3k  $0.40  -            CHANGES
+--- judge ---
+Rename the helper.
+"""
+
+
+def test_columns_align_across_steps(home: Home) -> None:
+    """Pins the table layout lot 4's reviews will fill (plan P8)."""
+    steps = [
+        {
+            "slot": "review",
+            "role": "reviewer-agy",
+            "provider": "agy",
+            "model": None,
+            "exit_code": 0,
+            "duration_seconds": 160.0,
+            "tokens": None,
+            "cost_usd": None,
+            "tools": {"view_file": 9},
+            "verdict": "CHANGES",
+        },
+        {
+            "slot": "judge",
+            "role": "judge",
+            "provider": "claude",
+            "model": "opus",
+            "exit_code": 0,
+            "duration_seconds": 70.0,
+            "tokens": {"input": 90000, "output": 3000},
+            "cost_usd": 0.4,
+            "tools": None,
+            "verdict": "CHANGES",
+        },
+    ]
+    report = home.report(
+        target={"kind": "workflow", "name": "multi-review"},
+        status="changes",
+        exit_code=6,
+        text="Rename the helper.\n",
+        steps=steps,
+    )
+    assert show.render(_shown(report, task="Review this change.")) == GOLDEN_TWO_STEPS
+
+
+def test_the_header_names_a_failure_reason_and_a_warning_line_follows(home: Home) -> None:
+    report = home.report(
+        status="failed",
+        exit_code=1,
+        failure_reason="agent_moved_head",
+        branch=f"ha/{RUN}",
+        head=None,
+        commits=[],
+        steps=[],
+        text=None,
+    )
+    warning = f"lineage {RUN} is compromised: agent_moved_head"
+    text = show.render(_shown(report, warnings=(warning,)))
+    assert text.splitlines() == [
+        f"{RUN}  codex  exit 1  failed (agent_moved_head)",
+        "task    -",
+        f"head    ha/{RUN} @ -  0 commits",
+        f"warning lineage {RUN} is compromised: agent_moved_head",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("seconds", "text"),
+    [(None, "-"), (0.4, "0s"), (59.4, "59s"), (65.4, "1m05s"), (3725, "1h02m")],
+)
+def test_format_duration(seconds: object, text: str) -> None:
+    assert show.format_duration(seconds) == text
+
+
+def test_format_tools_and_tokens() -> None:
+    assert show.format_tools(None) == "-" and show.format_tools({}) == "none"
+    assert show.format_tools({"edit": 11, "read": 25, "bash": 11}) == "read 25, bash 11, edit 11"
+    assert show.format_tokens(None) == "-"
+    assert show.format_tokens({"input": 999, "output": None}) == "in 999 out -"
+    assert show.format_tokens({"input": 1_500_000, "output": 3000}) == "in 1.5M out 3k"

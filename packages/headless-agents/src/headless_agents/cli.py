@@ -6,6 +6,7 @@
     ha roles [--json]
     ha providers [--json]
     ha runs [--limit N] [--json]
+    ha show RUN_ID [--json]
     ha clean RUN_ID
     ha --version
 
@@ -27,6 +28,7 @@ from pathlib import Path
 from typing import IO, Final
 
 from . import lineage as lineages
+from . import show
 from .capability import INVALID_USAGE_EXIT_CODE
 from .config_paths import state_dir
 from .engine import (
@@ -140,6 +142,10 @@ def _parser() -> argparse.ArgumentParser:
     runs = commands.add_parser("runs", help="list recent runs")
     runs.add_argument("--limit", type=int, default=20, help="how many runs to list")
     runs.add_argument("--json", action="store_true", help="print the list as JSON")
+
+    show_parser = commands.add_parser("show", help="show one run, rebuilt from the state")
+    show_parser.add_argument("run_id", help="the run id, as ha run or ha runs printed it")
+    show_parser.add_argument("--json", action="store_true", help="print the rebuilt run.json")
 
     clean_parser = commands.add_parser("clean", help="remove one run's directory")
     clean_parser.add_argument("run_id", help="the run id, as ha run printed it")
@@ -390,6 +396,26 @@ def _clean(args: argparse.Namespace, io: Io) -> int:
     return clean(args.run_id, environ=io.environ, home=io.home, say=io.say)
 
 
+# ── ha show ─────────────────────────────────────────────────────────────────
+
+
+def _show(args: argparse.Namespace, io: Io) -> int:
+    """``ha show RUN_ID``: rebuilt from the state (plan P6); 1 when part of it is unreadable."""
+    try:
+        shown = show.rebuild(
+            args.run_id, state=state_dir(io.environ, home=io.home), runs_root=runs_root(io.home)
+        )
+    except show.NotShown as exc:
+        raise UsageError(str(exc)) from None
+    for note in shown.notes:
+        io.say(note)
+    if args.json:
+        io.stdout.write(json.dumps(shown.report, ensure_ascii=False, indent=2) + "\n")
+    else:
+        io.stdout.write(show.render(shown))
+    return 1 if shown.unknown else 0
+
+
 # ── entry point ─────────────────────────────────────────────────────────────
 
 
@@ -425,9 +451,11 @@ def main(
             return _roles(args, io)
         if args.command == "runs":
             return _runs(args, io)
+        if args.command == "show":
+            return _show(args, io)
         if args.command == "clean":
             return _clean(args, io)
-        raise UsageError("a command is required: run, roles, providers, runs or clean")
+        raise UsageError("a command is required: run, roles, providers, runs, show or clean")
     except UsageError as exc:
         io.say(str(exc))
         return INVALID_USAGE_EXIT_CODE
