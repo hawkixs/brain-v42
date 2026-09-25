@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import shutil
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -36,7 +36,14 @@ from .profile import CapabilityProfile, Credentials, McpServer, Workspace, mcp_n
 from .proofs import CLI_RAILS, confinement, isolation_label, isolation_ok
 from .providers.claude import MAX_APPEND_SYSTEM_PROMPT_BYTES
 from .providers.openai_compat import GENERIC_NAME
-from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes, probe, tool_counts
+from .registry import (
+    HTTP_PROVIDER_NAMES,
+    PROVIDER_NAMES,
+    get_provider,
+    max_prompt_bytes,
+    probe,
+    tool_counts,
+)
 from .repo import RepoError, RepoIdentity, discover
 from .report import (
     PROMPT_FILE,
@@ -53,9 +60,12 @@ from .run_record import RESULT_FILE_NAME
 from .runs import MINT_ATTEMPTS, Entry, Registry, RegistryError, make_run_dir
 from .spec import RunSpec
 from .state import Unknown
+from .templates import implement_prompt
+from .workflows import Workflow, WorkflowsError, load_workflows
 from .workspace import prepend
 
 ROLES_FILE_NAME: Final = "roles.toml"
+WORKFLOWS_FILE_NAME: Final = "workflows.toml"
 
 # A Claude Code session that launches ``ha`` must not leak into a nested
 # ``claude -p``: the child would no longer be the run the rail ships.
@@ -107,11 +117,16 @@ class Plan:
     request: Request
     role: Role
     models: Mapping[str, str]
+    #: What the provider gets: the task as given, or a template around it (§3.7).
     prompt: str
     mcp: McpServer | None
     environment: dict[str, str]
     run_dir: Path | None
     state: Path
+    #: The workflow a workflow target names; ``None`` for a role or a provider.
+    workflow: Workflow | None = None
+    #: The task as given, written to ``prompt.md`` (§3.10); ``None`` means ``prompt``.
+    task: str | None = None
 
 
 def operator_environment(environ: Mapping[str, str]) -> dict[str, str]:
@@ -135,6 +150,50 @@ def declared_roles(
         return load_roles(roles_path, mcp_profiles=profiles), profiles
     except (ConfigPathError, McpProfileError, RolesError) as exc:
         raise UsageError(str(exc)) from None
+
+
+@dataclass(frozen=True)
+class Config:
+    """The operator's configuration, validated as a whole before anything runs (§3.4)."""
+
+    roles: dict[str, Role]
+    profiles: Mapping[str, object]
+    workflows: dict[str, Workflow]
+
+
+def load_config(environ: Mapping[str, str], home: Path) -> Config:
+    """``roles.toml``, ``mcp.toml`` and ``workflows.toml``, validated; ``models.toml``
+    is read per link, when a run resolves its models.
+
+    Every file comes from the operator's configuration directory only (§3.3),
+    and an invalid one refuses every run, whatever its target: validation
+    happens before anything runs (§3.1, §3.2).
+    """
+    roles, profiles = declared_roles(environ, home)
+    try:
+        path = config_file(WORKFLOWS_FILE_NAME, environ, home=home)
+        workflows = load_workflows(path, roles=roles)
+    except (ConfigPathError, WorkflowsError) as exc:
+        raise UsageError(str(exc)) from None
+    return Config(roles=roles, profiles=profiles, workflows=workflows)
+
+
+def describe_workflows(environ: Mapping[str, str], home: Path) -> list[dict[str, object]]:
+    """``ha workflows``: every declared workflow, its shape and its slots, each slot's role
+    with the providers of every link of that role (spec §3.9)."""
+    config = load_config(environ, home)
+    rows: list[dict[str, object]] = []
+    for workflow in config.workflows.values():
+        slots = [
+            {
+                "slot": slot,
+                "role": name,
+                "providers": list(resolve_role(name, config.roles).providers),
+            }
+            for slot, name in workflow.slot_roles()
+        ]
+        rows.append({"name": workflow.name, "shape": workflow.shape, "slots": slots})
+    return rows
 
 
 def describe_roles(environ: Mapping[str, str], home: Path) -> list[dict[str, object]]:
@@ -276,22 +335,10 @@ def _environment(environ: Mapping[str, str], mcp: McpServer | None) -> dict[str,
     return environment
 
 
-def plan(request: Request) -> Plan:
-    """Resolve ``request`` and apply every gate that needs no git; raise :class:`UsageError`."""
-    declared, profiles = declared_roles(request.environ, request.home)
-    try:
-        role = _with_overrides(resolve_role(request.target, declared), request.overrides)
-    except RolesError as exc:
-        raise UsageError(str(exc)) from None
-    rule = capability_rule(role, profiles)
-    if rule is not None:
-        raise UsageError(f"{request.target}: {rule}")
-    if request.base is not None and not role.write:
-        raise UsageError("--base needs a write run: the role's write, or --write")
-
+def _models(role: Role, request: Request) -> Mapping[str, str]:
     links = tuple((link.provider, link.model) for link in role.links)
     try:
-        models = models_for(
+        return models_for(
             links,
             default=request.overrides.model or "",
             role_model=role.model,
@@ -301,24 +348,70 @@ def plan(request: Request) -> Plan:
     except ModelsError as exc:
         raise UsageError(str(exc)) from None
 
-    prompt = _prompt(request)
+
+def _mcp(role: Role, request: Request) -> McpServer | None:
+    if role.mcp is None:
+        return None
+    try:
+        return mcp_server(role.mcp, environ=request.environ, home=request.home)
+    except McpProfileError as exc:
+        raise UsageError(str(exc)) from None
+
+
+def _run_dir(request: Request) -> Path | None:
+    if request.run_dir is None:
+        return None
+    run_dir = Path(os.path.abspath(request.cwd / request.run_dir))
+    if not run_dir.name:
+        raise UsageError(
+            f"--run-dir {request.run_dir} has no name: a run is named by its directory"
+        )
+    return run_dir
+
+
+#: The ``ha run`` options that override a role (§3.9), by their ``Overrides`` field.
+_OVERRIDE_FLAGS: Final[Mapping[str, str]] = {
+    "model": "-m",
+    "effort": "--effort",
+    "timeout": "--timeout",
+    "context": "--context",
+    "context_parents": "--context-parents",
+    "mcp": "--mcp",
+    "write": "--write",
+    "shell": "--shell",
+    "base_url": "--base-url",
+    "key_env": "--key-env",
+}
+
+
+def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan:
+    """A workflow target: its roles run as declared (§3.3), its prompt is a template (§3.7)."""
+    given = [
+        flag
+        for field, flag in _OVERRIDE_FLAGS.items()
+        if getattr(request.overrides, field) is not None
+    ]
+    if given:
+        raise UsageError(
+            f"workflow {workflow.name}: a workflow runs its roles as declared, so "
+            f"{', '.join(given)} is refused; its options are --base, --repo, --json and "
+            "--run-dir"
+        )
+    if workflow.implement is None:
+        raise UsageError(
+            f"workflow {workflow.name}: the review shape is not available in this version of ha; "
+            f"run a reviewer role directly (ha run {workflow.review[0]} ...)"
+        )
+    role = resolve_role(workflow.implement, config.roles)
+    # Validated when workflows.toml was read; the engine checks again (§3.4).
+    rule = capability_rule(role, config.profiles)
+    if rule is not None:
+        raise UsageError(f"{workflow.name}: {rule}")
+    models = _models(role, request)
+    task = _prompt(request)
+    prompt = implement_prompt(task)
     _check_prompt_size(role, prompt, _bundle(role, request, None))
-
-    mcp: McpServer | None = None
-    if role.mcp is not None:
-        try:
-            mcp = mcp_server(role.mcp, environ=request.environ, home=request.home)
-        except McpProfileError as exc:
-            raise UsageError(str(exc)) from None
-
-    run_dir: Path | None = None
-    if request.run_dir is not None:
-        run_dir = Path(os.path.abspath(request.cwd / request.run_dir))
-        if not run_dir.name:
-            raise UsageError(
-                f"--run-dir {request.run_dir} has no name: a run is named by its directory"
-            )
-
+    mcp = _mcp(role, request)
     return Plan(
         request=request,
         role=role,
@@ -326,8 +419,46 @@ def plan(request: Request) -> Plan:
         prompt=prompt,
         mcp=mcp,
         environment=_environment(request.environ, mcp),
-        run_dir=run_dir,
+        run_dir=_run_dir(request),
         state=state_dir(request.environ, home=request.home),
+        workflow=workflow,
+        task=task,
+    )
+
+
+def plan(request: Request) -> Plan:
+    """Resolve ``request`` and apply every gate that needs no git; raise :class:`UsageError`."""
+    config = load_config(request.environ, request.home)
+    workflow = config.workflows.get(request.target)
+    if workflow is not None:
+        return _plan_workflow(request, workflow, config)
+    declared, profiles = config.roles, config.profiles
+    if request.target not in declared and request.target not in PROVIDER_NAMES:
+        known = sorted({*config.workflows, *declared, *PROVIDER_NAMES})
+        raise UsageError(
+            f"unknown target {request.target!r}; workflows, roles and providers: {', '.join(known)}"
+        )
+    role = _with_overrides(resolve_role(request.target, declared), request.overrides)
+    rule = capability_rule(role, profiles)
+    if rule is not None:
+        raise UsageError(f"{request.target}: {rule}")
+    if request.base is not None and not role.write:
+        raise UsageError("--base needs a write run: the role's write, or --write")
+
+    models = _models(role, request)
+    prompt = _prompt(request)
+    _check_prompt_size(role, prompt, _bundle(role, request, None))
+    mcp = _mcp(role, request)
+    return Plan(
+        request=request,
+        role=role,
+        models=models,
+        prompt=prompt,
+        mcp=mcp,
+        environment=_environment(request.environ, mcp),
+        run_dir=_run_dir(request),
+        state=state_dir(request.environ, home=request.home),
+        task=prompt,
     )
 
 
@@ -485,11 +616,13 @@ def _admit(
     target: Mapping[str, str],
     repository: Path,
     write: bool = False,
+    providers: Sequence[str] = (),
 ) -> Entry:
     """Mint an id, take its lifecycle lock, then publish its entry (§3.8.3 step 1).
 
     A write run's entry names its lineage -- the one it starts, owned by its
     own id -- so its status lives in the lineage state only (§3.8.1).
+    ``providers`` is a continuation record the report copies (§3.10).
 
     The lock comes first: an entry is never visible with a free lock before
     its run starts, so ``ha clean`` cannot forget a run that is being admitted
@@ -521,6 +654,7 @@ def _admit(
                     target=target,
                     repository=repository,
                     lineage=run_id if write else None,
+                    providers=providers,
                 )
             except FileExistsError:
                 continue
@@ -577,21 +711,22 @@ def _execute_write(
     identity: RepoIdentity,
     start: Path,
     report: dict[str, object],
+    slot: str,
     step_name: str,
     started: float,
     unconfined: bool,
     say: Callable[[str], None],
 ) -> Outcome:
-    """A role write run: the §3.8.3 protocol, then its report."""
+    """A write run -- a role's, or an ``implement`` workflow's: §3.8.3, then its report."""
     role, run_dir = plan.role, entry.run_dir
     step_dir = run_dir / "steps" / step_name
 
     def run_links(workspace: Workspace, directory: Path) -> RunResult:
-        say(f"step 1 run {role.name}: started")
+        say(f"step 1 {slot} {role.name}: started")
         final = _run_links(
             plan, bundle, run_id=entry.run_id, step_dir=directory, workspace=workspace, say=say
         )
-        say(f"step 1 run {role.name}: exit {final.exit_code}")
+        say(f"step 1 {slot} {role.name}: exit {final.exit_code}")
         return final
 
     try:
@@ -615,7 +750,7 @@ def _execute_write(
             report,
             step_entry(
                 index=1,
-                slot="run",
+                slot=slot,
                 role=role.name,
                 step_dir=f"steps/{step_name}",
                 result=outcome.final,
@@ -629,7 +764,9 @@ def _execute_write(
         branch=outcome.branch,
         base=outcome.base,
         head=outcome.head,
-        lineage=entry.run_id,
+        lineage=entry.lineage,
+        continues=entry.continues,
+        implement_providers=list(entry.providers),
         commits=[{"sha": sha, "made_by": made_by} for sha, made_by in outcome.commits],
         failure_reason=outcome.failure_reason,
         duration_seconds=round(time.monotonic() - started, 3),
@@ -645,15 +782,16 @@ def _execute_write(
 
 
 def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
-    """Run a planned one-step read-only run under its locks, and record it.
+    """Run a planned one-step run -- a role's, or an ``implement`` workflow's -- under its
+    locks, and record it.
 
     In order: identify the repository from the filesystem (no git, plan
     decision P2); mint the run, hold its lifecycle lock, then register it; take
     the unconfined lock shared (§3.8.2); build the real context bundle and
-    check the prompt size again; run the role's chain in ``steps/01-run-<role>``;
-    write ``run.json`` and the registry status. An interruption propagates
-    with every lock released and the status left non-final, so the run reads
-    ``incomplete``.
+    check the prompt size again; run the role's chain in
+    ``steps/01-<slot>-<role>``; write ``run.json`` and the registry status. An
+    interruption propagates with every lock released and the status left
+    non-final, so the run reads ``incomplete``.
     """
     request, role = plan.request, plan.role
     start = request.repo.resolve() if request.repo is not None else request.cwd.resolve()
@@ -675,7 +813,13 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
             make_run_dir(plan.run_dir, forbidden=forbidden)
         except RegistryError as exc:
             raise UsageError(str(exc)) from None
-    target = {"kind": "provider" if role.implicit else "role", "name": role.name}
+    workflow = plan.workflow
+    if workflow is not None:
+        target = {"kind": "workflow", "name": workflow.name, "shape": workflow.shape}
+        slot: str = workflow.shape
+    else:
+        target = {"kind": "provider" if role.implicit else "role", "name": role.name}
+        slot = "run"
 
     with ExitStack() as held_locks:
         try:
@@ -686,6 +830,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 target=target,
                 repository=repository,
                 write=role.write,
+                providers=role.providers,
             )
         except (LockTimeout, RegistryError) as exc:
             # A run that never started leaves nothing behind (codex review of #207).
@@ -731,7 +876,9 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
 
         started = time.monotonic()
         run_dir = entry.run_dir
-        (run_dir / PROMPT_FILE).write_text(plan.prompt, encoding="utf-8")
+        # §3.10: prompt.md is the task as given; the provider gets its template around it.
+        task = plan.task if plan.task is not None else plan.prompt
+        (run_dir / PROMPT_FILE).write_text(task, encoding="utf-8")
         report = new_report(
             run_id=entry.run_id,
             target=target,
@@ -740,7 +887,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
             started_at=_utc_now(),
         )
         write_report(run_dir, report)
-        step_name = step_dir_name(1, "run", role.name)
+        step_name = step_dir_name(1, slot, role.name)
         step_dir = run_dir / "steps" / step_name
         if role.write:
             assert identity is not None
@@ -753,6 +900,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 identity=identity,
                 start=start,
                 report=report,
+                slot=slot,
                 step_name=step_name,
                 started=started,
                 say=say,
@@ -869,13 +1017,16 @@ def clean(
 
 __all__ = [
     "DEFAULT_CREDENTIALS",
+    "Config",
     "clean",
     "declared_roles",
     "describe_roles",
+    "describe_workflows",
     "DEFAULT_EXECUTABLES",
     "Outcome",
     "execute",
     "executable_for",
+    "load_config",
     "runs_root",
     "Overrides",
     "Plan",

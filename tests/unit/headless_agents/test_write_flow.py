@@ -198,7 +198,7 @@ def test_a_committed_write(world: World) -> None:
         "run_id": run_id,
         "lineage": run_id,
         "made_by": "engine",
-        "providers": [],
+        "providers": ["codex"],
     }
     assert world.registry().resolve(run_id).lineage == run_id
     patch = (outcome.run_dir / write_flow.PATCH_FILE).read_text()
@@ -207,6 +207,15 @@ def test_a_committed_write(world: World) -> None:
     assert report["status"] == "committed" and report["branch"] == branch
     assert report["head"] == tip and report["lineage"] == run_id
     assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
+
+
+def test_a_write_run_records_its_roles_providers(world: World) -> None:
+    """Lot 3, §3.10: implement_providers copies the entry's providers, every link of the role."""
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    assert world.registry().resolve(outcome.run_id).providers == ("codex",)
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["implement_providers"] == ["codex"] and report["continues"] is None
 
 
 def test_the_agent_works_in_the_worktree_with_the_role_shell(world: World) -> None:
@@ -807,6 +816,26 @@ def test_a_crash_between_the_lineage_rename_and_the_intent_removal_quarantines_t
     with pytest.raises(UsageError, match="stale unconfined intent"):
         unconfined.write()
     assert quarantine.check(unconfined.state, None) is not None
+
+
+def test_a_write_final_in_its_lineage_already_has_its_patch(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§3.8.3 step 9: after the lineage rename only the report is left to rebuild, so
+    ``change.patch`` is written before it, never after (codex review of the lot 3 plan)."""
+
+    def crash(step: str) -> None:
+        if step == "lineage_published":
+            raise SystemExit("killed")
+
+    monkeypatch.setattr(write_flow, "_crash_after", crash)
+    world.agent.edit = _edit_app
+    with pytest.raises(SystemExit):
+        world.write()
+    (owner,) = lineage.owners(world.state)
+    state = lineage.load(world.state, owner)
+    assert state.members[owner] == "committed"
+    assert "print('v2')" in (state.worktree.parent / write_flow.PATCH_FILE).read_text()
 
 
 def test_a_new_unconfined_write_finding_a_leftover_intent_is_refused(unconfined: World) -> None:
