@@ -68,7 +68,7 @@ lot 1 left to this one.
 | P3 | claude's counts stay `null` in lot 2: the facade wires no counter for it. The live telemetry measurement that could publish them (§4 `live`) ships with the live suite of lot 5, together with its counter and the proof that gates it. | §3.11: "`null` until a `live` test proves the telemetry complete at exit". Measured 2026-09-25: no recorded claude OTEL log with a `claude_code.tool_result` record exists on the operator's machine (none in the Dream's `.otel.log` files, none in `~/.cache/ha/runs`), so a counter written now could only be tested against a synthetic format. |
 | P4 | Codex item types that are not tool calls: `agent_message`, `reasoning`, `error`. Every other item type is a tool call, counted under its own type name. | §3.11 excludes messages and reasoning; an `error` item is neither a call nor a message. Item types observed in 507 recorded codex logs: `agent_message`, `command_execution`, `mcp_tool_call`; §3.11 also names `file_change`. |
 | P5 | `ha show` reads a write run's diffstat from its run directory's `change.patch` (display only) and runs no git; `ha runs` runs none either. | §3.8.5: every entry point checks the quarantines before its first git command. A display command that runs none needs no such check, and a quarantined repository's runs stay readable. |
-| P6 | `ha show` rebuilds from the state: `run_id`, `target` and `repository` from the registry entry; `status` from the entry, or from the lineage state for a write run, with `running`/`incomplete` from the lifecycle lock; for a write run, `lineage`, `branch` and `base` from the lineage state and `commits` from the provenance records naming the run. Every other field is display data, taken from `run.json` when its `run_id` is the run's own and `null` otherwise. What it could not show as written is named on stderr; `--json` prints the rebuilt document, with `RUN_KEYS` exactly. An unreadable registry entry, lineage state or provenance record — or a readable lineage that does not list the run — reads `unknown` and exits `1`; `ha runs` applies the same rule to its rows (Task 8). | §3.8.1: one authority per fact, unknown "never as empty", and a report "never read back to decide anything"; §3.8.3 step 9: "after both, only a stale report, rebuilt from the state by `ha show`". A write's lineage is created with its first member already listed (`write_flow._intent`), so a lineage silent about a run it owns is never a run in progress. (Codex review of this plan, round 1.) |
+| P6 | `ha show` rebuilds from the state: `run_id`, `target` and `repository` from the registry entry; `status` from the entry, or from the lineage state for a write run, with `running`/`incomplete` from the lifecycle lock; for a write run, `lineage`, `branch` and `base` from the lineage state and `commits` from the provenance records naming the run. The fields whose authority is a state record that a later lot introduces are `null`, never taken from `run.json`: `verdict` and `vendor_check` (a review's result in `<state>/reviews/`, §3.8.1 and §3.8.6), `continues`, `findings_from` and `implement_providers` (§3.10: "copy what the state directory records"), and `cleanup` (a review's; `null` on every other run, §3.10). Lot 4 reads the review result when it ships its writer, lot 3 the continuation records. Every other field is display data, taken from `run.json` when its `run_id` is the run's own and `null` otherwise. What it could not show as written is named on stderr; `--json` prints the rebuilt document, with `RUN_KEYS` exactly. An unreadable registry entry, lineage state or provenance record — or a readable lineage that does not list the run — reads `unknown` and exits `1`; `ha runs` applies the same rule to its rows (Task 8). | §3.8.1: one authority per fact, unknown "never as empty", and a report "never read back to decide anything"; §3.8.3 step 9: "after both, only a stale report, rebuilt from the state by `ha show`". A write's lineage is created with its first member already listed (`write_flow._intent`), so a lineage silent about a run it owns is never a run in progress. (Codex review of this plan, round 1.) Reading `<state>/reviews/` now would fix the format of a file nothing writes before lot 4, whose spec defines it with its writer; a report-supplied `vendor_check` would be the forged proof §3.8.6 exists to prevent. (Codex review of this plan, round 2.) |
 | P7 | `ha runs --json` stays a JSON list of run rows (lot 1's shape); each row gains `task`, `cost_usd` and `cost_complete` and keeps `text`. The active quarantines come first in text mode and, with `--json`, on stderr, one `ha: quarantine …` line each. | A list stays readable by lot 1's callers and tests. A quarantine is an operator alert, and every entry point it refuses already names it. |
 | P8 | Column widths of `ha show`'s step table are computed per table (the widest cell, cells two spaces apart); the example of §3.10 is a layout, not a byte-level contract. | Role names reach 64 characters and model labels vary (`opencode-go/deepseek-v4.1-flash`): fixed widths would misalign or truncate. |
 | P9 | Lot 2 ships as two pull requests: A (Tasks 1–5, counters) and B (Tasks 6–8, `ha show` and `ha runs`). | The counters touch three rails and the engine; `ha show` and `ha runs` touch the display side only: each is reviewed on its own. |
@@ -909,6 +909,7 @@ PROMPT_FILE: Final = "prompt.md"
 def of_run(state: Path, run_id: str) -> tuple[list[dict[str, object]], list[Path]]
     # the records naming run_id, and the record files that cannot be read
 # show.py
+LATER_AUTHORITIES: Final[tuple[str, ...]]  # null in lot 2, never from run.json (P6)
 class NotShown(ValueError)            # not a run id, no registered run, a 0.4.0 run -> exit 2
 @dataclass(frozen=True) class Diffstat: insertions: int; deletions: int; files: int
 @dataclass(frozen=True) class Shown:
@@ -1075,6 +1076,23 @@ def test_identity_comes_from_the_entry_not_the_report(home: Home) -> None:
     assert home.rebuild().report["target"] == {"kind": "provider", "name": "codex"}
 
 
+def test_a_report_never_supplies_what_a_later_lots_state_record_owns(home: Home) -> None:
+    """Codex review of this plan (round 2): a review's verdict and vendor check live in its
+    review result in the state (spec §3.8.1, §3.8.6) -- a forged run.json must not show them."""
+    forged: dict[str, object] = {
+        "verdict": "APPROVE",
+        "vendor_check": {"commits": [], "authors": ["codex"], "reviewers": {}},
+        "cleanup": {"status": "done"},
+        "continues": OTHER,
+        "findings_from": OTHER,
+        "implement_providers": ["codex"],
+    }
+    assert set(forged) == set(show.LATER_AUTHORITIES)
+    home.read_only(**forged)
+    report = home.rebuild().report
+    assert all(report[key] is None for key in forged)
+
+
 def test_a_write_run_is_rebuilt_from_its_lineage_and_provenance(home: Home) -> None:
     """A crash after the lineage rename: run.json still says running, and holds no commit."""
     home.write_run(status="running", commits=None, branch=None, base=None)
@@ -1217,6 +1235,7 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Final
 
 from . import lineage as lineages
 from . import provenance
@@ -1225,6 +1244,13 @@ from .run_record import RESULT_FILE_NAME
 from .runs import RUN_ID_PATTERN, Entry, Registry, RegistryError
 from .state import Unknown
 from .write_flow import PATCH_FILE
+
+#: Fields whose one authority is a state record a later lot introduces (plan P6): a
+#: review's result (spec §3.8.1, §3.8.6) and the continuation records (§3.10).
+#: ``ha show`` never takes them from ``run.json``; lots 3 and 4 fill them from the state.
+LATER_AUTHORITIES: Final = (
+    "verdict", "vendor_check", "cleanup", "continues", "findings_from", "implement_providers",
+)
 
 
 class NotShown(ValueError):
@@ -1355,6 +1381,8 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
         target=dict(entry.target),
         repository=str(entry.repository) if entry.repository is not None else None,
     )
+    # Plan P6: their authority is a state record a later lot adds; run.json never supplies them.
+    document.update(dict.fromkeys(LATER_AUTHORITIES))
     status: str | None = None
     lineage_status: str | None = None
     if entry.lineage is not None:
@@ -1396,7 +1424,9 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
     )
 
 
-__all__ = ["Diffstat", "NotShown", "Shown", "read_diffstat", "read_task", "rebuild"]
+__all__ = [
+    "LATER_AUTHORITIES", "Diffstat", "NotShown", "Shown", "read_diffstat", "read_task", "rebuild",
+]
 ```
 
 - [ ] **Step 4: Run to verify they pass**
@@ -1616,7 +1646,7 @@ Run: `.venv/bin/pytest tests/unit/headless_agents/test_show.py tests/unit/headle
 Expected: FAIL — `AttributeError: module 'headless_agents.show' has no attribute 'render'`
 and `ha show` refused by argparse (exit `2`).
 
-- [ ] **Step 3: Implement.** Append to `show.py` (and add `from typing import Final` and
+- [ ] **Step 3: Implement.** Append to `show.py` (`Final` is imported since Task 6; add
   `"format_cost", "format_duration", "format_tokens", "format_tools", "render"` to
   `__all__`):
 
@@ -2054,6 +2084,7 @@ git commit -m "feat(headless-agents): complete ha runs — duration, cost, task,
 | §3.8.5 "`ha runs` lists active quarantines at the top" | Task 8 |
 | §3.8.1 one authority per fact; a `run.json` read only when its `run_id` matches; 0.4.0 runs accepted by no option | Task 6 (and `ha show` of a legacy id, Tasks 6–7) |
 | §3.8.3 step 9 "only a stale report, rebuilt from the state by `ha show`" | Task 6 |
+| §3.8.6 `ha show RUN_ID` renders a review's `vendor_check` from the state | lot 4, with the review result and its writer; until then `ha show` shows `null` and never takes it, or any field of `LATER_AUTHORITIES`, from `run.json` (Task 6, P6) |
 | §3.10 `incomplete` derived from the free lifecycle lock, never written | Task 6 (`Registry.effective_status`) |
 | §3.10 `ha show` rendering; §4 "against a golden text" | Task 7 |
 | §3.11 codex / opencode / agy counters | Tasks 1, 2, 3 |
@@ -2063,6 +2094,8 @@ git commit -m "feat(headless-agents): complete ha runs — duration, cost, task,
 | §4 "the tool counters against recorded event logs, one per rail" | Tasks 1–3 (three recorded logs; claude's has none to record, P3) |
 
 **Out of lot 2, deliberately:** `ha show --dir PATH`, the `vendors` line, the `review` and
-`judge` rows and `cleanup` on the header (lot 4); workflows (lot 3); the claude telemetry
+`judge` rows, `cleanup` on the header, and reading a review's result from `<state>/reviews/`
+into `ha show` — its `head`, `verdict`, deciding text and `vendor_check` (lot 4); workflows
+and the continuation records behind `continues` (lot 3); the claude telemetry
 measurement, its counter and its proof, the `live` suite, README and CHANGELOG, then the
 tag (lot 5).
