@@ -551,6 +551,17 @@ def test_agy_counts_a_step_once_across_its_states(tmp_path: Path) -> None:
     assert agy.count_tools(log) == {"view_file": 2}
 
 
+def test_agy_counts_two_conversations_sharing_a_step_index_as_two_calls(tmp_path: Path) -> None:
+    """Codex closure of this plan (carry-forward): the identity is the pair, not the index."""
+    step = {"step_index": 4, "step_type": "tool", "tool_name": "view_file", "state": "ACTIVE"}
+    log = _log(
+        tmp_path,
+        {"event": "step_update", "step_update": {**step, "conversation_id": "c1"}},
+        {"event": "step_update", "step_update": {**step, "conversation_id": "c2"}},
+    )
+    assert agy.count_tools(log) == {"view_file": 2}
+
+
 def test_agy_ignores_steps_that_are_not_tools(tmp_path: Path) -> None:
     log = _log(
         tmp_path,
@@ -625,7 +636,7 @@ def count_tools(events_log: Path | None) -> dict[str, int] | None:
 - [ ] **Step 5: Run to verify they pass**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_tool_counts.py -v`
-Expected: PASS (16 tests).
+Expected: PASS (17 tests).
 
 - [ ] **Step 6: Commit**
 
