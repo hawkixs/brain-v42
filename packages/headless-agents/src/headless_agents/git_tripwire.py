@@ -159,6 +159,15 @@ def _common_dir(git_dir: Path) -> Path | None:
     return Path(os.path.normpath(target if target.is_absolute() else git_dir / target))
 
 
+def common_dir(git_dir: Path) -> Path | None:
+    """The repository's common dir a linked worktree's git dir names, or ``None``.
+
+    ``None`` for a plain checkout's ``.git``, which is its own common dir. Read
+    from the ``commondir`` file only: no git command runs.
+    """
+    return _common_dir(git_dir)
+
+
 def _hooks_paths(config_files: Sequence[Path], root: Path) -> list[Path]:
     """Every ``core.hooksPath`` the config files set, resolved like git does.
 
