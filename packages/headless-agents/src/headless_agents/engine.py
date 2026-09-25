@@ -53,9 +53,11 @@ from .run_record import RESULT_FILE_NAME
 from .runs import MINT_ATTEMPTS, Entry, Registry, RegistryError, make_run_dir
 from .spec import RunSpec
 from .state import Unknown
+from .workflows import Workflow, WorkflowsError, load_workflows
 from .workspace import prepend
 
 ROLES_FILE_NAME: Final = "roles.toml"
+WORKFLOWS_FILE_NAME: Final = "workflows.toml"
 
 # A Claude Code session that launches ``ha`` must not leak into a nested
 # ``claude -p``: the child would no longer be the run the rail ships.
@@ -135,6 +137,50 @@ def declared_roles(
         return load_roles(roles_path, mcp_profiles=profiles), profiles
     except (ConfigPathError, McpProfileError, RolesError) as exc:
         raise UsageError(str(exc)) from None
+
+
+@dataclass(frozen=True)
+class Config:
+    """The operator's configuration, validated as a whole before anything runs (§3.4)."""
+
+    roles: dict[str, Role]
+    profiles: Mapping[str, object]
+    workflows: dict[str, Workflow]
+
+
+def load_config(environ: Mapping[str, str], home: Path) -> Config:
+    """``roles.toml``, ``mcp.toml`` and ``workflows.toml``, validated; ``models.toml``
+    is read per link, when a run resolves its models.
+
+    Every file comes from the operator's configuration directory only (§3.3),
+    and an invalid one refuses every run, whatever its target: validation
+    happens before anything runs (§3.1, §3.2).
+    """
+    roles, profiles = declared_roles(environ, home)
+    try:
+        path = config_file(WORKFLOWS_FILE_NAME, environ, home=home)
+        workflows = load_workflows(path, roles=roles)
+    except (ConfigPathError, WorkflowsError) as exc:
+        raise UsageError(str(exc)) from None
+    return Config(roles=roles, profiles=profiles, workflows=workflows)
+
+
+def describe_workflows(environ: Mapping[str, str], home: Path) -> list[dict[str, object]]:
+    """``ha workflows``: every declared workflow, its shape and its slots, each slot's role
+    with the providers of every link of that role (spec §3.9)."""
+    config = load_config(environ, home)
+    rows: list[dict[str, object]] = []
+    for workflow in config.workflows.values():
+        slots = [
+            {
+                "slot": slot,
+                "role": name,
+                "providers": list(resolve_role(name, config.roles).providers),
+            }
+            for slot, name in workflow.slot_roles()
+        ]
+        rows.append({"name": workflow.name, "shape": workflow.shape, "slots": slots})
+    return rows
 
 
 def describe_roles(environ: Mapping[str, str], home: Path) -> list[dict[str, object]]:
@@ -869,13 +915,16 @@ def clean(
 
 __all__ = [
     "DEFAULT_CREDENTIALS",
+    "Config",
     "clean",
     "declared_roles",
     "describe_roles",
+    "describe_workflows",
     "DEFAULT_EXECUTABLES",
     "Outcome",
     "execute",
     "executable_for",
+    "load_config",
     "runs_root",
     "Overrides",
     "Plan",

@@ -4,6 +4,7 @@
 
     ha run TARGET [PROMPT | -] [options]     TARGET: a role or a provider
     ha roles [--json]
+    ha workflows [--json]
     ha providers [--json]
     ha runs [--limit N] [--json]
     ha show RUN_ID [--json]
@@ -37,6 +38,7 @@ from .engine import (
     UsageError,
     clean,
     describe_roles,
+    describe_workflows,
     executable_for,
     execute,
     plan,
@@ -141,6 +143,11 @@ def _parser() -> argparse.ArgumentParser:
 
     roles = commands.add_parser("roles", help="list the roles declared in roles.toml")
     roles.add_argument("--json", action="store_true", help="print the list as JSON")
+
+    workflows = commands.add_parser(
+        "workflows", help="list the workflows declared in workflows.toml"
+    )
+    workflows.add_argument("--json", action="store_true", help="print the list as JSON")
 
     runs = commands.add_parser("runs", help="list recent runs")
     runs.add_argument("--limit", type=int, default=20, help="how many runs to list")
@@ -281,6 +288,26 @@ def _roles(args: argparse.Namespace, io: Io) -> int:
             + (f"  instructions {row['instructions_bytes']} B" if row["instructions_bytes"] else "")
             + "\n"
         )
+    return 0
+
+
+# ── ha workflows ────────────────────────────────────────────────────────────
+
+
+def _workflows(args: argparse.Namespace, io: Io) -> int:
+    rows = describe_workflows(io.environ, io.home)
+    if args.json:
+        io.stdout.write(json.dumps(rows, indent=2) + "\n")
+        return 0
+    for row in rows:
+        slots = row["slots"]
+        assert isinstance(slots, list)
+        grouped: dict[str, list[str]] = {}
+        for slot in slots:
+            providers = ", ".join(slot["providers"])
+            grouped.setdefault(slot["slot"], []).append(f"{slot['role']} ({providers})")
+        described = "; ".join(f"{name}: {', '.join(roles)}" for name, roles in grouped.items())
+        io.stdout.write(f"{row['name']:<20} {row['shape']:<9}  {described}\n")
     return 0
 
 
@@ -494,13 +521,17 @@ def main(
             return _run(args, io)
         if args.command == "roles":
             return _roles(args, io)
+        if args.command == "workflows":
+            return _workflows(args, io)
         if args.command == "runs":
             return _runs(args, io)
         if args.command == "show":
             return _show(args, io)
         if args.command == "clean":
             return _clean(args, io)
-        raise UsageError("a command is required: run, roles, providers, runs, show or clean")
+        raise UsageError(
+            "a command is required: run, roles, workflows, providers, runs, show or clean"
+        )
     except UsageError as exc:
         io.say(str(exc))
         return INVALID_USAGE_EXIT_CODE
