@@ -112,7 +112,7 @@ packages/headless-agents/src/headless_agents/
   cli_models.py     MOD  model precedence gains the role level; paths via config_paths
   mcp_profiles.py   MOD  default path via config_paths (absolute XDG only, inside the dir)
   context.py        MOD  scope "role": role instructions block, placed last (§3.1)
-  providers/claude.py  MOD  --safe-mode on every command; docstring (2901d5ba)
+  providers/claude.py  MOD  per-run HOME/CLAUDE_CONFIG_DIR, login copy + rotation; docstring (2901d5ba)
   providers/codex.py   MOD  write roles: /tmp and $TMPDIR excluded, per-run TMPDIR (§3.8.0)
   procgroup.py      NEW  preexec: PR_SET_PDEATHSIG(SIGKILL) for provider children (§3.8.2)
   providers/*.py    MOD  pass procgroup.preexec_for(os.getpid()) to Popen (5 call sites)
@@ -137,8 +137,7 @@ tests/unit/headless_agents/
   test_cli.py test_cli_models.py test_context.py test_provider_claude.py
   test_provider_codex.py                                                   MOD
   test_cli_write.py   DELETE (its cases move into test_write_flow.py)
-tests/unit/agents/test_golden_commands.py   unchanged; fixtures below gain --safe-mode
-tests/fixtures/agents_golden/claude-*.json  MOD  "--safe-mode" inserted, nothing else
+tests/unit/agents/test_golden_commands.py   unchanged, and so are the fixtures (Task 5 amended)
 tests/live/headless_agents/test_proofs_live.py   NEW  isolation + confinement per rail
 ```
 
@@ -146,7 +145,7 @@ tests/live/headless_agents/test_proofs_live.py   NEW  isolation + confinement pe
 
 | PR | Tasks | Content | Leaves `main` |
 |---|---|---|---|
-| A | 1–8 | configuration and roles, role instructions, rail hardening (`--safe-mode`, codex tmp roots, PDEATHSIG), `--version` | 0.4.0 CLI unchanged, library hardened |
+| A | 1–8 | configuration and roles, role instructions, rail hardening (claude per-run config dir, codex tmp roots, PDEATHSIG), `--version` | 0.4.0 CLI unchanged, library hardened |
 | B | 9–15, 15b | state, locks, registry, `run.json`, engine for one-step **read-only** runs, the isolation proofs and their gate, new CLI grammar, `ha roles`, `ha clean` via the registry | new grammar live; every executor isolation-proven; write runs refused (P5) |
 | C | 16–22 | the full §3.8.3 write protocol, quarantines, provenance, the unconfined path, `ha clean` rules, the confinement proofs and classification in `ha roles`; write runs enabled | lot 1 complete |
 
@@ -560,44 +559,41 @@ def test_the_role_entry_is_listed_with_scope_role() -> None:
   expected PASS (the Dream bundles carry no role instructions).
 - [ ] **Step 5: Commit** — `feat(headless-agents): role instructions travel as the last preamble block`
 
-### Task 5: claude runs with `--safe-mode`; the `workspace=None` docstring (2901d5ba)
+### Task 5: claude runs on a per-run config dir; the `workspace=None` docstring (2901d5ba)
+
+> **Amended 2026-09-25 (operator decision Q68 = a).** The first version of this task added
+> `--safe-mode` to every claude command. Measured before shipping it (claude 2.1.282, Brain
+> learning 5ffb9e1b): `--safe-mode` also drops the run's own `--mcp-config` server, which
+> would have cut the Dream's claude phases off Brain MCP. Spec §3.8.0 is amended in the
+> same PR.
 
 **Files:**
-- Modify: `packages/headless-agents/src/headless_agents/providers/claude.py` (`build_claude_command`)
-- Modify: `tests/fixtures/agents_golden/claude-{scan,clean,connect,synth,reorg,promote}.json`
+- Modify: `packages/headless-agents/src/headless_agents/providers/claude.py` (`run_claude`, `build_claude_command` docstring)
+- Modify: `docs/specs/2026-09-24-headless-agents-0.5.0-design.md` (§3.8.0, §4, §5, §6, §7, §8 row 9)
 - Test: `tests/unit/headless_agents/test_provider_claude.py`
 
 **Interfaces:**
-- Produces: every command from `build_claude_command` contains `--safe-mode` right after
-  `"-p", "-"`; nothing else in the argv changes.
+- Produces: every `run_claude` child gets `HOME=<runtime>/home` (empty) and
+  `CLAUDE_CONFIG_DIR=<runtime>/config` holding only `.credentials.json` =
+  `{"claudeAiOauth": <copy>}` (`0600`, `O_EXCL`); the source is the operator's
+  `CLAUDE_CONFIG_DIR` when absolute, else `$HOME/.claude`. With no usable login and no
+  `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN`, the run is refused before any spawn with exit
+  `3` (provider unavailable). On every exit path a rotated login is written back, replacing
+  only `claudeAiOauth` in the real file and only when that file is byte-identical to what
+  was copied; a malformed, oversize (> 1 MiB) or unchanged candidate is ignored. The argv is
+  unchanged, so the Dream's golden fixtures are unchanged.
 
-- [ ] **Step 1: Failing test**
-
-```python
-@pytest.mark.parametrize("workspace", [None, "read", "write", "shell"])
-def test_every_claude_command_runs_in_safe_mode(tmp_path: Path, workspace: str | None) -> None:
-    ws = None
-    if workspace is not None:
-        ws = Workspace(path=tmp_path, write=workspace != "read", shell=workspace == "shell")
-    command = build_claude_command(
-        model="m", max_turns=1, mcp_config_path=tmp_path / "mcp.json", mcp=None, workspace=ws
-    )
-    assert command[:4] == ["claude", "-p", "-", "--safe-mode"]
-```
-
-- [ ] **Step 2:** run; expect FAIL (`--model` at index 3).
-- [ ] **Step 3:** insert `"--safe-mode"` in the base command; rewrite the docstring paragraph
-  "``workspace=None`` keeps this run exactly as it ran before 0.4.0 -- ``bypassPermissions``
-  and every tool" to: "``workspace=None`` runs in ``bypassPermissions`` with **no built-in
-  tool** (``--tools ""``): only the MCP tools ``--allowedTools`` names are callable." (ticket
-  2901d5ba), and add a paragraph for `--safe-mode` citing spec 0.5.0 §3.8.0 (operator
-  customisations off, OAuth kept; `--bare` breaks OAuth).
-- [ ] **Step 4:** update each golden fixture by inserting `"--safe-mode"` after `"-"` in
-  `argv` — by a one-off edit, never by re-running `capture.py` (its docstring forbids it).
-  Add to `tests/fixtures/agents_golden/capture.py`'s docstring one line: "2026-09-25:
-  `--safe-mode` inserted by hand in every claude fixture (spec 0.5.0 §3.8.0), nothing else."
-  Run `pytest tests/unit/headless_agents/test_provider_claude.py tests/unit/agents/test_golden_commands.py tests/unit/test_dream_claude_runner.py -v`; expected PASS.
-- [ ] **Step 5: Commit** — `fix(headless-agents): run claude in --safe-mode on every run (G7)`, body naming tickets a5cbb325 and 2901d5ba.
+- [ ] **Step 1: Failing tests** — an autouse fixture points `HOME` at a fake operator home so
+  no test reads the real `~/.claude`; then: private `HOME` and `CLAUDE_CONFIG_DIR` under the
+  runtime dir, removed after the run; only the `claudeAiOauth` entry copied (the MCP OAuth
+  tokens absent), mode `0600`; the operator's `CLAUDE_CONFIG_DIR` honoured as the source;
+  an API key runs without a credentials file; no credentials at all → exit 3, not started;
+  a rotated login written back keeping the other entries, `0600`; not written over a file
+  changed meanwhile; a malformed rotation (not JSON, not an object, no entry, wrong types,
+  oversize) refused; the `workspace=None` docstring says "no built-in tool".
+- [ ] **Step 2–4:** fail, implement, pass; `tests/unit/agents` and the Dream claude tests
+  unchanged and green.
+- [ ] **Step 5: Commit** — `fix(headless-agents): claude runs on a per-run config dir holding only its login (G7)`
 
 ### Task 6: codex write roles — no `/tmp`, no `$TMPDIR`, a per-run scratch `TMPDIR`
 
@@ -648,6 +644,19 @@ def test_a_read_only_run_is_unchanged(tmp_path: Path) -> None:
 - Create: `packages/headless-agents/src/headless_agents/procgroup.py`
 - Modify: the `Popen` calls and their waits in `providers/{claude,codex,agy,opencode,openai_compat}.py`
 - Test: `tests/unit/headless_agents/test_procgroup.py`, each rail's test file
+
+> **Amended 2026-09-25 (codex review of PR A, operator decision Q75 = a):** `PR_SET_PDEATHSIG`
+> reaches the direct child only. `procgroup.spawn_watched(command, **popen_kwargs) ->
+> (Popen, Lifeline)` first starts a watcher (`python -I _reaper.py <life-fd> <ready-fd>`,
+> standard library only, its own session) and waits for its `r` — no watcher, no provider
+> (`OSError`, the rails' "unable to start" path) — then starts the provider and writes its
+> group id to the watcher. The watcher holds the read end of a pipe whose write end only
+> `ha` holds: end-of-file without a release → the whole group gets `SIGKILL`;
+> `Lifeline.release()` (every rail's `finally`) → the watcher leaves; an empty group → the
+> watcher leaves. Unit tests of rails with a fake `Popen` never start a real watcher
+> (`tests/unit/conftest.py`, marker `real_watcher` to opt in). The provider stays `ha`'s direct child, so
+> `Popen` semantics (exit codes, `OSError` on a missing executable) are unchanged. Tested
+> with a grandchild outliving a killed `ha`.
 
 **Interfaces:**
 - Produces: `preexec_for(parent_pid: int) -> Callable[[], None]` — the returned function,
@@ -1543,7 +1552,7 @@ with the PR links, and fyi b0bfacf1 is acknowledged.
 | quarantines | 18, 19, 20 |
 | new `ha run` grammar, `ha roles`, `--version`, documented help | 8, 15 |
 | `ha clean` through the registry | 15, 21 |
-| claude `--safe-mode`, golden fixtures for that flag alone | 5 |
+| claude isolated on a per-run config dir (Q68 = a; golden fixtures unchanged) | 5 |
 | codex `/tmp` and `$TMPDIR` closed for write roles | 6 |
 | providers die with `ha` (PDEATHSIG, own process group) | 7 |
 | isolation proof per rail (refuse unproven) | 15b |

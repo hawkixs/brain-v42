@@ -30,6 +30,7 @@ from ..capability import (
     failure_code_after_a_write,
     terminate_process_group,
 )
+from ..procgroup import preexec_for, spawn_watched
 from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
@@ -167,6 +168,15 @@ def build_codex_command(
     )
     if mcp is not None:
         overrides += _server_overrides(mcp)
+    if sandbox == "workspace-write":
+        # Spec 0.5.0 §3.8.0: ``workspace-write`` treats ``/tmp`` and ``$TMPDIR``
+        # as writable roots besides the workspace, so a second repository placed
+        # there could be written by a write run. Both are closed; the run's own
+        # TMPDIR is a per-run scratch directory (``run_codex``).
+        overrides += (
+            ("sandbox_workspace_write.exclude_slash_tmp", True),
+            ("sandbox_workspace_write.exclude_tmpdir_env_var", True),
+        )
     # ``features.shell_tool`` must be emitted exactly once: codex's ``-c``
     # last-wins behaviour is unmeasured, so the disabled-feature loop and the
     # enabling branch below are mutually exclusive, never both.
@@ -833,7 +843,7 @@ def run_codex(
             if run_environment is not None:
                 popen_kwargs["env"] = run_environment
             try:
-                process = subprocess.Popen(
+                process, lifeline = spawn_watched(
                     command,
                     stdin=subprocess.PIPE,
                     stdout=events_stream,
@@ -841,6 +851,7 @@ def run_codex(
                     cwd=runtime_dir,
                     text=True,
                     start_new_session=True,
+                    preexec_fn=preexec_for(os.getpid()),
                     **popen_kwargs,
                 )
             except OSError as exc:
@@ -856,8 +867,18 @@ def run_codex(
                 # and then hung. The stream decides, after the kill, whether a
                 # call could even have started -- see _deadline_exit_code.
                 timed_out = True
+            except BaseException:
+                # Ctrl-C reaches ha only (the provider has its own session):
+                # kill the provider's group before the interruption propagates,
+                # or it keeps running -- and writing -- behind ha (spec 0.5.0
+                # §3.8.2).
+                terminate_process_group(process)
+                raise
             else:
                 timed_out = False
+            finally:
+                # Normal end: the watcher leaves without killing (Q75 = a).
+                lifeline.release()
 
         if timed_out:
             return _deadline_exit_code(
@@ -926,9 +947,12 @@ def run_codex(
                 "no codex home root outside the sandbox's writable roots\n", encoding="utf-8"
             )
             return PROVIDER_FALLBACK_EXIT_CODE
-        with tempfile.TemporaryDirectory(
-            prefix=f"{temp_prefix}home-", dir=home_root
-        ) as codex_home_dir:
+        with (
+            tempfile.TemporaryDirectory(
+                prefix=f"{temp_prefix}home-", dir=home_root
+            ) as codex_home_dir,
+            tempfile.TemporaryDirectory(prefix=f"{temp_prefix}tmp-", dir=home_root) as scratch,
+        ):
             ephemeral_home = build_codex_home(
                 root=Path(codex_home_dir), real_codex_home=real_codex_home
             )
@@ -936,6 +960,11 @@ def run_codex(
                 dict(child_environment) if child_environment is not None else dict(os.environ)
             )
             run_environment["CODEX_HOME"] = str(ephemeral_home)
+            if workspace_write:
+                # Spec 0.5.0 §3.8.0: never the operator's TMPDIR, which may
+                # hold repositories; a scratch directory outside the sandbox's
+                # writable roots, holding nothing, removed after the run.
+                run_environment["TMPDIR"] = scratch
             try:
                 return _run(workspace_capability.path.resolve(), run_environment)
             finally:

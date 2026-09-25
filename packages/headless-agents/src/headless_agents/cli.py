@@ -39,6 +39,7 @@ import time
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import IO, Final
 
@@ -113,6 +114,9 @@ class Io:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ha", description="Run a task on any agent provider.")
+    parser.add_argument(
+        "--version", action="store_true", help="print the installed version of ha and exit"
+    )
     commands = parser.add_subparsers(dest="command")
 
     providers = commands.add_parser("providers", help="list the providers and their availability")
@@ -320,7 +324,7 @@ def _plan(args: argparse.Namespace, io: Io) -> RunPlan:
     mcp: McpServer | None = None
     if args.mcp:
         try:
-            mcp = mcp_server(args.mcp, environ=io.environ)
+            mcp = mcp_server(args.mcp, environ=io.environ, home=io.home)
         except McpProfileError as exc:
             raise UsageError(str(exc)) from None
     environment = operator_environment(io.environ)
@@ -544,6 +548,9 @@ def main(
     )
     try:
         args = _parse(sys.argv[1:] if argv is None else argv)
+        if args.version:
+            io.stdout.write(f"ha {package_version('headless-agents')}\n")
+            return 0
         if args.command == "providers":
             return _providers(args, io)
         if args.command == "run":

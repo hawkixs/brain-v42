@@ -393,8 +393,16 @@ What an agent can write decides what `ha` must guard, and 0.4.0 measured it per 
   instructions an executor receives are the preamble's (0.4.0 decision 12, role
   instructions included). Measured 2026-09-24 (arena-42): 0.4.0's claude rail runs
   `claude -p` with the operator's real `HOME` and, without a workspace, without
-  `--restricted` — it loads all of them; 0.5.0 runs claude with `--safe-mode` (all
-  customisations off, OAuth kept; `--bare` breaks OAuth) on every run. codex (ephemeral
+  `--restricted` — it loads all of them; 0.5.0 runs claude, on every run, with a per-run
+  `HOME` and `CLAUDE_CONFIG_DIR` holding nothing but a copy of the `claudeAiOauth` entry of
+  the operator's `.credentials.json` — never its other entries, the operator's MCP OAuth
+  tokens (Gmail, Drive…) — a token claude rotates during the run being written back only
+  when the real file did not change meanwhile (amended 2026-09-25, operator decision
+  Q68 = a: `--safe-mode`, the first choice, also drops the run's own `--mcp-config`
+  server, measured on claude 2.1.282, Brain learning 5ffb9e1b; `--bare` breaks OAuth).
+  What still loads under that isolation is built into claude (bundled skills, the
+  `agents-md` and `telemetry` built-in plugins, the default agents); account-synced
+  plugins are downloaded but not loaded (measured the same day). codex (ephemeral
   `CODEX_HOME`, `--ignore-user-config`) and agy (ephemeral `HOME`) already isolate;
   opencode is checked by the same proof. Like confinement, this is **proven per rail**
   by a `live` test (4) — a marker planted in each of those places must neither reach the
@@ -459,7 +467,12 @@ early refusals `plan()` can give from the registry are re-checked there.
 All locks are `flock` on files opened with `O_CLOEXEC`, so no provider, hook or git
 subprocess inherits one: a lock dies with the `ha` process that took it. A provider is
 started in its own process group with a parent-death signal (Linux `PR_SET_PDEATHSIG`,
-`SIGKILL`), so it does not outlive a killed `ha`. Locks are released by a context manager
+`SIGKILL`), so it does not outlive a killed `ha`; because that signal reaches the direct
+child only, a watcher in its own session, started and running before the provider (no
+watcher, no provider), holds a pipe from `ha` and kills the provider's whole process group
+when `ha` disappears, however it died, so no descendant keeps writing after the locks died
+(amended 2026-09-25, operator decision Q75 = a; the provider stays `ha`'s direct child, so
+`Popen` semantics are unchanged). Locks are released by a context manager
 on every exit path. The order is fixed, which excludes a deadlock:
 
 1. the run's own **lifecycle lock**;
@@ -940,10 +953,10 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   entry.
 - **Boundary guard (existing):** runtime dependencies stay within `pydantic` and
   `structlog` — TOML, not YAML, for that reason; no import of `brain_v42`.
-- **Dream non-regression (existing):** the golden fixtures pass unchanged, with **one
-  intentional exception**: the executor isolation of 3.8.0 adds `--safe-mode` to every
-  claude command line, so the fixtures that compare claude's exact argument list are
-  updated for that flag alone, in the lot that adds it, every other assertion kept.
+- **Dream non-regression (existing):** the golden fixtures pass unchanged. The executor
+  isolation of 3.8.0 changes no argument (amended 2026-09-25: a per-run `HOME` and
+  `CLAUDE_CONFIG_DIR`, not a flag); it overrides those two variables inside the claude
+  rail, after the environment the fixtures pin is built.
 - **`live`** (marked, excluded from CI, run by hand on an operator machine): one real
   `review` with two providers and a judge on a small diff; one real `implement`, `review
   --run`, `implement --continue --findings` sequence on a toy repository; two rails
@@ -977,7 +990,8 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   `ha roles`, `ha workflows`, `--version`, tool counts, the `role` context scope.
   Unchanged: `result.json` schema 1, the `AgentProvider` protocol, the providers'
   behaviour when no role instructions are given — except the executor isolation of
-  3.8.0 (claude runs with `--safe-mode`), listed under Breaking as a security fix.
+  3.8.0 (claude runs with a per-run `HOME` and `CLAUDE_CONFIG_DIR`), listed under Breaking
+  as a security fix.
 - **Lots, in order**, each with its tests, its own branch and pull request, reviewed by
   an independent reviewer from another provider, merged on green CI:
   1. roles (loader, validation, implicit roles, instructions in the bundle); the engine
@@ -1009,9 +1023,10 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
   the `AgentProvider` protocol are unchanged, and their pending migrations to 0.4.0
   (spec 0.4.0 §6) are unaffected. A consumer that reads `context[].scope` sees `role`
   only on a run it gave role instructions to.
-- **The Dream** calls the providers directly: unaffected except that its claude runs gain
-  `--safe-mode` (3.8.0) and stop loading the operator's customisations — the intended
-  fix — and gated by its golden fixtures, updated for that flag alone.
+- **The Dream** calls the providers directly: unaffected except that its claude runs get
+  a per-run `HOME` and `CLAUDE_CONFIG_DIR` (3.8.0) and stop loading the operator's
+  customisations — the intended fix — while keeping their Brain MCP server; its golden
+  fixtures are unchanged.
 - **The operator:** `models.toml` and `mcp.toml` keep working as they are. `roles.toml`
   and `workflows.toml` are new; the README shows a starting set. Writing them is where the
   provisional configuration of decision c4f1ea03 gets reviewed.
@@ -1034,7 +1049,7 @@ The counts live in `run.json` only; a step's `result.json` stays schema 1.
 | A review certifies a commit whose provenance is not yet written | The review pins its head, finds the involved lineages without trusting a branch (pending, compromised or unknown lineages of the repository always count), takes their locks shared, and refuses any with a pending write or a compromise (3.8.4) |
 | An unconfined agent tampers a configuration other runs share while they run git | While an unconfined write step runs, no other `ha` process runs git anywhere (the unconfined lock); a stale unconfined write quarantines the operator scope (3.8.0, 3.8.5) |
 | The confinement 3.8.0 relies on regresses in a rail upgrade | The per-rail confinement proof (4) classifies write roles and is re-run on every rail upgrade; without a passing proof a rail's write roles are unconfined |
-| An executor inherits the operator's agent configuration (instructions, skills, plugins, hooks, settings, MCP servers) and runs or obeys it on steered content | Every rail runs without them (claude with `--safe-mode`; codex and agy on ephemeral homes); a per-rail isolation proof (4) is required before a rail can execute at all. The 0.4.0 claude defect (arena-42, 2026-09-24) may warrant a 0.4.x fix before 0.5.0 |
+| An executor inherits the operator's agent configuration (instructions, skills, plugins, hooks, settings, MCP servers) and runs or obeys it on steered content | Every rail runs without them (claude, codex and agy on ephemeral homes; for claude, only the Claude login is copied in); a per-rail isolation proof (4) is required before a rail can execute at all. The 0.4.0 claude defect (arena-42, 2026-09-24) may warrant a 0.4.x fix before 0.5.0 |
 | The state directory is lost | Reports survive in the cache and in each review's `vendor_check`; reviews of branches whose provenance is gone are refused, not waved through |
 | A shape is too rigid for the next workflow | A new shape is a reviewed change to the package; a general language stays out until a third shape is needed |
 
@@ -1052,3 +1067,4 @@ The operator's answers, in order; the design above follows them.
 | 6 | Which engine? | Two shapes coded in the package — not a flow grammar, not a general DAG |
 | 7 | Design sections (vocabulary and trust; the two shapes; CLI and report; engine, tests and delivery) | Approved as presented. §5 moves `run.json` into lot 1 (the engine writes its record from its first lot) and `ha workflows` into lot 3 (with the first shape) |
 | 8 | Review of the written spec: one combined `implement-review` shape, or separate workflows? | Separate: one workflow to implement, one to review, which the operator's sessions pick and combine — "more flexible". The shapes become `implement` and `review`; `implement-review` and its automatic loop are dropped from 0.5.0 (could return later as a third shape); a fix continues the same branch (`--continue`) and takes a review's findings (`--findings`); `review --run` reads an implementation run; the vendor rule moves across runs. Lots 3 and 4 re-cut accordingly |
+| 9 | (2026-09-25, during lot 1) How does the claude rail shed the operator's customisations, now that `--safe-mode` was measured to drop the run's own `--mcp-config` server? | Q68 = a: a per-run `HOME` and `CLAUDE_CONFIG_DIR` holding only a copy of the Claude login, a rotated token written back like codex's, proven by the per-rail isolation proof — not a flag set on the real `HOME` (fails open on the next customisation type), not `--safe-mode` for runs without MCP only |

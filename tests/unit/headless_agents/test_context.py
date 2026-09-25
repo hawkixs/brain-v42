@@ -4,7 +4,7 @@ import hashlib
 import subprocess
 from pathlib import Path
 
-from headless_agents.context import ContextBundle, resolve_context
+from headless_agents.context import ContextBundle, resolve_context, role_instructions
 
 
 def _git_repo(root: Path) -> Path:
@@ -76,3 +76,44 @@ def test_preamble_carries_user_then_repository_content(tmp_path: Path) -> None:
 
 def test_empty_bundle_has_empty_preamble() -> None:
     assert ContextBundle(level="none", files=()).preamble() == ""
+
+
+def test_role_instructions_read_last_in_the_preamble(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    (repo / "CLAUDE.md").write_text("repo rules", encoding="utf-8")
+    user = tmp_path / "user.md"
+    user.write_text("user rules", encoding="utf-8")
+    bundle = resolve_context(level="full", repository_root=repo, user_files=(user,))
+    text = bundle.with_role(role_instructions("reviewer-codex", "review rules")).preamble()
+    assert text.index("user rules") < text.index("repo rules") < text.index("review rules")
+    assert '<instructions source="role:reviewer-codex" scope="role">' in text
+
+
+def test_role_instructions_reach_the_none_level() -> None:
+    bundle = resolve_context(level="none", repository_root=None)
+    assert "only mine" in bundle.with_role(role_instructions("r", "only mine")).preamble()
+
+
+def test_a_bundle_without_role_instructions_is_byte_identical(tmp_path: Path) -> None:
+    repo = _git_repo(tmp_path / "repo")
+    (repo / "CLAUDE.md").write_text("repo rules", encoding="utf-8")
+    bundle = resolve_context(level="full", repository_root=repo)
+    assert bundle.with_role(None) == bundle
+    assert bundle.with_role(None).preamble() == bundle.preamble()
+    assert bundle.with_role(None).to_list() == bundle.to_list()
+
+
+def test_the_role_entry_is_listed_with_scope_role() -> None:
+    text = "x é"
+    bundle = resolve_context(level="none", repository_root=None).with_role(
+        role_instructions("r", text)
+    )
+    entry = bundle.to_list()[-1]
+    raw = text.encode("utf-8")
+    assert entry == {
+        "path": "role:r",
+        "scope": "role",
+        "size_bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+    }
+    assert bundle.role_files() == (bundle.files[-1],)

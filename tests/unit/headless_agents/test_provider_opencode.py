@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 from pydantic import SecretStr
 
+from headless_agents import procgroup
 from headless_agents.capability import (
     INVALID_USAGE_EXIT_CODE,
     PROVIDER_FALLBACK_EXIT_CODE,
@@ -1079,3 +1080,71 @@ class TestWorkspaceProvider:
         assert result.workspace == {"path": str(ws), "write": False, "shell": False}
         assert calls[0]["workspace"] == Workspace(path=ws)
         assert calls[0]["prompt"].endswith("<task>\nTASK\n</task>")
+
+
+class TestTheProviderDiesWithHa:
+    """Spec 0.5.0 §3.8.2 (see the claude rail's test of the same name)."""
+
+    def test_the_child_is_started_with_the_death_signal_preexec(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        _run(tmp_path)
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        assert callable(kwargs["preexec_fn"])
+
+    def test_an_interrupted_wait_kills_the_group_and_propagates(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        class _Interrupted(_FakeProcess):
+            def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+                raise KeyboardInterrupt
+
+        fake = _Interrupted(returncode=0)
+        _install(monkeypatch, fake)
+        with pytest.raises(KeyboardInterrupt):
+            _run(tmp_path)
+        assert fake.returncode == -9, "terminate_process_group was not called"
+
+
+class _RecordedLifeline:
+    def __init__(self, log: list[object]) -> None:
+        log.append("start")
+        self._log = log
+
+    def child_attach(self, preexec_fn: object) -> object:
+        """The provider's child names its own group to the watcher before exec."""
+        self._log.append("child_attach")
+        return preexec_fn
+
+    def release(self) -> None:
+        self._log.append("release")
+
+
+class TestTheGroupIsWatched:
+    """Operator decision Q75=a: a watcher kills the provider's whole group if
+    ha dies; the rail starts it on the provider's pid and releases it on every
+    exit path."""
+
+    def test_the_watcher_is_started_and_released(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        log: list[object] = []
+        monkeypatch.setattr(procgroup, "start_watcher", lambda: _RecordedLifeline(log))
+        fake = _FakeProcess(returncode=0)
+        _install(monkeypatch, fake)
+        _run(tmp_path)
+        assert log == ["start", "child_attach", "release"]
+
+    def test_the_watcher_is_released_on_interruption(self, monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+        log: list[object] = []
+        monkeypatch.setattr(procgroup, "start_watcher", lambda: _RecordedLifeline(log))
+
+        class _Interrupted(_FakeProcess):
+            def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+                raise KeyboardInterrupt
+
+        fake = _Interrupted(returncode=0)
+        _install(monkeypatch, fake)
+        with pytest.raises(KeyboardInterrupt):
+            _run(tmp_path)
+        assert log == ["start", "child_attach", "release"]

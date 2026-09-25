@@ -113,3 +113,20 @@ def test_the_default_path_follows_xdg(tmp_path: Path) -> None:
         tmp_path / "ha" / "mcp.toml"
     )
     assert default_profiles_path({}, home=Path("/h")) == Path("/h/.config/ha/mcp.toml")
+
+
+def test_a_relative_xdg_config_home_is_ignored(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    assert (
+        default_profiles_path({"XDG_CONFIG_HOME": "rel"}, home=home)
+        == (home / ".config" / "ha" / "mcp.toml").resolve()
+    )
+
+
+def test_a_profile_file_linking_into_a_repository_is_refused(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    (home / ".config" / "ha").mkdir(parents=True)
+    planted = _file(tmp_path, BRAIN_READ)
+    (home / ".config" / "ha" / "mcp.toml").symlink_to(planted)
+    with pytest.raises(McpProfileError, match="outside the configuration directory"):
+        mcp_server("brain-read", environ={}, home=home)
