@@ -167,6 +167,15 @@ def build_codex_command(
     )
     if mcp is not None:
         overrides += _server_overrides(mcp)
+    if sandbox == "workspace-write":
+        # Spec 0.5.0 §3.8.0: ``workspace-write`` treats ``/tmp`` and ``$TMPDIR``
+        # as writable roots besides the workspace, so a second repository placed
+        # there could be written by a write run. Both are closed; the run's own
+        # TMPDIR is a per-run scratch directory (``run_codex``).
+        overrides += (
+            ("sandbox_workspace_write.exclude_slash_tmp", True),
+            ("sandbox_workspace_write.exclude_tmpdir_env_var", True),
+        )
     # ``features.shell_tool`` must be emitted exactly once: codex's ``-c``
     # last-wins behaviour is unmeasured, so the disabled-feature loop and the
     # enabling branch below are mutually exclusive, never both.
@@ -926,9 +935,12 @@ def run_codex(
                 "no codex home root outside the sandbox's writable roots\n", encoding="utf-8"
             )
             return PROVIDER_FALLBACK_EXIT_CODE
-        with tempfile.TemporaryDirectory(
-            prefix=f"{temp_prefix}home-", dir=home_root
-        ) as codex_home_dir:
+        with (
+            tempfile.TemporaryDirectory(
+                prefix=f"{temp_prefix}home-", dir=home_root
+            ) as codex_home_dir,
+            tempfile.TemporaryDirectory(prefix=f"{temp_prefix}tmp-", dir=home_root) as scratch,
+        ):
             ephemeral_home = build_codex_home(
                 root=Path(codex_home_dir), real_codex_home=real_codex_home
             )
@@ -936,6 +948,11 @@ def run_codex(
                 dict(child_environment) if child_environment is not None else dict(os.environ)
             )
             run_environment["CODEX_HOME"] = str(ephemeral_home)
+            if workspace_write:
+                # Spec 0.5.0 §3.8.0: never the operator's TMPDIR, which may
+                # hold repositories; a scratch directory outside the sandbox's
+                # writable roots, holding nothing, removed after the run.
+                run_environment["TMPDIR"] = scratch
             try:
                 return _run(workspace_capability.path.resolve(), run_environment)
             finally:

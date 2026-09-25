@@ -1772,3 +1772,106 @@ class TestCodexProviderWorkspace:
         result = codex.CodexProvider().run(spec)
         assert result.workspace == {"path": str(ws), "write": False, "shell": False}
         assert result.context is None
+
+
+class TestWriteRunsCloseTheTmpRoots:
+    """Spec 0.5.0 §3.8.0: a ``workspace-write`` sandbox treats ``/tmp`` and
+    ``$TMPDIR`` as writable roots besides the workspace -- a second repository
+    placed there could be written. Write runs close both, and the run's
+    ``TMPDIR`` points at a per-run scratch directory holding no repository."""
+
+    def test_a_write_run_excludes_both_tmp_roots(self, tmp_path: Path) -> None:
+        command = codex.build_codex_command(
+            model="m",
+            reasoning_effort="low",
+            report_log=tmp_path / "r",
+            workspace=tmp_path,
+            mcp=None,
+            workspace_mode=Workspace(path=tmp_path, write=True),
+        )
+        assert "sandbox_workspace_write.exclude_slash_tmp=true" in _overrides(command)
+        assert "sandbox_workspace_write.exclude_tmpdir_env_var=true" in _overrides(command)
+
+    @pytest.mark.parametrize("workspace", ["read", "none"])
+    def test_other_runs_are_unchanged(self, tmp_path: Path, workspace: str) -> None:
+        mode = Workspace(path=tmp_path) if workspace == "read" else None
+        command = codex.build_codex_command(
+            model="m",
+            reasoning_effort="low",
+            report_log=tmp_path / "r",
+            workspace=tmp_path,
+            mcp=None,
+            workspace_mode=mode,
+        )
+        assert not [item for item in _overrides(command) if "sandbox_workspace_write" in item]
+
+    def test_a_write_run_gets_a_scratch_tmpdir(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = tmp_path / "real-codex-home"
+        real_home.mkdir()
+        (real_home / "auth.json").write_text(_auth_json(), encoding="utf-8")
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        seen: dict[str, object] = {}
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            scratch = Path(env["TMPDIR"])
+            seen["tmpdir"] = scratch
+            seen["existed"] = scratch.is_dir()
+            seen["empty"] = not any(scratch.iterdir())
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws, write=True),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home), "TMPDIR": "/tmp"},
+        )
+
+        assert code == 0
+        scratch = seen["tmpdir"]
+        assert isinstance(scratch, Path)
+        assert seen["existed"] and seen["empty"]
+        assert scratch != Path("/tmp")
+        assert not scratch.is_relative_to(ws)
+        assert not scratch.exists(), "the scratch TMPDIR is removed after the run"
+
+    def test_a_read_only_run_keeps_its_tmpdir(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = tmp_path / "real-codex-home"
+        real_home.mkdir()
+        (real_home / "auth.json").write_text(_auth_json(), encoding="utf-8")
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        seen: dict[str, object] = {}
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            seen["tmpdir"] = env.get("TMPDIR")
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home), "TMPDIR": "/x"},
+        )
+
+        assert seen["tmpdir"] == "/x"
