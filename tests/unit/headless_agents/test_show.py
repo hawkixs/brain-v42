@@ -212,6 +212,32 @@ def test_an_unreadable_lineage_is_unknown(home: Home) -> None:
     assert shown.report["status"] == "unknown" and shown.unknown is True
 
 
+def test_a_run_outside_any_lineage_takes_no_write_field_from_its_report(home: Home) -> None:
+    """Final review of PR B: the entry names no lineage, and the engine writes these fields
+    for a write run only -- a report keeping its run_id but claiming a branch shows none."""
+    home.read_only(
+        lineage=RUN,
+        branch=f"ha/{RUN}",
+        base=BASE,
+        head=SHA_1,
+        commits=[{"sha": SHA_1, "made_by": "engine"}],
+    )
+    shown = home.rebuild()
+    assert all(
+        shown.report[key] is None for key in ("lineage", "branch", "base", "head", "commits")
+    )
+    assert not any(line.startswith("head") for line in show.render(shown).splitlines())
+
+
+def test_an_unreadable_lineage_takes_no_branch_from_the_report(home: Home) -> None:
+    """Final review of PR B: the lineage state is a write's one authority for its branch and
+    base; when it cannot be read, the report does not stand in for it."""
+    home.write_run(lineage="forged", branch="ha/forged", base="f" * 40)
+    lineages.lineage_path(home.state, RUN).write_text("{not json")
+    report = home.rebuild().report
+    assert report["lineage"] == RUN and report["branch"] is None and report["base"] is None
+
+
 def test_a_lineage_silent_about_the_run_is_unknown(home: Home) -> None:
     """Codex review of this plan (round 1): no member status is no status, not a live run."""
     home.write_run()

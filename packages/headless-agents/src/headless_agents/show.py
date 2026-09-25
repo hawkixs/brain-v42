@@ -37,6 +37,8 @@ LATER_AUTHORITIES: Final = (
     "findings_from",
     "implement_providers",
 )
+#: What the engine writes for a write run only; a run outside any lineage has none of them.
+_WRITE_FIELDS: Final = ("lineage", "branch", "base", "head", "commits")
 
 
 class NotShown(ValueError):
@@ -187,6 +189,8 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
         except Unknown as exc:
             notes.append(f"{exc}: the lineage cannot be read")
             status, unknown = "unknown", True
+            # Their one authority cannot be read: the report does not stand in for it.
+            document.update(lineage=entry.lineage, branch=None, base=None)
         else:
             document.update(lineage=lineage.owner, branch=lineage.branch, base=lineage.base)
             if run_id in lineage.members:
@@ -206,6 +210,8 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
             )
             unknown = True
         document["commits"] = _commits(document.get("commits"), recorded)
+    else:
+        document.update(dict.fromkeys(_WRITE_FIELDS))
     if status is None:
         status = registry.effective_status(entry, lineage_status)
     if report is not None and report.get("status") != status:
