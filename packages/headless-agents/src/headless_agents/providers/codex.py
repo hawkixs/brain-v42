@@ -11,6 +11,7 @@ validation and the exit-code discipline are unchanged.
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -528,6 +529,10 @@ def _read_ephemeral_rotation(ephemeral_auth: Path) -> bytes | None:
     return raw
 
 
+#: How long a write-back waits for another run holding the auth.json lock.
+_AUTH_LOCK_SECONDS = 10.0
+
+
 def _persist_rotated_auth_or_raise(
     *,
     ephemeral_home: Path,
@@ -547,8 +552,33 @@ def _persist_rotated_auth_or_raise(
         raise ValueError("real auth.json carries no account_id to match against")
     if _account_id(raw) != real_account_id_at_build:
         raise ValueError("rotated auth.json account_id does not match the real one")
+    # The compare and the replace hold one exclusive lock beside the file, so
+    # two runs that both rotated cannot both see it unchanged and overwrite
+    # each other (codex review of #207, round 3; claude's twin: #206).
+    lock = os.open(auth_lock_path(real_auth_target), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        deadline = time.monotonic() + _AUTH_LOCK_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("the auth.json lock stayed busy") from None
+                time.sleep(0.05)
+        _replace_if_unchanged(real_auth_target, raw, real_auth_digest_at_build)
+    finally:
+        os.close(lock)
+
+
+def auth_lock_path(real_auth_target: Path) -> Path:
+    """The lock every ``ha`` run takes to write a rotated login back to ``real_auth_target``."""
+    return real_auth_target.with_name(f".{real_auth_target.name}.ha-lock")
+
+
+def _replace_if_unchanged(real_auth_target: Path, raw: bytes, digest_at_build: str) -> None:
     current = real_auth_target.read_bytes() if real_auth_target.is_file() else None
-    if current is None or hashlib.sha256(current).hexdigest() != real_auth_digest_at_build:
+    if current is None or hashlib.sha256(current).hexdigest() != digest_at_build:
         raise ValueError("real auth.json changed since the ephemeral home was built")
     descriptor, temp_name = tempfile.mkstemp(dir=real_auth_target.parent, prefix=".auth.json.")
     try:

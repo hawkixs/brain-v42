@@ -2061,3 +2061,84 @@ class TestEveryRunGetsAnEphemeralCodexHome:
         )
         assert code == PROVIDER_FALLBACK_EXIT_CODE
         assert "home" not in seen, "codex must not be started"
+
+
+class TestTheAuthWriteBackIsSerialised:
+    """Codex review of #207 (round 3): with an ephemeral CODEX_HOME on every
+    run, two concurrent runs that both rotated could both see the real
+    ``auth.json`` unchanged and overwrite each other. The compare-and-replace
+    holds an exclusive lock beside the file, as claude's does (#206)."""
+
+    _HOLD = """
+import fcntl, os, pathlib, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+pathlib.Path(sys.argv[2]).write_text("ok")
+time.sleep(float(sys.argv[3]))
+"""
+
+    def _setup(self, tmp_path: Path, rotated: str) -> tuple[Path, Path, str]:
+        import hashlib
+
+        real_home = tmp_path / "real-codex-home"
+        real_home.mkdir()
+        real = real_home / "auth.json"
+        real.write_text(_auth_json(), encoding="utf-8")
+        ephemeral_home = tmp_path / "ephemeral"
+        ephemeral_home.mkdir()
+        (ephemeral_home / "auth.json").write_text(rotated, encoding="utf-8")
+        return real, ephemeral_home, hashlib.sha256(real.read_bytes()).hexdigest()
+
+    def test_the_write_back_waits_for_the_auth_lock(self, tmp_path: Path) -> None:
+        import sys
+        import time
+
+        rotated = _auth_json(access_token="new")
+        real, ephemeral_home, digest = self._setup(tmp_path, rotated)
+        lock = codex.auth_lock_path(real)
+        assert lock.parent == real.parent
+        ready = tmp_path / "ready"
+        holder = subprocess.Popen([sys.executable, "-c", self._HOLD, str(lock), str(ready), "1.0"])
+        try:
+            while not ready.exists():
+                time.sleep(0.02)
+            start = time.monotonic()
+            codex._persist_rotated_auth_or_raise(
+                ephemeral_home=ephemeral_home,
+                real_auth_target=real,
+                real_auth_digest_at_build=digest,
+                real_account_id_at_build="acct-1",
+            )
+            waited = time.monotonic() - start
+        finally:
+            holder.wait()
+        assert waited >= 0.7, "the compare-and-replace ran without the lock"
+        assert real.read_text(encoding="utf-8") == rotated
+
+    def test_a_busy_auth_lock_writes_nothing_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        import time
+
+        monkeypatch.setattr(codex, "_AUTH_LOCK_SECONDS", 0.2)
+        real, ephemeral_home, digest = self._setup(tmp_path, _auth_json(access_token="new"))
+        before = real.read_bytes()
+        ready = tmp_path / "ready"
+        holder = subprocess.Popen(
+            [sys.executable, "-c", self._HOLD, str(codex.auth_lock_path(real)), str(ready), "2.0"]
+        )
+        try:
+            while not ready.exists():
+                time.sleep(0.02)
+            with pytest.raises(TimeoutError):
+                codex._persist_rotated_auth_or_raise(
+                    ephemeral_home=ephemeral_home,
+                    real_auth_target=real,
+                    real_auth_digest_at_build=digest,
+                    real_account_id_at_build="acct-1",
+                )
+        finally:
+            holder.kill()
+            holder.wait()
+        assert real.read_bytes() == before
