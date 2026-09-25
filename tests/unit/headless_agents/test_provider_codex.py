@@ -2117,6 +2117,29 @@ time.sleep(float(sys.argv[3]))
         assert waited >= 0.7, "the compare-and-replace ran without the lock"
         assert real.read_text(encoding="utf-8") == rotated
 
+    def test_a_second_rotation_from_the_same_digest_keeps_the_first(self, tmp_path: Path) -> None:
+        """Closure round of #207 (carry-forward): two runs copied the same
+        auth.json; the first write-back wins, the second finds the digest
+        changed under the lock and leaves the first token in place."""
+        real, first_home, digest = self._setup(tmp_path, _auth_json(access_token="first"))
+        second_home = tmp_path / "second"
+        second_home.mkdir()
+        (second_home / "auth.json").write_text(_auth_json(access_token="second"), encoding="utf-8")
+        codex._persist_rotated_auth_or_raise(
+            ephemeral_home=first_home,
+            real_auth_target=real,
+            real_auth_digest_at_build=digest,
+            real_account_id_at_build="acct-1",
+        )
+        with pytest.raises(ValueError, match="changed since"):
+            codex._persist_rotated_auth_or_raise(
+                ephemeral_home=second_home,
+                real_auth_target=real,
+                real_auth_digest_at_build=digest,
+                real_account_id_at_build="acct-1",
+            )
+        assert real.read_text(encoding="utf-8") == _auth_json(access_token="first")
+
     def test_a_busy_auth_lock_writes_nothing_back(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
