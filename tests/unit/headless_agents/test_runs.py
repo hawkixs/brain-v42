@@ -237,3 +237,36 @@ def test_an_entry_without_its_run_dir_is_unknown(tmp_path: Path) -> None:
     registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
     with pytest.raises(Unknown, match="run_dir"):
         registry.resolve(run_id)
+
+
+@pytest.mark.parametrize(
+    "target",
+    [
+        {"kind": [], "name": None},
+        {"kind": "provider", "name": 7},
+        {"kind": "provider"},
+        {"kind": "provider", "name": ""},
+        {"kind": "provider", "name": "codex", "extra": {"x": 1}},
+    ],
+    ids=["not-text", "name-not-text", "no-name", "empty-name", "extra-not-text"],
+)
+def test_a_target_that_is_not_a_kind_and_a_name_in_text_is_unknown(
+    tmp_path: Path, target: dict[str, object]
+) -> None:
+    """Codex review of lot 2 PR B (round 1): _entry turned every target value into text, so
+    {"kind": [], "name": null} showed as a run of target "None" -- an invented identity."""
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    run_id = "20260925T000000-eeeeeeee"
+    registry.create(
+        run_id,
+        run_dir=None,
+        target={"kind": "provider", "name": "codex"},
+        repository=None,
+        lineage=None,
+    )
+    path = tmp_path / "state" / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    document["target"] = target
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match="target"):
+        registry.resolve(run_id)

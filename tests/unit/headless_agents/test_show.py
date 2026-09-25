@@ -302,6 +302,17 @@ def test_a_malformed_registry_entry_is_unknown(home: Home) -> None:
     assert shown.report["status"] == "unknown" and shown.unknown is True
 
 
+def test_a_target_that_is_not_text_is_unknown(home: Home) -> None:
+    """Codex review of PR B (round 1): a mistyped target showed as a run of target "None"."""
+    home.read_only()
+    path = home.state / "runs" / f"{RUN}.json"
+    document = json.loads(path.read_text())
+    document["target"] = {"kind": [], "name": None}
+    path.write_text(json.dumps(document))
+    shown = home.rebuild()
+    assert shown.report["status"] == "unknown" and shown.report["target"] is None
+
+
 @pytest.mark.parametrize(
     ("run_id", "needle"),
     [("nope", "not a run id"), ("20260925T000000-00000000", "no run 20260925T000000-00000000")],

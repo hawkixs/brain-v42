@@ -937,6 +937,19 @@ def test_runs_survives_an_unreadable_quarantine_and_entry(world: _World) -> None
     assert lines[1].startswith(run_id) and "unknown" in lines[1]
 
 
+def test_runs_reads_a_target_that_is_not_text_as_unknown(world: _World) -> None:
+    """Codex review of PR B (round 1): the row named the run's target "None"."""
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    path = world.state / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    document["target"] = {"kind": [], "name": None}
+    path.write_text(json.dumps(document))
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert code == 0 and row["status"] == "unknown" and row["target"] is None
+
+
 def test_runs_takes_no_task_from_a_directory_a_later_run_reused(
     world: _World, tmp_path: Path
 ) -> None:

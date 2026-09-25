@@ -52,6 +52,13 @@ def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _is_target(target: Mapping[object, object]) -> bool:
+    """A target states its kind and its name, in text -- as the engine writes it."""
+    return all(isinstance(value, str) for value in target.values()) and all(
+        target.get(key) for key in ("kind", "name")
+    )
+
+
 class Registry:
     def __init__(self, state: Path, *, runs_root: Path) -> None:
         self.state = state
@@ -123,12 +130,14 @@ class Registry:
 
         ``read`` vouches for the JSON and the id only: a well-formed object without its
         ``run_dir`` escaped as ``KeyError`` and crashed ``ha runs`` and ``ha clean``
-        (codex review of the lot 2 plan, round 3). Unknown is never empty (§3.8.1).
+        (codex review of the lot 2 plan, round 3), and a target turned into text
+        showed a run of target ``None`` (codex review of lot 2 PR B, round 1).
+        Unknown is never empty, nor invented (§3.8.1).
         """
         run_dir, target = document.get("run_dir"), document.get("target")
         if not isinstance(run_dir, str) or not run_dir:
             raise Unknown(f"{path}: run_dir is malformed")
-        if not isinstance(target, dict):
+        if not isinstance(target, dict) or not _is_target(target):
             raise Unknown(f"{path}: target is malformed")
         for key in ("repository", "lineage", "status", "cleaned_at"):
             value = document.get(key)
@@ -138,7 +147,7 @@ class Registry:
             run_id=str(document["run_id"]),
             run_dir=Path(run_dir),
             repository=_optional_path(document.get("repository")),
-            target={str(k): str(v) for k, v in target.items()},
+            target=dict(target),
             lineage=_optional_str(document.get("lineage")),
             status=_optional_str(document.get("status")),
             cleaned_at=_optional_str(document.get("cleaned_at")),
