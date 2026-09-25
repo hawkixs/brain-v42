@@ -477,16 +477,26 @@ def count_tools(events_log: Path | None) -> dict[str, int] | None:
     """Tool calls in this ``--format json`` event stream, by ``part.tool`` (spec 0.5.0 §3.11).
 
     opencode writes one ``tool_use`` event per call once it settles; a part
-    seen twice is counted once, by ``part.id`` (plan P2). ``None`` when the
-    stream cannot be read whole, or names a tool part with no id or tool: not
-    measured, never a partial count.
+    seen twice is counted once, by ``part.id`` (plan P2). Because a call is
+    logged only once it settles, a step cut before its ``step_finish`` -- a
+    provider killed mid-call -- may hold a call the log never shows: that count
+    is not measured (final review of lot 2 PR A; measured 2026-09-25, every one
+    of 149 completed opencode logs ends its last step with a ``step_finish``).
+    ``None`` too when the stream cannot be read whole, or names a tool part
+    with no id or tool: not measured, never a partial count.
     """
     events = read_events(events_log)
     if events is None:
         return None
     calls: dict[str, str] = {}
+    step_open = False
     for event in events:
-        if event.get("type") != "tool_use":
+        kind = event.get("type")
+        if kind == "step_start":
+            step_open = True
+        elif kind == "step_finish":
+            step_open = False
+        if kind != "tool_use":
             continue
         part = event.get("part")
         tool = part.get("tool") if isinstance(part, dict) else None
@@ -494,6 +504,8 @@ def count_tools(events_log: Path | None) -> dict[str, int] | None:
         if not isinstance(tool, str) or not isinstance(part_id, str):
             return None
         calls.setdefault(part_id, tool)
+    if step_open:
+        return None
     return dict(Counter(calls.values()))
 
 

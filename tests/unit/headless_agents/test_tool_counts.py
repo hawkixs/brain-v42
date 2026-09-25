@@ -46,6 +46,14 @@ def test_read_events_cannot_vouch_for_a_log_it_cannot_read_whole(tmp_path: Path)
     assert read_events(not_utf8) is None
 
 
+def test_read_events_cannot_vouch_for_a_line_nested_too_deep(tmp_path: Path) -> None:
+    """Final review of PR A: json.loads raises RecursionError, not ValueError, on deep
+    nesting -- an MCP result can carry it, and it must not escape into the run's report."""
+    deep = tmp_path / "deep.jsonl"
+    deep.write_text("[" * 100_000 + "\n", encoding="utf-8")
+    assert read_events(deep) is None
+
+
 # ── codex ───────────────────────────────────────────────────────────────────
 
 
@@ -142,8 +150,18 @@ def test_opencode_ignores_steps_and_text(tmp_path: Path) -> None:
         tmp_path,
         {"type": "step_start", "part": {"id": "prt_1", "type": "step-start"}},
         {"type": "text", "part": {"id": "prt_2", "type": "text", "text": "<redacted>"}},
+        {"type": "step_finish", "part": {"id": "prt_3", "type": "step-finish", "reason": "stop"}},
     )
     assert opencode.count_tools(log) == {}
+
+
+def test_opencode_step_cut_before_its_finish_is_not_measured(tmp_path: Path) -> None:
+    """Final review of PR A: opencode logs a call only once it settles, so a step
+    killed before its step_finish may hold a call in flight -- not measured."""
+    recorded = (FIXTURES / "opencode.events.jsonl").read_text(encoding="utf-8").splitlines()
+    cut = tmp_path / "events.jsonl"
+    cut.write_text("\n".join(recorded[:3]) + "\n", encoding="utf-8")
+    assert opencode.count_tools(cut) is None
 
 
 def test_opencode_without_a_whole_log_is_not_measured(tmp_path: Path) -> None:

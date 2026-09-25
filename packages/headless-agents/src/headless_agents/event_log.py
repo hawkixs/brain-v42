@@ -17,7 +17,10 @@ def read_events(path: Path | None) -> list[dict[str, object]] | None:
     """Every event of the JSON-lines log at ``path``, or ``None`` when it cannot be read whole.
 
     Blank lines are skipped. ``None`` when ``path`` is ``None``, missing,
-    unreadable or not UTF-8, or when any other line is not a JSON object.
+    unreadable or not UTF-8, or when any other line is not a JSON object --
+    one nested too deep for the parser included: ``json`` raises
+    ``RecursionError`` there, not ``ValueError``, and an MCP result can carry
+    such a document into a rail's log (final review of lot 2 PR A).
     """
     if path is None:
         return None
@@ -31,7 +34,7 @@ def read_events(path: Path | None) -> list[dict[str, object]] | None:
             continue
         try:
             event = json.loads(line)
-        except ValueError:
+        except (ValueError, RecursionError):
             return None
         if not isinstance(event, dict):
             return None
