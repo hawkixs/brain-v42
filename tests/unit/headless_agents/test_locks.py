@@ -130,3 +130,20 @@ def test_is_free_tells_a_live_writer_from_readers(tmp_path: Path) -> None:
 
 def test_the_bound_is_the_spec_value() -> None:
     assert locks.LOCK_WAIT_SECONDS == 10.0
+
+
+def test_releasing_the_registry_lock_before_a_lineage_lock_keeps_the_order_true(
+    tmp_path: Path,
+) -> None:
+    """Spec §3.8.3 releases the lineage registry lock after the intent, while the
+    lineage lock stays held: the order check must then see the lineage lock, not
+    the registry lock, as the last one held."""
+    registry = held(tmp_path / "r", rank=Rank.LINEAGE_REGISTRY, exclusive=True, what="r")
+    registry.__enter__()
+    with held(tmp_path / "b", rank=Rank.LINEAGE, exclusive=True, what="b", key="b"):
+        registry.__exit__(None, None, None)
+        with pytest.raises(RuntimeError, match="lock order violated"):
+            with held(tmp_path / "a", rank=Rank.LINEAGE, exclusive=False, what="a", key="a"):
+                pass
+    with held(tmp_path / "u", rank=Rank.UNCONFINED, exclusive=False, what="u"):
+        pass

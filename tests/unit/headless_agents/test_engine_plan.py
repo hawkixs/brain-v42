@@ -112,13 +112,11 @@ def test_base_needs_a_write_run(env: Env) -> None:
         plan(env.request("codex", "task", base="main"))
 
 
-def test_write_runs_are_refused_until_the_write_protocol_lands(env: Env) -> None:
-    """Plan decision P5: PR B refuses every write run."""
+def test_a_write_role_is_planned_for_the_write_protocol(env: Env) -> None:
+    """Plan Task 22 lifts the P5 refusal: a write run now reaches the write flow."""
     env.roles('[impl]\nprovider = "codex"\nwrite = true\n')
-    with pytest.raises(UsageError, match="write runs are not available in this build"):
-        plan(env.request("impl", "task"))
-    with pytest.raises(UsageError, match="write runs are not available in this build"):
-        plan(env.request("codex", "task", overrides=Overrides(write=True)))
+    assert plan(env.request("impl", "task")).role.write
+    assert plan(env.request("codex", "task", overrides=Overrides(write=True))).role.write
 
 
 def test_no_prompt_on_a_terminal_is_refused(env: Env) -> None:

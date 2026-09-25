@@ -24,7 +24,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from . import locks
+from . import locks, write_flow
 from .capability import scoped_environment
 from .chain import run_chain
 from .cli_models import ModelsError, models_for
@@ -33,11 +33,11 @@ from .context import ContextBundle, ContextLevel, resolve_context, role_instruct
 from .locks import LockTimeout, Rank, held
 from .mcp_profiles import PROFILES_FILE_NAME, McpProfileError, load_profiles, mcp_server
 from .profile import CapabilityProfile, Credentials, McpServer, Workspace, mcp_no_proxy_hosts
-from .proofs import CLI_RAILS, isolation_label, isolation_ok
+from .proofs import CLI_RAILS, confinement, isolation_label, isolation_ok
 from .providers.claude import MAX_APPEND_SYSTEM_PROMPT_BYTES
 from .providers.openai_compat import GENERIC_NAME
 from .registry import HTTP_PROVIDER_NAMES, get_provider, max_prompt_bytes, probe
-from .repo import RepoError, discover
+from .repo import RepoError, RepoIdentity, discover
 from .report import RUN_JSON, new_report, step_dir_name, step_entry, with_step, write_report
 from .result import RunResult
 from .roles import Role, RolesError, capability_rule, load_roles, resolve_role
@@ -48,13 +48,6 @@ from .state import Unknown
 from .workspace import prepend
 
 ROLES_FILE_NAME: Final = "roles.toml"
-
-#: Plan decision P5: every merged state of main keeps the spec's guarantees, so
-#: write runs are refused until the write protocol of §3.8.3 is merged.
-WRITE_NOT_AVAILABLE: Final = (
-    "write runs are not available in this build: the write protocol of spec §3.8.3 "
-    "is not merged yet"
-)
 
 # A Claude Code session that launches ``ha`` must not leak into a nested
 # ``claude -p``: the child would no longer be the run the rail ships.
@@ -158,13 +151,19 @@ def describe_roles(environ: Mapping[str, str], home: Path) -> list[dict[str, obj
                 if link.provider in CLI_RAILS
                 else None
             )
+            state = state_dir(environ, home=home)
+            confined: str | None = None
+            if role.write:
+                label, date = confinement(state, link.provider, version)
+                if role.shell and link.provider in _UNSANDBOXED_SHELL_RAILS:
+                    label, date = "unconfined", None
+                confined = f"{label} ({date})" if label == "confined" else label
             links.append(
                 {
                     "provider": link.provider,
                     "model": model,
-                    "isolation": isolation_label(
-                        state_dir(environ, home=home), link.provider, version
-                    ),
+                    "isolation": isolation_label(state, link.provider, version),
+                    "confinement": confined,
                 }
             )
         rows.append(
@@ -281,8 +280,6 @@ def plan(request: Request) -> Plan:
         raise UsageError(f"{request.target}: {rule}")
     if request.base is not None and not role.write:
         raise UsageError("--base needs a write run: the role's write, or --write")
-    if role.write:
-        raise UsageError(WRITE_NOT_AVAILABLE)
 
     links = tuple((link.provider, link.model) for link in role.links)
     try:
@@ -479,8 +476,12 @@ def _admit(
     run_dir: Path | None,
     target: Mapping[str, str],
     repository: Path,
+    write: bool = False,
 ) -> Entry:
     """Mint an id, take its lifecycle lock, then publish its entry (§3.8.3 step 1).
+
+    A write run's entry names its lineage -- the one it starts, owned by its
+    own id -- so its status lives in the lineage state only (§3.8.1).
 
     The lock comes first: an entry is never visible with a free lock before
     its run starts, so ``ha clean`` cannot forget a run that is being admitted
@@ -507,7 +508,11 @@ def _admit(
                 continue
             try:
                 entry = registry.create(
-                    run_id, run_dir=run_dir, target=target, repository=repository, lineage=None
+                    run_id,
+                    run_dir=run_dir,
+                    target=target,
+                    repository=repository,
+                    lineage=run_id if write else None,
                 )
             except FileExistsError:
                 continue
@@ -516,6 +521,118 @@ def _admit(
     if last is not None:
         raise last
     raise RegistryError(f"could not mint a fresh run id in {MINT_ATTEMPTS} attempts")
+
+
+#: Rails whose shell runs outside any sandbox of theirs: a ``shell`` write role
+#: on one of them is unconfined whatever its proofs say (decision 13; codex
+#: keeps its sandboxed shell).
+_UNSANDBOXED_SHELL_RAILS: Final = frozenset({"claude", "opencode", "agy"})
+
+
+def write_is_unconfined(plan: Plan) -> bool:
+    """Whether a write takes the unconfined path of §3.8.3 (plan Tasks 20, 22).
+
+    Any link on a rail without a passing confinement proof for its installed
+    version, whatever the rail, codex included; or a ``shell`` role on a rail
+    whose shell is unsandboxed. One unconfined link sends the whole write down
+    the unconfined path: it holds the unconfined lock exclusively, publishes
+    its intent, and has its worktree's ``HEAD`` reflog read for agent commits.
+    """
+    role = plan.role
+    if role.shell and any(provider in _UNSANDBOXED_SHELL_RAILS for provider in role.providers):
+        return True
+    for provider in role.providers:
+        if provider not in CLI_RAILS:
+            continue
+        version = _installed_version(provider, plan.request.home, plan.environment)
+        if confinement(plan.state, provider, version)[0] != "confined":
+            return True
+    return False
+
+
+def _refused(registry: Registry, entry: Entry) -> None:
+    """A gate refused the run before its step: a read-only run is ``failed``; a
+    write run never started, so its entry and directory go (§3.8.1)."""
+    if entry.lineage is None:
+        registry.set_status(entry.run_id, "failed")
+        return
+    shutil.rmtree(entry.run_dir, ignore_errors=True)
+    registry.forget(entry.run_id)
+
+
+def _execute_write(
+    plan: Plan,
+    bundle: ContextBundle,
+    *,
+    registry: Registry,
+    entry: Entry,
+    identity: RepoIdentity,
+    start: Path,
+    report: dict[str, object],
+    step_name: str,
+    started: float,
+    unconfined: bool,
+    say: Callable[[str], None],
+) -> Outcome:
+    """A role write run: the §3.8.3 protocol, then its report."""
+    role, run_dir = plan.role, entry.run_dir
+    step_dir = run_dir / "steps" / step_name
+
+    def run_links(workspace: Workspace, directory: Path) -> RunResult:
+        say(f"step 1 run {role.name}: started")
+        final = _run_links(
+            plan, bundle, run_id=entry.run_id, step_dir=directory, workspace=workspace, say=say
+        )
+        say(f"step 1 run {role.name}: exit {final.exit_code}")
+        return final
+
+    try:
+        outcome = write_flow.run_write_step(
+            plan,
+            run_id=entry.run_id,
+            run_dir=run_dir,
+            state=plan.state,
+            identity=identity,
+            start=start,
+            step_dir=step_dir,
+            run_links=run_links,
+            say=say,
+            unconfined=unconfined,
+        )
+    except write_flow.WriteRefused as exc:
+        _refused(registry, entry)
+        raise UsageError(str(exc)) from None
+    if outcome.final is not None:
+        report = with_step(
+            report,
+            step_entry(
+                index=1,
+                slot="run",
+                role=role.name,
+                step_dir=f"steps/{step_name}",
+                result=outcome.final,
+            ),
+        )
+    report.update(
+        status=outcome.status,
+        exit_code=outcome.exit_code,
+        text=outcome.final.text if outcome.final is not None else None,
+        branch=outcome.branch,
+        base=outcome.base,
+        head=outcome.head,
+        lineage=entry.run_id,
+        commits=[{"sha": sha, "made_by": made_by} for sha, made_by in outcome.commits],
+        failure_reason=outcome.failure_reason,
+        duration_seconds=round(time.monotonic() - started, 3),
+    )
+    write_report(run_dir, report)
+    return Outcome(
+        exit_code=outcome.exit_code,
+        run_id=entry.run_id,
+        run_dir=run_dir,
+        report=report,
+        final=outcome.final,
+    )
 
 
 def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
@@ -536,6 +653,8 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
     except RepoError as exc:
         raise UsageError(str(exc)) from None
     repository = identity.work_tree if identity is not None else start
+    if role.write and identity is None:
+        raise UsageError(f"a write run needs a git repository; {start} is not in one")
 
     runs = runs_root(request.home)
     registry = Registry(plan.state, runs_root=runs)
@@ -557,6 +676,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 run_dir=plan.run_dir,
                 target=target,
                 repository=repository,
+                write=role.write,
             )
         except (LockTimeout, RegistryError) as exc:
             # A run that never started leaves nothing behind (codex review of #207).
@@ -565,18 +685,24 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
             raise UsageError(f"{exc}: nothing ran") from None
         if plan.run_dir is None:
             entry.run_dir.mkdir(parents=True, mode=0o700)
+        unconfined = role.write and write_is_unconfined(plan)
         try:
             held_locks.enter_context(
                 held(
                     plan.state / "unconfined.lock",
                     rank=Rank.UNCONFINED,
-                    exclusive=False,
+                    exclusive=unconfined,
                     wait=locks.LOCK_WAIT_SECONDS,
                     what="the unconfined lock",
                 )
             )
         except LockTimeout:
-            registry.set_status(entry.run_id, "failed")
+            _refused(registry, entry)
+            if unconfined:
+                raise UsageError(
+                    "runs and writes still running after the bound: an unconfined write "
+                    "waits for none of them; nothing ran"
+                ) from None
             raise UsageError(
                 "an unconfined write is running: nothing ran; retry once it has ended"
             ) from None
@@ -584,14 +710,14 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         try:
             _check_isolation(plan)
         except UsageError:
-            registry.set_status(entry.run_id, "failed")
+            _refused(registry, entry)
             raise
 
         bundle = _bundle(role, request, identity.work_tree if identity is not None else None)
         try:
             _check_prompt_size(role, plan.prompt, bundle)
         except UsageError:
-            registry.set_status(entry.run_id, "failed")
+            _refused(registry, entry)
             raise
 
         started = time.monotonic()
@@ -607,6 +733,21 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         write_report(run_dir, report)
         step_name = step_dir_name(1, "run", role.name)
         step_dir = run_dir / "steps" / step_name
+        if role.write:
+            assert identity is not None
+            return _execute_write(
+                plan,
+                bundle,
+                unconfined=unconfined,
+                registry=registry,
+                entry=entry,
+                identity=identity,
+                start=start,
+                report=report,
+                step_name=step_name,
+                started=started,
+                say=say,
+            )
         say(f"step 1 run {role.name}: started")
         final = _run_links(
             plan,
@@ -649,8 +790,8 @@ def clean(
     Resolved through the registry; the run's lifecycle lock taken without
     waiting (an active run is refused), then the unconfined lock shared. A run
     that never started is forgotten; any other has its directory removed and
-    ``cleaned_at`` set -- its entry stays. Write runs, whose worktree and lineage
-    rules arrive with the write protocol, are not in this build.
+    ``cleaned_at`` set -- its entry stays. A write run follows the lineage
+    rules of :func:`headless_agents.write_flow.clean_write`.
     """
     state = state_dir(environ, home=home)
     registry = Registry(state, runs_root=runs_root(home))
@@ -660,9 +801,6 @@ def clean(
         raise UsageError(str(exc)) from None
     except Unknown as exc:
         say(f"{exc}: recover it by hand; nothing cleaned")
-        return 1
-    if entry.lineage is not None:
-        say(f"{run_id} is a write run: cleaning one is not available in this build")
         return 1
     with ExitStack() as held_locks:
         try:
@@ -689,6 +827,20 @@ def clean(
             )
         except LockTimeout:
             raise UsageError("an unconfined write is running: nothing cleaned") from None
+        if entry.lineage is not None:
+            try:
+                return write_flow.clean_write(
+                    run_id=run_id,
+                    run_dir=entry.run_dir,
+                    owner=entry.lineage,
+                    state=state,
+                    environ=operator_environment(environ),
+                    say=say,
+                    forget=lambda: registry.forget(run_id),
+                    cleaned=lambda: registry.set_cleaned(run_id, _utc_now()),
+                )
+            except LockTimeout as exc:
+                raise UsageError(f"{exc}: the lineage is in use; nothing cleaned") from None
         started = (entry.run_dir / RUN_JSON).is_file()
         if entry.run_dir.is_dir():
             shutil.rmtree(entry.run_dir)
@@ -711,7 +863,6 @@ __all__ = [
     "execute",
     "executable_for",
     "runs_root",
-    "WRITE_NOT_AVAILABLE",
     "Overrides",
     "Plan",
     "Request",

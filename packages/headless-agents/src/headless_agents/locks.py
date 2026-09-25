@@ -100,11 +100,17 @@ def held(
                     raise LockTimeout(f"{what}: not obtained {bound}") from None
                 time.sleep(_POLL_SECONDS)
         stack = _stack()
-        stack.append((rank, key))
+        entry = (rank, key)
+        stack.append(entry)
         try:
             yield
         finally:
-            stack.pop()
+            # Its own entry, not the last one: §3.8.3 releases the lineage
+            # registry lock while the lineage locks taken after it stay held.
+            for index in range(len(stack) - 1, -1, -1):
+                if stack[index] is entry:
+                    del stack[index]
+                    break
             fcntl.flock(descriptor, fcntl.LOCK_UN)
     finally:
         os.close(descriptor)

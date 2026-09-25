@@ -26,6 +26,7 @@ from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import IO, Final
 
+from . import lineage as lineages
 from .capability import INVALID_USAGE_EXIT_CODE
 from .config_paths import state_dir
 from .engine import (
@@ -44,6 +45,7 @@ from .report import RUN_JSON
 from .run_record import RESULT_FILE_NAME
 from .runs import Registry, RegistryError
 from .state import Unknown
+from .write_flow import PATCH_FILE
 
 __all__ = ["PROVIDER_NAMES", "Probe", "UnknownProvider", "main"]
 
@@ -118,7 +120,9 @@ def _parser() -> argparse.ArgumentParser:
         run, "--context-parents", help="add the parent directories' instruction files"
     )
     run.add_argument("--mcp", metavar="PROFILE", help="an MCP profile of mcp.toml")
-    _store_true_or_none(run, "--write", help="a writable run (not available in this build)")
+    _store_true_or_none(
+        run, "--write", help="a writable run on a new ha/<run_id> branch (spec §3.8.3)"
+    )
     _store_true_or_none(run, "--shell", help="the unconfined shell of a write run")
     run.add_argument("--base", metavar="REF", help="the base of a write run")
     run.add_argument("--repo", type=Path, help="the repository (default: the one holding cwd)")
@@ -230,9 +234,12 @@ def _run(args: argparse.Namespace, io: Io) -> int:
         home=io.home,
     )
     outcome = execute(plan(request), say=io.say)
+    branch = outcome.report.get("branch")
     if args.json:
         io.stdout.write(json.dumps(outcome.report, ensure_ascii=False, indent=2) + "\n")
     elif outcome.exit_code == 0 and outcome.final is not None and outcome.final.text:
+        if isinstance(branch, str):
+            io.stdout.write(f"branch: {branch}\npatch: {outcome.run_dir / PATCH_FILE}\n\n")
         text = outcome.final.text
         io.stdout.write(text if text.endswith("\n") else text + "\n")
     if outcome.exit_code != 0:
@@ -309,9 +316,18 @@ def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
         entry = registry.resolve(run_id)
     except (RegistryError, Unknown):
         return row
+    lineage_status: str | None = None
+    if entry.lineage is not None:
+        # A write run's status lives in its lineage state only (§3.8.1).
+        try:
+            lineage_status = lineages.load(registry.state, entry.lineage).members.get(run_id)
+        except Unknown:
+            lineage_status = "unknown"
     row.update(
         target=entry.target.get("name"),
-        status=registry.effective_status(entry, None),
+        status=lineage_status
+        if lineage_status == "unknown"
+        else registry.effective_status(entry, lineage_status),
         cleaned=entry.cleaned_at is not None,
     )
     report = _read_json(entry.run_dir / RUN_JSON)

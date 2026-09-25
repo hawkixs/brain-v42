@@ -355,11 +355,12 @@ def test_the_removed_options_say_what_replaced_them(
     assert "roles.toml" in err or "TARGET" in err
 
 
-def test_write_runs_are_refused_in_this_build(world: _World) -> None:
-    """Plan decision P5: write runs return with the spec §3.8.3 protocol."""
+def test_a_write_run_reaches_the_write_protocol(world: _World) -> None:
+    """Plan Task 22: no more P5 refusal; the write flow runs (here a repository
+    with no commit, so preparation cannot resolve the base)."""
     code, _, err = world.run("run", "codex", "--write", "go")
-    assert code == 2 and "write runs are not available" in err
-    assert not world.fakes
+    assert "not available" not in err
+    assert code == 1 and "cannot resolve --base" in err
 
 
 # ── roles: declared targets, chains ─────────────────────────────────────────
@@ -478,7 +479,12 @@ def test_roles_lists_the_declared_roles_resolved(world: _World) -> None:
     assert code == 0
     rows = {row["name"]: row for row in json.loads(out)}
     assert rows["reviewer"]["links"] == [
-        {"provider": "codex", "model": "codex-default", "isolation": "isolated (2026-09-25)"}
+        {
+            "provider": "codex",
+            "model": "codex-default",
+            "isolation": "isolated (2026-09-25)",
+            "confinement": None,
+        }
     ]
     assert rows["reviewer"]["effort"] == "high"
     assert rows["reviewer"]["instructions_bytes"] == 3
@@ -707,6 +713,21 @@ def test_an_interrupted_ha_kills_its_provider_and_exits_130(tmp_path: Path) -> N
     assert locks.is_free(state / "unconfined.lock")
 
 
+def test_roles_shows_each_write_links_confinement(world: _World) -> None:
+    from headless_agents.proofs import record_proof
+
+    record_proof(world.state, "codex", version="codex 1.0", confinement=True, today="2026-09-25")
+    world.roles('[w]\nchain = ["codex", "claude"]\nwrite = true\n[r]\nprovider = "codex"\n')
+    code, out, _ = world.run("roles", "--json")
+    assert code == 0
+    rows = {row["name"]: row for row in json.loads(out)}
+    assert [link["confinement"] for link in rows["w"]["links"]] == [
+        "confined (2026-09-25)",
+        "unconfined",
+    ]
+    assert [link["confinement"] for link in rows["r"]["links"]] == [None]
+
+
 def test_roles_shows_each_links_isolation(world: _World) -> None:
     world.roles('[r]\nchain = ["codex", "mistral"]\n')
     code, out, _ = world.run("roles", "--json")
@@ -762,3 +783,31 @@ def test_runs_lists_a_run_with_a_custom_run_dir(world: _World, tmp_path: Path) -
     code, out, _ = world.run("runs", "--json")
     (row,) = json.loads(out)
     assert row["run_id"] == run_id and row["text"] == "the answer"
+
+
+def test_runs_reads_a_write_run_status_from_its_lineage(world: _World) -> None:
+    """A write run's status lives in its lineage state only (§3.8.1)."""
+    from headless_agents import lineage as lineages
+
+    run_id = "20260925T000000-eeeeeeee"
+    registry = world.registry()
+    registry.create(
+        run_id, run_dir=None, target={"kind": "role", "name": "w"}, repository=None, lineage=run_id
+    )
+    lineages.create(
+        world.state,
+        lineages.LineageState(
+            owner=run_id,
+            repository=world.home,
+            common_dir=world.home / ".git",
+            worktree=world.home / "wt",
+            branch=f"ha/{run_id}",
+            base=None,
+            members={run_id: "committed"},
+            pending=None,
+            compromised=None,
+        ),
+    )
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["status"] == "committed"
