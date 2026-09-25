@@ -437,7 +437,8 @@ def _instrument(world: World, monkeypatch: pytest.MonkeyPatch) -> list[str]:
     real_held = locks.held
 
     def held(path: Path, *, rank: locks.Rank, **kwargs: object):  # type: ignore[no-untyped-def]
-        events.append(f"lock {rank.name} {kwargs.get('key', '')}".rstrip())
+        mode = "ex" if kwargs.get("exclusive") else "sh"
+        events.append(f"lock {rank.name} {kwargs.get('key', '')}".rstrip() + f" {mode}")
         manager = real_held(path, rank=rank, **kwargs)  # type: ignore[arg-type]
 
         class _Traced:
@@ -583,6 +584,9 @@ def test_a_source_lineage_is_locked_in_ascending_order(
     world.agent.edit = _edit_app
     assert world.write(repo=worktree).exit_code == 0
     lineage_locks = [e.split()[2] for e in events if e.startswith("lock LINEAGE ")]
+    assert [e.split()[3] for e in events if e.startswith("lock LINEAGE ")] == [
+        "ex" if owner == own else "sh" for owner in sorted([own, source])
+    ]
     assert lineage_locks == sorted([own, source])
 
 
@@ -826,3 +830,129 @@ def test_a_shell_write_on_an_unsandboxed_rail_is_unconfined(
     links = tuple(replace(planned.role.links[0], provider=p) for p in providers)
     role = replace(planned.role, links=links, shell=shell)
     assert engine.write_is_unconfined(replace(planned, role=role)) is expected
+
+
+# ── ha clean under the lineage rules (plan Task 21) ────────────────────────
+
+
+def _clean(world: World, run_id: str) -> int:
+    return engine.clean(
+        run_id,
+        environ={"PATH": os.environ["PATH"], "HOME": str(world.home)},
+        home=world.home,
+        say=world.said.append,
+    )
+
+
+def test_clean_removes_a_committed_write_worktree_and_keeps_the_rest(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    worktree = outcome.run_dir / "wt"
+    tip = _git(world.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
+    assert _clean(world, outcome.run_id) == 0
+    assert not outcome.run_dir.exists()
+    assert str(worktree) not in _git(world.repo, "worktree", "list")
+    assert _git(world.repo, "rev-parse", "--verify", f"ha/{outcome.run_id}").strip() == tip
+    assert world.registry().resolve(outcome.run_id).cleaned_at is not None
+    assert lineage.load(world.state, outcome.run_id).members[outcome.run_id] == "committed"
+    assert provenance.lookup(world.state, tip) is not None
+
+
+def test_clean_waits_for_a_lineage_in_use_then_refuses(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.3)
+    ready = world.home / "ready-lineage"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _HOLD,
+            str(lineage.lineage_lock(world.state, outcome.run_id)),
+            "ex",
+            str(ready),
+        ]
+    )
+    try:
+        while not ready.exists():
+            time.sleep(0.02)
+        with pytest.raises(UsageError, match="lineage lock"):
+            _clean(world, outcome.run_id)
+    finally:
+        holder.kill()
+        holder.wait()
+    assert outcome.run_dir.exists()
+
+
+def test_clean_of_a_compromised_lineage_runs_no_git(world: World) -> None:
+    def tamper(root: Path) -> None:
+        _edit_app(root)
+        (root / ".git").write_text("gitdir: /somewhere/else\n")
+
+    world.agent.edit = tamper
+    outcome = world.write()
+    world.git_calls.clear()
+    assert _clean(world, outcome.run_id) == 1
+    assert world.git_calls == []
+    assert outcome.run_dir.exists()
+    assert any("compromised" in line for line in world.said)
+
+
+def test_clean_under_a_repository_quarantine_runs_no_git(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    quarantine.publish(
+        world.state, "repository", reason="x", run_id="r", paths=[], common_dir=world.common_dir()
+    )
+    world.git_calls.clear()
+    assert _clean(world, outcome.run_id) == 1
+    assert world.git_calls == []
+
+
+def test_clean_finds_a_stale_pending_write_in_the_repository(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    _other_lineage(world, "20200101T000000-00000002", pending=True)
+    world.git_calls.clear()
+    assert _clean(world, outcome.run_id) == 1
+    assert world.git_calls == []
+    stale = lineage.load(world.state, "20200101T000000-00000002")
+    assert stale.compromised == "unfinalized_write"
+    assert quarantine.check(world.state, world.common_dir()) is not None
+
+
+def test_clean_of_a_write_that_never_started_forgets_it(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_id = "20260925T000000-ffffffff"
+    world.registry().create(
+        run_id,
+        run_dir=None,
+        target={"kind": "role", "name": "codex"},
+        repository=world.repo,
+        lineage=run_id,
+    )
+    world.git_calls.clear()
+    assert _clean(world, run_id) == 0
+    assert run_id not in world.registry().run_ids()
+    assert world.git_calls == []
+
+
+def test_clean_takes_its_locks_in_order_and_releases_the_registry_before_git(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    events = _instrument(world, monkeypatch)
+    assert _clean(world, outcome.run_id) == 0
+    taken = [e for e in events if e.startswith("lock")]
+    assert [(e.split()[1], e.split()[-1]) for e in taken] == [
+        ("LIFECYCLE", "ex"),
+        ("UNCONFINED", "sh"),
+        ("LINEAGE_REGISTRY", "sh"),
+        ("LINEAGE", "ex"),
+    ]
+    assert events.index("release LINEAGE_REGISTRY") < events.index("git")
+    assert events.index("quarantine check") < events.index("release LINEAGE_REGISTRY")

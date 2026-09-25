@@ -782,8 +782,8 @@ def clean(
     Resolved through the registry; the run's lifecycle lock taken without
     waiting (an active run is refused), then the unconfined lock shared. A run
     that never started is forgotten; any other has its directory removed and
-    ``cleaned_at`` set -- its entry stays. Write runs, whose worktree and lineage
-    rules arrive with the write protocol, are not in this build.
+    ``cleaned_at`` set -- its entry stays. A write run follows the lineage
+    rules of :func:`headless_agents.write_flow.clean_write`.
     """
     state = state_dir(environ, home=home)
     registry = Registry(state, runs_root=runs_root(home))
@@ -793,9 +793,6 @@ def clean(
         raise UsageError(str(exc)) from None
     except Unknown as exc:
         say(f"{exc}: recover it by hand; nothing cleaned")
-        return 1
-    if entry.lineage is not None:
-        say(f"{run_id} is a write run: cleaning one is not available in this build")
         return 1
     with ExitStack() as held_locks:
         try:
@@ -822,6 +819,20 @@ def clean(
             )
         except LockTimeout:
             raise UsageError("an unconfined write is running: nothing cleaned") from None
+        if entry.lineage is not None:
+            try:
+                return write_flow.clean_write(
+                    run_id=run_id,
+                    run_dir=entry.run_dir,
+                    owner=entry.lineage,
+                    state=state,
+                    environ=operator_environment(environ),
+                    say=say,
+                    forget=lambda: registry.forget(run_id),
+                    cleaned=lambda: registry.set_cleaned(run_id, _utc_now()),
+                )
+            except LockTimeout as exc:
+                raise UsageError(f"{exc}: the lineage is in use; nothing cleaned") from None
         started = (entry.run_dir / RUN_JSON).is_file()
         if entry.run_dir.is_dir():
             shutil.rmtree(entry.run_dir)

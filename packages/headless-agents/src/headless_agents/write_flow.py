@@ -26,6 +26,7 @@ and the unconfined lock (§3.8.2) around the whole call and writes the report.
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
@@ -33,11 +34,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
 from . import lineage as lineages
-from . import provenance, quarantine
+from . import locks, provenance, quarantine
 from .git_tripwire import Tripwire, resolve_git_dir
 from .gitops import git
 from .lineage import LineageState, PendingWrite
-from .locks import LOCK_WAIT_SECONDS, LockTimeout, Rank, held, is_free
+from .locks import LockTimeout, Rank, held, is_free
 from .profile import Workspace
 from .provenance import MadeBy
 from .repo import RepoIdentity
@@ -140,9 +141,9 @@ def _sources(state: Path, start: Path) -> list[str]:
     return found
 
 
-def _check_unconfined_intent(write: _Write) -> None:
+def check_unconfined_intent(state: Path, run_id: str) -> None:
     """An intent found by a holder of the unconfined lock has lost its writer (§3.8.2)."""
-    path = write.state / UNCONFINED_INTENT
+    path = state / UNCONFINED_INTENT
     if not path.exists() and not path.is_symlink():
         return
     try:
@@ -151,10 +152,10 @@ def _check_unconfined_intent(write: _Write) -> None:
     except Unknown:
         named = None
     quarantine.publish(
-        write.state,
+        state,
         "operator",
         reason="stale_unconfined_intent",
-        run_id=str(named) if isinstance(named, str) else write.run_id,
+        run_id=str(named) if isinstance(named, str) else run_id,
         paths=[str(path)],
         common_dir=None,
     )
@@ -164,11 +165,15 @@ def _check_unconfined_intent(write: _Write) -> None:
     )
 
 
-def _check_repository(write: _Write, sources: Sequence[str]) -> None:
-    """No stale pending write in the repository; every source sound (§3.8.3 step 1)."""
-    state, common = write.state, write.identity.common_dir
+def check_repository(state: Path, common: Path, *, own: str) -> None:
+    """No lineage of the repository unknown, and no stale pending write in any (§3.8.3 step 1).
+
+    A stale pending write compromises its lineage (``unfinalized_write``) and
+    publishes the repository quarantine -- the operator's too when that write
+    was unconfined. ``own`` is skipped: the caller holds its lock.
+    """
     for owner in lineages.of_repository(state, common):
-        if owner == write.run_id:
+        if owner == own:
             continue
         try:
             other = lineages.load(state, owner)
@@ -198,6 +203,10 @@ def _check_repository(write: _Write, sources: Sequence[str]) -> None:
                 "it is compromised (unfinalized_write) and the repository quarantined; "
                 "nothing ran"
             )
+
+
+def _check_sources(state: Path, sources: Sequence[str]) -> None:
+    """Every source lineage (§3.8.2) known, not compromised, with no pending write."""
     for owner in sources:
         try:
             source = lineages.load(state, owner)
@@ -221,7 +230,7 @@ def _admit(write: _Write, registry: ExitStack) -> None:
             lineages.registry_lock(state),
             rank=Rank.LINEAGE_REGISTRY,
             exclusive=True,
-            wait=LOCK_WAIT_SECONDS,
+            wait=locks.LOCK_WAIT_SECONDS,
             what="the lineage registry lock",
         )
     )
@@ -233,7 +242,7 @@ def _admit(write: _Write, registry: ExitStack) -> None:
                 lineages.lineage_lock(state, owner),
                 rank=Rank.LINEAGE,
                 exclusive=own,
-                wait=LOCK_WAIT_SECONDS,
+                wait=locks.LOCK_WAIT_SECONDS,
                 what=f"the lineage lock of {owner}",
                 key=owner,
             )
@@ -241,8 +250,9 @@ def _admit(write: _Write, registry: ExitStack) -> None:
     refusal = quarantine.check(state, write.identity.common_dir)
     if refusal is not None:
         raise WriteRefused(f"{refusal}; nothing ran")
-    _check_unconfined_intent(write)
-    _check_repository(write, sources)
+    check_unconfined_intent(state, write.run_id)
+    check_repository(state, write.identity.common_dir, own=write.run_id)
+    _check_sources(state, sources)
 
 
 # ── step 2: intent ─────────────────────────────────────────────────────────
@@ -637,6 +647,94 @@ def run_write_step(
         return _outcome(0, "committed", None, write, commits=commits, head=head, final=final)
 
 
+# ── ha clean of a write run (plan Task 21) ────────────────────────────────
+
+
+def clean_write(
+    *,
+    run_id: str,
+    run_dir: Path,
+    owner: str,
+    state: Path,
+    environ: Mapping[str, str],
+    say: Callable[[str], None],
+    forget: Callable[[], None],
+    cleaned: Callable[[], None],
+) -> int:
+    """``ha clean`` of a lineage member, under the §3.8.2 locks (spec §3.9).
+
+    The caller holds the run's lifecycle lock and the unconfined lock shared.
+    Here: the lineage registry lock shared, then the lineage lock exclusive;
+    under them, the admission checks of §3.8.3 step 1; the registry lock
+    released before the first git command. No git at all -- exit ``1``,
+    naming the reason -- when a quarantine covers the repository or the
+    operator, or the lineage is unknown, compromised or holds a pending
+    write. Otherwise the worktree is removed, the run dir deleted, the branch,
+    the lineage state and the provenance kept. A run whose lineage state was
+    never written and whose directory holds no worktree never started: it is
+    forgotten.
+    """
+    with ExitStack() as held_locks:
+        with ExitStack() as registry:
+            registry.enter_context(
+                held(
+                    lineages.registry_lock(state),
+                    rank=Rank.LINEAGE_REGISTRY,
+                    exclusive=False,
+                    wait=locks.LOCK_WAIT_SECONDS,
+                    what="the lineage registry lock",
+                )
+            )
+            held_locks.enter_context(
+                held(
+                    lineages.lineage_lock(state, owner),
+                    rank=Rank.LINEAGE,
+                    exclusive=True,
+                    wait=locks.LOCK_WAIT_SECONDS,
+                    what=f"the lineage lock of {owner}",
+                    key=owner,
+                )
+            )
+            path = lineages.lineage_path(state, owner)
+            if not path.exists() and not path.is_symlink() and not (run_dir / "wt").exists():
+                shutil.rmtree(run_dir, ignore_errors=True)
+                forget()
+                say(f"{run_id} never started: forgotten")
+                return 0
+            try:
+                current = lineages.load(state, owner)
+                refusal = quarantine.check(state, current.common_dir)
+                if refusal is not None:
+                    raise WriteRefused(refusal)
+                check_unconfined_intent(state, run_id)
+                check_repository(state, current.common_dir, own=owner)
+            except (Unknown, WriteRefused) as exc:
+                say(f"{exc}: nothing cleaned, no git command run")
+                return 1
+            if current.compromised is not None or current.pending is not None:
+                reason = current.compromised or "a pending write"
+                say(
+                    f"lineage {owner} is uncertain ({reason}): nothing cleaned, no git command "
+                    "run; inspect it and recover it by hand"
+                )
+                return 1
+        # The registry lock is released: the first git command comes now.
+        if current.worktree.exists():
+            result = git(
+                current.repository,
+                ["worktree", "remove", "--force", str(current.worktree)],
+                environ,
+                state=state,
+            )
+            if result.returncode != 0:
+                say(f"git worktree remove failed: {result.stderr.strip()}; nothing cleaned")
+                return 1
+        shutil.rmtree(run_dir, ignore_errors=True)
+        cleaned()
+        say(f"{run_id} cleaned: worktree removed; branch {current.branch} kept")
+        return 0
+
+
 __all__ = [
     "COMMIT_LOG",
     "NO_CHANGE_EXIT_CODE",
@@ -645,5 +743,8 @@ __all__ = [
     "UNCONFINED_WRITERS",
     "WriteOutcome",
     "WriteRefused",
+    "check_repository",
+    "check_unconfined_intent",
+    "clean_write",
     "run_write_step",
 ]
