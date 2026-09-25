@@ -130,6 +130,46 @@ def _refusal(path: Path, label: str) -> str | None:
     )
 
 
+def active(state: Path) -> list[dict[str, object]]:
+    """Every quarantine in force, the operator's first (spec §3.8.5: at the top of ``ha runs``).
+
+    A file present is a quarantine in force -- ``ha`` never lifts one, the
+    operator deletes its file. An unreadable file is listed as such: :func:`check`
+    still refuses on it.
+    """
+    directory = state / "quarantine"
+    if not directory.is_dir():
+        return []
+    paths = sorted(
+        directory.glob("*.json"), key=lambda path: (path.name != "operator.json", path.name)
+    )
+    found: list[dict[str, object]] = []
+    for path in paths:
+        try:
+            document = read(path)
+        except Unknown as exc:
+            found.append(
+                {
+                    "file": str(path),
+                    "readable": False,
+                    "scope": None,
+                    "reason": str(exc),
+                    "run_id": None,
+                }
+            )
+            continue
+        found.append(
+            {
+                "file": str(path),
+                "readable": True,
+                "scope": document.get("scope"),
+                "reason": document.get("reason"),
+                "run_id": document.get("run_id"),
+            }
+        )
+    return found
+
+
 def check(state: Path, common_dir: Path | None) -> str | None:
     """The refusal message of the quarantine covering ``common_dir``; ``None`` when clear.
 
@@ -142,4 +182,12 @@ def check(state: Path, common_dir: Path | None) -> str | None:
     return _refusal(quarantine_path(state, "repository", common_dir), "repository")
 
 
-__all__ = ["Scope", "check", "publish", "quarantine_path", "repository_id", "widest_scope"]
+__all__ = [
+    "Scope",
+    "active",
+    "check",
+    "publish",
+    "quarantine_path",
+    "repository_id",
+    "widest_scope",
+]

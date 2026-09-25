@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import IO, Final
 
 from . import lineage as lineages
-from . import show
+from . import quarantine, show
 from .capability import INVALID_USAGE_EXIT_CODE
 from .config_paths import state_dir
 from .engine import (
@@ -46,12 +46,15 @@ from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, 
 from .report import RUN_JSON
 from .run_record import RESULT_FILE_NAME
 from .runs import Registry, RegistryError
+from .show import format_cost, format_duration, read_task
 from .state import Unknown
 from .write_flow import PATCH_FILE
 
 __all__ = ["PROVIDER_NAMES", "Probe", "UnknownProvider", "main"]
 
 INTERRUPTED_EXIT_CODE: Final = 130
+#: ``ha runs`` shows the first line of a task up to this many characters (spec §3.9).
+TASK_WIDTH: Final = 60
 
 _RUN_EPILOG: Final = """\
 exit codes of a run (a role or a provider):
@@ -306,15 +309,19 @@ def _admitted_at(registry: Registry, run_id: str) -> int:
 
 def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
     """One listing row: identity and status from the registry entry, the one
-    authority (§3.8.1); exit code, duration and answer only from a ``run.json``
-    whose ``run_id`` is this entry's -- a report is display data, never trusted
-    to name a run (codex review of #207, round 3)."""
+    authority (§3.8.1); exit code, duration, cost and answer only from a
+    ``run.json`` whose ``run_id`` is this entry's -- a report is display data,
+    never trusted to name a run (codex review of #207, round 3); the task from
+    the run's ``prompt.md``."""
     row: dict[str, object] = {
         "run_id": run_id,
         "target": None,
         "status": "unknown",
         "exit_code": None,
         "duration_seconds": None,
+        "cost_usd": None,
+        "cost_complete": None,
+        "task": None,
         "text": None,
         "cleaned": False,
     }
@@ -324,34 +331,65 @@ def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
         return row
     lineage_status: str | None = None
     if entry.lineage is not None:
-        # A write run's status lives in its lineage state only (§3.8.1).
+        # A write run's status lives in its lineage state only (§3.8.1); a
+        # readable lineage silent about the run gives no status (plan P6).
         try:
-            lineage_status = lineages.load(registry.state, entry.lineage).members.get(run_id)
+            members = lineages.load(registry.state, entry.lineage).members
         except Unknown:
             lineage_status = "unknown"
+        else:
+            lineage_status = members.get(run_id, "unknown")
     row.update(
         target=entry.target.get("name"),
         status=lineage_status
         if lineage_status == "unknown"
         else registry.effective_status(entry, lineage_status),
         cleaned=entry.cleaned_at is not None,
+        task=read_task(entry.run_dir),
     )
     report = _read_json(entry.run_dir / RUN_JSON)
     if report is not None and report.get("run_id") == run_id:
         row.update(
             exit_code=report.get("exit_code"),
             duration_seconds=report.get("duration_seconds"),
+            cost_usd=report.get("cost_usd"),
+            cost_complete=report.get("cost_complete"),
             text=_first_line(report.get("text")),
         )
     return row
 
 
+def _quarantine_line(entry: Mapping[str, object]) -> str:
+    """One quarantine in force (spec §3.8.5); an unreadable one still refuses."""
+    if entry.get("readable"):
+        return (
+            f"QUARANTINE {entry.get('scope')}: {entry.get('reason')} in run {entry.get('run_id')} "
+            f"({entry.get('file')}); lift it by hand after inspection"
+        )
+    return f"QUARANTINE unreadable: {entry.get('reason')}; lift it by hand after inspection"
+
+
+def _runs_line(row: Mapping[str, object]) -> str:
+    """run id, target, status, exit code, duration, cost, first line of the task (§3.9)."""
+    task = row.get("task")
+    shown = task if isinstance(task, str) else "-"
+    if len(shown) > TASK_WIDTH:
+        shown = shown[: TASK_WIDTH - 1] + "…"
+    exit_code = "-" if row.get("exit_code") is None else str(row.get("exit_code"))
+    return (
+        f"{row.get('run_id')}  {row.get('target') or '-'!s:<16} {row.get('status')!s:<10} "
+        f"exit {exit_code:<4} {format_duration(row.get('duration_seconds')):>6}  "
+        f"{format_cost(row.get('cost_usd')):>6}  {shown}"
+    ).rstrip()
+
+
 def _runs(args: argparse.Namespace, io: Io) -> int:
-    """Plan decision P7: a minimal listing; the full one (cost, quarantines) is lot 2.
+    """The runs, newest first, the active quarantines above them (spec §3.9, §3.8.5).
 
     Registered runs come from the registry -- a custom ``--run-dir`` and a
     cleaned run included; a 0.4.0 directory of the runs cache that no entry
-    names is listed as ``legacy``, from its ``result.json``.
+    names is listed as ``legacy``, from its ``result.json``. ``--json`` stays a
+    list of rows and names the quarantines on stderr (plan P7).
     """
     root = runs_root(io.home)
     registry = Registry(state_dir(io.environ, home=io.home), runs_root=root)
@@ -374,6 +412,10 @@ def _runs(args: argparse.Namespace, io: Io) -> int:
                             "status": "legacy",
                             "exit_code": legacy.get("exit_code"),
                             "duration_seconds": legacy.get("duration_seconds"),
+                            "cost_usd": legacy.get("cost_usd"),
+                            "cost_complete": isinstance(legacy.get("cost_usd"), int | float),
+                            # A 0.4.0 run kept no task.
+                            "task": None,
                             "text": _first_line(legacy.get("text")),
                             "cleaned": False,
                         },
@@ -381,14 +423,16 @@ def _runs(args: argparse.Namespace, io: Io) -> int:
                 )
     entries.sort(key=lambda item: item[0], reverse=True)
     rows = [row for _, row in entries[: max(0, args.limit)]]
+    quarantines = quarantine.active(registry.state)
     if args.json:
+        for entry in quarantines:
+            io.say(_quarantine_line(entry).replace("QUARANTINE", "quarantine", 1))
         io.stdout.write(json.dumps(rows, indent=2) + "\n")
         return 0
+    for entry in quarantines:
+        io.stdout.write(_quarantine_line(entry) + "\n")
     for row in rows:
-        io.stdout.write(
-            f"{row['run_id']}  {row['target']!s:<16} {row['status']!s:<10} "
-            f"exit {row['exit_code']}  {row['text'] or ''}\n"
-        )
+        io.stdout.write(_runs_line(row) + "\n")
     return 0
 
 

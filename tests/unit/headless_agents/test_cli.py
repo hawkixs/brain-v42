@@ -20,7 +20,7 @@ from pathlib import Path
 
 import pytest
 
-from headless_agents import cli, engine, locks
+from headless_agents import cli, engine, locks, quarantine
 from headless_agents.proofs import CLI_RAILS, record_proof
 from headless_agents.registry import Probe
 from headless_agents.report import RUN_KEYS
@@ -827,6 +827,114 @@ def test_runs_and_clean_survive_a_malformed_registry_entry(world: _World) -> Non
     assert code == 0 and row["status"] == "unknown"
     code, _, err = world.run("clean", run_id)
     assert code == 1 and "recover it by hand" in err
+
+
+# ── the complete ha runs (plan Task 8) ─────────────────────────────────────
+
+
+def test_runs_rows_carry_the_task_and_the_cost(world: _World) -> None:
+    world.run("run", "codex", "Explain the layout.\nDetails.")
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["task"] == "Explain the layout."
+    assert {"cost_usd", "cost_complete", "duration_seconds", "text"} <= row.keys()
+
+
+def test_runs_prints_duration_cost_and_the_task(world: _World) -> None:
+    world.run("run", "codex", "Explain the layout.\nDetails.")
+    code, out, _ = world.run("runs")
+    (line,) = out.splitlines()
+    assert code == 0 and "codex" in line and "answered" in line and "exit 0" in line
+    assert line.endswith("  Explain the layout.")
+
+
+def test_runs_cuts_a_long_task(world: _World) -> None:
+    world.run("run", "codex", "x" * 80)
+    code, out, _ = world.run("runs")
+    assert out.rstrip("\n").endswith("x" * 59 + "…")
+
+
+def test_runs_lists_a_legacy_runs_cost(world: _World) -> None:
+    legacy = world.home / ".cache" / "ha" / "runs" / "20260920T000000-aaaaaaaa"
+    legacy.mkdir(parents=True)
+    (legacy / "result.json").write_text(
+        json.dumps(
+            {"provider": "codex", "exit_code": 0, "duration_seconds": 30.0, "cost_usd": 0.12}
+        )
+    )
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["status"] == "legacy" and row["cost_usd"] == 0.12 and row["task"] is None
+
+
+def test_runs_lists_active_quarantines_first(world: _World) -> None:
+    world.run("run", "codex", "go")
+    quarantine.publish(
+        world.state,
+        "operator",
+        reason="tripwire",
+        run_id="20260925T000000-aaaaaaaa",
+        paths=["/x"],
+        common_dir=None,
+    )
+    code, out, _ = world.run("runs")
+    lines = out.splitlines()
+    assert code == 0 and len(lines) == 2
+    assert lines[0].startswith("QUARANTINE operator: tripwire in run 20260925T000000-aaaaaaaa")
+    assert lines[0].endswith("lift it by hand after inspection")
+
+
+def test_runs_json_stays_a_list_and_names_quarantines_on_stderr(world: _World) -> None:
+    quarantine.publish(
+        world.state,
+        "operator",
+        reason="tripwire",
+        run_id="20260925T000000-aaaaaaaa",
+        paths=[],
+        common_dir=None,
+    )
+    code, out, err = world.run("runs", "--json")
+    assert code == 0 and json.loads(out) == []
+    assert "ha: quarantine operator: tripwire" in err
+
+
+def test_runs_reads_a_write_run_its_lineage_does_not_list_as_unknown(world: _World) -> None:
+    """Same rule as ha show (plan P6): a silent authority is no status."""
+    from headless_agents import lineage as lineages
+
+    run_id = "20260925T000000-eeeeeeee"
+    world.registry().create(
+        run_id, run_dir=None, target={"kind": "role", "name": "w"}, repository=None, lineage=run_id
+    )
+    lineages.create(
+        world.state,
+        lineages.LineageState(
+            owner=run_id,
+            repository=world.home,
+            common_dir=world.home / ".git",
+            worktree=world.home / "wt",
+            branch=f"ha/{run_id}",
+            base=None,
+            members={},
+            pending=None,
+            compromised=None,
+        ),
+    )
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["status"] == "unknown"
+
+
+def test_runs_survives_an_unreadable_quarantine_and_entry(world: _World) -> None:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    (world.state / "runs" / f"{run_id}.json").write_text("{not json")
+    (world.state / "quarantine").mkdir(parents=True, exist_ok=True)
+    (world.state / "quarantine" / "operator.json").write_text("{not json")
+    code, out, _ = world.run("runs")
+    lines = out.splitlines()
+    assert code == 0 and lines[0].startswith("QUARANTINE unreadable:")
+    assert lines[1].startswith(run_id) and "unknown" in lines[1]
 
 
 # ── ha show ─────────────────────────────────────────────────────────────────
