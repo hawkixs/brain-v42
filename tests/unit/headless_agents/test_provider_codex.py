@@ -41,6 +41,22 @@ def _server(**overrides: object) -> McpServer:
     return McpServer(**fields)  # type: ignore[arg-type]
 
 
+@pytest.fixture(autouse=True)
+def _operator_codex_login(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Every codex run needs a login now (operator decision Q80 = a): the tests
+    get a fake one under a fake HOME, never the operator's real ~/.codex."""
+    home = tmp_path_factory.mktemp("operator-home")
+    (home / ".codex").mkdir()
+    (home / ".codex" / "auth.json").write_text(
+        '{"tokens": {"account_id": "acct-1", "access_token": "t"}}', encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    return home
+
+
 def _overrides(command: list[str]) -> list[str]:
     return [command[i + 1] for i, item in enumerate(command) if item == "-c"]
 
@@ -457,7 +473,13 @@ class TestRunCodex:
         assert _run(logs) == 0
         kwargs = captured["kwargs"]
         assert isinstance(kwargs, dict)
-        assert kwargs["env"] == {"PATH": "/usr/bin", "EXAMPLE_TOKEN": "token-placeholder"}
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        # Q80 = a: the run's own CODEX_HOME is added, nothing else.
+        assert {k: v for k, v in env.items() if k != "CODEX_HOME"} == {
+            "PATH": "/usr/bin",
+            "EXAMPLE_TOKEN": "token-placeholder",
+        }
         assert kwargs["start_new_session"] is True
 
     def test_refuses_to_start_when_the_environment_lacks_the_bearer_variable(
@@ -1950,3 +1972,175 @@ class TestTheGroupIsWatched:
         with pytest.raises(KeyboardInterrupt):
             _run(logs)
         assert log == ["start", "child_attach", "release"]
+
+
+class TestEveryRunGetsAnEphemeralCodexHome:
+    """Operator decision Q80=a (spec 0.5.0 §3.8.0): measured by the live
+    isolation proof on codex 0.156.0, a run without a workspace capability used
+    the real CODEX_HOME, and --ignore-user-config did not stop codex loading the
+    operator's ~/.codex/AGENTS.md. Every run now gets the ephemeral CODEX_HOME
+    workspace runs already had: a private directory holding only auth.json."""
+
+    @staticmethod
+    def _real_home(tmp_path: Path) -> Path:
+        real = tmp_path / "real-codex-home"
+        real.mkdir()
+        (real / "auth.json").write_text(_auth_json(), encoding="utf-8")
+        (real / "AGENTS.md").write_text("operator instructions\n", encoding="utf-8")
+        return real
+
+    @staticmethod
+    def _capture(monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path]) -> dict[str, object]:
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        seen: dict[str, object] = {}
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs.get("env")
+            assert isinstance(env, dict), "a run must carry its CODEX_HOME in env"
+            home = Path(env["CODEX_HOME"])
+            seen["home"] = home
+            seen["entries"] = sorted(p.name for p in home.iterdir())
+            seen["cwd"] = kwargs["cwd"]
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        return seen
+
+    def test_a_bare_run_gets_an_ephemeral_codex_home(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real = self._real_home(tmp_path)
+        seen = self._capture(monkeypatch, logs)
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real)},
+        )
+        assert code == 0
+        home = seen["home"]
+        assert isinstance(home, Path)
+        assert home != real and not home.is_relative_to(real)
+        assert seen["entries"] == ["auth.json"], "AGENTS.md and config never reach the run"
+        assert not home.exists(), "torn down after the run"
+
+    def test_a_legacy_workspace_run_gets_one_too(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real = self._real_home(tmp_path)
+        seen = self._capture(monkeypatch, logs)
+        ws = tmp_path / "legacy-ws"
+        ws.mkdir()
+        _run(
+            logs, mcp=None, workspace=ws, environment={"PATH": "/usr/bin", "CODEX_HOME": str(real)}
+        )
+        assert seen["entries"] == ["auth.json"]
+        assert seen["cwd"] == ws.resolve()
+
+    def test_an_inherited_environment_is_copied_not_dropped(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real = self._real_home(tmp_path)
+        monkeypatch.setenv("CODEX_HOME", str(real))
+        monkeypatch.setenv("KEEP_ME", "yes")
+        seen = self._capture(monkeypatch, logs)
+        assert _run(logs, mcp=None, workspace=None, environment=None) == 0
+        assert seen["entries"] == ["auth.json"]
+
+    def test_a_bare_run_without_auth_is_provider_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        empty = tmp_path / "empty-codex-home"
+        empty.mkdir()
+        seen = self._capture(monkeypatch, logs)
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(empty)},
+        )
+        assert code == PROVIDER_FALLBACK_EXIT_CODE
+        assert "home" not in seen, "codex must not be started"
+
+
+class TestTheAuthWriteBackIsSerialised:
+    """Codex review of #207 (round 3): with an ephemeral CODEX_HOME on every
+    run, two concurrent runs that both rotated could both see the real
+    ``auth.json`` unchanged and overwrite each other. The compare-and-replace
+    holds an exclusive lock beside the file, as claude's does (#206)."""
+
+    _HOLD = """
+import fcntl, os, pathlib, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+pathlib.Path(sys.argv[2]).write_text("ok")
+time.sleep(float(sys.argv[3]))
+"""
+
+    def _setup(self, tmp_path: Path, rotated: str) -> tuple[Path, Path, str]:
+        import hashlib
+
+        real_home = tmp_path / "real-codex-home"
+        real_home.mkdir()
+        real = real_home / "auth.json"
+        real.write_text(_auth_json(), encoding="utf-8")
+        ephemeral_home = tmp_path / "ephemeral"
+        ephemeral_home.mkdir()
+        (ephemeral_home / "auth.json").write_text(rotated, encoding="utf-8")
+        return real, ephemeral_home, hashlib.sha256(real.read_bytes()).hexdigest()
+
+    def test_the_write_back_waits_for_the_auth_lock(self, tmp_path: Path) -> None:
+        import sys
+        import time
+
+        rotated = _auth_json(access_token="new")
+        real, ephemeral_home, digest = self._setup(tmp_path, rotated)
+        lock = codex.auth_lock_path(real)
+        assert lock.parent == real.parent
+        ready = tmp_path / "ready"
+        holder = subprocess.Popen([sys.executable, "-c", self._HOLD, str(lock), str(ready), "1.0"])
+        try:
+            while not ready.exists():
+                time.sleep(0.02)
+            start = time.monotonic()
+            codex._persist_rotated_auth_or_raise(
+                ephemeral_home=ephemeral_home,
+                real_auth_target=real,
+                real_auth_digest_at_build=digest,
+                real_account_id_at_build="acct-1",
+            )
+            waited = time.monotonic() - start
+        finally:
+            holder.wait()
+        assert waited >= 0.7, "the compare-and-replace ran without the lock"
+        assert real.read_text(encoding="utf-8") == rotated
+
+    def test_a_busy_auth_lock_writes_nothing_back(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import sys
+        import time
+
+        monkeypatch.setattr(codex, "_AUTH_LOCK_SECONDS", 0.2)
+        real, ephemeral_home, digest = self._setup(tmp_path, _auth_json(access_token="new"))
+        before = real.read_bytes()
+        ready = tmp_path / "ready"
+        holder = subprocess.Popen(
+            [sys.executable, "-c", self._HOLD, str(codex.auth_lock_path(real)), str(ready), "2.0"]
+        )
+        try:
+            while not ready.exists():
+                time.sleep(0.02)
+            with pytest.raises(TimeoutError):
+                codex._persist_rotated_auth_or_raise(
+                    ephemeral_home=ephemeral_home,
+                    real_auth_target=real,
+                    real_auth_digest_at_build=digest,
+                    real_account_id_at_build="acct-1",
+                )
+        finally:
+            holder.kill()
+            holder.wait()
+        assert real.read_bytes() == before

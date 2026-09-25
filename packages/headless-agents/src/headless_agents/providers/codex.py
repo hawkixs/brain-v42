@@ -11,6 +11,7 @@ validation and the exit-code discipline are unchanged.
 from __future__ import annotations
 
 import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Mapping
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -527,6 +529,10 @@ def _read_ephemeral_rotation(ephemeral_auth: Path) -> bytes | None:
     return raw
 
 
+#: How long a write-back waits for another run holding the auth.json lock.
+_AUTH_LOCK_SECONDS = 10.0
+
+
 def _persist_rotated_auth_or_raise(
     *,
     ephemeral_home: Path,
@@ -546,8 +552,33 @@ def _persist_rotated_auth_or_raise(
         raise ValueError("real auth.json carries no account_id to match against")
     if _account_id(raw) != real_account_id_at_build:
         raise ValueError("rotated auth.json account_id does not match the real one")
+    # The compare and the replace hold one exclusive lock beside the file, so
+    # two runs that both rotated cannot both see it unchanged and overwrite
+    # each other (codex review of #207, round 3; claude's twin: #206).
+    lock = os.open(auth_lock_path(real_auth_target), os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        deadline = time.monotonic() + _AUTH_LOCK_SECONDS
+        while True:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("the auth.json lock stayed busy") from None
+                time.sleep(0.05)
+        _replace_if_unchanged(real_auth_target, raw, real_auth_digest_at_build)
+    finally:
+        os.close(lock)
+
+
+def auth_lock_path(real_auth_target: Path) -> Path:
+    """The lock every ``ha`` run takes to write a rotated login back to ``real_auth_target``."""
+    return real_auth_target.with_name(f".{real_auth_target.name}.ha-lock")
+
+
+def _replace_if_unchanged(real_auth_target: Path, raw: bytes, digest_at_build: str) -> None:
     current = real_auth_target.read_bytes() if real_auth_target.is_file() else None
-    if current is None or hashlib.sha256(current).hexdigest() != real_auth_digest_at_build:
+    if current is None or hashlib.sha256(current).hexdigest() != digest_at_build:
         raise ValueError("real auth.json changed since the ephemeral home was built")
     descriptor, temp_name = tempfile.mkstemp(dir=real_auth_target.parent, prefix=".auth.json.")
     try:
@@ -792,25 +823,24 @@ def run_codex(
     # an interrupted Codex turn can never be mistaken for a successful retry.
     report_log.write_text("", encoding="utf-8")
 
-    real_codex_home: Path | None = None
-    if workspace_capability is not None:
-        codex_home_value = visible.get("CODEX_HOME")
-        if codex_home_value and not Path(codex_home_value).is_absolute():
-            stderr_log.write_text(
-                f"codex CODEX_HOME must be an absolute path, got: {codex_home_value}\n",
-                encoding="utf-8",
-            )
-            return PROVIDER_FALLBACK_EXIT_CODE
-        real_codex_home = (
-            Path(codex_home_value).resolve()
-            if codex_home_value
-            else (Path.home() / ".codex").resolve()
+    # Every run gets an ephemeral CODEX_HOME (operator decision Q80 = a): the
+    # live isolation proof measured, on codex 0.156.0, that a run on the real
+    # one loads the operator's ~/.codex/AGENTS.md despite --ignore-user-config.
+    codex_home_value = visible.get("CODEX_HOME")
+    if codex_home_value and not Path(codex_home_value).is_absolute():
+        stderr_log.write_text(
+            f"codex CODEX_HOME must be an absolute path, got: {codex_home_value}\n",
+            encoding="utf-8",
         )
-        if not (real_codex_home / "auth.json").is_file():
-            stderr_log.write_text(
-                f"codex auth.json not found under {real_codex_home}\n", encoding="utf-8"
-            )
-            return PROVIDER_FALLBACK_EXIT_CODE
+        return PROVIDER_FALLBACK_EXIT_CODE
+    real_codex_home = (
+        Path(codex_home_value).resolve() if codex_home_value else (Path.home() / ".codex").resolve()
+    )
+    if not (real_codex_home / "auth.json").is_file():
+        stderr_log.write_text(
+            f"codex auth.json not found under {real_codex_home}\n", encoding="utf-8"
+        )
+        return PROVIDER_FALLBACK_EXIT_CODE
 
     def _run(runtime_dir: Path, run_environment: dict[str, str] | None) -> int:
         runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -908,8 +938,13 @@ def run_codex(
             return _failure_exit_code(events_log, 1, server, workspace_write=workspace_write)
         return 0
 
-    if workspace_capability is not None:
-        assert real_codex_home is not None
+    with ExitStack() as scope:
+        if workspace_capability is not None:
+            runtime_dir = workspace_capability.path.resolve()
+        elif workspace is not None:
+            runtime_dir = workspace.resolve()
+        else:
+            runtime_dir = Path(scope.enter_context(tempfile.TemporaryDirectory(prefix=temp_prefix)))
         # Resolved once, here: the compare-and-swap and the eventual replace
         # both need the file the symlink points AT (a dotfile manager may
         # symlink auth.json elsewhere), not the symlink path itself.
@@ -941,47 +976,43 @@ def run_codex(
             _account_id(real_auth_snapshot) if real_auth_snapshot is not None else None
         )
 
-        home_root = _choose_codex_home_root(visible, workspace_path=workspace_capability.path)
+        home_root = _choose_codex_home_root(visible, workspace_path=runtime_dir)
         if home_root is None:
             stderr_log.write_text(
                 "no codex home root outside the sandbox's writable roots\n", encoding="utf-8"
             )
             return PROVIDER_FALLBACK_EXIT_CODE
-        with (
-            tempfile.TemporaryDirectory(
-                prefix=f"{temp_prefix}home-", dir=home_root
-            ) as codex_home_dir,
-            tempfile.TemporaryDirectory(prefix=f"{temp_prefix}tmp-", dir=home_root) as scratch,
-        ):
-            ephemeral_home = build_codex_home(
-                root=Path(codex_home_dir), real_codex_home=real_codex_home
+        codex_home_dir = scope.enter_context(
+            tempfile.TemporaryDirectory(prefix=f"{temp_prefix}home-", dir=home_root)
+        )
+        scratch = scope.enter_context(
+            tempfile.TemporaryDirectory(prefix=f"{temp_prefix}tmp-", dir=home_root)
+        )
+        ephemeral_home = build_codex_home(
+            root=Path(codex_home_dir), real_codex_home=real_codex_home
+        )
+        run_environment = (
+            dict(child_environment) if child_environment is not None else dict(os.environ)
+        )
+        run_environment["CODEX_HOME"] = str(ephemeral_home)
+        if workspace_write:
+            # Spec 0.5.0 §3.8.0: never the operator's TMPDIR, which may
+            # hold repositories; a scratch directory outside the sandbox's
+            # writable roots, holding nothing, removed after the run.
+            run_environment["TMPDIR"] = scratch
+        try:
+            return _run(runtime_dir, run_environment)
+        finally:
+            # Every exit path -- success, failure, timeout -- must still
+            # rescue a rotated token before the ephemeral home is removed.
+            _persist_rotated_auth(
+                ephemeral_home=ephemeral_home,
+                real_auth_target=real_auth_target,
+                real_auth_digest_at_build=real_auth_digest_at_build,
+                real_account_id_at_build=real_account_id_at_build,
+                snapshot_failure=snapshot_failure,
+                stderr_log=stderr_log,
             )
-            run_environment = (
-                dict(child_environment) if child_environment is not None else dict(os.environ)
-            )
-            run_environment["CODEX_HOME"] = str(ephemeral_home)
-            if workspace_write:
-                # Spec 0.5.0 §3.8.0: never the operator's TMPDIR, which may
-                # hold repositories; a scratch directory outside the sandbox's
-                # writable roots, holding nothing, removed after the run.
-                run_environment["TMPDIR"] = scratch
-            try:
-                return _run(workspace_capability.path.resolve(), run_environment)
-            finally:
-                # Every exit path -- success, failure, timeout -- must still
-                # rescue a rotated token before the ephemeral home is removed.
-                _persist_rotated_auth(
-                    ephemeral_home=ephemeral_home,
-                    real_auth_target=real_auth_target,
-                    real_auth_digest_at_build=real_auth_digest_at_build,
-                    real_account_id_at_build=real_account_id_at_build,
-                    snapshot_failure=snapshot_failure,
-                    stderr_log=stderr_log,
-                )
-    if workspace is not None:
-        return _run(workspace.resolve(), child_environment)
-    with tempfile.TemporaryDirectory(prefix=temp_prefix) as temp_dir:
-        return _run(Path(temp_dir), child_environment)
 
 
 #: What a run's preamble tells codex about its tools, by mode -- keyed the

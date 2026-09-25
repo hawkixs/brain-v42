@@ -75,6 +75,22 @@ EXPECTED_PHASE_TOOLS = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _operator_codex_login(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """Every codex run needs a login now (operator decision Q80 = a): the tests
+    get a fake one under a fake HOME, never the operator's real ~/.codex."""
+    home = tmp_path_factory.mktemp("operator-home")
+    (home / ".codex").mkdir()
+    (home / ".codex" / "auth.json").write_text(
+        '{"tokens": {"account_id": "acct-1", "access_token": "t"}}', encoding="utf-8"
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CODEX_HOME", raising=False)
+    return home
+
+
 def _runner() -> ModuleType:
     assert RUNNER_PATH.is_file(), (
         "Codex Dream runner is missing: expected scripts/dream/codex_runner.py"
@@ -892,7 +908,14 @@ def test_disabled_run_preserves_popen_environment_inheritance(
     assert return_code == PROVIDER_FALLBACK_EXIT_CODE
     kwargs = captured["kwargs"]
     assert isinstance(kwargs, dict)
-    assert "env" not in kwargs
+    # Operator decision Q80 = a: every codex run carries its own ephemeral
+    # CODEX_HOME, so the environment is now passed explicitly -- as a copy of
+    # the inherited one: what was historically inherited still is.
+    env = kwargs["env"]
+    assert isinstance(env, dict)
+    assert env["TOP_SECRET"] == "historically-inherited"
+    assert env["MCP_HTTP_TOKEN"] == "admin-token"
+    assert env["CODEX_HOME"] != os.environ.get("CODEX_HOME")
 
 
 def test_invalid_enforcement_flag_fails_before_popen(

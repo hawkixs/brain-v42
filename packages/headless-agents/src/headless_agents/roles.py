@@ -222,22 +222,7 @@ def _role(path: Path, name: str, table: object, mcp_profiles: Mapping[str, objec
     if context not in CONTEXT_LEVELS:
         raise entry.refuse("context must be one of full, global, none")
 
-    if shell and not write:
-        raise entry.refuse("shell requires write: a shell can write what read tools cannot")
-    http = [link.provider for link in links if link.provider in HTTP_PROVIDER_NAMES]
-    if http and (write or shell):
-        raise entry.refuse(f"write needs a CLI rail; {', '.join(http)} has no tool to edit with")
-    if http and mcp is not None:
-        raise entry.refuse(f"mcp needs a CLI rail; {', '.join(http)} has no tools")
-    if mcp is not None and mcp not in mcp_profiles:
-        raise entry.refuse(f"mcp profile {mcp!r} is not in mcp.toml")
-    generic = any(link.provider == GENERIC_NAME for link in links)
-    if generic and (base_url is None or key_env is None):
-        raise entry.refuse("openai-compat needs base_url and key_env")
-    if not generic and (base_url is not None or key_env is not None):
-        raise entry.refuse("base_url and key_env apply to openai-compat only")
-
-    return Role(
+    role = Role(
         name=name,
         links=links,
         model=cast("str", model or ""),
@@ -253,6 +238,33 @@ def _role(path: Path, name: str, table: object, mcp_profiles: Mapping[str, objec
         key_env=key_env,
         instructions=instructions,
     )
+    rule = capability_rule(role, mcp_profiles)
+    if rule is not None:
+        raise entry.refuse(rule)
+    return role
+
+
+def capability_rule(role: Role, mcp_profiles: Mapping[str, object]) -> str | None:
+    """The first capability rule ``role`` breaks, or ``None``.
+
+    Shared by ``roles.toml`` validation and by the engine, which applies it
+    again after a run's overrides (spec §3.4: every gate in the engine).
+    """
+    if role.shell and not role.write:
+        return "shell requires write: a shell can write what read tools cannot"
+    http = [link.provider for link in role.links if link.provider in HTTP_PROVIDER_NAMES]
+    if http and (role.write or role.shell):
+        return f"write needs a CLI rail; {', '.join(http)} has no tool to edit with"
+    if http and role.mcp is not None:
+        return f"mcp needs a CLI rail; {', '.join(http)} has no tools"
+    if role.mcp is not None and role.mcp not in mcp_profiles:
+        return f"mcp profile {role.mcp!r} is not in mcp.toml"
+    generic = any(link.provider == GENERIC_NAME for link in role.links)
+    if generic and (role.base_url is None or role.key_env is None):
+        return "openai-compat needs base_url and key_env"
+    if not generic and (role.base_url is not None or role.key_env is not None):
+        return "base_url and key_env apply to openai-compat only"
+    return None
 
 
 def load_roles(path: Path | None, *, mcp_profiles: Mapping[str, object]) -> dict[str, Role]:
@@ -289,6 +301,7 @@ def resolve_role(name: str, declared: Mapping[str, Role]) -> Role:
 
 __all__ = [
     "CONTEXT_LEVELS",
+    "capability_rule",
     "NAME_PATTERN",
     "Link",
     "Role",
