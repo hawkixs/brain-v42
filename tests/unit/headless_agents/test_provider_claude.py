@@ -23,6 +23,29 @@ from headless_agents.workspace import workspace_summary
 
 URL = "http://127.0.0.1:8765/mcp"
 
+_OAUTH = {"accessToken": "at-1", "refreshToken": "rt-1", "expiresAt": 1}
+_MCP_OAUTH = {"Gmail|x": {"accessToken": "gmail-secret"}}
+
+
+def _write_credentials(config_dir: Path, **overrides: object) -> Path:
+    config_dir.mkdir(parents=True, exist_ok=True)
+    path = config_dir / ".credentials.json"
+    document: dict[str, object] = {"mcpOAuth": _MCP_OAUTH, "claudeAiOauth": _OAUTH}
+    document.update(overrides)
+    path.write_text(json.dumps(document), encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+@pytest.fixture(autouse=True)
+def _operator_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Every run in this module reads a fake operator home, never the real one."""
+    home = tmp_path / "operator-home"
+    _write_credentials(home / ".claude")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    return home
+
 
 def _server(**overrides: object) -> McpServer:
     fields: dict[str, object] = {
@@ -406,7 +429,12 @@ class TestRunClaude:
         assert isinstance(command, list) and isinstance(kwargs, dict)
         config_path = Path(command[command.index("--mcp-config") + 1])
         assert config_path.parent == kwargs["cwd"]
-        assert kwargs["env"] == {"PATH": "/usr/bin", "EXAMPLE_TOKEN": "t"}
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        assert {k: v for k, v in env.items() if k not in ("HOME", "CLAUDE_CONFIG_DIR")} == {
+            "PATH": "/usr/bin",
+            "EXAMPLE_TOKEN": "t",
+        }
         assert kwargs["stderr"] is subprocess.STDOUT
         assert (tmp_path / "out" / "raw.log").read_text(encoding="utf-8") == "ok\n"
 
@@ -686,3 +714,173 @@ class TestTheProviderDiesWithHa:
         with pytest.raises(KeyboardInterrupt):
             _run(tmp_path)
         assert fake.returncode == -9, "terminate_process_group was not called"
+
+
+class TestTheOperatorConfigurationIsNotInherited:
+    """Spec 0.5.0 §3.8.0 (G7), operator decision Q68=a: claude runs with a
+    per-run HOME and CLAUDE_CONFIG_DIR holding only a copy of the Claude
+    OAuth entry -- no CLAUDE.md, skills, plugins, hooks, settings or user MCP
+    servers to load, and none of the operator's other OAuth tokens (the MCP
+    ones for Gmail, Drive...). An explicit --mcp-config server still loads,
+    which --safe-mode would drop (measured, learning 5ffb9e1b)."""
+
+    @staticmethod
+    def _capture(monkeypatch: pytest.MonkeyPatch, fake: _FakeProcess) -> dict[str, object]:
+        seen: dict[str, object] = {}
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            seen["env"] = dict(env)
+            config = Path(env["CLAUDE_CONFIG_DIR"])
+            credentials = config / ".credentials.json"
+            seen["credentials"] = (
+                json.loads(credentials.read_text()) if credentials.exists() else None
+            )
+            seen["mode"] = credentials.stat().st_mode & 0o777 if credentials.exists() else None
+            seen["home_entries"] = sorted(p.name for p in Path(env["HOME"]).iterdir())
+            seen["cwd"] = kwargs["cwd"]
+            fake.bind(kwargs["stdout"])
+            if "rotate" in seen:
+                credentials.write_text(json.dumps(seen["rotate"]), encoding="utf-8")
+            return fake
+
+        monkeypatch.setattr(claude.subprocess, "Popen", popen)
+        monkeypatch.setattr(claude, "terminate_process_group", lambda process: process.kill())
+        return seen
+
+    def test_the_child_gets_a_private_home_and_config_dir(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _operator_home: Path
+    ) -> None:
+        seen = self._capture(monkeypatch, _FakeProcess(returncode=0, output="ok\n"))
+        assert _run(tmp_path) == 0
+        env = seen["env"]
+        assert isinstance(env, dict)
+        home, config = Path(env["HOME"]), Path(env["CLAUDE_CONFIG_DIR"])
+        assert not home.is_relative_to(_operator_home)
+        assert not config.is_relative_to(_operator_home)
+        assert home.parent == config.parent == seen["cwd"]
+        assert seen["home_entries"] == []
+        assert not home.exists() and not config.exists(), "removed after the run"
+
+    def test_only_the_claude_oauth_entry_is_copied(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        seen = self._capture(monkeypatch, _FakeProcess(returncode=0, output="ok\n"))
+        _run(tmp_path)
+        assert seen["credentials"] == {"claudeAiOauth": _OAUTH}
+        assert seen["mode"] == 0o600
+
+    def test_the_operators_claude_config_dir_is_the_source(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        custom = tmp_path / "custom-config"
+        _write_credentials(custom, claudeAiOauth={"accessToken": "custom", "refreshToken": "r"})
+        seen = self._capture(monkeypatch, _FakeProcess(returncode=0, output="ok\n"))
+        _run(
+            tmp_path,
+            environment={
+                "PATH": "/usr/bin",
+                "EXAMPLE_TOKEN": "t",
+                "CLAUDE_CONFIG_DIR": str(custom),
+            },
+        )
+        assert seen["credentials"] == {
+            "claudeAiOauth": {"accessToken": "custom", "refreshToken": "r"}
+        }
+        env = seen["env"]
+        assert isinstance(env, dict)
+        assert env["CLAUDE_CONFIG_DIR"] != str(custom)
+
+    def test_an_api_key_runs_without_any_credentials_file(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _operator_home: Path
+    ) -> None:
+        (_operator_home / ".claude" / ".credentials.json").unlink()
+        seen = self._capture(monkeypatch, _FakeProcess(returncode=0, output="ok\n"))
+        code = _run(
+            tmp_path,
+            environment={"PATH": "/usr/bin", "EXAMPLE_TOKEN": "t", "ANTHROPIC_API_KEY": "k"},
+        )
+        assert code == 0
+        assert seen["credentials"] is None
+
+    def test_no_credentials_at_all_is_provider_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _operator_home: Path
+    ) -> None:
+        (_operator_home / ".claude" / ".credentials.json").unlink()
+        seen = self._capture(monkeypatch, _FakeProcess(returncode=0))
+        assert _run(tmp_path) == PROVIDER_FALLBACK_EXIT_CODE
+        assert "env" not in seen, "claude must not be started"
+        assert "no Claude credentials" in (tmp_path / "out" / "raw.log").read_text()
+
+    def test_a_rotated_token_is_written_back_keeping_the_other_entries(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _operator_home: Path
+    ) -> None:
+        rotated = {"accessToken": "at-2", "refreshToken": "rt-2", "expiresAt": 2}
+        seen = self._capture(monkeypatch, _FakeProcess(returncode=0, output="ok\n"))
+        seen["rotate"] = {"claudeAiOauth": rotated}
+        assert _run(tmp_path) == 0
+        real = _operator_home / ".claude" / ".credentials.json"
+        assert json.loads(real.read_text()) == {"mcpOAuth": _MCP_OAUTH, "claudeAiOauth": rotated}
+        assert real.stat().st_mode & 0o777 == 0o600
+
+    def test_a_rotation_is_not_written_over_a_file_changed_meanwhile(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, _operator_home: Path
+    ) -> None:
+        real = _operator_home / ".claude" / ".credentials.json"
+        seen = self._capture(monkeypatch, _FakeProcess(returncode=0, output="ok\n"))
+        newer = {"mcpOAuth": _MCP_OAUTH, "claudeAiOauth": {"accessToken": "other-session"}}
+
+        original_bind = _FakeProcess.bind
+
+        def bind_and_race(self: _FakeProcess, stream: object) -> None:
+            real.write_text(json.dumps(newer), encoding="utf-8")
+            original_bind(self, stream)
+
+        monkeypatch.setattr(_FakeProcess, "bind", bind_and_race)
+        seen["rotate"] = {"claudeAiOauth": {"accessToken": "at-2", "refreshToken": "rt-2"}}
+        _run(tmp_path)
+        assert json.loads(real.read_text()) == newer
+        assert "not written back" in (tmp_path / "out" / "raw.log").read_text()
+
+    @pytest.mark.parametrize(
+        "rotated",
+        [
+            "not json",
+            [],
+            {"claudeAiOauth": "x"},
+            {"claudeAiOauth": {"accessToken": 1, "refreshToken": "r"}},
+            {"claudeAiOauth": {"accessToken": "a", "refreshToken": "r", "pad": "x" * 1_100_000}},
+        ],
+    )
+    def test_a_malformed_rotation_is_refused(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        _operator_home: Path,
+        rotated: object,
+    ) -> None:
+        real = _operator_home / ".claude" / ".credentials.json"
+        before = real.read_bytes()
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            target = Path(env["CLAUDE_CONFIG_DIR"]) / ".credentials.json"
+            text = rotated if isinstance(rotated, str) else json.dumps(rotated)
+            target.write_text(text, encoding="utf-8")
+            fake.bind(kwargs["stdout"])
+            return fake
+
+        fake = _FakeProcess(returncode=0, output="ok\n")
+        monkeypatch.setattr(claude.subprocess, "Popen", popen)
+        monkeypatch.setattr(claude, "terminate_process_group", lambda process: process.kill())
+        _run(tmp_path)
+        assert real.read_bytes() == before
+
+
+def test_the_workspace_none_docstring_says_no_built_in_tool() -> None:
+    """Ticket 2901d5ba: the code passes --tools "" -- no built-in tool."""
+    doc = claude.build_claude_command.__doc__ or ""
+    assert "every tool" not in doc
+    assert "no built-in tool" in doc

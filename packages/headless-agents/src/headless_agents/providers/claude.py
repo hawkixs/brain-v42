@@ -117,8 +117,9 @@ def build_claude_command(
     would make the bearer the only line of defence. No server, no
     ``--allowedTools`` at all.
 
-    ``workspace=None`` keeps this run exactly as it ran before 0.4.0 --
-    ``bypassPermissions`` and every tool. A workspace narrows both the
+    ``workspace=None`` runs in ``bypassPermissions`` with **no built-in tool**
+    (``--tools ""``): only the MCP tools ``--allowedTools`` names are callable.
+    A workspace narrows both the
     permission mode and the tool list to what its ``write``/``shell`` flags
     allow, and adds ``--restricted`` (file tools confined to the working
     directory; user, project and local settings ignored -- a trusted
@@ -194,6 +195,102 @@ def _effective_timeout(timeout_seconds: float, deadline: float | None) -> float:
     return max(0.0, min(timeout_seconds, deadline - time.monotonic()))
 
 
+#: The one entry of ``.credentials.json`` a run may see: the Claude login.
+#: The file also holds the operator's MCP OAuth tokens (Gmail, Drive, ...),
+#: which no agent run needs and none may read.
+CLAUDE_OAUTH_KEY = "claudeAiOauth"
+_CREDENTIALS_FILE = ".credentials.json"
+_MAX_CREDENTIALS_BYTES = 1 << 20
+_API_KEY_VARIABLES = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
+def _real_config_dir(visible: Mapping[str, str]) -> Path:
+    """Where the operator's claude keeps its configuration and credentials."""
+    value = visible.get("CLAUDE_CONFIG_DIR", "")
+    if value and os.path.isabs(value):
+        return Path(value)
+    home = visible.get("HOME") or os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".claude"
+
+
+def _oauth_entry(raw: bytes) -> dict[str, object] | None:
+    """The ``claudeAiOauth`` entry of a credentials document, or ``None``."""
+    if len(raw) > _MAX_CREDENTIALS_BYTES:
+        return None
+    try:
+        document = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        return None
+    entry = document.get(CLAUDE_OAUTH_KEY) if isinstance(document, dict) else None
+    if not isinstance(entry, dict):
+        return None
+    if not all(isinstance(entry.get(key), str) for key in ("accessToken", "refreshToken")):
+        return None
+    return entry
+
+
+def _write_private(path: Path, data: bytes) -> None:
+    """``data`` into ``path`` atomically, ``0600``, the directory fsynced."""
+    descriptor, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp_name, 0o600)
+        os.replace(temp_name, path)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
+    directory = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
+def _persist_rotated_oauth(
+    *,
+    ephemeral: Path,
+    real: Path,
+    real_at_build: bytes,
+    copied: dict[str, object],
+    raw_log: Path,
+) -> None:
+    """Write a token claude rotated during the run back to the real file.
+
+    Only the ``claudeAiOauth`` entry is replaced, the other entries kept; and
+    only when the real file is byte-identical to what the run copied from --
+    another session may have rotated it meanwhile, and its token must win.
+    """
+
+    def note(message: str) -> None:
+        with raw_log.open("a", encoding="utf-8") as stream:
+            stream.write(f"claude credentials: {message}\n")
+
+    try:
+        raw = ephemeral.read_bytes()
+    except OSError:
+        return
+    entry = _oauth_entry(raw)
+    if entry is None:
+        note("the run left an unreadable credentials file; not written back")
+        return
+    if entry == copied:
+        return
+    try:
+        current = real.read_bytes()
+    except OSError:
+        note("rotated during the run but not written back: the real file is gone")
+        return
+    if current != real_at_build:
+        note("rotated during the run but not written back: the real file changed meanwhile")
+        return
+    document = json.loads(current.decode("utf-8"))
+    document[CLAUDE_OAUTH_KEY] = entry
+    _write_private(real, json.dumps(document).encode("utf-8"))
+
+
 def run_claude(
     *,
     prompt: str,
@@ -239,8 +336,40 @@ def run_claude(
         answer_log = answer_log.resolve()
         answer_log.parent.mkdir(parents=True, exist_ok=True)
 
+    # Spec 0.5.0 §3.8.0 (G7), operator decision Q68=a: no run inherits the
+    # operator's claude configuration -- CLAUDE.md, skills, plugins, hooks,
+    # settings, user MCP servers. The child gets a per-run HOME and
+    # CLAUDE_CONFIG_DIR holding nothing but a copy of the Claude login.
+    # ``--safe-mode`` would also drop the run's own --mcp-config server
+    # (measured on claude 2.1.282, Brain learning 5ffb9e1b).
+    real_credentials = _real_config_dir(visible) / _CREDENTIALS_FILE
+    try:
+        real_at_build: bytes | None = real_credentials.read_bytes()
+    except OSError:
+        real_at_build = None
+    copied = _oauth_entry(real_at_build) if real_at_build is not None else None
+    if copied is None and not any(visible.get(name) for name in _API_KEY_VARIABLES):
+        with raw_log.open("a", encoding="utf-8") as stream:
+            stream.write(
+                f"no Claude credentials: {real_credentials} holds no usable "
+                f"{CLAUDE_OAUTH_KEY} entry and no API key variable is set\n"
+            )
+        return PROVIDER_FALLBACK_EXIT_CODE
+
     with tempfile.TemporaryDirectory(prefix=temp_prefix) as temp_dir:
         runtime_dir = Path(temp_dir)
+        isolated_home = runtime_dir / "home"
+        isolated_config = runtime_dir / "config"
+        isolated_home.mkdir(mode=0o700)
+        isolated_config.mkdir(mode=0o700)
+        isolated_credentials = isolated_config / _CREDENTIALS_FILE
+        if copied is not None:
+            descriptor = os.open(isolated_credentials, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                json.dump({CLAUDE_OAUTH_KEY: copied}, stream)
+        run_environment = dict(child_environment if child_environment is not None else os.environ)
+        run_environment["HOME"] = str(isolated_home)
+        run_environment["CLAUDE_CONFIG_DIR"] = str(isolated_config)
         mcp_config_path = runtime_dir / "mcp-config.json"
         mcp_config_path.write_text(json.dumps(build_claude_mcp_config(mcp)), encoding="utf-8")
         command = build_claude_command(
@@ -268,7 +397,7 @@ def run_claude(
                     stdout=raw_stream if answer_stream is None else answer_stream,
                     stderr=subprocess.STDOUT if answer_stream is None else raw_stream,
                     cwd=cwd,
-                    env=child_environment,
+                    env=run_environment,
                     text=True,
                     start_new_session=True,
                     preexec_fn=preexec_for(os.getpid()),
@@ -300,6 +429,17 @@ def run_claude(
                 # §3.8.2).
                 terminate_process_group(process)
                 raise
+            finally:
+                # Every exit path -- success, failure, timeout, interruption --
+                # rescues a rotated login before the per-run config is removed.
+                if copied is not None and real_at_build is not None:
+                    _persist_rotated_oauth(
+                        ephemeral=isolated_credentials,
+                        real=real_credentials,
+                        real_at_build=real_at_build,
+                        copied=copied,
+                        raw_log=raw_log,
+                    )
 
     exit_code = int(process.returncode or 0)
     if exit_code == 0:
