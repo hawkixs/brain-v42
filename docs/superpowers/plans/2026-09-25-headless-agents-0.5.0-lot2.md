@@ -64,11 +64,11 @@ lot 1 left to this one.
 | # | Decision | Why |
 |---|---|---|
 | P1 | Each rail's counter is a module-level `count_tools(events_log: Path \| None) -> dict[str, int] \| None` in its provider module (`providers/codex.py`, `opencode.py`, `agy.py`), on top of one strict reader `event_log.read_events`. The facade `registry.tool_counts(result: RunResult)` dispatches on `result.provider`. | §3.11: "each CLI rail gains a function that counts its tool calls by name from its own event log, reached through the registry; the `AgentProvider` protocol is unchanged". A module function beside the rail's other event readers (`tool_call_started`, `write_tool_started`) keeps the protocol untouched and the format knowledge in one file per rail. |
-| P2 | A call is counted once, however many events it writes: codex by `item.id`, opencode by `part.id`, agy by `(conversation_id, step_index)`. A call that was refused, failed, or started and never finished still counts: the agent made it. A tool event that names no identity (no `item.id`, no `part.id`, no integer `step_index`) makes the whole count unmeasured. | Measured 2026-09-25 on recorded logs: codex writes `item.started` then `item.completed` under one `item.id` (38 of 38 calls in the Dream log `2026-09-25_watchk-claude_synth`); agy writes `ACTIVE` then `DONE` or `ERROR` under one `step_index` (29 of 29 in `2026-09-15_watchk-claude_synth`); opencode writes one `tool_use` per call (4 of 4, and 30 of 30 in the operator's three recorded `ha` runs). Counting events would double codex and agy. |
+| P2 | A call is counted once, however many events it writes: codex by `item.id`, opencode by `part.id`, agy by `(conversation_id, step_index)`. A call that was refused, failed, or started and never finished still counts: the agent made it. A tool event that does not carry its whole identity (no `item.id`, no `part.id`, no `conversation_id` or no integer `step_index`) makes the whole count unmeasured. | Measured 2026-09-25 on recorded logs: codex writes `item.started` then `item.completed` under one `item.id` (38 of 38 calls in the Dream log `2026-09-25_watchk-claude_synth`); agy writes `ACTIVE` then `DONE` or `ERROR` under one `step_index` (29 of 29 in `2026-09-15_watchk-claude_synth`), and every one of the 4 938 tool-step events of the 84 agy-served Dream logs carries a `conversation_id`, one conversation per log; opencode writes one `tool_use` per call (4 of 4, and 30 of 30 in the operator's three recorded `ha` runs). Counting events would double codex and agy. (Codex review of this plan, round 1: an identity key half-checked would merge calls.) |
 | P3 | claude's counts stay `null` in lot 2: the facade wires no counter for it. The live telemetry measurement that could publish them (§4 `live`) ships with the live suite of lot 5, together with its counter and the proof that gates it. | §3.11: "`null` until a `live` test proves the telemetry complete at exit". Measured 2026-09-25: no recorded claude OTEL log with a `claude_code.tool_result` record exists on the operator's machine (none in the Dream's `.otel.log` files, none in `~/.cache/ha/runs`), so a counter written now could only be tested against a synthetic format. |
 | P4 | Codex item types that are not tool calls: `agent_message`, `reasoning`, `error`. Every other item type is a tool call, counted under its own type name. | §3.11 excludes messages and reasoning; an `error` item is neither a call nor a message. Item types observed in 507 recorded codex logs: `agent_message`, `command_execution`, `mcp_tool_call`; §3.11 also names `file_change`. |
 | P5 | `ha show` reads a write run's diffstat from its run directory's `change.patch` (display only) and runs no git; `ha runs` runs none either. | §3.8.5: every entry point checks the quarantines before its first git command. A display command that runs none needs no such check, and a quarantined repository's runs stay readable. |
-| P6 | `ha show` rebuilds from the state: `run_id`, `target` and `repository` from the registry entry; `status` from the entry, or from the lineage state for a write run, with `running`/`incomplete` from the lifecycle lock; for a write run, `lineage`, `branch` and `base` from the lineage state and `commits` from the provenance records naming the run. Every other field is display data, taken from `run.json` when its `run_id` is the run's own and `null` otherwise. What it could not show as written is named on stderr; `--json` prints the rebuilt document, with `RUN_KEYS` exactly. An unreadable registry entry, lineage state or provenance record exits `1`. | §3.8.1: one authority per fact, and a report "never read back to decide anything"; §3.8.3 step 9: "after both, only a stale report, rebuilt from the state by `ha show`". |
+| P6 | `ha show` rebuilds from the state: `run_id`, `target` and `repository` from the registry entry; `status` from the entry, or from the lineage state for a write run, with `running`/`incomplete` from the lifecycle lock; for a write run, `lineage`, `branch` and `base` from the lineage state and `commits` from the provenance records naming the run. Every other field is display data, taken from `run.json` when its `run_id` is the run's own and `null` otherwise. What it could not show as written is named on stderr; `--json` prints the rebuilt document, with `RUN_KEYS` exactly. An unreadable registry entry, lineage state or provenance record — or a readable lineage that does not list the run — reads `unknown` and exits `1`; `ha runs` applies the same rule to its rows (Task 8). | §3.8.1: one authority per fact, unknown "never as empty", and a report "never read back to decide anything"; §3.8.3 step 9: "after both, only a stale report, rebuilt from the state by `ha show`". A write's lineage is created with its first member already listed (`write_flow._intent`), so a lineage silent about a run it owns is never a run in progress. (Codex review of this plan, round 1.) |
 | P7 | `ha runs --json` stays a JSON list of run rows (lot 1's shape); each row gains `task`, `cost_usd` and `cost_complete` and keeps `text`. The active quarantines come first in text mode and, with `--json`, on stderr, one `ha: quarantine …` line each. | A list stays readable by lot 1's callers and tests. A quarantine is an operator alert, and every entry point it refuses already names it. |
 | P8 | Column widths of `ha show`'s step table are computed per table (the widest cell, cells two spaces apart); the example of §3.10 is a layout, not a byte-level contract. | Role names reach 64 characters and model labels vary (`opencode-go/deepseek-v4.1-flash`): fixed widths would misalign or truncate. |
 | P9 | Lot 2 ships as two pull requests: A (Tasks 1–5, counters) and B (Tasks 6–8, `ha show` and `ha runs`). | The counters touch three rails and the engine; `ha show` and `ha runs` touch the display side only: each is reviewed on its own. |
@@ -565,10 +565,20 @@ def test_agy_without_a_whole_log_is_not_measured(tmp_path: Path) -> None:
     assert agy.count_tools(_log(tmp_path, tail='{"event": "step_up')) is None
     unindexed = _log(
         tmp_path,
-        {"event": "step_update", "step_update": {"step_type": "tool", "tool_name": "view_file",
-                                                  "state": "ACTIVE"}},
+        {"event": "step_update", "step_update": {"conversation_id": "c1", "step_type": "tool",
+                                                  "tool_name": "view_file", "state": "ACTIVE"}},
     )
     assert agy.count_tools(unindexed) is None
+
+
+def test_agy_without_a_conversation_id_is_not_measured(tmp_path: Path) -> None:
+    """Codex review of this plan (round 1): half an identity would merge two calls."""
+    anonymous = _log(
+        tmp_path,
+        {"event": "step_update", "step_update": {"step_index": 3, "step_type": "tool",
+                                                  "tool_name": "view_file", "state": "ACTIVE"}},
+    )
+    assert agy.count_tools(anonymous) is None
 ```
 
 - [ ] **Step 3: Run to verify they fail**
@@ -588,28 +598,34 @@ def count_tools(events_log: Path | None) -> dict[str, int] | None:
     or ``ERROR`` (see :func:`tool_call_started`): a call is counted once, by
     its conversation and step index (plan P2). A step the guard refused
     counts -- the agent made the call. ``None`` when the stream cannot be read
-    whole, or names a tool step with no tool name or no integer index: not
-    measured, never a partial count.
+    whole, or names a tool step without its tool name, its conversation id or
+    an integer index: not measured, never a partial count.
     """
     events = read_events(events_log)
     if events is None:
         return None
-    calls: dict[tuple[object, int], str] = {}
+    calls: dict[tuple[str, int], str] = {}
     for event in events:
         step = event.get("step_update")
         if not isinstance(step, dict) or step.get("step_type") != "tool":
             continue
-        tool, index = step.get("tool_name"), step.get("step_index")
-        if not isinstance(tool, str) or not isinstance(index, int) or isinstance(index, bool):
+        tool = step.get("tool_name")
+        conversation, index = step.get("conversation_id"), step.get("step_index")
+        if (
+            not isinstance(tool, str)
+            or not isinstance(conversation, str)
+            or not isinstance(index, int)
+            or isinstance(index, bool)
+        ):
             return None
-        calls.setdefault((step.get("conversation_id"), index), tool)
+        calls.setdefault((conversation, index), tool)
     return dict(Counter(calls.values()))
 ```
 
 - [ ] **Step 5: Run to verify they pass**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_tool_counts.py -v`
-Expected: PASS (15 tests).
+Expected: PASS (16 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -901,7 +917,7 @@ class NotShown(ValueError)            # not a run id, no registered run, a 0.4.0
     diffstat: Diffstat | None         # a write run's change.patch, counted (P5)
     notes: tuple[str, ...]            # what could not be shown as written -> stderr
     warnings: tuple[str, ...]         # shown on the page: a compromised lineage
-    unknown: bool                     # an authoritative document is unreadable -> exit 1
+    unknown: bool                     # an authority is unreadable, or silent on the run -> exit 1
 def read_task(run_dir: Path) -> str | None
 def read_diffstat(run_dir: Path) -> Diffstat | None
 def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown
@@ -1080,6 +1096,20 @@ def test_an_unreadable_lineage_is_unknown(home: Home) -> None:
     lineages.lineage_path(home.state, RUN).write_text("{not json")
     shown = home.rebuild()
     assert shown.report["status"] == "unknown" and shown.unknown is True
+
+
+def test_a_lineage_silent_about_the_run_is_unknown(home: Home) -> None:
+    """Codex review of this plan (round 1): no member status is no status, not a live run."""
+    home.write_run()
+    path = lineages.lineage_path(home.state, RUN)
+    document = json.loads(path.read_text())
+    document["members"] = {}
+    path.write_text(json.dumps(document))
+    lock = home.registry().lifecycle_lock(RUN)
+    with locks.held(lock, rank=locks.Rank.LIFECYCLE, exclusive=True, wait=None, what="test"):
+        shown = home.rebuild()
+    assert shown.report["status"] == "unknown" and shown.unknown is True
+    assert any(f"the lineage {RUN} does not list this run" in note for note in shown.notes)
 
 
 def test_an_unreadable_provenance_record_makes_the_commits_unknown(home: Home) -> None:
@@ -1334,8 +1364,14 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
             notes.append(f"{exc}: the lineage cannot be read")
             status, unknown = "unknown", True
         else:
-            lineage_status = lineage.members.get(run_id)
             document.update(lineage=lineage.owner, branch=lineage.branch, base=lineage.base)
+            if run_id in lineage.members:
+                lineage_status = lineage.members[run_id]
+            else:
+                # The lineage is created with its first member listed (write_flow._intent):
+                # silence about this run is no status, never "running" (plan P6).
+                notes.append(f"the lineage {lineage.owner} does not list this run")
+                status, unknown = "unknown", True
             if lineage.compromised is not None:
                 warnings.append(f"lineage {lineage.owner} is compromised: {lineage.compromised}")
         recorded, unreadable = provenance.of_run(state, run_id)
@@ -1864,6 +1900,27 @@ def test_runs_json_stays_a_list_and_names_quarantines_on_stderr(world: _World) -
     assert "ha: quarantine operator: tripwire" in err
 
 
+def test_runs_reads_a_write_run_its_lineage_does_not_list_as_unknown(world: _World) -> None:
+    """Same rule as ha show (plan P6): a silent authority is no status."""
+    from headless_agents import lineage as lineages
+
+    run_id = "20260925T000000-eeeeeeee"
+    world.registry().create(
+        run_id, run_dir=None, target={"kind": "role", "name": "w"}, repository=None, lineage=run_id
+    )
+    lineages.create(
+        world.state,
+        lineages.LineageState(
+            owner=run_id, repository=world.home, common_dir=world.home / ".git",
+            worktree=world.home / "wt", branch=f"ha/{run_id}", base=None,
+            members={}, pending=None, compromised=None,
+        ),
+    )
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert row["status"] == "unknown"
+
+
 def test_runs_survives_an_unreadable_quarantine_and_entry(world: _World) -> None:
     code, out, _ = world.run("run", "codex", "--json", "go")
     run_id = json.loads(out)["run_id"]
@@ -1923,7 +1980,10 @@ def active(state: Path) -> list[dict[str, object]]:
   `"cost_usd": None, "cost_complete": None, "task": None` beside the existing keys, set
   `task=read_task(entry.run_dir)` with the entry's fields, and read
   `cost_usd=report.get("cost_usd"), cost_complete=report.get("cost_complete")` with the
-  report's. Give the legacy row
+  report's. Read a write run's member status as
+  `lineages.load(registry.state, entry.lineage).members.get(run_id, "unknown")`: a readable
+  lineage silent about the run gives `unknown`, as `ha show` does (P6), where lot 1 fell
+  through to `running`/`incomplete`. Give the legacy row
   `"cost_usd": legacy.get("cost_usd")`,
   `"cost_complete": isinstance(legacy.get("cost_usd"), int | float)` and `"task": None`
   (a 0.4.0 run kept no task). Update `_runs`' docstring (the listing is complete now; P7)
