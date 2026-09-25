@@ -115,6 +115,72 @@ def test_a_file_owned_by_another_user_is_refused(
         preset_key("openrouter", {"HOME": str(home)})
 
 
+def test_a_key_file_that_is_a_symlink_is_refused(tmp_path: Path) -> None:
+    """Codex review of #215: a link is checked through its target, and whoever controls
+    the link's directory could swap it; the key file itself must be the declared path."""
+    home = _home(tmp_path)
+    target = _env_file(home / "real.env", f"OPENROUTER_API_KEY={SECRET}\n")
+    (home / "or.env").symlink_to(target)
+    _declare(home, 'openrouter = "~/or.env"\n')
+    with pytest.raises(KeysError, match="symbolic link"):
+        preset_key("openrouter", {"HOME": str(home)})
+
+
+@pytest.mark.parametrize("mode", [0o602, 0o666])
+def test_a_keys_toml_others_can_write_is_refused(tmp_path: Path, mode: int) -> None:
+    """Codex review of #215: whoever can edit keys.toml chooses which file ha reads."""
+    home = _home(tmp_path)
+    _env_file(home / "or.env", f"OPENROUTER_API_KEY={SECRET}\n")
+    _declare(home, 'openrouter = "~/or.env"\n')
+    (home / ".config" / "ha" / "keys.toml").chmod(mode)
+    with pytest.raises(KeysError, match="writable by others"):
+        preset_key("openrouter", {"HOME": str(home)})
+
+
+def test_a_keys_toml_a_foreign_group_can_write_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    _declare(home, 'openrouter = "~/or.env"\n')
+    (home / ".config" / "ha" / "keys.toml").chmod(0o620)
+    foreign_group = os.getgid() + 1
+    monkeypatch.setattr(keys.os, "getgid", lambda: foreign_group)
+    with pytest.raises(KeysError, match="writable by others"):
+        preset_key("openrouter", {"HOME": str(home)})
+
+
+def test_a_keys_toml_writable_by_the_users_own_group_is_accepted(tmp_path: Path) -> None:
+    """Measured: umask 002 with a user private group creates 0664 files; that group is
+    the user alone, so refusing it would refuse the machine's default."""
+    home = _home(tmp_path)
+    _env_file(home / "or.env", f"OPENROUTER_API_KEY={SECRET}\n")
+    _declare(home, 'openrouter = "~/or.env"\n')
+    (home / ".config" / "ha" / "keys.toml").chmod(0o664)
+    found = preset_key("openrouter", {"HOME": str(home)})
+    assert found is not None and found.value == SECRET
+
+
+def test_a_keys_toml_readable_by_others_is_accepted(tmp_path: Path) -> None:
+    """keys.toml holds paths, never a key: reading it reveals nothing to protect."""
+    home = _home(tmp_path)
+    _env_file(home / "or.env", f"OPENROUTER_API_KEY={SECRET}\n")
+    _declare(home, 'openrouter = "~/or.env"\n')
+    (home / ".config" / "ha" / "keys.toml").chmod(0o644)
+    found = preset_key("openrouter", {"HOME": str(home)})
+    assert found is not None and found.value == SECRET
+
+
+def test_a_keys_toml_owned_by_another_user_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    _declare(home, 'openrouter = "~/or.env"\n')
+    someone_else = os.getuid() + 1
+    monkeypatch.setattr(keys.os, "getuid", lambda: someone_else)
+    with pytest.raises(KeysError, match=r"keys\.toml: not owned by"):
+        preset_key("openrouter", {"HOME": str(home)})
+
+
 def test_a_missing_declared_file_is_refused_naming_it(tmp_path: Path) -> None:
     home = _home(tmp_path)
     _declare(home, 'openrouter = "~/nowhere.env"\n')

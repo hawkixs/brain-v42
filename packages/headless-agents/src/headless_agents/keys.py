@@ -22,6 +22,7 @@ guessed: without it, no file is read.
 
 from __future__ import annotations
 
+import errno
 import os
 import stat
 import tomllib
@@ -57,6 +58,23 @@ def _declared(home: Path, environ: Mapping[str, str]) -> dict[str, Path]:
     if path is None:
         return {}
     try:
+        info = path.stat()
+    except OSError as exc:
+        raise KeysError(f"{path}: {exc.strerror or exc}") from None
+    # keys.toml holds paths, never a key: reading it reveals nothing, but whoever can
+    # EDIT it chooses which file ha reads a key from (codex review of #215).
+    if info.st_uid != os.getuid():
+        raise KeysError(f"{path}: not owned by the user running ha")
+    # Group write is refused unless the group is the user's own primary group: with a
+    # user private group and umask 002 (measured on this machine) every file is 0664,
+    # and that group is the user alone.
+    foreign_group = info.st_gid != os.getgid()
+    if info.st_mode & 0o002 or (info.st_mode & 0o020 and foreign_group):
+        raise KeysError(
+            f"{path}: mode {stat.S_IMODE(info.st_mode):04o} is writable by others; "
+            "only you may edit the file that says where your keys are"
+        )
+    try:
         with path.open("rb") as stream:
             document = tomllib.load(stream)
     except (OSError, tomllib.TOMLDecodeError) as exc:
@@ -79,24 +97,36 @@ def _declared(home: Path, environ: Mapping[str, str]) -> dict[str, Path]:
 
 
 def _read_variable(path: Path, variable: str) -> str:
-    """``variable`` from the ``.env`` file ``path``, after checking who can read the file."""
+    """``variable`` from the ``.env`` file ``path``, after checking who can read the file.
+
+    The file is opened without following a link and checked through the descriptor
+    it was read from: a link would be judged by its target, and whoever controls the
+    link's directory could swap one between the check and the read (codex review of
+    #215).
+    """
     try:
-        info = path.stat()
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise KeysError(
+                f"{path}: a symbolic link; declare the key file itself in keys.toml"
+            ) from None
         raise KeysError(f"{path}: {exc.strerror or exc}") from None
-    if not stat.S_ISREG(info.st_mode):
-        raise KeysError(f"{path}: not a regular file")
-    if info.st_uid != os.getuid():
-        raise KeysError(f"{path}: not owned by the user running ha")
-    if info.st_mode & 0o077:
-        raise KeysError(
-            f"{path}: mode {stat.S_IMODE(info.st_mode):04o}; a key file must be 0600 "
-            "(readable by you only)"
-        )
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError) as exc:
-        raise KeysError(f"{path}: unreadable ({type(exc).__name__})") from None
+    with os.fdopen(fd, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise KeysError(f"{path}: not a regular file")
+        if info.st_uid != os.getuid():
+            raise KeysError(f"{path}: not owned by the user running ha")
+        if info.st_mode & 0o077:
+            raise KeysError(
+                f"{path}: mode {stat.S_IMODE(info.st_mode):04o}; a key file must be 0600 "
+                "(readable by you only)"
+            )
+        try:
+            text = stream.read().decode("utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise KeysError(f"{path}: unreadable ({type(exc).__name__})") from None
     for raw in text.splitlines():
         line = raw.strip()
         if not line or line.startswith("#"):
