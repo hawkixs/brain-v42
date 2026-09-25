@@ -541,3 +541,21 @@ def test_the_cli_refuses_continue_on_a_role_target(world: World) -> None:
     first = _first(world)
     code, _, err = world.cli("run", "codex", "--continue", first.run_id, "task")
     assert code == 2 and "--continue needs an implement workflow" in err
+
+
+@pytest.mark.parametrize("spoil", ["dirty", "detached"])
+def test_the_cli_exits_2_on_a_continuation_refused_after_admission(
+    world: World, spoil: str
+) -> None:
+    """§3.9, P9: a continuation refused under its lineage lock ran nothing -- exit 2, like
+    every refusal the engine raises (codex review of #216, round 1)."""
+    first = _first(world)
+    worktree = first.run_dir / "wt"
+    if spoil == "dirty":
+        (worktree / "app.py").write_text("edited by hand, not committed\n")
+    else:
+        _git(worktree, "checkout", "-q", "--detach")
+    world.agent.edit = _fix
+    code, _, err = world.cli("run", "build", "--continue", first.run_id, "Turn it on.")
+    assert code == 2, err
+    assert world.registry().run_ids() == [first.run_id]
