@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 from headless_agents.event_log import read_events
-from headless_agents.providers import codex
+from headless_agents.providers import codex, opencode
 
 FIXTURES = Path(__file__).parent / "fixtures" / "tool_counts"
 
@@ -107,3 +107,43 @@ def test_codex_without_a_whole_log_is_not_measured(tmp_path: Path) -> None:
     assert codex.count_tools(_log(tmp_path, tail='{"type": "item.started", "item": {"id"')) is None
     anonymous = _log(tmp_path, {"type": "item.started", "item": {"type": "command_execution"}})
     assert codex.count_tools(anonymous) is None
+
+
+# ── opencode ────────────────────────────────────────────────────────────────
+
+
+def test_opencode_counts_a_recorded_run_by_tool() -> None:
+    assert opencode.count_tools(FIXTURES / "opencode.events.jsonl") == {"grep": 1, "glob": 1}
+
+
+def test_opencode_counts_a_part_once(tmp_path: Path) -> None:
+    part = {
+        "type": "tool",
+        "tool": "read",
+        "callID": "call_1",
+        "id": "prt_1",
+        "state": {"status": "running"},
+    }
+    log = _log(
+        tmp_path,
+        {"type": "tool_use", "part": part},
+        {"type": "tool_use", "part": {**part, "state": {"status": "completed"}}},
+        {"type": "tool_use", "part": {**part, "id": "prt_2", "callID": "call_2", "tool": "edit"}},
+    )
+    assert opencode.count_tools(log) == {"read": 1, "edit": 1}
+
+
+def test_opencode_ignores_steps_and_text(tmp_path: Path) -> None:
+    log = _log(
+        tmp_path,
+        {"type": "step_start", "part": {"id": "prt_1", "type": "step-start"}},
+        {"type": "text", "part": {"id": "prt_2", "type": "text", "text": "<redacted>"}},
+    )
+    assert opencode.count_tools(log) == {}
+
+
+def test_opencode_without_a_whole_log_is_not_measured(tmp_path: Path) -> None:
+    assert opencode.count_tools(None) is None
+    assert opencode.count_tools(_log(tmp_path, tail='{"type": "tool_u')) is None
+    anonymous = _log(tmp_path, {"type": "tool_use", "part": {"type": "tool", "tool": "read"}})
+    assert opencode.count_tools(anonymous) is None
