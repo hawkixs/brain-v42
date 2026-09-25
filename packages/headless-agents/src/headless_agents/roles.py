@@ -247,7 +247,8 @@ def _role(path: Path, name: str, table: object, mcp_profiles: Mapping[str, objec
         context_parents=context_parents,
         mcp=mcp,
         write=write,
-        shell=shell,
+        # nosec B604: ``shell`` is a role capability flag, not a subprocess argument.
+        shell=shell,  # nosec B604
         base_url=base_url,
         key_env=key_env,
         instructions=instructions,
