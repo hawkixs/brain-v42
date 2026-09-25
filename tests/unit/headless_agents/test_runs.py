@@ -239,6 +239,57 @@ def test_an_entry_without_its_run_dir_is_unknown(tmp_path: Path) -> None:
         registry.resolve(run_id)
 
 
+def _entry_document(tmp_path: Path) -> tuple[Registry, str, Path, dict[str, object]]:
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    run_id = "20260925T000000-eeeeeeee"
+    registry.create(
+        run_id,
+        run_dir=None,
+        target={"kind": "provider", "name": "codex"},
+        repository=None,
+        lineage=None,
+    )
+    path = tmp_path / "state" / "runs" / f"{run_id}.json"
+    return registry, run_id, path, json.loads(path.read_text())
+
+
+@pytest.mark.parametrize("key", ["repository", "lineage", "status", "cleaned_at", "created_at"])
+def test_an_entry_missing_a_key_create_writes_is_unknown(tmp_path: Path, key: str) -> None:
+    """Codex review of lot 2 PR B (round 3): a missing status read as null, and a run outside
+    any lineage then took running or incomplete from its lock -- a status its entry never
+    gave (plan P6: a silent authority is no status)."""
+    registry, run_id, path, document = _entry_document(tmp_path)
+    del document[key]
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match=key):
+        registry.resolve(run_id)
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("status", None),
+        ("status", "bogus"),
+        ("status", "incomplete"),
+        ("created_at", None),
+        ("created_at", ""),
+        ("repository", ""),
+        ("lineage", ""),
+        ("cleaned_at", ""),
+    ],
+)
+def test_an_entry_holding_what_ha_never_writes_is_unknown(
+    tmp_path: Path, key: str, value: object
+) -> None:
+    """Codex review of lot 2 PR B (round 3): create writes running and the engine a final
+    status -- incomplete is derived, never stored; a timestamp or a lineage is never empty."""
+    registry, run_id, path, document = _entry_document(tmp_path)
+    document[key] = value
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match=key):
+        registry.resolve(run_id)
+
+
 @pytest.mark.parametrize(
     "target",
     [

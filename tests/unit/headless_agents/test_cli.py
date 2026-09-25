@@ -937,6 +937,32 @@ def test_runs_survives_an_unreadable_quarantine_and_entry(world: _World) -> None
     assert lines[1].startswith(run_id) and "unknown" in lines[1]
 
 
+def _drop_status(world: _World) -> str:
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id: str = json.loads(out)["run_id"]
+    path = world.state / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    del document["status"]
+    path.write_text(json.dumps(document))
+    return run_id
+
+
+def test_runs_reads_an_entry_without_its_status_as_unknown(world: _World) -> None:
+    """Codex review of PR B (round 3): the row read incomplete, from the free lock."""
+    _drop_status(world)
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert code == 0 and row["status"] == "unknown"
+
+
+def test_show_exits_1_on_an_entry_without_its_status(world: _World) -> None:
+    """Codex review of PR B (round 3): ha show exited 0 on a status its entry never gave."""
+    run_id = _drop_status(world)
+    code, out, err = world.run("show", run_id)
+    assert code == 1 and "status is malformed" in err
+    assert out.splitlines()[0] == f"{run_id}  -  exit -  unknown"
+
+
 def test_runs_reads_a_target_that_is_not_text_as_unknown(world: _World) -> None:
     """Codex review of PR B (round 1): the row named the run's target "None"."""
     code, out, _ = world.run("run", "codex", "--json", "go")

@@ -26,6 +26,9 @@ RUN_ID_PATTERN: Final = re.compile(r"\d{8}T\d{6}-[0-9a-f]{8}")
 FINAL_STATUSES: Final = frozenset(
     {"answered", "failed", "committed", "no_change", "approved", "changes"}
 )
+#: What an entry's status can say: ``create`` writes ``running``, the engine a final
+#: status. ``incomplete`` is derived from the lifecycle lock, never stored.
+_ENTRY_STATUSES: Final = FINAL_STATUSES | {"running"}
 MINT_ATTEMPTS: Final = 100
 
 
@@ -50,6 +53,10 @@ def _optional_path(value: object) -> Path | None:
 
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _null_or_text(value: object) -> bool:
+    return value is None or (isinstance(value, str) and bool(value))
 
 
 def _is_target(target: Mapping[object, object]) -> bool:
@@ -126,30 +133,38 @@ class Registry:
 
     @staticmethod
     def _entry(document: Mapping[str, object], path: Path) -> Entry:
-        """The entry ``document`` states; :class:`Unknown` when a field is missing or ill-typed.
+        """The entry ``document`` states; :class:`Unknown` when a key :meth:`create` writes
+        is missing or holds what ``ha`` never writes there.
 
         ``read`` vouches for the JSON and the id only: a well-formed object without its
         ``run_dir`` escaped as ``KeyError`` and crashed ``ha runs`` and ``ha clean``
-        (codex review of the lot 2 plan, round 3), and a target turned into text
-        showed a run of target ``None`` (codex review of lot 2 PR B, round 1).
-        Unknown is never empty, nor invented (§3.8.1).
+        (codex review of the lot 2 plan, round 3); a target turned into text showed a
+        run of target ``None`` (codex review of lot 2 PR B, round 1); and a missing
+        status let a run outside any lineage take ``running`` or ``incomplete`` from
+        its lock (round 3) -- a silent authority is no status (plan P6). Unknown is
+        never empty, nor invented (§3.8.1).
         """
         run_dir, target = document.get("run_dir"), document.get("target")
         if not isinstance(run_dir, str) or not run_dir:
             raise Unknown(f"{path}: run_dir is malformed")
         if not isinstance(target, dict) or not _is_target(target):
             raise Unknown(f"{path}: target is malformed")
-        for key in ("repository", "lineage", "status", "cleaned_at"):
-            value = document.get(key)
-            if value is not None and not isinstance(value, str):
+        for key in ("repository", "lineage", "cleaned_at"):
+            if key not in document or not _null_or_text(document[key]):
                 raise Unknown(f"{path}: {key} is malformed")
+        status = document.get("status")
+        if not isinstance(status, str) or status not in _ENTRY_STATUSES:
+            raise Unknown(f"{path}: status is malformed")
+        created_at = document.get("created_at")
+        if not isinstance(created_at, str) or not created_at:
+            raise Unknown(f"{path}: created_at is malformed")
         return Entry(
             run_id=str(document["run_id"]),
             run_dir=Path(run_dir),
             repository=_optional_path(document.get("repository")),
             target=dict(target),
             lineage=_optional_str(document.get("lineage")),
-            status=_optional_str(document.get("status")),
+            status=status,
             cleaned_at=_optional_str(document.get("cleaned_at")),
         )
 
