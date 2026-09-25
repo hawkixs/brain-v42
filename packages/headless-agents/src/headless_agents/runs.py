@@ -26,9 +26,9 @@ RUN_ID_PATTERN: Final = re.compile(r"\d{8}T\d{6}-[0-9a-f]{8}")
 FINAL_STATUSES: Final = frozenset(
     {"answered", "failed", "committed", "no_change", "approved", "changes"}
 )
-#: What an entry's status can say: ``create`` writes ``running``, the engine a final
-#: status. ``incomplete`` is derived from the lifecycle lock, never stored.
-_ENTRY_STATUSES: Final = FINAL_STATUSES | {"running"}
+#: What ``ha`` stores as a run's status, in its entry or in its lineage: ``running``,
+#: or a final status. ``incomplete`` is derived from the lifecycle lock, never stored.
+STORED_STATUSES: Final = FINAL_STATUSES | {"running"}
 MINT_ATTEMPTS: Final = 100
 
 
@@ -153,7 +153,7 @@ class Registry:
             if key not in document or not _null_or_text(document[key]):
                 raise Unknown(f"{path}: {key} is malformed")
         status = document.get("status")
-        if not isinstance(status, str) or status not in _ENTRY_STATUSES:
+        if not isinstance(status, str) or status not in STORED_STATUSES:
             raise Unknown(f"{path}: status is malformed")
         created_at = document.get("created_at")
         if not isinstance(created_at, str) or not created_at:
@@ -247,6 +247,7 @@ __all__ = [
     "FINAL_STATUSES",
     "MINT_ATTEMPTS",
     "RUN_ID_PATTERN",
+    "STORED_STATUSES",
     "Entry",
     "Registry",
     "RegistryError",

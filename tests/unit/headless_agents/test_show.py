@@ -262,6 +262,13 @@ def test_an_unreadable_lineage_takes_no_branch_from_the_report(home: Home) -> No
     assert report["lineage"] == RUN and report["branch"] is None and report["base"] is None
 
 
+def test_a_lineage_giving_the_run_a_status_ha_never_writes_is_unknown(home: Home) -> None:
+    """Codex review of PR B (round 4): the run read running or incomplete from its lock."""
+    home.write_run(member="bogus")
+    shown = home.rebuild()
+    assert shown.report["status"] == "unknown" and shown.unknown is True
+
+
 def test_a_lineage_silent_about_the_run_is_unknown(home: Home) -> None:
     """Codex review of this plan (round 1): no member status is no status, not a live run."""
     home.write_run()

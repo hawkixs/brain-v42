@@ -86,6 +86,21 @@ def test_a_malformed_lineage_is_unknown(tmp_path: Path, mutation: object) -> Non
         lineage.load(state, _OWNER)
 
 
+@pytest.mark.parametrize("status", ["bogus", "incomplete", ""])
+def test_a_member_status_ha_never_writes_is_unknown(tmp_path: Path, status: str) -> None:
+    """Codex review of lot 2 PR B (round 4): members were checked as text only, so a status
+    ha never writes read running or incomplete from the lock -- the mirror of the registry
+    entry (round 3). ha writes running or a final status; incomplete is derived."""
+    state = tmp_path / "state"
+    lineage.create(state, _lineage(tmp_path))
+    path = lineage.lineage_path(state, _OWNER)
+    document = json.loads(path.read_text())
+    document["members"] = {_OWNER: status}
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match="members"):
+        lineage.load(state, _OWNER)
+
+
 def test_a_missing_lineage_is_unknown(tmp_path: Path) -> None:
     with pytest.raises(Unknown):
         lineage.load(tmp_path, _OWNER)

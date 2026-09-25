@@ -925,6 +925,33 @@ def test_runs_reads_a_write_run_its_lineage_does_not_list_as_unknown(world: _Wor
     assert row["status"] == "unknown"
 
 
+def test_runs_reads_a_lineage_status_ha_never_writes_as_unknown(world: _World) -> None:
+    """Codex review of PR B (round 4): the row read incomplete, from the free lock."""
+    from headless_agents import lineage as lineages
+
+    run_id = "20260925T000000-eeeeeeee"
+    world.registry().create(
+        run_id, run_dir=None, target={"kind": "role", "name": "w"}, repository=None, lineage=run_id
+    )
+    lineages.create(
+        world.state,
+        lineages.LineageState(
+            owner=run_id,
+            repository=world.home,
+            common_dir=world.home / ".git",
+            worktree=world.home / "wt",
+            branch=f"ha/{run_id}",
+            base=None,
+            members={run_id: "bogus"},
+            pending=None,
+            compromised=None,
+        ),
+    )
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert code == 0 and row["status"] == "unknown"
+
+
 def test_runs_survives_an_unreadable_quarantine_and_entry(world: _World) -> None:
     code, out, _ = world.run("run", "codex", "--json", "go")
     run_id = json.loads(out)["run_id"]
