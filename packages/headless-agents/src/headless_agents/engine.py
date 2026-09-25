@@ -526,6 +526,22 @@ def _admit(
     raise RegistryError(f"could not mint a fresh run id in {MINT_ATTEMPTS} attempts")
 
 
+#: Rails whose shell runs outside any sandbox of theirs: a ``shell`` write role
+#: on one of them is unconfined whatever its proofs say (decision 13; codex
+#: keeps its sandboxed shell).
+_UNSANDBOXED_SHELL_RAILS: Final = frozenset({"claude", "opencode", "agy"})
+
+
+def write_is_unconfined(plan: Plan) -> bool:
+    """Whether a write takes the unconfined path of §3.8.3 (plan Tasks 20, 22).
+
+    An unconfined write holds the unconfined lock exclusively, publishes its
+    intent, and has its worktree's ``HEAD`` reflog read for agent commits.
+    """
+    role = plan.role
+    return role.shell and any(provider in _UNSANDBOXED_SHELL_RAILS for provider in role.providers)
+
+
 def _refused(registry: Registry, entry: Entry) -> None:
     """A gate refused the run before its step: a read-only run is ``failed``; a
     write run never started, so its entry and directory go (§3.8.1)."""
@@ -547,6 +563,7 @@ def _execute_write(
     report: dict[str, object],
     step_name: str,
     started: float,
+    unconfined: bool,
     say: Callable[[str], None],
 ) -> Outcome:
     """A role write run: the §3.8.3 protocol, then its report."""
@@ -572,6 +589,7 @@ def _execute_write(
             step_dir=step_dir,
             run_links=run_links,
             say=say,
+            unconfined=unconfined,
         )
     except write_flow.WriteRefused as exc:
         _refused(registry, entry)
@@ -659,18 +677,24 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
             raise UsageError(f"{exc}: nothing ran") from None
         if plan.run_dir is None:
             entry.run_dir.mkdir(parents=True, mode=0o700)
+        unconfined = role.write and write_is_unconfined(plan)
         try:
             held_locks.enter_context(
                 held(
                     plan.state / "unconfined.lock",
                     rank=Rank.UNCONFINED,
-                    exclusive=False,
+                    exclusive=unconfined,
                     wait=locks.LOCK_WAIT_SECONDS,
                     what="the unconfined lock",
                 )
             )
         except LockTimeout:
             _refused(registry, entry)
+            if unconfined:
+                raise UsageError(
+                    "runs and writes still running after the bound: an unconfined write "
+                    "waits for none of them; nothing ran"
+                ) from None
             raise UsageError(
                 "an unconfined write is running: nothing ran; retry once it has ended"
             ) from None
@@ -706,6 +730,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
             return _execute_write(
                 plan,
                 bundle,
+                unconfined=unconfined,
                 registry=registry,
                 entry=entry,
                 identity=identity,

@@ -42,7 +42,7 @@ from .profile import Workspace
 from .provenance import MadeBy
 from .repo import RepoIdentity
 from .result import RunResult
-from .state import Unknown, read_optional
+from .state import Unknown, publish, read_optional
 
 if TYPE_CHECKING:
     from .engine import Plan
@@ -52,6 +52,7 @@ NO_CHANGE_EXIT_CODE: Final = 5
 COMMIT_LOG: Final = "commit.log"
 PATCH_FILE: Final = "change.patch"
 UNCONFINED_INTENT: Final = "unconfined-intent.json"
+UNCONFINED_WRITERS: Final = "unconfined-writers.json"
 
 
 class WriteRefused(Exception):  # noqa: N818 - a refusal, not a crash
@@ -267,6 +268,30 @@ def _intent(write: _Write) -> None:
         compromised=None,
     )
     lineages.create(write.state, write.lineage)
+    if write.unconfined:
+        _publish_unconfined_intent(write)
+
+
+def _publish_unconfined_intent(write: _Write) -> None:
+    """``unconfined-intent.json``, and this write appended to ``unconfined-writers.json``.
+
+    The intent exists only while its writer holds the unconfined lock
+    exclusively; the writers' list is never cleared by ``ha`` (§3.8.4).
+    """
+    record: dict[str, object] = {
+        "run_id": write.run_id,
+        "repository": str(write.identity.work_tree),
+        "providers": list(write.plan.role.providers),
+    }
+    publish(write.state / UNCONFINED_INTENT, record)
+    path = write.state / UNCONFINED_WRITERS
+    try:
+        document = read_optional(path) or {"writers": []}
+    except Unknown:
+        document = {"writers": [], "unreadable_before": True}
+    writers = document.get("writers")
+    listed = list(writers) if isinstance(writers, list) else []
+    publish(path, {**document, "writers": [*listed, record]})
 
 
 # ── step 3: preparation ────────────────────────────────────────────────────
@@ -309,10 +334,40 @@ def _head(write: _Write) -> str | None:
 # ── step 4: start point ────────────────────────────────────────────────────
 
 
+def _head_reflog(write: _Write) -> list[str] | None:
+    """The worktree's ``HEAD`` reflog, newest first; ``None`` when unreadable."""
+    code, out, _ = write.git(write.worktree, ["reflog", "show", "--format=%H", "HEAD"])
+    return out.split() if code == 0 else None
+
+
 def _start_point(write: _Write, tip: str) -> None:
+    """Step 4: the branch tip and, for an unconfined write, the ``HEAD`` reflog position."""
     pending = write.current.pending
     assert pending is not None, "the intent records the pending write"
-    write.save(replace(write.current, pending=replace(pending, start_tip=tip)))
+    reflog = _head_reflog(write) if write.unconfined else None
+    start_reflog = len(reflog) if reflog is not None else None
+    write.save(
+        replace(
+            write.current,
+            pending=replace(pending, start_tip=tip, start_reflog=start_reflog),
+        )
+    )
+
+
+def _reflog_gained(write: _Write, tip: str) -> tuple[bool, list[str]]:
+    """``(moved, commits)`` the ``HEAD`` reflog gained since the start point, oldest first.
+
+    A reflog shorter than at the start point, or unreadable, was rewritten:
+    it counts as a movement although no commit can be named.
+    """
+    pending = write.current.pending
+    start = pending.start_reflog if pending is not None else None
+    reflog = _head_reflog(write)
+    if start is None or reflog is None or len(reflog) < start:
+        return True, []
+    gained = list(reversed(reflog[: len(reflog) - start]))
+    commits = [sha for sha in dict.fromkeys(gained) if sha != tip]
+    return bool(gained) and bool(commits), commits
 
 
 # ── steps 6 to 8 ───────────────────────────────────────────────────────────
@@ -407,6 +462,9 @@ def _publish(
             compromised=compromised or current.compromised,
         )
     )
+    _crash_after("lineage_published")
+    if write.unconfined:
+        (write.state / UNCONFINED_INTENT).unlink(missing_ok=True)
 
 
 def _compromise(write: _Write, reason: str) -> None:
@@ -531,10 +589,11 @@ def run_write_step(
             return _outcome(1, "failed", "tripwire", write, final=final)
 
         head, moved_tip = _head(write), _tip(write)
-        if head != tip or moved_tip != tip:
-            commits: list[tuple[str, MadeBy]] = [
-                (sha, "agent") for sha in _new_commits(write, tip, [head, moved_tip])
-            ]
+        reflog_moved, reflog_commits = _reflog_gained(write, tip) if unconfined else (False, [])
+        if head != tip or moved_tip != tip or reflog_moved:
+            found = _new_commits(write, tip, [head, moved_tip])
+            found += [sha for sha in reflog_commits if sha not in found]
+            commits: list[tuple[str, MadeBy]] = [(sha, "agent") for sha in found]
             _publish(write, status="failed", commits=commits, compromised="agent_moved_head")
             say("the agent moved HEAD or the branch: nothing committed, the lineage compromised")
             return _outcome(
@@ -583,6 +642,7 @@ __all__ = [
     "NO_CHANGE_EXIT_CODE",
     "PATCH_FILE",
     "UNCONFINED_INTENT",
+    "UNCONFINED_WRITERS",
     "WriteOutcome",
     "WriteRefused",
     "run_write_step",

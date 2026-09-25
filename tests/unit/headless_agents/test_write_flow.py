@@ -13,7 +13,9 @@ import json
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Callable
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -627,3 +629,200 @@ def test_a_write_outside_a_git_repository_is_refused_before_anything(
     with pytest.raises(UsageError, match="git repository"):
         world.write(repo=plain)
     assert world.registry().run_ids() == [] and world.git_calls == []
+
+
+# ── the unconfined path (plan Task 20) ─────────────────────────────────────
+
+
+@pytest.fixture
+def unconfined(world: World, monkeypatch: pytest.MonkeyPatch) -> World:
+    monkeypatch.setattr(engine, "write_is_unconfined", lambda planned: True)
+    return world
+
+
+_HOLD = """
+import fcntl, os, pathlib, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX if sys.argv[2] == "ex" else fcntl.LOCK_SH)
+pathlib.Path(sys.argv[3]).write_text("ok")
+time.sleep(30)
+"""
+
+
+@contextmanager
+def _holding(world: World, mode: str):  # type: ignore[no-untyped-def]
+    ready = world.home / f"ready-{mode}"
+    world.state.mkdir(parents=True, exist_ok=True)
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLD, str(world.state / "unconfined.lock"), mode, str(ready)]
+    )
+    try:
+        while not ready.exists():
+            time.sleep(0.02)
+        yield
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_an_unconfined_write_waits_for_running_runs_then_is_refused(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.3)
+    with _holding(unconfined, "sh"), pytest.raises(UsageError, match="running"):
+        unconfined.write()
+    assert unconfined.registry().run_ids() == []
+
+
+def test_a_running_unconfined_write_serialises_a_read_only_run(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.3)
+    read_only = plan(replace(world.write_plan().request, base=None))
+    with _holding(world, "ex"), pytest.raises(UsageError, match="unconfined write is running"):
+        execute(read_only, say=world.said.append)
+
+
+def test_an_unconfined_write_publishes_its_intent_then_removes_it(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: dict[str, object] = {}
+
+    def at(step: str) -> None:
+        if step == "intent":
+            seen["intent"] = json.loads(
+                (unconfined.state / write_flow.UNCONFINED_INTENT).read_text()
+            )
+
+    monkeypatch.setattr(write_flow, "_crash_after", at)
+    unconfined.agent.edit = _edit_app
+    outcome = unconfined.write()
+    assert outcome.exit_code == 0
+    assert seen["intent"] == {
+        "run_id": outcome.run_id,
+        "repository": str(unconfined.repo),
+        "providers": ["codex"],
+    }
+    assert not (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    writers = json.loads((unconfined.state / write_flow.UNCONFINED_WRITERS).read_text())
+    assert writers["writers"] == [
+        {"run_id": outcome.run_id, "repository": str(unconfined.repo), "providers": ["codex"]}
+    ]
+    assert lineage.load(unconfined.state, outcome.run_id).members[outcome.run_id] == "committed"
+
+
+def test_an_unconfined_agent_commit_hidden_by_a_reset_is_found_in_the_reflog(
+    unconfined: World,
+) -> None:
+    def commit_then_hide(root: Path) -> None:
+        _edit_app(root)
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "--no-verify", "-m", "hidden")
+        _git(root, "reset", "-q", "--hard", "HEAD~1")
+
+    unconfined.agent.edit = commit_then_hide
+    outcome = unconfined.write()
+    assert outcome.exit_code == 1
+    assert lineage.load(unconfined.state, outcome.run_id).compromised == "agent_moved_head"
+    commits = json.loads((outcome.run_dir / "run.json").read_text())["commits"]
+    assert [c["made_by"] for c in commits] == ["agent"]
+    hidden = provenance.lookup(unconfined.state, commits[0]["sha"])
+    assert hidden is not None and hidden["made_by"] == "agent"
+    assert _git(unconfined.repo, "log", "-1", "--format=%s", commits[0]["sha"]).strip() == "hidden"
+
+
+def test_a_confined_write_does_not_read_the_reflog(world: World) -> None:
+    """The reflog is the unconfined path's extra witness; a confined write
+    compares the tips only (a reset back to the start is invisible to it)."""
+
+    def commit_then_hide(root: Path) -> None:
+        _edit_app(root)
+        _git(root, "add", "-A")
+        _git(root, "commit", "-q", "--no-verify", "-m", "hidden")
+        _git(root, "reset", "-q", "--hard", "HEAD~1")
+
+    world.agent.edit = commit_then_hide
+    assert world.write().exit_code == 5
+
+
+def _second_repository(world: World) -> Path:
+    other = world.home / "other-repo"
+    other.mkdir()
+    _git(other, "init", "-q", "-b", "main")
+    _git(other, "config", "user.name", "Op")
+    _git(other, "config", "user.email", "op@example.test")
+    (other / "a.txt").write_text("a\n")
+    _git(other, "add", "a.txt")
+    _git(other, "commit", "-q", "-m", "init")
+    return other
+
+
+def test_an_unconfined_write_killed_in_one_repository_stops_every_repository(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def crash(step: str) -> None:
+        if step == "step":
+            raise SystemExit("killed")
+
+    monkeypatch.setattr(write_flow, "_crash_after", crash)
+    unconfined.agent.edit = _edit_app
+    with pytest.raises(SystemExit):
+        unconfined.write()
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    monkeypatch.setattr(engine, "write_is_unconfined", lambda planned: False)
+    unconfined.git_calls.clear()
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write(repo=_second_repository(unconfined))
+    assert unconfined.git_calls == []
+    refusal = quarantine.check(unconfined.state, None)
+    assert refusal is not None and refusal.startswith("operator quarantine")
+
+
+def test_a_crash_between_the_lineage_rename_and_the_intent_removal_quarantines_the_operator(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def crash(step: str) -> None:
+        if step == "lineage_published":
+            raise SystemExit("killed")
+
+    monkeypatch.setattr(write_flow, "_crash_after", crash)
+    unconfined.agent.edit = _edit_app
+    with pytest.raises(SystemExit):
+        unconfined.write()
+    (owner,) = lineage.owners(unconfined.state)
+    assert lineage.load(unconfined.state, owner).members[owner] == "committed"
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()
+    assert quarantine.check(unconfined.state, None) is not None
+
+
+def test_a_new_unconfined_write_finding_a_leftover_intent_is_refused(unconfined: World) -> None:
+    unconfined.state.mkdir(parents=True, exist_ok=True)
+    (unconfined.state / write_flow.UNCONFINED_INTENT).write_text(json.dumps({"run_id": "old"}))
+    unconfined.git_calls.clear()
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()
+    assert unconfined.git_calls == []
+    assert quarantine.check(unconfined.state, None) is not None
+
+
+@pytest.mark.parametrize(
+    ("providers", "shell", "expected"),
+    [
+        (("claude",), True, True),
+        (("opencode",), True, True),
+        (("agy",), True, True),
+        (("codex", "claude"), True, True),
+        (("codex",), True, False),
+        (("claude",), False, False),
+    ],
+)
+def test_a_shell_write_on_an_unsandboxed_rail_is_unconfined(
+    world: World, providers: tuple[str, ...], shell: bool, expected: bool
+) -> None:
+    """Decision 13: codex keeps its sandboxed shell; the other rails' shell is unconfined."""
+    planned = world.write_plan()
+    links = tuple(replace(planned.role.links[0], provider=p) for p in providers)
+    role = replace(planned.role, links=links, shell=shell)
+    assert engine.write_is_unconfined(replace(planned, role=role)) is expected
