@@ -576,6 +576,16 @@ def test_no_subcommand_is_a_usage_error(world: _World) -> None:
     assert code == 2
 
 
+def test_version_prints_the_installed_package_version(world: _World) -> None:
+    """Spec 0.5.0 §3.9: ``ha --version``."""
+    from importlib.metadata import version
+
+    code, out, err = world.run("--version")
+    assert code == 0
+    assert out.strip() == f"ha {version('headless-agents')}"
+    assert err == ""
+
+
 def test_the_package_installs_the_ha_command() -> None:
     import tomllib
 
