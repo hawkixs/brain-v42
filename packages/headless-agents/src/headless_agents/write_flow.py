@@ -1,13 +1,15 @@
 """A write, from admission to publication (spec 0.5.0 §3.8.3).
 
-:func:`run_write_step` runs the nine steps of §3.8.3 for a role write run,
+:func:`run_write_step` runs the nine steps of §3.8.3 for a write run -- a
+role's, or an ``implement`` workflow's, new or continuing a lineage (§3.6) --
 each a function of its own, in this order:
 
 1. admission, without git -- the lineage registry lock, then the lineage
    locks in ascending owner order, then every state check under them;
-2. intent -- the new lineage's state, with its pending write, created before
-   any mutation; the registry lock released;
-3. preparation -- the only git before the provider, hooks off;
+2. intent -- the pending write, before any mutation: in a new lineage's state,
+   created here, or in the continued lineage's; the registry lock released;
+3. preparation -- the only git before the provider, hooks off: a new worktree,
+   or a continuation's checked clean and on its branch;
 4. start point -- the branch tip, recorded after preparation;
 5. the step -- the role's chain, on a writable worktree, the tripwire armed;
 6. tripwire -- fired: quarantine, lineage compromised, no git at all;
@@ -92,15 +94,28 @@ class _Write:
     unconfined: bool
     say: Callable[[str], None]
     locks: ExitStack
+    #: The lineage's owner: this run's own id for a new lineage, or the owner of the
+    #: lineage a continuation joins (§3.6); ``""`` means this run's id.
+    owner: str = ""
+    #: The run ``--continue`` named, a member of the joined lineage.
+    named: str | None = None
     worktree: Path = field(init=False)
     branch: str = field(init=False)
     git_dir: Path | None = None
     reflog_start: tuple[bytes | None, ...] = ()
     lineage: LineageState | None = None
+    #: A continuation's lineage as admission read it: restored if preparation refuses.
+    before: LineageState | None = None
 
     def __post_init__(self) -> None:
+        self.owner = self.owner or self.run_id
+        # A continuation takes both from its lineage state at admission.
         self.worktree = self.run_dir / "wt"
-        self.branch = f"ha/{self.run_id}"
+        self.branch = f"ha/{self.owner}"
+
+    @property
+    def continuing(self) -> bool:
+        return self.owner != self.run_id
 
     @property
     def environ(self) -> Mapping[str, str]:
@@ -181,29 +196,37 @@ def check_repository(state: Path, common: Path, *, own: str) -> None:
         except Unknown as exc:
             raise WriteRefused(f"lineage {owner} is unknown ({exc}); nothing ran") from None
         if other.pending is not None and is_free(lineages.lineage_lock(state, owner)):
-            lineages.save(state, replace(other, compromised="unfinalized_write"))
-            quarantine.publish(
-                state,
-                "repository",
-                reason="unfinalized_write",
-                run_id=other.pending.run_id,
-                paths=[],
-                common_dir=common,
-            )
-            if other.pending.unconfined:
-                quarantine.publish(
-                    state,
-                    "operator",
-                    reason="unfinalized_write",
-                    run_id=other.pending.run_id,
-                    paths=[],
-                    common_dir=None,
-                )
-            raise WriteRefused(
-                f"lineage {owner} holds the unfinished write of run {other.pending.run_id}: "
-                "it is compromised (unfinalized_write) and the repository quarantined; "
-                "nothing ran"
-            )
+            raise _unfinalized(state, other, common)
+
+
+def _unfinalized(state: Path, lineage: LineageState, common: Path) -> WriteRefused:
+    """A stale pending write: its lineage compromised (``unfinalized_write``), the
+    repository quarantined -- the operator too when that write was unconfined."""
+    pending = lineage.pending
+    assert pending is not None, "only a pending write can be stale"
+    lineages.save(state, replace(lineage, compromised="unfinalized_write"))
+    quarantine.publish(
+        state,
+        "repository",
+        reason="unfinalized_write",
+        run_id=pending.run_id,
+        paths=[],
+        common_dir=common,
+    )
+    if pending.unconfined:
+        quarantine.publish(
+            state,
+            "operator",
+            reason="unfinalized_write",
+            run_id=pending.run_id,
+            paths=[],
+            common_dir=None,
+        )
+    return WriteRefused(
+        f"lineage {lineage.owner} holds the unfinished write of run {pending.run_id}: "
+        "it is compromised (unfinalized_write) and the repository quarantined; "
+        "nothing ran"
+    )
 
 
 def _check_sources(state: Path, sources: Sequence[str]) -> None:
@@ -223,21 +246,61 @@ def _check_sources(state: Path, sources: Sequence[str]) -> None:
             )
 
 
+def _check_continued(write: _Write) -> None:
+    """A continuation's own lineage, from the state only, under its lock (§3.6).
+
+    Known; its pending write, if any, stale -- this process holds the lineage
+    lock exclusively, so no writer of it is alive (§3.8.2); not compromised;
+    listing the named run; in the repository of this run; its worktree not
+    removed by ``ha clean``. Whether that worktree is clean is a git
+    question, answered in preparation.
+    """
+    state, owner = write.state, write.owner
+    try:
+        current = lineages.load(state, owner)
+    except Unknown as exc:
+        raise WriteRefused(f"lineage {owner} is unknown ({exc}); nothing ran") from None
+    if current.pending is not None:
+        raise _unfinalized(state, current, write.identity.common_dir)
+    if current.compromised is not None:
+        raise WriteRefused(f"lineage {owner} is compromised ({current.compromised}); nothing ran")
+    if write.named not in current.members:
+        raise WriteRefused(f"{write.named} is not a member of lineage {owner}; nothing ran")
+    if current.common_dir.resolve() != write.identity.common_dir.resolve():
+        raise WriteRefused(
+            f"lineage {owner} belongs to {current.repository}, not to "
+            f"{write.identity.work_tree}; nothing ran"
+        )
+    if not current.worktree.is_dir():
+        raise WriteRefused(
+            f"the worktree of lineage {owner} is gone ({current.worktree}): it was cleaned; "
+            "nothing ran"
+        )
+    write.lineage = write.before = current
+    write.worktree, write.branch = current.worktree, current.branch
+
+
 def _admit(write: _Write, registry: ExitStack) -> None:
-    """Step 1: every lock first, in the §3.8.2 order, then every state check under them."""
+    """Step 1: every lock first, in the §3.8.2 order, then every state check under them.
+
+    A new lineage holds the lineage registry lock exclusively: it creates its
+    state under it. A continuation creates none, and holds it shared while it
+    enumerates the repository's lineages (§3.8.2); its own lineage lock is
+    exclusive, waited for at most :data:`locks.LOCK_WAIT_SECONDS`.
+    """
     state = write.state
     registry.enter_context(
         held(
             lineages.registry_lock(state),
             rank=Rank.LINEAGE_REGISTRY,
-            exclusive=True,
+            exclusive=not write.continuing,
             wait=locks.LOCK_WAIT_SECONDS,
             what="the lineage registry lock",
         )
     )
     sources = _sources(state, write.start)
-    for owner in sorted({write.run_id, *sources}):
-        own = owner == write.run_id
+    for owner in sorted({write.owner, *sources}):
+        own = owner == write.owner
         write.locks.enter_context(
             held(
                 lineages.lineage_lock(state, owner),
@@ -252,33 +315,45 @@ def _admit(write: _Write, registry: ExitStack) -> None:
     if refusal is not None:
         raise WriteRefused(f"{refusal}; nothing ran")
     check_unconfined_intent(state, write.run_id)
-    check_repository(state, write.identity.common_dir, own=write.run_id)
-    _check_sources(state, sources)
+    check_repository(state, write.identity.common_dir, own=write.owner)
+    # A continuation run from inside its own worktree finds its lineage as a source:
+    # its own checks, below, are the stricter ones.
+    _check_sources(state, [owner for owner in sources if owner != write.owner])
+    if write.continuing:
+        _check_continued(write)
 
 
 # ── step 2: intent ─────────────────────────────────────────────────────────
 
 
 def _intent(write: _Write) -> None:
-    providers = write.plan.role.providers
-    write.lineage = LineageState(
-        owner=write.run_id,
-        repository=write.identity.work_tree,
-        common_dir=write.identity.common_dir,
-        worktree=write.worktree,
-        branch=write.branch,
-        base=None,
-        members={write.run_id: "running"},
-        pending=PendingWrite(
-            run_id=write.run_id,
-            providers=tuple(providers),
-            unconfined=write.unconfined,
-            start_tip=None,
-            start_reflog=None,
-        ),
-        compromised=None,
+    """Step 2: the pending write, before any mutation -- in a new lineage's state, created
+    here, or added to the joined lineage's with the continuation as a member."""
+    pending = PendingWrite(
+        run_id=write.run_id,
+        providers=tuple(write.plan.role.providers),
+        unconfined=write.unconfined,
+        start_tip=None,
+        start_reflog=None,
     )
-    lineages.create(write.state, write.lineage)
+    if write.continuing:
+        current = write.current
+        write.save(
+            replace(current, members={**current.members, write.run_id: "running"}, pending=pending)
+        )
+    else:
+        write.lineage = LineageState(
+            owner=write.run_id,
+            repository=write.identity.work_tree,
+            common_dir=write.identity.common_dir,
+            worktree=write.worktree,
+            branch=write.branch,
+            base=None,
+            members={write.run_id: "running"},
+            pending=pending,
+            compromised=None,
+        )
+        lineages.create(write.state, write.lineage)
     if write.unconfined:
         _publish_unconfined_intent(write)
 
@@ -312,8 +387,48 @@ class _PreparationFailed(Exception):
     pass
 
 
+class _ContinuationRefused(Exception):  # noqa: N818 - a refusal, not a crash
+    """A continuation's worktree cannot be continued: nothing ran (§3.8.3 step 3)."""
+
+
+def _prepare_continued(write: _Write) -> str:
+    """A continuation's worktree: clean, on its lineage's branch, which exists; its base.
+
+    A worktree switched to another branch or detached by hand would put the
+    continuation's commit elsewhere than on the branch a review reads.
+    """
+    worktree, branch = write.worktree, write.branch
+    code, out, err = write.git(worktree, ["status", "--porcelain"])
+    if code != 0:
+        raise _ContinuationRefused(f"git status failed in {worktree}: {err.strip()}")
+    if out.strip():
+        raise _ContinuationRefused(
+            f"the worktree {worktree} has uncommitted changes: commit or discard them first"
+        )
+    code, out, _ = write.git(worktree, ["symbolic-ref", "-q", "HEAD"])
+    if code != 0 or out.strip() != f"refs/heads/{branch}":
+        raise _ContinuationRefused(
+            f"the worktree {worktree} is not on its branch {branch}: check it out again first"
+        )
+    base = write.current.base
+    if _tip(write) is None or base is None:
+        raise _ContinuationRefused(f"the branch {branch} or the lineage's base is missing")
+    write.git_dir = resolve_git_dir(worktree)
+    return base
+
+
+def _withdraw(write: _Write) -> None:
+    """A refused continuation leaves its lineage as admission found it: nothing ran."""
+    assert write.before is not None, "admission read the lineage"
+    write.save(write.before)
+    if write.unconfined:
+        (write.state / UNCONFINED_INTENT).unlink(missing_ok=True)
+
+
 def _prepare(write: _Write) -> str:
-    """Resolve the base and add the worktree; the base commit."""
+    """Resolve the base and add the worktree -- or check a continuation's; the base commit."""
+    if write.continuing:
+        return _prepare_continued(write)
     base_ref = write.plan.request.base or "HEAD"
     repository = write.identity.work_tree
     code, out, err = write.git(repository, ["rev-parse", "--verify", f"{base_ref}^{{commit}}"])
@@ -486,7 +601,7 @@ def _publish(
                 write.state,
                 sha,
                 run_id=write.run_id,
-                lineage=write.run_id,
+                lineage=write.owner,
                 made_by=made_by,
                 providers=providers,
             )
@@ -556,8 +671,15 @@ def run_write_step(
     run_links: RunLinks,
     say: Callable[[str], None],
     unconfined: bool = False,
+    joins: str | None = None,
+    named: str | None = None,
 ) -> WriteOutcome:
-    """§3.8.3 for one role write run; :class:`WriteRefused` when admission refuses."""
+    """§3.8.3 for one write run; :class:`WriteRefused` when admission refuses.
+
+    ``joins`` names the lineage a continuation joins (its owner) and ``named``
+    the member ``--continue`` named (§3.6); without them the write starts a
+    lineage of its own.
+    """
     with ExitStack() as locks:
         write = _Write(
             plan=plan,
@@ -569,6 +691,8 @@ def run_write_step(
             unconfined=unconfined,
             say=say,
             locks=locks,
+            owner=joins or run_id,
+            named=named,
         )
         with ExitStack() as registry:
             try:
@@ -580,13 +704,18 @@ def run_write_step(
         # The registry lock is released: the lineage exists with its intent.
         try:
             base = _prepare(write)
+        except _ContinuationRefused as exc:
+            _withdraw(write)
+            raise WriteRefused(f"{exc}; nothing ran") from None
         except _PreparationFailed as exc:
             _publish(write, status="failed", commits=(), compromised=None)
             say(f"{exc}; nothing ran")
             return _outcome(1, "failed", "preparation_failed", write)
         _crash_after("preparation")
         tip = _tip(write)
-        if tip != base:
+        # A new lineage starts at its base; a continuation at its branch's tip, which
+        # keeps the commits made by hand since the last member (§3.6).
+        if tip is None or (not write.continuing and tip != base):
             _compromise(write, "preparation_moved_head")
             say(f"the branch {write.branch} is not at the base after preparation")
             return _outcome(1, "failed", "preparation_moved_head", write, head=tip)
@@ -642,7 +771,7 @@ def run_write_step(
                         state,
                         sha,
                         run_id=run_id,
-                        lineage=run_id,
+                        lineage=write.owner,
                         made_by="agent",
                         providers=plan.role.providers,
                     )

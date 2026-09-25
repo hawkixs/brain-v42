@@ -11,14 +11,17 @@ import io
 import json
 import os
 import subprocess
-from collections.abc import Callable
+import sys
+import time
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
 
-from headless_agents import cli, engine, lineage, provenance, write_flow
-from headless_agents.engine import Overrides, Request, execute, plan
+from headless_agents import cli, engine, lineage, locks, provenance, quarantine, write_flow
+from headless_agents.engine import Overrides, Request, UsageError, execute, plan
 from headless_agents.proofs import CLI_RAILS, record_proof
 from headless_agents.registry import Probe
 from headless_agents.result import RunResult
@@ -243,3 +246,283 @@ def test_ha_show_names_the_workflow_and_its_implement_step(world: World) -> None
     assert code == 0 and lines[0] == f"{outcome.run_id}  build  exit 0  committed"
     assert lines[2].startswith(f"head    ha/{outcome.run_id} @ ")
     assert lines[3].startswith("  implement  implementer  codex  ")
+
+
+# ── --continue (plan Tasks 7 and 8) ────────────────────────────────────────
+
+
+def _fix(root: Path) -> None:
+    (root / "app.py").write_text("print('v1')\nVERBOSE = True\n")
+
+
+def _first(world: World) -> engine.Outcome:
+    world.agent.edit = _flag
+    outcome = world.implement("Add a flag.")
+    assert outcome.exit_code == 0, world.said
+    return outcome
+
+
+def _continue(
+    world: World, run_id: str, task: str = "Turn it on.", **fields: object
+) -> engine.Outcome:
+    world.agent.edit = _fix
+    return world.implement(task, continue_run=run_id, **fields)
+
+
+def _run_dirs(world: World) -> list[str]:
+    return sorted(path.name for path in (world.home / ".cache" / "ha" / "runs").iterdir())
+
+
+def _assert_no_trace(world: World, first: str) -> None:
+    """A refused continuation leaves no run behind: no entry, no directory, no agent run."""
+    assert world.registry().run_ids() == [first]
+    assert _run_dirs(world) == [first]
+    assert len(world.agent.specs) == 1
+
+
+def test_a_continuation_commits_on_the_lineages_branch(world: World) -> None:
+    first = _first(world)
+    second = _continue(world, first.run_id)
+    assert second.exit_code == 0, world.said
+    owner, run_id = first.run_id, second.run_id
+    branch = f"ha/{owner}"
+    assert _subjects(world, branch) == [
+        f"chore(ha): {run_id} implement via codex/served-model",
+        f"chore(ha): {owner} implement via codex/served-model",
+    ]
+    assert lineage.load(world.state, owner).members == {owner: "committed", run_id: "committed"}
+    workspace = world.agent.specs[-1].profile.workspace
+    assert workspace is not None and workspace.path == first.run_dir / "wt"
+    entry = world.registry().resolve(run_id)
+    assert entry.lineage == owner and entry.continues == owner
+    report = json.loads((second.run_dir / "run.json").read_text())
+    assert report["lineage"] == owner and report["continues"] == owner
+    assert report["branch"] == branch
+    tip = _git(world.repo, "rev-parse", branch).strip()
+    assert provenance.lookup(world.state, tip) == {
+        "sha": tip,
+        "run_id": run_id,
+        "lineage": owner,
+        "made_by": "engine",
+        "providers": ["codex"],
+    }
+    patch = (second.run_dir / write_flow.PATCH_FILE).read_text()
+    assert "+VERBOSE = True" in patch and "VERBOSE = False" not in patch
+
+
+def test_a_continuation_may_name_any_member_of_the_lineage(world: World) -> None:
+    first = _first(world)
+    second = _continue(world, first.run_id)
+    world.agent.edit = lambda root: (root / "extra.py").write_text("x = 1\n")
+    third = world.implement("And more.", continue_run=second.run_id)
+    assert third.exit_code == 0, world.said
+    assert world.registry().resolve(third.run_id).lineage == first.run_id
+    members = lineage.load(world.state, first.run_id).members
+    assert set(members) == {first.run_id, second.run_id, third.run_id}
+
+
+def test_a_commit_made_by_hand_between_runs_is_kept(world: World) -> None:
+    """Review Focus 1, §3.6: kept, unattributed, and in the cumulative patch."""
+    first = _first(world)
+    worktree = first.run_dir / "wt"
+    (worktree / "notes.md").write_text("by hand\n")
+    _git(worktree, "add", "notes.md")
+    _git(worktree, "commit", "-q", "-m", "docs: notes by hand")
+    hand = _git(worktree, "rev-parse", "HEAD").strip()
+    second = _continue(world, first.run_id)
+    assert second.exit_code == 0, world.said
+    assert _subjects(world, f"ha/{first.run_id}")[1] == "docs: notes by hand"
+    assert provenance.lookup(world.state, hand) is None
+    assert "notes.md" in (second.run_dir / write_flow.PATCH_FILE).read_text()
+
+
+def test_a_dirty_worktree_refuses_the_continuation_and_leaves_no_trace(world: World) -> None:
+    first = _first(world)
+    (first.run_dir / "wt" / "app.py").write_text("edited by hand, not committed\n")
+    before = lineage.load(world.state, first.run_id)
+    with pytest.raises(UsageError, match="has uncommitted changes"):
+        _continue(world, first.run_id)
+    assert lineage.load(world.state, first.run_id) == before
+    assert world.registry().run_ids() == [first.run_id]
+    assert _run_dirs(world) == [first.run_id]
+    assert len(world.agent.specs) == 1
+
+
+def test_a_worktree_off_its_branch_refuses_the_continuation(world: World) -> None:
+    """Review Focus 2: a worktree detached or switched by hand would commit elsewhere."""
+    first = _first(world)
+    _git(first.run_dir / "wt", "checkout", "-q", "--detach")
+    with pytest.raises(UsageError, match="is not on its branch"):
+        _continue(world, first.run_id)
+    assert lineage.load(world.state, first.run_id).pending is None
+    _assert_no_trace(world, first.run_id)
+
+
+def test_a_continuation_from_inside_its_worktree_is_admitted(world: World) -> None:
+    """Review Focus 3: its lineage is both the one it joins and the source of --repo."""
+    first = _first(world)
+    second = _continue(world, first.run_id, cwd=first.run_dir / "wt")
+    assert second.exit_code == 0, world.said
+
+
+def test_a_continuation_after_ha_clean_is_refused(world: World) -> None:
+    first = _first(world)
+    code, _, err = world.cli("clean", first.run_id)
+    assert code == 0, err
+    with pytest.raises(UsageError, match="it was cleaned"):
+        _continue(world, first.run_id)
+
+
+def test_a_continuation_from_another_repository_is_refused(world: World, tmp_path: Path) -> None:
+    first = _first(world)
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-q", "-b", "main")
+    with pytest.raises(UsageError, match="belongs to"):
+        _continue(world, first.run_id, cwd=other)
+    _assert_no_trace(world, first.run_id)
+
+
+def test_a_continuation_refused_before_admission_creates_no_run_dir(
+    world: World, tmp_path: Path
+) -> None:
+    """§3.8.2: what plan() read from the registry is read again before anything is created."""
+    first = _first(world)
+    custom = tmp_path / "custom"
+    planned = plan(world.request("Turn it on.", continue_run=first.run_id, run_dir=custom))
+    (world.state / "runs" / f"{first.run_id}.json").write_text("{not json")
+    with pytest.raises(UsageError, match="recover it by hand"):
+        execute(planned, say=world.said.append)
+    assert not custom.exists()
+
+
+def test_a_compromised_lineage_refuses_the_continuation(world: World) -> None:
+    first = _first(world)
+    current = lineage.load(world.state, first.run_id)
+    lineage.save(world.state, replace(current, compromised="agent_moved_head"))
+    with pytest.raises(UsageError, match=r"compromised \(agent_moved_head\)"):
+        _continue(world, first.run_id)
+    _assert_no_trace(world, first.run_id)
+
+
+def test_an_unreadable_lineage_refuses_the_continuation(world: World) -> None:
+    first = _first(world)
+    lineage.lineage_path(world.state, first.run_id).write_text("{not json")
+    with pytest.raises(UsageError, match=f"lineage {first.run_id} is unknown"):
+        _continue(world, first.run_id)
+
+
+def test_the_named_run_must_be_a_member_of_its_lineage(world: World) -> None:
+    first = _first(world)
+    stranger = "20260926T120000-cccccccc"
+    world.registry().create(
+        stranger,
+        run_dir=None,
+        target=IMPLEMENT,
+        repository=world.repo,
+        lineage=first.run_id,
+        providers=("codex",),
+    )
+    with pytest.raises(UsageError, match=f"{stranger} is not a member of lineage {first.run_id}"):
+        _continue(world, stranger)
+
+
+def test_a_tripwire_in_a_continuation_compromises_the_whole_lineage(world: World) -> None:
+    """§4: a tripwire fired in B, then --continue A refused and ha clean A running no git."""
+    first = _first(world)
+    world.agent.edit = lambda root: (root / ".git").write_text("gitdir: /somewhere/else\n")
+    second = world.implement("Tamper.", continue_run=first.run_id)
+    assert second.exit_code == 1
+    assert lineage.load(world.state, first.run_id).compromised == "tripwire"
+    with pytest.raises(UsageError, match="unfinished write"):
+        _continue(world, first.run_id)
+    code, _, err = world.cli("clean", first.run_id)
+    assert code == 1 and "no git command" in err
+
+
+def test_a_crash_after_a_continuations_intent_is_found_by_the_next(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§4: the next --continue marks the lineage unfinalized_write and is refused."""
+    first = _first(world)
+
+    def crash(step: str) -> None:
+        if step == "intent":
+            raise SystemExit("crashed")
+
+    monkeypatch.setattr(write_flow, "_crash_after", crash)
+    with pytest.raises(SystemExit):
+        _continue(world, first.run_id)
+    assert lineage.load(world.state, first.run_id).pending is not None
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    with pytest.raises(UsageError, match="unfinished write"):
+        _continue(world, first.run_id)
+    assert lineage.load(world.state, first.run_id).compromised == "unfinalized_write"
+    assert quarantine.check(world.state, (world.repo / ".git").resolve()) is not None
+
+
+_HOLD = """
+import fcntl, os, pathlib, sys, time
+fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX if sys.argv[2] == "ex" else fcntl.LOCK_SH)
+pathlib.Path(sys.argv[3]).write_text("ok")
+time.sleep(30)
+"""
+
+
+@contextmanager
+def _holding(world: World, lock: Path, mode: str) -> Iterator[None]:
+    """``lock`` held by another process, as a running continuation holds its lineage's."""
+    ready = world.home / f"ready-{lock.name}-{mode}"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), mode, str(ready)])
+    try:
+        while not ready.exists():
+            time.sleep(0.02)
+        yield
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_two_continuations_of_one_lineage_never_run_at_once(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§3.6: the second waits for the lineage lock at most the bound, then is refused."""
+    first = _first(world)
+    second = _continue(world, first.run_id)
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.3)
+    lock = lineage.lineage_lock(world.state, first.run_id)
+    with (
+        _holding(world, lock, "ex"),
+        pytest.raises(UsageError, match=f"the lineage lock of {first.run_id}: not obtained"),
+    ):
+        world.implement("Meanwhile.", continue_run=second.run_id)
+    assert sorted(world.registry().run_ids()) == sorted([first.run_id, second.run_id])
+
+
+def test_ha_clean_waits_for_a_running_continuation_then_refuses(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """§4: ha clean A while B runs -- it waits for the lineage lock, then is refused."""
+    first = _first(world)
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.3)
+    with _holding(world, lineage.lineage_lock(world.state, first.run_id), "ex"):
+        code, _, err = world.cli("clean", first.run_id)
+    assert code == 2 and "the lineage is in use" in err
+    assert (first.run_dir / "wt").is_dir()
+
+
+def test_a_refused_unconfined_continuation_withdraws_its_intent(world: World) -> None:
+    first = _first(world)
+    record_proof(
+        world.state,
+        "codex",
+        version="codex 1.0",
+        isolation=True,
+        confinement=False,
+        today="2026-09-26",
+    )
+    (first.run_dir / "wt" / "app.py").write_text("dirty\n")
+    with pytest.raises(UsageError, match="uncommitted changes"):
+        _continue(world, first.run_id)
+    assert not (world.state / write_flow.UNCONFINED_INTENT).exists()
