@@ -136,6 +136,32 @@ class TestProbeHttp:
         found = registry.probe("mistral", environ={"MISTRAL_API_KEY": "sk-SECRET"})
         assert "sk-SECRET" not in found.detail
 
+    def test_a_preset_is_available_through_its_declared_key_file(self, tmp_path: Path) -> None:
+        """Decision 0612592e: keys.toml names the file; the detail names it, never the key."""
+        home = tmp_path / "home"
+        (home / ".config" / "ha").mkdir(parents=True)
+        key_file = home / ".config" / "red" / "openrouter.env"
+        key_file.parent.mkdir(parents=True)
+        key_file.write_text("OPENROUTER_API_KEY=sk-SECRET\n")
+        key_file.chmod(0o600)
+        (home / ".config" / "ha" / "keys.toml").write_text(
+            'openrouter = "~/.config/red/openrouter.env"\n'
+        )
+        found = registry.probe("openrouter", environ={"HOME": str(home)})
+        assert found.available is True
+        assert found.detail == f"OPENROUTER_API_KEY from {key_file}"
+
+    def test_a_key_file_others_can_read_makes_the_preset_unavailable(self, tmp_path: Path) -> None:
+        home = tmp_path / "home"
+        (home / ".config" / "ha").mkdir(parents=True)
+        key_file = home / "or.env"
+        key_file.write_text("OPENROUTER_API_KEY=sk-SECRET\n")
+        key_file.chmod(0o644)
+        (home / ".config" / "ha" / "keys.toml").write_text('openrouter = "~/or.env"\n')
+        found = registry.probe("openrouter", environ={"HOME": str(home)})
+        assert found.available is False
+        assert "0600" in found.detail and "sk-SECRET" not in found.detail
+
     def test_the_generic_provider_is_configured_per_run(self) -> None:
         found = registry.probe("openai-compat", environ={})
         assert found.available is True

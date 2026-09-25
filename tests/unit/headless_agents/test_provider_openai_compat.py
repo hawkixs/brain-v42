@@ -14,6 +14,7 @@ import threading
 import time
 import uuid
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -294,6 +295,49 @@ def test_a_missing_key_fails_without_a_request(tmp_path, serve) -> None:
     assert result.exit_code == 1
     assert server.requests == []
     assert KEY_ENV in (tmp_path / "run-1" / "stderr.log").read_text()
+
+
+def _key_file_home(tmp_path: Path, *, mode: int = 0o600) -> Path:
+    home = tmp_path / "home"
+    (home / ".config" / "ha").mkdir(parents=True)
+    key_file = home / "or.env"
+    key_file.write_text(f"OPENROUTER_API_KEY={SECRET}\n")
+    key_file.chmod(mode)
+    (home / ".config" / "ha" / "keys.toml").write_text('openrouter = "~/or.env"\n')
+    return home
+
+
+def test_a_preset_takes_its_key_from_the_declared_key_file(tmp_path, serve, monkeypatch) -> None:
+    """Decision 0612592e: the key reaches the request, and no file the run writes."""
+    server = serve(lambda _b: (200, _completion(), 0))
+    monkeypatch.setitem(
+        openai_compat.PRESETS,
+        "openrouter",
+        openai_compat.Preset("openrouter", server.url, "OPENROUTER_API_KEY"),
+    )
+    home = _key_file_home(tmp_path)
+    spec = _spec(tmp_path, server.url, environment={"PATH": "/usr/bin:/bin", "HOME": str(home)})
+    result = OpenAICompatProvider("openrouter").run(replace(spec, extra={}))
+    assert result.exit_code == 0
+    (request,) = server.requests
+    assert request["headers"]["Authorization"] == f"Bearer {SECRET}"  # type: ignore[index]
+    assert SECRET not in _everything_written(tmp_path / "run-1")
+
+
+def test_an_unusable_key_file_fails_without_a_request(tmp_path, serve, monkeypatch) -> None:
+    server = serve(lambda _b: (200, _completion(), 0))
+    monkeypatch.setitem(
+        openai_compat.PRESETS,
+        "openrouter",
+        openai_compat.Preset("openrouter", server.url, "OPENROUTER_API_KEY"),
+    )
+    home = _key_file_home(tmp_path, mode=0o644)
+    spec = _spec(tmp_path, server.url, environment={"PATH": "/usr/bin:/bin", "HOME": str(home)})
+    result = OpenAICompatProvider("openrouter").run(replace(spec, extra={}))
+    assert result.exit_code == 1
+    assert server.requests == []
+    stderr = (tmp_path / "run-1" / "stderr.log").read_text()
+    assert "0600" in stderr and SECRET not in stderr
 
 
 # ── Usage limits ────────────────────────────────────────────────────────────
