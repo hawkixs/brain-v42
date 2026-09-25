@@ -223,3 +223,39 @@ def test_a_working_prctl_writes_nothing(tmp_path: Path) -> None:
     with log.open("w") as stream:
         subprocess.run(["true"], preexec_fn=preexec_for(os.getpid()), stderr=stream, check=True)
     assert log.read_text() == ""
+
+
+_HA_KILLED_BEFORE_ATTACH = """
+import os, pathlib, sys, time
+from headless_agents.procgroup import preexec_for, spawn_watched
+# The parent names no group after the spawn: were it still the one to do it,
+# ha dying right after the provider's start would leave the group unwatched.
+out = pathlib.Path(sys.argv[1])
+child, lifeline = spawn_watched(
+    ["sh", "-c", f"sleep 60 & echo $! > {out}/grandchild; wait"],
+    preexec_fn=preexec_for(os.getpid()),
+    start_new_session=True,
+)
+(out / "child").write_text(str(child.pid))
+time.sleep(60)
+"""
+
+
+@pytest.mark.real_watcher
+def test_a_grandchild_dies_when_ha_is_killed_before_attaching(tmp_path: Path) -> None:
+    """Closure round of #206: the watcher knows the group before the provider
+    can start any descendant -- the child names its own group before exec."""
+    ha = subprocess.Popen([sys.executable, "-c", _HA_KILLED_BEFORE_ATTACH, str(tmp_path)])
+    grandchild: int | None = None
+    try:
+        child = _read_pid(tmp_path / "child")
+        grandchild = _read_pid(tmp_path / "grandchild")
+        ha.kill()
+        ha.wait()
+        assert _gone_within(child, seconds=5)
+        assert _gone_within(grandchild, seconds=5)
+    finally:
+        if ha.poll() is None:
+            ha.kill()
+        if grandchild is not None and _alive(grandchild):
+            os.kill(grandchild, signal.SIGKILL)

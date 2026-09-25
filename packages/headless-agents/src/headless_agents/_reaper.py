@@ -7,7 +7,8 @@ operator decision Q75 = a):
 
 1. the watcher writes ``r`` on ``<ready-fd>`` once it runs -- ``ha`` starts
    no provider before that;
-2. ``ha`` writes the provider's process group id and a newline;
+2. the provider's child, before its exec, writes its own process group id
+   and a newline (it inherits the write end until exec);
 3. then ``d`` on a normal end: the watcher leaves, killing nothing -- or
    end-of-file if ``ha`` died, however it died: the watcher sends ``SIGKILL``
    to the whole group, the provider's descendants included, which
