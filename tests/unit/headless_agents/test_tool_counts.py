@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 
 from headless_agents.event_log import read_events
-from headless_agents.providers import codex, opencode
+from headless_agents.providers import agy, codex, opencode
 
 FIXTURES = Path(__file__).parent / "fixtures" / "tool_counts"
 
@@ -147,3 +147,88 @@ def test_opencode_without_a_whole_log_is_not_measured(tmp_path: Path) -> None:
     assert opencode.count_tools(_log(tmp_path, tail='{"type": "tool_u')) is None
     anonymous = _log(tmp_path, {"type": "tool_use", "part": {"type": "tool", "tool": "read"}})
     assert opencode.count_tools(anonymous) is None
+
+
+# ── agy ─────────────────────────────────────────────────────────────────────
+
+
+def test_agy_counts_a_recorded_run_by_tool_name() -> None:
+    """One MCP call that succeeded; a file read and a command the guard refused."""
+    assert agy.count_tools(FIXTURES / "agy.events.jsonl") == {
+        "call_mcp_tool": 1,
+        "view_file": 1,
+        "run_command": 1,
+    }
+
+
+def test_agy_counts_a_step_once_across_its_states(tmp_path: Path) -> None:
+    step = {"conversation_id": "c1", "step_index": 4, "step_type": "tool", "tool_name": "view_file"}
+    log = _log(
+        tmp_path,
+        {"event": "step_update", "step_update": {**step, "state": "ACTIVE"}},
+        {"event": "step_update", "step_update": {**step, "state": "DONE"}},
+        {"event": "step_update", "step_update": {**step, "step_index": 6, "state": "ACTIVE"}},
+    )
+    assert agy.count_tools(log) == {"view_file": 2}
+
+
+def test_agy_counts_two_conversations_sharing_a_step_index_as_two_calls(tmp_path: Path) -> None:
+    """Codex closure of this plan (carry-forward): the identity is the pair, not the index."""
+    step = {"step_index": 4, "step_type": "tool", "tool_name": "view_file", "state": "ACTIVE"}
+    log = _log(
+        tmp_path,
+        {"event": "step_update", "step_update": {**step, "conversation_id": "c1"}},
+        {"event": "step_update", "step_update": {**step, "conversation_id": "c2"}},
+    )
+    assert agy.count_tools(log) == {"view_file": 2}
+
+
+def test_agy_ignores_steps_that_are_not_tools(tmp_path: Path) -> None:
+    log = _log(
+        tmp_path,
+        {
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "c1",
+                "step_index": 1,
+                "state": "DONE",
+                "step_type": "agent_response",
+            },
+        },
+    )
+    assert agy.count_tools(log) == {}
+
+
+def test_agy_without_a_whole_log_is_not_measured(tmp_path: Path) -> None:
+    assert agy.count_tools(None) is None
+    assert agy.count_tools(_log(tmp_path, tail='{"event": "step_up')) is None
+    unindexed = _log(
+        tmp_path,
+        {
+            "event": "step_update",
+            "step_update": {
+                "conversation_id": "c1",
+                "step_type": "tool",
+                "tool_name": "view_file",
+                "state": "ACTIVE",
+            },
+        },
+    )
+    assert agy.count_tools(unindexed) is None
+
+
+def test_agy_without_a_conversation_id_is_not_measured(tmp_path: Path) -> None:
+    """Codex review of this plan (round 1): half an identity would merge two calls."""
+    anonymous = _log(
+        tmp_path,
+        {
+            "event": "step_update",
+            "step_update": {
+                "step_index": 3,
+                "step_type": "tool",
+                "tool_name": "view_file",
+                "state": "ACTIVE",
+            },
+        },
+    )
+    assert agy.count_tools(anonymous) is None

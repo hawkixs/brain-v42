@@ -38,6 +38,7 @@ import os
 import subprocess
 import tempfile
 import time
+from collections import Counter
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -50,6 +51,7 @@ from ..capability import (
     terminate_process_group,
 )
 from ..context import xml_attribute
+from ..event_log import read_events
 from ..guards.agy_workspace import GUARD_CONFIG_NAME
 from ..procgroup import preexec_for, spawn_watched
 from ..profile import CapabilityProfile, Workspace
@@ -347,6 +349,37 @@ def tool_call_completed(events_log: Path) -> bool:
         ):
             return True
     return False
+
+
+def count_tools(events_log: Path | None) -> dict[str, int] | None:
+    """Tool calls in this ``stream-json`` flow, by ``tool_name`` (spec 0.5.0 §3.11).
+
+    agy writes a ``tool`` step ``ACTIVE`` before the tool runs, then ``DONE``
+    or ``ERROR`` (see :func:`tool_call_started`): a call is counted once, by
+    its conversation and step index (plan P2). A step the guard refused
+    counts -- the agent made the call. ``None`` when the stream cannot be read
+    whole, or names a tool step without its tool name, its conversation id or
+    an integer index: not measured, never a partial count.
+    """
+    events = read_events(events_log)
+    if events is None:
+        return None
+    calls: dict[tuple[str, int], str] = {}
+    for event in events:
+        step = event.get("step_update")
+        if not isinstance(step, dict) or step.get("step_type") != "tool":
+            continue
+        tool = step.get("tool_name")
+        conversation, index = step.get("conversation_id"), step.get("step_index")
+        if (
+            not isinstance(tool, str)
+            or not isinstance(conversation, str)
+            or not isinstance(index, int)
+            or isinstance(index, bool)
+        ):
+            return None
+        calls.setdefault((conversation, index), tool)
+    return dict(Counter(calls.values()))
 
 
 def guard_denies_machine_tools(guard: Path) -> bool:
