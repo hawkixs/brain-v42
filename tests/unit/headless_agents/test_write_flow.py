@@ -52,6 +52,8 @@ class _Agent:
     code: int = 0
     specs: list[RunSpec] = field(default_factory=list)
     after: Callable[[], None] | None = None
+    #: The event log this provider writes, as its rail would (plan Task 5).
+    events: str | None = None
 
     def run(self, spec: RunSpec) -> RunResult:
         self.specs.append(spec)
@@ -62,6 +64,10 @@ class _Agent:
         if self.after is not None:
             self.after()
         spec = spec.with_run_dir_defaults()
+        if self.events is not None:
+            assert spec.events_log is not None
+            spec.events_log.parent.mkdir(parents=True, exist_ok=True)
+            spec.events_log.write_text(self.events, encoding="utf-8")
         return record(
             spec,
             RunResult(
@@ -1052,3 +1058,16 @@ def test_an_unconfined_write_whose_reflog_was_rewritten_stays_uncertain(
     unconfined.agent.edit = _edit_app
     with pytest.raises(UsageError, match="stale unconfined intent"):
         unconfined.write()
+
+
+# ── tool counts in run.json (spec §3.11, plan Task 5) ──────────────────────
+
+
+def test_a_committed_write_records_its_tool_counts(world: World) -> None:
+    world.agent.edit = _edit_app
+    world.agent.events = (
+        Path(__file__).parent / "fixtures" / "tool_counts" / "codex.events.jsonl"
+    ).read_text()
+    outcome = world.write()
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["steps"][0]["tools"] == {"command_execution": 4}

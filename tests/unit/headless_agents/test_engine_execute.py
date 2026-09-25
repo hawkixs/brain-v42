@@ -29,6 +29,8 @@ class _Fake:
     code: int = 0
     answer: str = "the answer"
     raises: BaseException | None = None
+    #: The event log this provider writes, as its rail would (plan Task 5).
+    events: str | None = None
     specs: list[RunSpec] = field(default_factory=list)
 
     def run(self, spec: RunSpec) -> RunResult:
@@ -36,6 +38,10 @@ class _Fake:
         if self.raises is not None:
             raise self.raises
         spec = spec.with_run_dir_defaults()
+        if self.events is not None:
+            assert spec.events_log is not None
+            spec.events_log.parent.mkdir(parents=True, exist_ok=True)
+            spec.events_log.write_text(self.events, encoding="utf-8")
         return record(
             spec,
             RunResult(
@@ -372,3 +378,45 @@ def test_an_id_whose_lifecycle_lock_is_held_is_minted_again(
         holder.wait()
     assert outcome.run_id == "20260925T000000-bbbbbbbb"
     assert not (world.state / "runs" / "20260925T000000-aaaaaaaa.json").exists()
+
+
+# ── tool counts in run.json (spec §3.11, plan Task 5) ──────────────────────
+
+TOOL_FIXTURES = Path(__file__).parent / "fixtures" / "tool_counts"
+
+
+def _steps(outcome: engine.Outcome) -> list[dict[str, object]]:
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    steps = report["steps"]
+    assert isinstance(steps, list)
+    return steps
+
+
+def test_a_step_records_its_tool_counts(world: World) -> None:
+    world.fakes["codex"] = _Fake("codex", events=(TOOL_FIXTURES / "codex.events.jsonl").read_text())
+    assert _steps(world.run("codex"))[0]["tools"] == {"command_execution": 4}
+
+
+def test_a_step_whose_log_is_missing_is_not_measured(world: World) -> None:
+    assert _steps(world.run("codex"))[0]["tools"] is None
+
+
+def test_a_claude_step_is_not_measured(world: World) -> None:
+    assert _steps(world.run("claude"))[0]["tools"] is None
+
+
+def test_an_http_step_has_no_tools(world: World) -> None:
+    outcome = world.run(
+        "openrouter",
+        overrides=Overrides(model="some/model"),
+        environ={"PATH": "/usr/bin:/bin", "HOME": str(world.home), "OPENROUTER_API_KEY": "k"},
+    )
+    assert _steps(outcome)[0]["tools"] == {}
+
+
+def test_a_chain_records_the_counts_of_the_link_that_answered(world: World) -> None:
+    world.roles('[pair]\nchain = ["claude:c", "codex:x"]\n')
+    world.fakes["claude"] = _Fake("claude", code=3)
+    world.fakes["codex"] = _Fake("codex", events=(TOOL_FIXTURES / "codex.events.jsonl").read_text())
+    (step,) = _steps(world.run("pair"))
+    assert step["provider"] == "codex" and step["tools"] == {"command_execution": 4}
