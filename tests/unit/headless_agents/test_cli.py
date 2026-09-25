@@ -811,3 +811,18 @@ def test_runs_reads_a_write_run_status_from_its_lineage(world: _World) -> None:
     code, out, _ = world.run("runs", "--json")
     (row,) = json.loads(out)
     assert row["status"] == "committed"
+
+
+def test_runs_and_clean_survive_a_malformed_registry_entry(world: _World) -> None:
+    """Codex review of the lot 2 plan (round 3): lot 1 crashed here with a KeyError."""
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_id = json.loads(out)["run_id"]
+    path = world.state / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    del document["run_dir"]
+    path.write_text(json.dumps(document))
+    code, out, _ = world.run("runs", "--json")
+    (row,) = json.loads(out)
+    assert code == 0 and row["status"] == "unknown"
+    code, _, err = world.run("clean", run_id)
+    assert code == 1 and "recover it by hand" in err

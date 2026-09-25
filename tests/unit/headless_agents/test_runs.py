@@ -191,3 +191,49 @@ def test_a_run_dir_that_lands_in_a_forbidden_tree_after_creation_is_refused(
     with pytest.raises(RegistryError, match="the repository"):
         make_run_dir(outside / "mine", forbidden=roots)
     assert not (roots["the repository"] / "mine").exists(), "the stray directory is removed"
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"run_dir": None},
+        {"run_dir": ""},
+        {"run_dir": 7},
+        {"target": "codex"},
+        {"repository": 1},
+        {"lineage": 5},
+        {"status": ["answered"]},
+        {"cleaned_at": 0},
+    ],
+)
+def test_a_well_formed_entry_with_a_malformed_field_is_unknown(
+    tmp_path: Path, broken: dict[str, object]
+) -> None:
+    """Codex review of the lot 2 plan (round 3): read() vouches for the JSON and the id
+    only; a missing or mistyped field escaped resolve() as KeyError."""
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    run_id = "20260925T000000-eeeeeeee"
+    registry.create(
+        run_id,
+        run_dir=None,
+        target={"kind": "provider", "name": "codex"},
+        repository=None,
+        lineage=None,
+    )
+    path = tmp_path / "state" / "runs" / f"{run_id}.json"
+    document = json.loads(path.read_text())
+    document.update(broken)
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown):
+        registry.resolve(run_id)
+
+
+def test_an_entry_without_its_run_dir_is_unknown(tmp_path: Path) -> None:
+    run_id = "20260925T000000-eeeeeeee"
+    (tmp_path / "state" / "runs").mkdir(parents=True)
+    (tmp_path / "state" / "runs" / f"{run_id}.json").write_text(
+        json.dumps({"run_id": run_id, "status": "answered"})
+    )
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    with pytest.raises(Unknown, match="run_dir"):
+        registry.resolve(run_id)

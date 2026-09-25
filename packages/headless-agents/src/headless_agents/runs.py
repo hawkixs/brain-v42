@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Final
 
 from .locks import is_free
-from .state import create_once, publish, read
+from .state import Unknown, create_once, publish, read
 
 RUN_ID_PATTERN: Final = re.compile(r"\d{8}T\d{6}-[0-9a-f]{8}")
 FINAL_STATUSES: Final = frozenset(
@@ -93,7 +93,7 @@ class Registry:
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }
         create_once(self._path(run_id), document)
-        return self._entry(document)
+        return self._entry(document, self._path(run_id))
 
     def register(
         self,
@@ -118,13 +118,27 @@ class Registry:
         raise RegistryError(f"could not mint a fresh run id in {MINT_ATTEMPTS} attempts")
 
     @staticmethod
-    def _entry(document: Mapping[str, object]) -> Entry:
-        target = document.get("target")
+    def _entry(document: Mapping[str, object], path: Path) -> Entry:
+        """The entry ``document`` states; :class:`Unknown` when a field is missing or ill-typed.
+
+        ``read`` vouches for the JSON and the id only: a well-formed object without its
+        ``run_dir`` escaped as ``KeyError`` and crashed ``ha runs`` and ``ha clean``
+        (codex review of the lot 2 plan, round 3). Unknown is never empty (§3.8.1).
+        """
+        run_dir, target = document.get("run_dir"), document.get("target")
+        if not isinstance(run_dir, str) or not run_dir:
+            raise Unknown(f"{path}: run_dir is malformed")
+        if not isinstance(target, dict):
+            raise Unknown(f"{path}: target is malformed")
+        for key in ("repository", "lineage", "status", "cleaned_at"):
+            value = document.get(key)
+            if value is not None and not isinstance(value, str):
+                raise Unknown(f"{path}: {key} is malformed")
         return Entry(
             run_id=str(document["run_id"]),
-            run_dir=Path(str(document["run_dir"])),
+            run_dir=Path(run_dir),
             repository=_optional_path(document.get("repository")),
-            target={str(k): str(v) for k, v in target.items()} if isinstance(target, dict) else {},
+            target={str(k): str(v) for k, v in target.items()},
             lineage=_optional_str(document.get("lineage")),
             status=_optional_str(document.get("status")),
             cleaned_at=_optional_str(document.get("cleaned_at")),
@@ -147,7 +161,7 @@ class Registry:
         path = self._path(run_id)
         if not path.exists():
             raise RegistryError(f"no run {run_id} in {self._entries}")
-        return self._entry(read(path, expect_id=("run_id", run_id)))
+        return self._entry(read(path, expect_id=("run_id", run_id)), path)
 
     def _update(self, run_id: str, **fields: object) -> None:
         path = self._path(run_id)
