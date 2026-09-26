@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
@@ -25,7 +26,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from . import locks, review_flow, reviews, write_flow
+from . import locks, procgroup, review_flow, reviews, write_flow
 from .capability import scoped_environment
 from .chain import run_chain
 from .cli_models import ModelsError, models_for
@@ -1061,23 +1062,43 @@ def _run_phase(
             )
             return _Phase(entries=[entry], results=[None], failure_reason="prompt_too_large")
 
+    # A library caller's say need not be thread-safe: the steps take turns.
+    said_lock = threading.Lock()
+
+    def said(message: str) -> None:
+        with said_lock:
+            say(message)
+
+    live = procgroup.Collected()
+
     def run_one(step: tuple[int, SlotPlan, str]) -> RunResult:
         index, slot, prompt = step
         name = step_dir_name(index, slot.slot, slot.role.name)
-        say(f"step {index} {slot.slot} {slot.role.name}: started")
-        final = _run_links(
-            _slot_run_plan(plan, slot, prompt),
-            bundles[index],
-            run_id=run_id,
-            step_dir=run_dir / "steps" / name,
-            workspace=Workspace(path=worktree),
-            say=say,
-        )
-        say(f"step {index} {slot.slot} {slot.role.name}: exit {final.exit_code}")
+        said(f"step {index} {slot.slot} {slot.role.name}: started")
+        with procgroup.collecting(live):
+            final = _run_links(
+                _slot_run_plan(plan, slot, prompt),
+                bundles[index],
+                run_id=run_id,
+                step_dir=run_dir / "steps" / name,
+                workspace=Workspace(path=worktree),
+                say=said,
+            )
+        said(f"step {index} {slot.slot} {slot.role.name}: exit {final.exit_code}")
         return final
 
-    with ThreadPoolExecutor(max_workers=len(steps)) as pool:
-        results = list(pool.map(run_one, steps))
+    pool = ThreadPoolExecutor(max_workers=len(steps))
+    futures = [pool.submit(run_one, step) for step in steps]
+    try:
+        results = [future.result() for future in futures]
+    except BaseException:
+        # A Ctrl-C lands here, in the main thread; the rails wait in the workers and
+        # never see it. Their providers die first, then their threads are joined --
+        # only then may the caller remove the worktree they were reading (§3.9).
+        procgroup.kill_collected(live)
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
     entries = []
     failed = False
     for (index, slot, _), result in zip(steps, results, strict=True):
@@ -1131,12 +1152,13 @@ def _execute_review(
         _refused(registry, entry)
         raise UsageError(str(exc)) from None
     task = plan.task or REVIEW_DEFAULT_TASK
-    report.update(
-        head=prepared.head, base=prepared.merge_base, vendor_check=prepared.check.to_document()
-    )
-    write_report(run_dir, report)
-
     try:
+        report.update(
+            head=prepared.head,
+            base=prepared.merge_base,
+            vendor_check=prepared.check.to_document(),
+        )
+        write_report(run_dir, report)
         phase = _run_phase(
             plan,
             [(index, slot, review_prompt(task, prepared.patch)) for index, slot in reviewers],
