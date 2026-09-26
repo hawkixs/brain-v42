@@ -74,10 +74,10 @@ states what `workflows.toml`, the implement run and `--continue` already do; its
 | # | Decision | Why |
 |---|---|---|
 | P1 | `templates`: the review, judge and fix templates; `OUTPUT_CONTRACT` is the spec's text verbatim; with `--findings` and no task, the task is `Address the findings below.`; a block's content travels verbatim (only attributes are escaped). `read_verdict` reads the last non-empty line, strips `*`, `_` and backticks around it, and fullmatches `VERDICT:\s*(APPROVE\|CHANGES)` case-insensitively; anything else is `None`. | §3.5 step 5, §3.7; §3.3: "a diff can try to steer a judge. The verdict is therefore advisory". |
-| P2 | `vendor`: a commit without provenance, while no unconfined write is recorded, is attributed `made_by: hand` with no provider — the spec names `engine`, `agent`, `hook`, `unknown` for provenance and needs a word for "no provider"; an unreadable provenance record or `unconfined-writers.json` refuses the review. | §3.8.4 step 4; §3.8.1: "unknown is treated as compromised — never as empty". |
+| P2 | `vendor`: a commit without provenance, while no unconfined write is recorded, is attributed `made_by: hand` with no provider — the spec names `engine`, `agent`, `hook`, `unknown` for provenance and needs a word for "no provider"; an unreadable provenance record or `unconfined-writers.json` refuses the review, and so does a readable record that is not one `ha` writes (a `run_id` not a non-empty text, a `made_by` outside `engine`, `agent`, `hook`, `unknown`, `providers` not a non-empty list of non-empty texts) — read as no provider, it would let an author's vendor review its code. | §3.8.4 step 4; §3.8.1: "unknown is treated as compromised — never as empty". |
 | P3 | A review is planned and executed in one task (Task 4): planned alone, it would reach `execute()` and run as a one-step run of its first reviewer, without the rule. | §5 item 4. |
 | P4 | Planning a review: `SlotPlan(slot, role, models, mcp, environment)` per slot, `Plan.panel` in launch order (reviewers, then the judge); `Plan.role` is the first reviewer's; a blank or absent prompt is `Review this change.`; `--run` is resolved like `--continue` (an implement run's registry entry) and excludes `--head` and `--base`; `--head` and `--run` are refused off a review, `--continue` and `--findings` off an implement. | §3.5, §3.9; §3.8.2 (registry only). |
-| P5 | `review_flow.prepare` takes the lineage registry lock shared and every lineage of the repository — and any lineage whose worktree holds `--repo` — shared, ascending, each bounded to 10 s; under them a pending write is stale by construction (a live writer holds its lock exclusively), so it is handled as a write's admission handles one (`write_flow.unfinalized`: lineage compromised, repository quarantined) and refuses. The head, the merge base, `git log` and the diff all use the pinned commit; an empty diff refuses; the check is written once, then the lineage and registry locks are released before `change.patch` and `git worktree add --detach`. | §3.8.2, §3.8.4 steps 1–6, §3.8.5. |
+| P5 | `review_flow.prepare` takes the lineage registry lock shared and every lineage of the repository — and any lineage whose worktree holds `--repo` — shared, ascending, each bounded to 10 s; under them, and only then, the quarantines and a stale unconfined intent are checked (a write that finished while the review waited may have quarantined the repository); a pending write is stale by construction (a live writer holds its lock exclusively), so it is handled as a write's admission handles one (`write_flow.unfinalized`: lineage compromised, repository quarantined) and refuses. The head, the merge base, `git log` and the diff all use the pinned commit; an empty diff refuses; the check is written once, then the lineage and registry locks are released before `change.patch` and `git worktree add --detach`. | §3.8.2, §3.8.4 steps 1–6, §3.8.5. |
 | P6 | The engine runs a phase's steps in threads (`ThreadPoolExecutor`), each through the unchanged `_run_links` with the slot's own plan; every prompt of a phase is size-checked before any starts — one too large refuses the phase with its step recorded at `2` and `failure_reason: prompt_too_large`; any reviewer that does not answer (exit `0` and a non-empty text) fails the review before the judge (`step_failed`); an unreadable verdict fails it (`unreadable_verdict`) and writes no result. A review's registry entry has no lineage and records no providers; its report records `base` (the merge base), `head`, `verdict`, `text`, `vendor_check` and `cleanup`, the write fields `null`, and each step's own verdict. Every panel role's rail needs its isolation proof. | §3.4, §3.5 steps 2–5, §3.8.0, §3.10. |
 | P7 | `ha show` of a review takes its head, verdict and text from its result, its check from the result or, before a verdict, from the check file; `cleanup` and `base` have no record in the state, so they come from the review's own report, for display. A review's head line is `head    <sha7>  N commits  +x -y  f files` (it has no branch), followed by `vendors …`; step verdicts render upper-case; a failed cleanup is named on the header. `ha show --dir PATH` renders a run directory's report, noting it is display only; `ha show` takes a run id or `--dir`, exactly one. | §3.8.6, §3.9, §3.10 (its `ha show` example). |
 | P8 | `--findings`: `plan()` checks the registry only (the named run is a review); `execute()` reads the review result before anything is created (written once, immutable) and composes `fix_prompt(task, result.text)`; the head check is done in the write flow's preparation — a continuation compares the lineage's tip, a new run its resolved base **before** `git worktree add` — because the intent precedes the first git command (§3.6 step 2, §3.8.3 step 2). A refused new run withdraws its lineage state, which its intent created and nothing else touched. The engine's commit says `fix`; the registry entry records `findings_from` (required, as `continues`: lot 3's P5 argument holds — no released `ha` wrote an entry). | §3.6, §3.8.2, §3.8.3, §3.10. |
@@ -539,10 +539,10 @@ git commit -m "feat(headless-agents): the review, judge and fix templates, and t
 ```diff
 diff --git a/tests/unit/headless_agents/test_vendor.py b/tests/unit/headless_agents/test_vendor.py
 new file mode 100644
-index 00000000..20ad8e84
+index 00000000..76020911
 --- /dev/null
 +++ b/tests/unit/headless_agents/test_vendor.py
-@@ -0,0 +1,137 @@
+@@ -0,0 +1,169 @@
 +"""The vendor rule: who wrote each commit of a range, and whether a reviewer shares a vendor
 +with them (spec 0.5.0 §3.8.4 steps 4-5, §3.8.6)."""
 +
@@ -620,6 +620,38 @@ index 00000000..20ad8e84
 +        attribute(tmp_path, [(SHA_1, "anything")])
 +
 +
++@pytest.mark.parametrize(
++    "change",
++    [
++        {"providers": "codex"},
++        {"providers": []},
++        {"providers": ["codex", ""]},
++        {"providers": ["codex", 7]},
++        {"providers": None},
++        {"made_by": "hand"},
++        {"made_by": None},
++        {"run_id": None},
++        {"run_id": ""},
++        {"run_id": 7},
++    ],
++)
++def test_a_malformed_provenance_record_refuses(tmp_path: Path, change: dict[str, object]) -> None:
++    """A readable record that is not one ``ha`` writes is unknown, never empty (§3.8.1)."""
++    publish(
++        tmp_path / "provenance" / f"{SHA_1}.json",
++        {
++            "sha": SHA_1,
++            "run_id": RUN,
++            "lineage": RUN,
++            "made_by": "engine",
++            "providers": ["codex"],
++            **change,
++        },
++    )
++    with pytest.raises(VendorRefused, match="malformed"):
++        attribute(tmp_path, [(SHA_1, "chore(ha): x implement via codex/m")])
++
++
 +def test_an_unreadable_writers_list_refuses(tmp_path: Path) -> None:
 +    """Unknown is never empty (§3.8.1): an unreadable list cannot presume a hand."""
 +    (tmp_path / "unconfined-writers.json").write_text("{not json")
@@ -693,10 +725,10 @@ Expected: `test_vendor.py: 1 error` — every failure is the missing feature:
 ```diff
 diff --git a/packages/headless-agents/src/headless_agents/vendor.py b/packages/headless-agents/src/headless_agents/vendor.py
 new file mode 100644
-index 00000000..756f81f6
+index 00000000..efde0a3a
 --- /dev/null
 +++ b/packages/headless-agents/src/headless_agents/vendor.py
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,223 @@
 +"""The vendor rule: no reviewer shares a vendor with the code's author (spec 0.5.0 §3.8.4).
 +
 +Pure decisions over the state directory, no git: the review flow lists the
@@ -719,7 +751,7 @@ index 00000000..756f81f6
 +from collections.abc import Mapping, Sequence
 +from dataclasses import dataclass, field
 +from pathlib import Path
-+from typing import Final
++from typing import Final, get_args
 +
 +from . import provenance
 +from .state import Unknown, read_optional
@@ -730,6 +762,8 @@ index 00000000..756f81f6
 +#: What a check records for each commit: the three of provenance, ``unknown`` for an
 +#: unconfined writer's possible commit, ``hand`` for a presumed hand-written one.
 +MADE_BY: Final = frozenset({"engine", "agent", "hook", "unknown", "hand"})
++#: What a provenance record may say: the three of a recorded commit, and ``unknown``.
++_RECORDED_MADE_BY: Final = frozenset(get_args(provenance.MadeBy))
 +_SHA: Final = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 +
 +
@@ -832,6 +866,32 @@ index 00000000..756f81f6
 +    return tuple(found)
 +
 +
++def _recorded(sha: str, record: Mapping[str, object]) -> AttributedCommit:
++    """The commit a provenance record states; :class:`VendorRefused` when it is not one ``ha``
++    writes -- a record read as no provider would let an author's vendor review its code, and
++    unknown is never empty (§3.8.1)."""
++    run_id, made_by, providers = (
++        record.get("run_id"),
++        record.get("made_by"),
++        record.get("providers"),
++    )
++    if (
++        not isinstance(run_id, str)
++        or not run_id
++        or made_by not in _RECORDED_MADE_BY
++        or not isinstance(providers, list)
++        or not providers
++        or not all(isinstance(p, str) and p for p in providers)
++    ):
++        raise VendorRefused(
++            f"the provenance record of {sha[:12]} is malformed: its authors cannot be proven; "
++            "recover it by hand"
++        )
++    return AttributedCommit(
++        sha=sha, run_id=run_id, made_by=str(made_by), providers=tuple(providers)
++    )
++
++
 +def attribute(state: Path, commits: Sequence[tuple[str, str]]) -> tuple[AttributedCommit, ...]:
 +    """Every ``(sha, subject)`` of the range attributed (§3.8.4 step 4), in the given order."""
 +    writers: tuple[str, ...] | None = None
@@ -842,16 +902,7 @@ index 00000000..756f81f6
 +        except Unknown as exc:
 +            raise VendorRefused(f"the provenance of {sha[:12]} is unknown ({exc})") from None
 +        if record is not None:
-+            providers = record.get("providers")
-+            run_id = record.get("run_id")
-+            attributed.append(
-+                AttributedCommit(
-+                    sha=sha,
-+                    run_id=run_id if isinstance(run_id, str) else None,
-+                    made_by=str(record.get("made_by")),
-+                    providers=tuple(providers) if isinstance(providers, list) else (),
-+                )
-+            )
++            attributed.append(_recorded(sha, record))
 +            continue
 +        if subject.startswith(HA_SUBJECT):
 +            raise VendorRefused(
@@ -906,7 +957,7 @@ index 00000000..756f81f6
 - [ ] **Step 4: Run them again, then the gates.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_vendor.py -q -p no:cacheprovider`
-Expected: `test_vendor.py: 16 passed`. Then the gates of the Global Constraints.
+Expected: `test_vendor.py: 26 passed`. Then the gates of the Global Constraints.
 
 - [ ] **Step 5: Commit.**
 
@@ -1341,10 +1392,10 @@ index 2d0970cd..88ed0337 100644
  def test_an_implement_workflow_needs_a_task(env: Env) -> None:
 diff --git a/tests/unit/headless_agents/test_review.py b/tests/unit/headless_agents/test_review.py
 new file mode 100644
-index 00000000..014333d2
+index 00000000..150d9024
 --- /dev/null
 +++ b/tests/unit/headless_agents/test_review.py
-@@ -0,0 +1,599 @@
+@@ -0,0 +1,627 @@
 +"""The shape ``review`` through the engine: the vendor rule, the panel, the verdict, the
 +records and the cleanup (spec 0.5.0 §3.5, §3.8.4, §3.8.6, §3.10; lot 4).
 +
@@ -1364,7 +1415,7 @@ index 00000000..014333d2
 +
 +import pytest
 +
-+from headless_agents import engine, lineage, locks, provenance, quarantine, reviews
++from headless_agents import engine, lineage, locks, provenance, quarantine, review_flow, reviews
 +from headless_agents.engine import Overrides, Request, UsageError, execute, plan
 +from headless_agents.proofs import CLI_RAILS, record_proof
 +from headless_agents.registry import Probe
@@ -1849,6 +1900,34 @@ index 00000000..014333d2
 +        world.review()
 +
 +
++def test_a_quarantine_published_while_the_review_waits_for_its_locks_refuses(
++    world: World, monkeypatch: pytest.MonkeyPatch
++) -> None:
++    """§3.8.4 step 1: the quarantines are checked under the locks, not only before them."""
++    built = world.implement()
++    world.commit_by_hand()
++    real_held = review_flow.held
++
++    def held(lock: Path, **kwargs: object) -> object:
++        if kwargs.get("rank") is locks.Rank.LINEAGE:
++            # A write finishing while the review waits on its lineage lock quarantines.
++            quarantine.publish(
++                world.state,
++                "repository",
++                reason="tripwire",
++                run_id=built.run_id,
++                paths=[],
++                common_dir=(world.repo / ".git").resolve(),
++            )
++        return real_held(lock, **kwargs)  # type: ignore[arg-type]
++
++    monkeypatch.setattr(review_flow, "held", held)
++    reviewers_before = len(world.agents["claude"].specs)
++    with pytest.raises(UsageError, match="quarantine"):
++        world.review()
++    assert len(world.agents["claude"].specs) == reviewers_before
++
++
 +def test_a_review_waits_for_a_write_holding_its_lineage_then_is_refused(
 +    world: World, monkeypatch: pytest.MonkeyPatch
 +) -> None:
@@ -1949,20 +2028,9 @@ index 00000000..014333d2
 - [ ] **Step 2: Run them.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_engine_plan.py tests/unit/headless_agents/test_review.py -q -p no:cacheprovider`
-Expected: `test_engine_plan.py: 1 error; test_review.py: 28 failed` — every failure is the missing feature:
+Expected: `test_engine_plan.py: 1 error; test_review.py: 1 error` — every failure is the missing feature:
   - `test_engine_plan.py -- (collection) ImportError: cannot import name 'REVIEW_DEFAULT_TASK' from 'headless_agents.engine' (packages/headless-agents/src/headless_agents/engine.py)`
-  - `test_review.py -- test_an_approving_review_records_its_head_verdict_check_and_cleanup: headless_agents.engine.UsageError: workflow check: the review shape is not ...`
-  - `test_review.py -- test_a_review_asking_for_changes_exits_6: headless_agents.engine.UsageError: workflow check: the review shape is not ...`
-  - `test_review.py -- test_the_reviewer_reads_the_pinned_commit_read_only_with_the_diff: headless_agents.engine.UsageError: workflow check: the review shape is not ...`
-  - `test_review.py -- test_an_unreadable_verdict_fails_and_writes_no_result: headless_agents.engine.UsageError: workflow check: the review shape is not ...`
-  - `test_review.py -- test_a_failing_reviewer_fails_the_review: headless_agents.engine.UsageError: workflow check: the review shape is not ...`
-  - `test_review.py -- test_a_reviewer_answering_nothing_fails_the_review: headless_agents.engine.UsageError: workflow check: the review shape is not ...`
-  - `test_review.py -- test_an_empty_diff_is_refused_nothing_to_review: AssertionError: Regex pattern did not match.`
-  - `test_review.py -- test_a_base_that_does_not_resolve_is_refused: AssertionError: Regex pattern did not match.`
-  - `test_review.py -- test_head_and_base_name_the_reviewed_range: TypeError: Request.__init__() got an unexpected keyword argument 'head'`
-  - `test_review.py -- test_a_panel_runs_its_reviewers_concurrently_then_the_judge_decides: headless_agents.engine.UsageError: workflow panel: the review shape is not ...`
-  - `test_review.py -- test_one_failing_reviewer_stops_the_panel_before_the_judge: headless_agents.engine.UsageError: workflow panel: the review shape is not ...`
-  - … and 17 more
+  - `test_review.py -- (collection) ImportError: cannot import name 'review_flow' from 'headless_agents' (packages/headless-agents/src/headless_agents/__init__.py)`
 
 - [ ] **Step 3: Implement.** Apply:
 
@@ -2489,10 +2557,10 @@ index e5d9d901..5cea7d78 100644
      "with_step",
 diff --git a/packages/headless-agents/src/headless_agents/review_flow.py b/packages/headless-agents/src/headless_agents/review_flow.py
 new file mode 100644
-index 00000000..44411c75
+index 00000000..b0bb3518
 --- /dev/null
 +++ b/packages/headless-agents/src/headless_agents/review_flow.py
-@@ -0,0 +1,292 @@
+@@ -0,0 +1,294 @@
 +"""A review's state and git, from its locks to its cleanup (spec 0.5.0 §3.5, §3.8.4, §3.8.6).
 +
 +:func:`prepare` runs steps 1-6 of §3.8.4 and step 1 of §3.5, in this order:
@@ -2500,7 +2568,7 @@ index 00000000..44411c75
 +1. locks, without git -- the lineage registry lock shared, then the lock of
 +   every lineage of the repository (and of any lineage whose worktree holds
 +   ``--repo``) shared, in ascending owner order; the quarantines and a stale
-+   unconfined intent checked first;
++   unconfined intent checked under them, before any git;
 +2. uncertainty refuses -- a lineage unknown, compromised, or holding a pending
 +   write; a pending write seen under its lock held shared has lost its writer
 +   (a live writer holds it exclusively), so it is handled as §3.8.5 says;
@@ -2653,13 +2721,6 @@ index 00000000..44411c75
 +) -> Prepared:
 +    """Steps 1-6 of §3.8.4, then the patch and the detached worktree; :class:`ReviewRefused`."""
 +    common = identity.common_dir
-+    refusal = quarantine.check(state, common)
-+    if refusal is not None:
-+        raise ReviewRefused(f"{refusal}; nothing ran")
-+    try:
-+        check_unconfined_intent(state, run_id)
-+    except WriteRefused as exc:
-+        raise ReviewRefused(str(exc)) from None
 +    with ExitStack() as stack:
 +        try:
 +            stack.enter_context(
@@ -2687,6 +2748,15 @@ index 00000000..44411c75
 +                )
 +        except LockTimeout as exc:
 +            raise ReviewRefused(f"{exc}: a write holds it; nothing ran") from None
++        # Step 1 checks under the locks: a write that finished while this review waited
++        # may have quarantined the repository or left an unconfined intent.
++        refusal = quarantine.check(state, common)
++        if refusal is not None:
++            raise ReviewRefused(f"{refusal}; nothing ran")
++        try:
++            check_unconfined_intent(state, run_id)
++        except WriteRefused as exc:
++            raise ReviewRefused(str(exc)) from None
 +        admitted = _admitted(state, owners)
 +        reviewed = None
 +        if reviewed_lineage is not None:
@@ -2850,7 +2920,7 @@ index dfbc4cc6..b52ed88c 100644
 - [ ] **Step 4: Run them again, then the gates.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_engine_plan.py tests/unit/headless_agents/test_review.py -q -p no:cacheprovider`
-Expected: `test_engine_plan.py: 65 passed; test_review.py: 28 passed`. Then the gates of the Global Constraints.
+Expected: `test_engine_plan.py: 65 passed; test_review.py: 29 passed`. Then the gates of the Global Constraints.
 
 - [ ] **Step 5: Commit.**
 
@@ -3434,10 +3504,10 @@ git commit -m "feat(headless-agents): ha show renders a review from its records,
 
 ```diff
 diff --git a/tests/unit/headless_agents/test_review.py b/tests/unit/headless_agents/test_review.py
-index 014333d2..459476dd 100644
+index 150d9024..8d85a780 100644
 --- a/tests/unit/headless_agents/test_review.py
 +++ b/tests/unit/headless_agents/test_review.py
-@@ -538,12 +538,12 @@ def test_a_failed_cleanup_keeps_the_worktree_and_the_verdicts_exit(
+@@ -566,12 +566,12 @@ def test_a_failed_cleanup_keeps_the_worktree_and_the_verdicts_exit(
      from headless_agents import review_flow
  
      world.commit_by_hand()
@@ -3452,7 +3522,7 @@ index 014333d2..459476dd 100644
      outcome = world.review()
      assert outcome.exit_code == 0
      report = _report(outcome)
-@@ -597,3 +597,63 @@ def test_every_role_of_the_panel_needs_its_isolation_proof(world: World) -> None
+@@ -625,3 +625,63 @@ def test_every_role_of_the_panel_needs_its_isolation_proof(world: World) -> None
      with pytest.raises(UsageError, match="agy agy 1.0 has no passing isolation proof"):
          world.review("panel")
      assert all(agent.specs == [] for agent in world.agents.values())
@@ -3521,7 +3591,7 @@ index 014333d2..459476dd 100644
 - [ ] **Step 2: Run them.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_review.py -q -p no:cacheprovider`
-Expected: `test_review.py: 3 failed, 28 passed` — every failure is the missing feature:
+Expected: `test_review.py: 3 failed, 29 passed` — every failure is the missing feature:
   - `test_review.py -- test_a_failed_cleanup_keeps_the_worktree_and_the_verdicts_exit: AttributeError: module 'headless_agents.review_flow' has no attribute 'remo...`
   - `test_review.py -- test_ha_clean_removes_a_kept_review_worktree_through_git: AttributeError: <module 'headless_agents.review_flow' from '/home/hawixs/ha...`
   - `test_review.py -- test_ha_clean_of_a_review_runs_no_git_under_a_quarantine: AttributeError: <module 'headless_agents.review_flow' from '/home/hawixs/ha...`
@@ -3569,10 +3639,10 @@ index dd59ffaa..85fe6044 100644
              shutil.rmtree(entry.run_dir)
          if not started:
 diff --git a/packages/headless-agents/src/headless_agents/review_flow.py b/packages/headless-agents/src/headless_agents/review_flow.py
-index 44411c75..8f7680a9 100644
+index b0bb3518..685451bd 100644
 --- a/packages/headless-agents/src/headless_agents/review_flow.py
 +++ b/packages/headless-agents/src/headless_agents/review_flow.py
-@@ -242,7 +242,7 @@ def prepare(
+@@ -244,7 +244,7 @@ def prepare(
      return Prepared(head=head, merge_base=merge_base, patch=patch, check=check, worktree=worktree)
  
  
@@ -3581,7 +3651,7 @@ index 44411c75..8f7680a9 100644
      worktree: Path, identity: RepoIdentity, environ: Mapping[str, str], state: Path
  ) -> str | None:
      """Remove the detached worktree through git; the reason when it cannot."""
-@@ -278,7 +278,7 @@ def finish(
+@@ -280,7 +280,7 @@ def finish(
              text=text or "",
              check=prepared.check,
          )
@@ -3590,7 +3660,7 @@ index 44411c75..8f7680a9 100644
      return {"status": "done"} if reason is None else {"status": "failed", "reason": reason}
  
  
-@@ -287,6 +287,8 @@ __all__ = [
+@@ -289,6 +289,8 @@ __all__ = [
      "DEFAULT_BASE",
      "Prepared",
      "ReviewRefused",
@@ -3604,7 +3674,7 @@ index 44411c75..8f7680a9 100644
 - [ ] **Step 4: Run them again, then the gates.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_review.py -q -p no:cacheprovider`
-Expected: `test_review.py: 31 passed`. Then the gates of the Global Constraints.
+Expected: `test_review.py: 32 passed`. Then the gates of the Global Constraints.
 
 - [ ] **Step 5: Commit.**
 
@@ -3635,10 +3705,10 @@ git commit -m "feat(headless-agents): ha clean removes a review's kept worktree 
 
 ```diff
 diff --git a/tests/unit/headless_agents/test_review.py b/tests/unit/headless_agents/test_review.py
-index 459476dd..d8c86ed4 100644
+index 8d85a780..629e815f 100644
 --- a/tests/unit/headless_agents/test_review.py
 +++ b/tests/unit/headless_agents/test_review.py
-@@ -657,3 +657,123 @@ def test_ha_clean_of_a_finished_review_removes_its_directory(world: World) -> No
+@@ -685,3 +685,123 @@ def test_ha_clean_of_a_finished_review_removes_its_directory(world: World) -> No
      outcome = world.review()
      assert _clean(world, outcome.run_id) == 0
      assert not outcome.run_dir.exists()
@@ -3847,7 +3917,7 @@ index 99fe2e4b..8ecece1a 100644
 - [ ] **Step 2: Run them.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_review.py tests/unit/headless_agents/test_runs.py tests/unit/headless_agents/test_show.py -q -p no:cacheprovider`
-Expected: `test_review.py: 10 failed, 31 passed; test_runs.py: 6 failed, 58 passed; test_show.py: 1 failed, 57 passed` — every failure is the missing feature:
+Expected: `test_review.py: 10 failed, 32 passed; test_runs.py: 6 failed, 58 passed; test_show.py: 1 failed, 57 passed` — every failure is the missing feature:
   - `test_review.py -- test_the_session_loop_implement_review_fix_review: TypeError: Request.__init__() got an unexpected keyword argument 'findings_...`
   - `test_review.py -- test_findings_take_no_task_and_never_read_stdin: TypeError: Request.__init__() got an unexpected keyword argument 'findings_...`
   - `test_review.py -- test_findings_still_read_after_ha_clean_of_the_review: TypeError: Request.__init__() got an unexpected keyword argument 'findings_...`
@@ -4268,7 +4338,7 @@ index b52ed88c..65fb0ba0 100644
 - [ ] **Step 4: Run them again, then the gates.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_review.py tests/unit/headless_agents/test_runs.py tests/unit/headless_agents/test_show.py -q -p no:cacheprovider`
-Expected: `test_review.py: 41 passed; test_runs.py: 64 passed; test_show.py: 58 passed`. Then the gates of the Global Constraints.
+Expected: `test_review.py: 42 passed; test_runs.py: 64 passed; test_show.py: 58 passed`. Then the gates of the Global Constraints.
 
 - [ ] **Step 5: Commit.**
 
@@ -4395,10 +4465,10 @@ index 8c56b111..d71c7480 100644
  
  
 diff --git a/tests/unit/headless_agents/test_review.py b/tests/unit/headless_agents/test_review.py
-index d8c86ed4..d96863d0 100644
+index 629e815f..28a7e078 100644
 --- a/tests/unit/headless_agents/test_review.py
 +++ b/tests/unit/headless_agents/test_review.py
-@@ -659,6 +659,47 @@ def test_ha_clean_of_a_finished_review_removes_its_directory(world: World) -> No
+@@ -687,6 +687,47 @@ def test_ha_clean_of_a_finished_review_removes_its_directory(world: World) -> No
      assert not outcome.run_dir.exists()
  
  
@@ -4449,7 +4519,7 @@ index d8c86ed4..d96863d0 100644
 - [ ] **Step 2: Run them.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_cli.py tests/unit/headless_agents/test_review.py -q -p no:cacheprovider`
-Expected: `test_cli.py: 6 failed, 103 passed; test_review.py: 3 failed, 41 passed` — every failure is the missing feature:
+Expected: `test_cli.py: 6 failed, 103 passed; test_review.py: 3 failed, 42 passed` — every failure is the missing feature:
   - `test_cli.py -- test_a_review_without_a_prompt_never_reads_a_piped_stdin: AssertionError: stdin was read`
   - `test_cli.py -- test_findings_without_a_prompt_never_read_a_piped_stdin: AssertionError: assert (2 == 2 and 'no run 20260926T000000-aaaaaaaa' in 'ha...`
   - `test_cli.py -- test_run_help_names_the_review_exit_codes_and_a_review_example: assert '  6 changes requested' in 'usage: ha run [-h] [-m MODEL] [--effort ...`
@@ -4657,7 +4727,7 @@ index 3c7628e4..fc3167fb 100644
 - [ ] **Step 4: Run them again, then the gates.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_cli.py tests/unit/headless_agents/test_review.py -q -p no:cacheprovider`
-Expected: `test_cli.py: 109 passed; test_review.py: 44 passed`. Then the gates of the Global Constraints.
+Expected: `test_cli.py: 109 passed; test_review.py: 45 passed`. Then the gates of the Global Constraints.
 
 - [ ] **Step 5: Commit.**
 
