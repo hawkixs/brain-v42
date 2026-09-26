@@ -58,6 +58,42 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _recovery_binding(release: Path, *, release_sha: str = SOURCE_SHA) -> dict[str, Any]:
+    """Build `<release>/recovery/` and its binding, and return the manifest entry.
+
+    Shaped exactly like `brain_v42.release_recovery.publish_recovery_binding`'s
+    real output, so the preflight's `recovery_binding` checks exercise the same
+    contract a real release carries: `schema_head` agreeing with `SCHEMA_HEAD`,
+    `release_sha` agreeing with the manifest's `source_sha`, and three files each
+    hashed inside the binding. Callable again to re-bind a tampered `source_sha`
+    to a matching `release_sha`, exactly as the fixture already regenerates
+    `source_archive` when a test moves `source_sha`.
+    """
+    recovery_dir = release / "recovery"
+    manifest_sql = recovery_dir / "recovery-manifest.json"
+    attestation_sql = recovery_dir / "recovery-attestation.sql"
+    restored_sql = recovery_dir / "recovery-restored.sql"
+    _write(manifest_sql, '{"contract_id": "brain-v42/postgresql-recovery/v1"}\n', mode=0o644)
+    _write(attestation_sql, "-- attestation\n", mode=0o644)
+    _write(restored_sql, "-- restored\n", mode=0o644)
+    recovery_dir.chmod(0o755)
+    binding_document = {
+        "attestation_sql": {"path": "recovery-attestation.sql", "sha256": _sha256(attestation_sql)},
+        "contract_id": "brain-v42/postgresql-recovery/v1",
+        "contract_version": 1,
+        "manifest": {"path": "recovery-manifest.json", "sha256": _sha256(manifest_sql)},
+        "release_sha": release_sha,
+        "restored_attestation_sql": {
+            "path": "recovery-restored.sql",
+            "sha256": _sha256(restored_sql),
+        },
+        "schema_head": SCHEMA_HEAD,
+    }
+    binding_path = recovery_dir / "recovery-binding.json"
+    _write(binding_path, json.dumps(binding_document, indent=2, sort_keys=True) + "\n", mode=0o644)
+    return {"path": "recovery/recovery-binding.json", "sha256": _sha256(binding_path)}
+
+
 def _write(path: Path, data: str | bytes, *, mode: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(data, str):
@@ -441,6 +477,7 @@ def deployment_case(tmp_path: Path) -> DeploymentCase:
         "source_sha": SOURCE_SHA,
         "minimum_guarded_sha": GUARDED_SHA,
         "version": "9.0.0",
+        "recovery_binding": _recovery_binding(release),
         "source_archive": {"path": "artifacts/brain-v42.tar.gz", "sha256": _sha256(source)},
         "wheel": {"path": "artifacts/brain_v42-9.0.0-py3-none-any.whl", "sha256": _sha256(wheel)},
         "uv_lock": {"path": "artifacts/uv.lock", "sha256": _sha256(lock)},
@@ -1260,6 +1297,9 @@ def test_preflight_refuses_an_unguarded_source_revision(
     _tar_source(source, "b" * 40)
     manifest["source_sha"] = "b" * 40
     manifest["source_archive"]["sha256"] = _sha256(source)
+    manifest["recovery_binding"] = _recovery_binding(
+        deployment_case.manifest.parent, release_sha="b" * 40
+    )
     deployment_case.write_manifest(manifest)
     deployment_case.guard_result = "behind"
 
@@ -1710,3 +1750,101 @@ def test_preflight_still_accepts_a_release_built_before_pyvenv_cfg_was_hashed(
     result = deployment_case.run()
 
     assert result.returncode == 0, result.stderr
+
+
+# --- recovery_binding: which recovery contract covers THIS release's schema ---
+#
+# Unlike `pyvenv_cfg`, this key carries no backward-compatibility grace period:
+# every release the preflight is asked to trust from now on must be able to prove
+# red-backup can find its recovery contract without brain running and without
+# reading brain's working checkout. `deployment_case` already carries a valid one
+# (`_recovery_binding`, built exactly like `release_recovery.publish_recovery_binding`
+# would build it); each test below breaks one fact and checks the specific,
+# pre-existing failure code the equivalent check already uses elsewhere in this
+# preflight — no new failure vocabulary is needed.
+
+
+def test_preflight_refuses_a_manifest_with_no_recovery_binding(
+    deployment_case: DeploymentCase,
+) -> None:
+    manifest = deployment_case.manifest_document()
+    del manifest["recovery_binding"]
+    deployment_case.write_manifest(manifest)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "config_schema_invalid"
+
+
+def test_preflight_refuses_a_recovery_binding_file_that_is_missing(
+    deployment_case: DeploymentCase,
+) -> None:
+    (deployment_case.manifest.parent / "recovery" / "recovery-binding.json").unlink()
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_path_unsafe"
+
+
+def test_preflight_refuses_a_recovery_binding_whose_sha256_the_manifest_gets_wrong(
+    deployment_case: DeploymentCase,
+) -> None:
+    manifest = deployment_case.manifest_document()
+    manifest["recovery_binding"]["sha256"] = "0" * 64
+    deployment_case.write_manifest(manifest)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_artifact_mismatch"
+
+
+def test_preflight_refuses_a_recovery_binding_declaring_a_stale_schema_head(
+    deployment_case: DeploymentCase,
+) -> None:
+    release = deployment_case.manifest.parent
+    binding_path = release / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["schema_head"] = "000"
+    _write(binding_path, json.dumps(binding, indent=2, sort_keys=True) + "\n", mode=0o644)
+    manifest = deployment_case.manifest_document()
+    manifest["recovery_binding"]["sha256"] = _sha256(binding_path)
+    deployment_case.write_manifest(manifest)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "schema_capability_unavailable"
+
+
+def test_preflight_refuses_a_recovery_binding_naming_a_different_release(
+    deployment_case: DeploymentCase,
+) -> None:
+    release = deployment_case.manifest.parent
+    binding_path = release / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["release_sha"] = "f" * 40
+    _write(binding_path, json.dumps(binding, indent=2, sort_keys=True) + "\n", mode=0o644)
+    manifest = deployment_case.manifest_document()
+    manifest["recovery_binding"]["sha256"] = _sha256(binding_path)
+    deployment_case.write_manifest(manifest)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_artifact_mismatch"
+
+
+def test_preflight_refuses_a_copied_recovery_asset_edited_after_publish(
+    deployment_case: DeploymentCase,
+) -> None:
+    release = deployment_case.manifest.parent
+    tampered = release / "recovery" / "recovery-attestation.sql"
+    tampered.write_text("-- tampered after publish\n", encoding="utf-8")
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_artifact_mismatch"

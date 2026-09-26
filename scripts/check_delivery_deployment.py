@@ -1134,6 +1134,29 @@ def check(
     # pressure. Absent means "built before the entry existed", never "trusted".
     if manifest.get("pyvenv_cfg") is not None:
         _release_file(root, manifest.get("pyvenv_cfg"))
+    # `recovery_binding` names which recovery contract red-backup can trust for
+    # THIS release's schema — published by `brain_v42.release_recovery` at build
+    # time, copied out of the release's own source tree so a later `git checkout`
+    # on the working checkout cannot move it. Unlike `pyvenv_cfg` above, this key
+    # carries NO backward-compatibility grace period: a release with no
+    # verifiable recovery contract must never pass this preflight, so every
+    # check below reuses `_release_file`'s existing failure vocabulary instead
+    # of inventing a new one.
+    binding = _release_file(root, manifest.get("recovery_binding"))
+    try:
+        binding_document = _object(
+            json.loads(binding.path.read_text(encoding="utf-8")), "config_schema_invalid"
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _fail("config_schema_invalid")
+    if binding_document.get("schema_head") != required_revision:
+        _fail("schema_capability_unavailable")
+    if binding_document.get("release_sha") != source_sha:
+        _fail("release_artifact_mismatch")
+    for asset_key in ("manifest", "attestation_sql", "restored_attestation_sql"):
+        asset = _object(binding_document.get(asset_key), "config_schema_invalid")
+        relative_path = _text(asset.get("path"), "config_schema_invalid")
+        _release_file(root, {"path": f"recovery/{relative_path}", "sha256": asset.get("sha256")})
     _validate_payload(root, manifest, source, wheel, retained_lock, interpreter)
     verified_source_paths = {
         _text(_object(item, "config_schema_invalid").get("archive_path"), "config_schema_invalid")
