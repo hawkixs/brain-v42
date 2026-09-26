@@ -74,7 +74,7 @@ states what `workflows.toml`, the implement run and `--continue` already do; its
 | # | Decision | Why |
 |---|---|---|
 | P1 | `templates`: the review, judge and fix templates; `OUTPUT_CONTRACT` is the spec's text verbatim; with `--findings` and no task, the task is `Address the findings below.`; a block's content travels verbatim (only attributes are escaped). `read_verdict` reads the last non-empty line, strips `*`, `_` and backticks around it, and fullmatches `VERDICT:\s*(APPROVE\|CHANGES)` case-insensitively; anything else is `None`. | §3.5 step 5, §3.7; §3.3: "a diff can try to steer a judge. The verdict is therefore advisory". |
-| P2 | `vendor`: a commit without provenance, while no unconfined write is recorded, is attributed `made_by: hand` with no provider — the spec names `engine`, `agent`, `hook`, `unknown` for provenance and needs a word for "no provider"; an unreadable provenance record or `unconfined-writers.json` refuses the review, and so does a readable record that is not one `ha` writes (a `run_id` not a non-empty text, a `made_by` outside `engine`, `agent`, `hook`, `unknown`, `providers` not a non-empty list of non-empty texts) — read as no provider, it would let an author's vendor review its code. | §3.8.4 step 4; §3.8.1: "unknown is treated as compromised — never as empty". |
+| P2 | `vendor`: a commit without provenance, while no unconfined write is recorded, is attributed `made_by: hand` with no provider — the spec names `engine`, `agent`, `hook`, `unknown` for provenance and needs a word for "no provider"; an unreadable provenance record or `unconfined-writers.json` refuses the review, and so does a readable record that is not one `ha` writes (a `run_id` not a non-empty text, a `made_by` that is not one of the texts `engine`, `agent`, `hook`, `unknown`, `providers` not a non-empty list of non-empty texts) — read as no provider, it would let an author's vendor review its code. | §3.8.4 step 4; §3.8.1: "unknown is treated as compromised — never as empty". |
 | P3 | A review is planned and executed in one task (Task 4): planned alone, it would reach `execute()` and run as a one-step run of its first reviewer, without the rule. | §5 item 4. |
 | P4 | Planning a review: `SlotPlan(slot, role, models, mcp, environment)` per slot, `Plan.panel` in launch order (reviewers, then the judge); `Plan.role` is the first reviewer's; a blank or absent prompt is `Review this change.`; `--run` is resolved like `--continue` (an implement run's registry entry) and excludes `--head` and `--base`; `--head` and `--run` are refused off a review, `--continue` and `--findings` off an implement. | §3.5, §3.9; §3.8.2 (registry only). |
 | P5 | `review_flow.prepare` takes the lineage registry lock shared and every lineage of the repository — and any lineage whose worktree holds `--repo` — shared, ascending, each bounded to 10 s; under them, and only then, the quarantines and a stale unconfined intent are checked (a write that finished while the review waited may have quarantined the repository); a pending write is stale by construction (a live writer holds its lock exclusively), so it is handled as a write's admission handles one (`write_flow.unfinalized`: lineage compromised, repository quarantined) and refuses. The head, the merge base, `git log` and the diff all use the pinned commit; an empty diff refuses; the check is written once, then the lineage and registry locks are released before `change.patch` and `git worktree add --detach`. | §3.8.2, §3.8.4 steps 1–6, §3.8.5. |
@@ -539,10 +539,10 @@ git commit -m "feat(headless-agents): the review, judge and fix templates, and t
 ```diff
 diff --git a/tests/unit/headless_agents/test_vendor.py b/tests/unit/headless_agents/test_vendor.py
 new file mode 100644
-index 00000000..76020911
+index 00000000..f95a4b2f
 --- /dev/null
 +++ b/tests/unit/headless_agents/test_vendor.py
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,176 @@
 +"""The vendor rule: who wrote each commit of a range, and whether a reviewer shares a vendor
 +with them (spec 0.5.0 §3.8.4 steps 4-5, §3.8.6)."""
 +
@@ -630,6 +630,8 @@ index 00000000..76020911
 +        {"providers": None},
 +        {"made_by": "hand"},
 +        {"made_by": None},
++        {"made_by": []},
++        {"made_by": {}},
 +        {"run_id": None},
 +        {"run_id": ""},
 +        {"run_id": 7},
@@ -707,6 +709,11 @@ index 00000000..76020911
 +        {"commits": [{"sha": "nope"}], "authors": [], "reviewers": {}},
 +        {"commits": [], "authors": [1], "reviewers": {}},
 +        {"commits": [], "authors": [], "reviewers": {"r": "codex"}},
++        {
++            "commits": [{"sha": "1" * 40, "run_id": None, "made_by": [], "providers": []}],
++            "authors": [],
++            "reviewers": {},
++        },
 +    ],
 +)
 +def test_a_malformed_check_is_unknown(document: dict[str, object]) -> None:
@@ -725,10 +732,10 @@ Expected: `test_vendor.py: 1 error` — every failure is the missing feature:
 ```diff
 diff --git a/packages/headless-agents/src/headless_agents/vendor.py b/packages/headless-agents/src/headless_agents/vendor.py
 new file mode 100644
-index 00000000..efde0a3a
+index 00000000..3851f001
 --- /dev/null
 +++ b/packages/headless-agents/src/headless_agents/vendor.py
-@@ -0,0 +1,223 @@
+@@ -0,0 +1,225 @@
 +"""The vendor rule: no reviewer shares a vendor with the code's author (spec 0.5.0 §3.8.4).
 +
 +Pure decisions over the state directory, no git: the review flow lists the
@@ -826,6 +833,7 @@ index 00000000..efde0a3a
 +                not isinstance(sha, str)
 +                or not _SHA.fullmatch(sha)
 +                or not (run_id is None or isinstance(run_id, str))
++                or not isinstance(made_by, str)
 +                or made_by not in MADE_BY
 +            ):
 +                raise Unknown(f"{where}: vendor check is malformed")
@@ -878,6 +886,7 @@ index 00000000..efde0a3a
 +    if (
 +        not isinstance(run_id, str)
 +        or not run_id
++        or not isinstance(made_by, str)
 +        or made_by not in _RECORDED_MADE_BY
 +        or not isinstance(providers, list)
 +        or not providers
@@ -957,7 +966,7 @@ index 00000000..efde0a3a
 - [ ] **Step 4: Run them again, then the gates.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_vendor.py -q -p no:cacheprovider`
-Expected: `test_vendor.py: 26 passed`. Then the gates of the Global Constraints.
+Expected: `test_vendor.py: 29 passed`. Then the gates of the Global Constraints.
 
 - [ ] **Step 5: Commit.**
 
