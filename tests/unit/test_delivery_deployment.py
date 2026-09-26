@@ -73,7 +73,11 @@ def _recovery_binding(release: Path, *, release_sha: str = SOURCE_SHA) -> dict[s
     manifest_sql = recovery_dir / "recovery-manifest.json"
     attestation_sql = recovery_dir / "recovery-attestation.sql"
     restored_sql = recovery_dir / "recovery-restored.sql"
-    _write(manifest_sql, '{"contract_id": "brain-v42/postgresql-recovery/v1"}\n', mode=0o644)
+    _write(
+        manifest_sql,
+        '{"contract_id": "brain-v42/postgresql-recovery/v1", "schema_version": 1}\n',
+        mode=0o644,
+    )
     _write(attestation_sql, "-- attestation\n", mode=0o644)
     _write(restored_sql, "-- restored\n", mode=0o644)
     recovery_dir.chmod(0o755)
@@ -1843,6 +1847,144 @@ def test_preflight_refuses_a_copied_recovery_asset_edited_after_publish(
     release = deployment_case.manifest.parent
     tampered = release / "recovery" / "recovery-attestation.sql"
     tampered.write_text("-- tampered after publish\n", encoding="utf-8")
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_artifact_mismatch"
+
+
+def _rebind(deployment_case: DeploymentCase, binding: dict[str, Any]) -> None:
+    """Rewrite `recovery-binding.json` and re-hash it into the manifest.
+
+    Mirrors what a real re-publish (or an attacker with write access to the
+    release directory) would do: the binding is edited, then re-hashed, so the
+    manifest's own `recovery_binding.sha256` stays internally consistent. Every
+    test below relies on the preflight catching the edit some other way than
+    that hash, which the edit itself never breaks.
+    """
+    release = deployment_case.manifest.parent
+    binding_path = release / "recovery" / "recovery-binding.json"
+    _write(binding_path, json.dumps(binding, indent=2, sort_keys=True) + "\n", mode=0o644)
+    manifest = deployment_case.manifest_document()
+    manifest["recovery_binding"]["sha256"] = _sha256(binding_path)
+    deployment_case.write_manifest(manifest)
+
+
+def test_preflight_refuses_a_recovery_binding_missing_a_required_key(
+    deployment_case: DeploymentCase,
+) -> None:
+    binding_path = deployment_case.manifest.parent / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    del binding["contract_version"]
+    _rebind(deployment_case, binding)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "config_schema_invalid"
+
+
+def test_preflight_refuses_a_recovery_binding_with_an_unexpected_extra_key(
+    deployment_case: DeploymentCase,
+) -> None:
+    binding_path = deployment_case.manifest.parent / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["unexpected"] = "surprise"
+    _rebind(deployment_case, binding)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "config_schema_invalid"
+
+
+def test_preflight_refuses_a_recovery_binding_with_a_non_string_contract_id(
+    deployment_case: DeploymentCase,
+) -> None:
+    binding_path = deployment_case.manifest.parent / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["contract_id"] = 1
+    _rebind(deployment_case, binding)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "config_schema_invalid"
+
+
+def test_preflight_refuses_a_recovery_binding_with_a_non_int_contract_version(
+    deployment_case: DeploymentCase,
+) -> None:
+    binding_path = deployment_case.manifest.parent / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["contract_version"] = True
+    _rebind(deployment_case, binding)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "config_schema_invalid"
+
+
+def test_preflight_refuses_a_recovery_asset_entry_with_an_unexpected_extra_key(
+    deployment_case: DeploymentCase,
+) -> None:
+    binding_path = deployment_case.manifest.parent / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["manifest"]["extra"] = "surprise"
+    _rebind(deployment_case, binding)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "config_schema_invalid"
+
+
+def test_preflight_refuses_a_recovery_asset_path_with_a_directory_component(
+    deployment_case: DeploymentCase,
+) -> None:
+    release = deployment_case.manifest.parent
+    binding_path = release / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    nested = release / "recovery" / "nested" / "recovery-attestation.sql"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("-- attestation\n", encoding="utf-8")
+    nested.chmod(0o644)
+    binding["attestation_sql"] = {"path": "nested/recovery-attestation.sql", "sha256": _sha256(nested)}
+    _rebind(deployment_case, binding)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_path_unsafe"
+
+
+def test_preflight_refuses_a_recovery_binding_whose_contract_id_disagrees_with_the_copied_manifest(
+    deployment_case: DeploymentCase,
+) -> None:
+    binding_path = deployment_case.manifest.parent / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    # Self-consistent otherwise: schema_head, release_sha and every asset's
+    # sha256 still agree with this release. Only the label the binding
+    # attaches to that content disagrees with the manifest asset's own,
+    # independently-read contract_id — the swap this check exists to catch.
+    binding["contract_id"] = "brain-v42/postgresql-recovery/v999"
+    _rebind(deployment_case, binding)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_artifact_mismatch"
+
+
+def test_preflight_refuses_a_recovery_binding_whose_contract_version_disagrees_with_the_copied_manifest(
+    deployment_case: DeploymentCase,
+) -> None:
+    binding_path = deployment_case.manifest.parent / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    binding["contract_version"] = 999
+    _rebind(deployment_case, binding)
 
     result = deployment_case.run()
 

@@ -64,6 +64,20 @@ _FAILURES = {
     "writer_launch_unsupported",
     "service_health_unavailable",
 }
+#: The recovery binding's complete schema — no more, no fewer keys — and the
+#: complete schema of each of its three asset entries.
+_RECOVERY_BINDING_KEYS = frozenset(
+    {
+        "contract_id",
+        "contract_version",
+        "schema_head",
+        "release_sha",
+        "manifest",
+        "attestation_sql",
+        "restored_attestation_sql",
+    }
+)
+_RECOVERY_ASSET_KEYS = frozenset({"path", "sha256"})
 
 
 class PreflightFailure(Exception):
@@ -1149,14 +1163,57 @@ def check(
         )
     except (OSError, UnicodeError, json.JSONDecodeError):
         _fail("config_schema_invalid")
+    # Exactly this key set, no more and no fewer: an extra key could carry data
+    # this preflight never validates, and a missing one would silently widen
+    # every check below into a vacuous truth over `None`.
+    if set(binding_document.keys()) != _RECOVERY_BINDING_KEYS:
+        _fail("config_schema_invalid")
+    contract_id = _text(binding_document.get("contract_id"), "config_schema_invalid", limit=256)
+    contract_version = binding_document.get("contract_version")
+    if type(contract_version) is not int:
+        _fail("config_schema_invalid")
     if binding_document.get("schema_head") != required_revision:
         _fail("schema_capability_unavailable")
     if binding_document.get("release_sha") != source_sha:
         _fail("release_artifact_mismatch")
+    asset_files: dict[str, ReleaseFile] = {}
     for asset_key in ("manifest", "attestation_sql", "restored_attestation_sql"):
         asset = _object(binding_document.get(asset_key), "config_schema_invalid")
+        if set(asset.keys()) != _RECOVERY_ASSET_KEYS:
+            _fail("config_schema_invalid")
         relative_path = _text(asset.get("path"), "config_schema_invalid")
-        _release_file(root, {"path": f"recovery/{relative_path}", "sha256": asset.get("sha256")})
+        # `release_recovery.publish_recovery_binding` only ever copies assets
+        # into `recovery/` under their own plain file name — never a nested
+        # path. A directory component here would still resolve inside
+        # `recovery/` (`_release_file` already refuses `..` and absolute
+        # paths), but it would no longer be the flat name publish writes:
+        # refuse it instead of accepting a shape publish never produces.
+        if relative_path != Path(relative_path).name:
+            _fail("release_path_unsafe")
+        asset_files[asset_key] = _release_file(
+            root, {"path": f"recovery/{relative_path}", "sha256": asset.get("sha256")}
+        )
+    # The binding's `contract_id`/`contract_version` are self-declared: every
+    # other check above is satisfied by a binding that is internally
+    # consistent (source_sha, schema_head, and each asset's sha256 all agree
+    # with each other and with this release), even if it was re-hashed to name
+    # a different — or older, revoked — recovery contract. Cross-check both
+    # fields against the copied manifest ASSET's own content, the file a real
+    # recovery restores against, so a swap has to falsify a second,
+    # independent fact instead of just a label next to the one already
+    # checked.
+    try:
+        manifest_asset_document = _object(
+            json.loads(asset_files["manifest"].path.read_text(encoding="utf-8")),
+            "config_schema_invalid",
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _fail("config_schema_invalid")
+    if (
+        manifest_asset_document.get("contract_id") != contract_id
+        or manifest_asset_document.get("schema_version") != contract_version
+    ):
+        _fail("release_artifact_mismatch")
     _validate_payload(root, manifest, source, wheel, retained_lock, interpreter)
     verified_source_paths = {
         _text(_object(item, "config_schema_invalid").get("archive_path"), "config_schema_invalid")
