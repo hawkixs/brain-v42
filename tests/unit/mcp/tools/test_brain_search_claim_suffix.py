@@ -274,6 +274,56 @@ async def test_grouped_search_appends_the_suffix_with_one_batch_call() -> None:
     assert set(entries) == {("decision", DECISION_ID), ("learning", LEARNING_ID)}
 
 
+async def test_grouped_search_batches_over_the_service_limit_and_still_renders() -> None:
+    """Grouped search applies its limit PER TYPE: >100 claimable results combined
+    across types must not exceed a single ClaimReadService.batch_summaries call
+    and turn every result unavailable -- see claim_suffix_map's chunking."""
+    decision_ids = [uuid4() for _ in range(60)]
+    learning_ids = [uuid4() for _ in range(60)]
+    by_type = KnowledgeByType(
+        decisions=[
+            SearchResult(type="decision", score=0.9, score_kind="cross_encoder", item=_fake_item(i))
+            for i in decision_ids
+        ],
+        learnings=[
+            SearchResult(
+                type="learning",
+                score=0.8,
+                score_kind="cross_encoder",
+                item=_fake_item(
+                    i, topic="t", insight="i", source_type="experience", confidence="medium"
+                ),
+            )
+            for i in learning_ids
+        ],
+    )
+    from brain_v42.models.brain import WhatDoIKnowResponse
+
+    response = WhatDoIKnowResponse(
+        topic="q",
+        by_type=by_type,
+        total=120,
+        types_searched=["decision", "learning"],
+        diagnostics=_make_diagnostics(),
+    )
+    state = _state()
+    claim_svc = AsyncMock()
+
+    async def _batch_summaries(chunk: Any, *, trusted_project_key: Any = None) -> Any:
+        if len(chunk) > 100:
+            raise ClaimReadError("invalid_argument")
+        return dict.fromkeys(chunk, (state,))
+
+    claim_svc.batch_summaries.side_effect = _batch_summaries
+    mcp, brain_svc = _build(claim_read_svc=claim_svc)
+    brain_svc.what_do_i_know_about = AsyncMock(return_value=response)
+
+    output = await (await _fn(mcp, "brain_search"))(query="q", group_by_type=True)
+
+    assert claim_svc.batch_summaries.await_count == 2
+    assert output.count("[claims : 1 tient]") == 120
+
+
 async def test_omitting_claim_read_svc_preserves_flat_search() -> None:
     result = SearchResult(
         type="decision", score=0.9, score_kind="cross_encoder", item=_fake_item(DECISION_ID)

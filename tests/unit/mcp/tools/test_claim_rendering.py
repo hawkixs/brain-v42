@@ -209,6 +209,70 @@ async def test_claim_suffix_map_marks_every_requested_entry_on_failure_without_s
     assert result == dict.fromkeys(entries, CLAIM_SUFFIX_UNAVAILABLE)
 
 
+async def test_claim_suffix_map_chunks_batches_over_the_service_limit() -> None:
+    """ClaimReadService.batch_summaries refuses more than 100 entries in one call.
+
+    A grouped caller (brain_search group_by_type=True) can combine several
+    types into a set bigger than that single-batch ceiling -- this must not
+    turn every claimable entry unavailable just because one call would have
+    exceeded the service's own limit.
+    """
+    entries = [("learning", uuid4()) for _ in range(150)]
+    holding = _verdict("holds", 1, NOW)
+    state = _state(_claim(), holding, holding)
+
+    async def _batch_summaries(
+        chunk: list[tuple[str, UUID]], *, trusted_project_key: str | None = None
+    ) -> dict[tuple[str, UUID], tuple[ClaimState, ...]]:
+        if len(chunk) > 100:
+            raise ClaimReadError("invalid_argument")
+        return dict.fromkeys(chunk, (state,))
+
+    service = AsyncMock()
+    service.batch_summaries.side_effect = _batch_summaries
+
+    result = await claim_suffix_map(service, entries)
+
+    assert len(result) == 150
+    assert all(value == "[claims : 1 tient]" for value in result.values())
+    assert service.batch_summaries.await_count == 2
+    call_sizes = sorted(len(call.args[0]) for call in service.batch_summaries.await_args_list)
+    assert call_sizes == [50, 100]
+
+
+async def test_claim_suffix_map_isolates_a_failing_batch_from_the_rest() -> None:
+    """One batch's failure marks only ITS OWN entries -- not a sibling batch's.
+
+    Chosen isolation semantics: a >100-entry request costs a small, bounded
+    number of queries (one per <=100-entry chunk), and a chunk that fails
+    degrades only the entries it was responsible for. Blanking out an entire
+    grouped result because one 100-entry slice of it failed would turn a
+    partial outage into a total one for no reason.
+    """
+    entries = [("learning", uuid4()) for _ in range(150)]
+    holding = _verdict("holds", 1, NOW)
+    state = _state(_claim(), holding, holding)
+    calls = 0
+
+    async def _batch_summaries(
+        chunk: list[tuple[str, UUID]], *, trusted_project_key: str | None = None
+    ) -> dict[tuple[str, UUID], tuple[ClaimState, ...]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return dict.fromkeys(chunk, (state,))
+        raise ClaimReadError("read_unavailable")
+
+    service = AsyncMock()
+    service.batch_summaries.side_effect = _batch_summaries
+
+    result = await claim_suffix_map(service, entries)
+
+    first_chunk, second_chunk = entries[:100], entries[100:]
+    assert all(result[key] == "[claims : 1 tient]" for key in first_chunk)
+    assert all(result[key] == CLAIM_SUFFIX_UNAVAILABLE for key in second_chunk)
+
+
 async def test_claim_suffix_map_threads_the_trusted_project_scope() -> None:
     service = AsyncMock()
     service.batch_summaries.return_value = {}

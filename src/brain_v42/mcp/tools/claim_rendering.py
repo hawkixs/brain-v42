@@ -231,28 +231,49 @@ def format_claim_history(
     return "\n".join(lines)
 
 
+#: ClaimReadService.batch_summaries refuses more than this many entries in one
+#: call (see its own ``invalid_argument`` check) -- mirrored here, not imported,
+#: because this module renders and never reaches into service internals.
+_MAX_BATCH_SIZE = 100
+
+
 async def claim_suffix_map(
     service: ClaimReadService,
     entries: Sequence[tuple[str, UUID]],
     *,
     trusted_project_key: str | None = None,
 ) -> dict[tuple[str, UUID], str]:
-    """One batch fetch per result set; a failure marks every entry, never silently.
+    """One batch fetch per <=100-entry chunk; a chunk's failure marks only itself.
 
-    Returns a mapping that carries a rendered value only for an entry that has
-    something to show: a real suffix, or ``CLAIM_SUFFIX_UNAVAILABLE`` for every
-    requested entry when the single batch fetch itself failed. A key absent
-    from the result means "no active claim" -- render nothing for it.
+    A grouped caller (brain_search with group_by_type=True) applies its limit
+    PER TYPE, so it can hand this function more than 100 claimable entries in
+    one call even though a single ClaimReadService.batch_summaries call never
+    accepts more than that. This still never queries per entry: it issues one
+    bounded batch fetch per <=100-entry chunk, so a 500-entry request costs at
+    most 5 queries.
+
+    Isolation choice: a chunk that fails marks ONLY the entries in that chunk
+    as ``CLAIM_SUFFIX_UNAVAILABLE`` -- it never blanks out a sibling chunk that
+    answered successfully. Turning one failed 100-entry slice into a total
+    outage for the whole grouped result would throw away information the
+    other chunks already have.
+
+    A key absent from the result means "no active claim" -- render nothing.
     """
     if not entries:
         return {}
-    try:
-        summaries = await service.batch_summaries(entries, trusted_project_key=trusted_project_key)
-    except ClaimReadError:
-        return dict.fromkeys(entries, CLAIM_SUFFIX_UNAVAILABLE)
     result: dict[tuple[str, UUID], str] = {}
-    for key, states in summaries.items():
-        suffix = render_claim_suffix(states)
-        if suffix:
-            result[key] = suffix
+    for start in range(0, len(entries), _MAX_BATCH_SIZE):
+        chunk = entries[start : start + _MAX_BATCH_SIZE]
+        try:
+            summaries = await service.batch_summaries(
+                chunk, trusted_project_key=trusted_project_key
+            )
+        except ClaimReadError:
+            result.update(dict.fromkeys(chunk, CLAIM_SUFFIX_UNAVAILABLE))
+            continue
+        for key, states in summaries.items():
+            suffix = render_claim_suffix(states)
+            if suffix:
+                result[key] = suffix
     return result
