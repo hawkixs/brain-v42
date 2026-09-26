@@ -14,7 +14,9 @@ import sqlalchemy as sa
 from brain_v42.db.tables import brain_entities
 from brain_v42.facts import ResolvedClaim, resolve_claim
 from brain_v42.facts.registry import UnknownFactError
+from brain_v42.mcp.tools.claim_tools import _issuer
 from brain_v42.models.claim_input import ClaimInput, validate_claim_inputs
+from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.provenance import is_human_actor
 from brain_v42.repositories.pg_knowledge_claims import (
     active_claims,
@@ -187,12 +189,20 @@ async def _write_claim(
     provenance: Literal["measured", "declared"] = "declared"
     detail: str | None = None
     write_measurement = None
+    issuer_identity: str | None = None
     if claim.measure:
         if verification is None:
             raise ValueError("measure=true claims require a claim verification service")
-        write_measurement = await verification.measure_for_write(claim)
-        provenance = write_measurement.provenance
-        detail = write_measurement.detail
+        try:
+            issuer_identity = _issuer(declared_by)
+        except ClaimVerificationError as exc:
+            if exc.code != "unknown_actor":
+                raise
+            detail = "unattributed caller"
+        else:
+            write_measurement = await verification.measure_for_write(claim)
+            provenance = write_measurement.provenance
+            detail = write_measurement.detail
 
     row = await insert_claim(
         session,
@@ -215,13 +225,14 @@ async def _write_claim(
 
     if write_measurement is not None:
         assert verification is not None  # `claim.measure` guarantees a service above
+        assert issuer_identity is not None
         issuer_kind: Literal["robot", "human"] = "human" if is_human_actor(declared_by) else "robot"
         await verification.record_write_verdict(
             session,
             claim_id=row.id,
             resolved=claim,
             write_measurement=write_measurement,
-            issuer_identity=declared_by,
+            issuer_identity=issuer_identity,
             issuer_kind=issuer_kind,
         )
 

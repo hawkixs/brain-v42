@@ -209,6 +209,45 @@ async def test_write_claim_measured_holds_inserts_measured_and_appends_a_verdict
     assert outcome.claim_id == fake_insert.rows[0].id
 
 
+@pytest.mark.parametrize("actor", ["unknown", "_unexpanded", " "])
+async def test_write_claim_without_attributable_issuer_stays_declared_without_measuring(
+    actor: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unresolved caller cannot leave a verdict that has no accountable issuer."""
+    fake_insert = _FakeInsertClaim()
+    monkeypatch.setattr(claim_writes, "insert_claim", fake_insert)
+    verification = _FakeVerification(WriteMeasurement("measured", "holds", object(), object()))
+
+    outcome = await _write_claim(
+        object(),
+        entity_ref_id=uuid4(),
+        entity_type="learning",
+        project_key="brain-v42",
+        claim=_resolved_claim(measure=True),
+        declared_by=actor,
+        declared_at=datetime.now(UTC),
+        verification=verification,
+    )
+
+    assert outcome.provenance == "declared"
+    assert outcome.detail == "unattributed caller"
+    assert fake_insert.calls[0]["provenance"] == "declared"
+    assert verification.measure_calls == 0
+    assert verification.record_calls == []
+    assert "declared (unattributed caller)" in claims_confirmation([outcome])
+
+
+async def test_write_claim_verdict_uses_the_verified_mcp_issuer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first verdict must use the same attributable issuer as explicit verification."""
+    verification = _FakeVerification(WriteMeasurement("measured", "holds", object(), object()))
+
+    await _write(verification=verification, monkeypatch=monkeypatch)
+
+    assert verification.record_calls[0]["issuer_identity"] == "mcp:integration-test"
+
+
 async def test_write_claim_measured_falsified_is_not_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
