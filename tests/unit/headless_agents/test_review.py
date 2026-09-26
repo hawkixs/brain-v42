@@ -566,12 +566,12 @@ def test_a_failed_cleanup_keeps_the_worktree_and_the_verdicts_exit(
     from headless_agents import review_flow
 
     world.commit_by_hand()
-    real = review_flow._remove_worktree
+    real = review_flow.remove_worktree
 
     def failing(*args: object, **kwargs: object) -> str | None:
         return "fatal: simulated"
 
-    monkeypatch.setattr(review_flow, "_remove_worktree", failing)
+    monkeypatch.setattr(review_flow, "remove_worktree", failing)
     outcome = world.review()
     assert outcome.exit_code == 0
     report = _report(outcome)
@@ -625,3 +625,63 @@ def test_every_role_of_the_panel_needs_its_isolation_proof(world: World) -> None
     with pytest.raises(UsageError, match="agy agy 1.0 has no passing isolation proof"):
         world.review("panel")
     assert all(agent.specs == [] for agent in world.agents.values())
+
+
+# ── ha clean of a review (§3.9) ─────────────────────────────────────────────
+
+
+def _kept_worktree(world: World, monkeypatch: pytest.MonkeyPatch) -> engine.Outcome:
+    from headless_agents import review_flow
+
+    world.commit_by_hand()
+    monkeypatch.setattr(review_flow, "remove_worktree", lambda *a, **k: "fatal: simulated")
+    outcome = world.review()
+    monkeypatch.undo()
+    assert (outcome.run_dir / "wt").is_dir()
+    return outcome
+
+
+def _clean(world: World, run_id: str) -> int:
+    return engine.clean(
+        run_id,
+        environ={"PATH": os.environ["PATH"], "HOME": str(world.home)},
+        home=world.home,
+        say=world.said.append,
+    )
+
+
+def test_ha_clean_removes_a_kept_review_worktree_through_git(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outcome = _kept_worktree(world, monkeypatch)
+    assert _clean(world, outcome.run_id) == 0, world.said
+    assert not outcome.run_dir.exists()
+    assert str(outcome.run_dir / "wt") not in _git(world.repo, "worktree", "list")
+    entry = world.registry().resolve(outcome.run_id)
+    assert entry.cleaned_at is not None and entry.status == "approved"
+    assert reviews.load_result(world.state, outcome.run_id).verdict == "approve"
+
+
+def test_ha_clean_of_a_review_runs_no_git_under_a_quarantine(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    outcome = _kept_worktree(world, monkeypatch)
+    quarantine.publish(
+        world.state,
+        "repository",
+        reason="tripwire",
+        run_id="x",
+        paths=[],
+        common_dir=(world.repo / ".git").resolve(),
+    )
+    assert _clean(world, outcome.run_id) == 1
+    assert (outcome.run_dir / "wt").is_dir()
+    assert any("quarantine" in line for line in world.said)
+    assert world.registry().resolve(outcome.run_id).cleaned_at is None
+
+
+def test_ha_clean_of_a_finished_review_removes_its_directory(world: World) -> None:
+    world.commit_by_hand()
+    outcome = world.review()
+    assert _clean(world, outcome.run_id) == 0
+    assert not outcome.run_dir.exists()

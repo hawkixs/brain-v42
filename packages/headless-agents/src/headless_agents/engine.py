@@ -1325,6 +1325,19 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         )
 
 
+def _remove_review_worktree(
+    worktree: Path, repository: Path, state: Path, environ: Mapping[str, str]
+) -> str | None:
+    """``git worktree remove`` of a review's kept worktree; the reason when it cannot."""
+    try:
+        identity = discover(repository)
+    except RepoError as exc:
+        return str(exc)
+    if identity is None:
+        return f"{repository} is no longer a git repository"
+    return review_flow.remove_worktree(worktree, identity, operator_environment(environ), state)
+
+
 def clean(
     run_id: str, *, environ: Mapping[str, str], home: Path, say: Callable[[str], None]
 ) -> int:
@@ -1385,6 +1398,14 @@ def clean(
             except LockTimeout as exc:
                 raise UsageError(f"{exc}: the lineage is in use; nothing cleaned") from None
         started = (entry.run_dir / RUN_JSON).is_file()
+        worktree = entry.run_dir / review_flow.WORKTREE
+        if worktree.is_dir() and entry.repository is not None:
+            # A review whose cleanup failed kept its detached worktree: removed through
+            # git, and no git at all under a quarantine (§3.9).
+            reason = _remove_review_worktree(worktree, entry.repository, state, environ)
+            if reason is not None:
+                say(f"{run_id}: its worktree {worktree} is kept ({reason}); nothing cleaned")
+                return 1
         if entry.run_dir.is_dir():
             shutil.rmtree(entry.run_dir)
         if not started:

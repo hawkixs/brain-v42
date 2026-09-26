@@ -244,7 +244,7 @@ def prepare(
     return Prepared(head=head, merge_base=merge_base, patch=patch, check=check, worktree=worktree)
 
 
-def _remove_worktree(
+def remove_worktree(
     worktree: Path, identity: RepoIdentity, environ: Mapping[str, str], state: Path
 ) -> str | None:
     """Remove the detached worktree through git; the reason when it cannot."""
@@ -280,7 +280,7 @@ def finish(
             text=text or "",
             check=prepared.check,
         )
-    reason = _remove_worktree(prepared.worktree, identity, environ, state)
+    reason = remove_worktree(prepared.worktree, identity, environ, state)
     return {"status": "done"} if reason is None else {"status": "failed", "reason": reason}
 
 
@@ -289,6 +289,8 @@ __all__ = [
     "DEFAULT_BASE",
     "Prepared",
     "ReviewRefused",
+    "WORKTREE",
     "finish",
     "prepare",
+    "remove_worktree",
 ]
