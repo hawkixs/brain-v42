@@ -80,7 +80,7 @@ states what `workflows.toml`, the implement run and `--continue` already do; its
 | P5 | `review_flow.prepare` takes the lineage registry lock shared and every lineage of the repository — and any lineage whose worktree holds `--repo` — shared, ascending, each bounded to 10 s; under them, and only then, the quarantines and a stale unconfined intent are checked (a write that finished while the review waited may have quarantined the repository); a pending write is stale by construction (a live writer holds its lock exclusively), so it is handled as a write's admission handles one (`write_flow.unfinalized`: lineage compromised, repository quarantined) and refuses. The head, the merge base, `git log` and the diff all use the pinned commit; an empty diff refuses; the check is written once, then the lineage and registry locks are released before `change.patch` and `git worktree add --detach`. | §3.8.2, §3.8.4 steps 1–6, §3.8.5. |
 | P6 | The engine runs a phase's steps in threads (`ThreadPoolExecutor`), each through the unchanged `_run_links` with the slot's own plan; every prompt of a phase is size-checked before any starts — one too large refuses the phase with its step recorded at `2` and `failure_reason: prompt_too_large`; any reviewer that does not answer (exit `0` and a non-empty text) fails the review before the judge (`step_failed`); an unreadable verdict fails it (`unreadable_verdict`) and writes no result. A review's registry entry has no lineage and records no providers; its report records `base` (the merge base), `head`, `verdict`, `text`, `vendor_check` and `cleanup`, the write fields `null`, and each step's own verdict. Every panel role's rail needs its isolation proof. | §3.4, §3.5 steps 2–5, §3.8.0, §3.10. |
 | P7 | `ha show` of a review takes its head, verdict and text from its result, its check from the result or, before a verdict, from the check file; `cleanup` and `base` have no record in the state, so they come from the review's own report, for display. A review's head line is `head    <sha7>  N commits  +x -y  f files` (it has no branch), followed by `vendors …`; step verdicts render upper-case; a failed cleanup is named on the header. `ha show --dir PATH` renders a run directory's report, noting it is display only; `ha show` takes a run id or `--dir`, exactly one. | §3.8.6, §3.9, §3.10 (its `ha show` example). |
-| P8 | `--findings`: `plan()` checks the registry only (the named run is a review); `execute()` reads the review result before anything is created (written once, immutable) and composes `fix_prompt(task, result.text)`; the head check is done in the write flow's preparation — a continuation compares the lineage's tip, a new run its resolved base **before** `git worktree add` — because the intent precedes the first git command (§3.6 step 2, §3.8.3 step 2). A refused new run withdraws its lineage state, which its intent created and nothing else touched. The engine's commit says `fix`; the registry entry records `findings_from` (required, as `continues`: lot 3's P5 argument holds — no released `ha` wrote an entry). | §3.6, §3.8.2, §3.8.3, §3.10. |
+| P8 | `--findings`: `plan()` checks the registry only (the named run is a review); `execute()` reads the review result before anything is created (written once, immutable) and composes `fix_prompt(task, result.text)`; the head check is done in the write flow's preparation — a continuation compares the lineage's tip, a new run its resolved base **before** `git worktree add` — because the intent precedes the first git command (§3.6 step 2, §3.8.3 step 2). A refused new run withdraws its lineage state, which its intent created and nothing else touched. The engine's commit says `fix`; the registry entry records `findings_from`. An entry older than a record lacks it, and its absence says what that `ha` could not do, so the reader takes an absent `findings_from` or `continues` as none, and an absent `providers` as none only outside a lineage — a write's authors are never invented; a present but malformed value stays unknown. This reverses lot 3's P5 (`continues` required) on an operator decision at codex round 3: two real entries written before lot 3 were unreadable. | §3.6, §3.8.2, §3.8.3, §3.10. |
 | P9 | `ha clean` of a review whose cleanup failed removes its kept worktree through git (`git worktree remove --force`), and runs no git at all under a quarantine (exit `1`, nothing cleaned). | §3.9 (`ha clean`). |
 | P10 | The CLI asks the engine whether a target's prompt is optional (`prompt_is_optional`, configuration only) before reading stdin: a review, or an implement with `--findings`, never reads it unless given `-`. A review prints `run: <id>`, `head: <sha>` and its deciding text for APPROVE and CHANGES alike (a verdict is an answer, and CHANGES is what `--findings` feeds back); a failure's stderr line names its `failure_reason`. | §3.9 (prompt, output). |
 
@@ -3842,10 +3842,10 @@ index 8d85a780..629e815f 100644
 +    with pytest.raises(UsageError, match=f"--findings {built.run_id}: not a review run"):
 +        plan(world.request("build", "x", findings_run=built.run_id))
 diff --git a/tests/unit/headless_agents/test_runs.py b/tests/unit/headless_agents/test_runs.py
-index a91dac75..50bffbac 100644
+index a91dac75..2fbe4fea 100644
 --- a/tests/unit/headless_agents/test_runs.py
 +++ b/tests/unit/headless_agents/test_runs.py
-@@ -338,9 +338,34 @@ def test_create_writes_the_continuation_records(tmp_path: Path) -> None:
+@@ -338,14 +338,63 @@ def test_create_writes_the_continuation_records(tmp_path: Path) -> None:
      )
      entry = registry.resolve(run_id)
      assert entry.continues == owner and entry.providers == ("opencode", "codex")
@@ -3853,6 +3853,7 @@ index a91dac75..50bffbac 100644
  
  
 -@pytest.mark.parametrize("key", ["continues", "providers"])
+-def test_an_entry_missing_a_continuation_record_is_unknown(tmp_path: Path, key: str) -> None:
 +def test_create_writes_the_review_a_fix_takes_its_findings_from(tmp_path: Path) -> None:
 +    """Lot 4: findings_from is a write run's record, like continues (§3.6, §3.10)."""
 +    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
@@ -3870,18 +3871,49 @@ index a91dac75..50bffbac 100644
 +
 +def test_findings_outside_any_lineage_are_unknown(tmp_path: Path) -> None:
 +    """A fix is a write: an entry with findings_from and no lineage is not ha's writing."""
-+    registry, run_id, path, document = _entry_document(tmp_path)
+     registry, run_id, path, document = _entry_document(tmp_path)
+-    del document[key]
 +    document["findings_from"] = "20260926T090000-dddddddd"
-+    path.write_text(json.dumps(document))
+     path.write_text(json.dumps(document))
+-    with pytest.raises(Unknown, match=key):
 +    with pytest.raises(Unknown, match="findings_from names a review, but the entry has no lineage"):
 +        registry.resolve(run_id)
 +
 +
-+@pytest.mark.parametrize("key", ["continues", "providers", "findings_from"])
- def test_an_entry_missing_a_continuation_record_is_unknown(tmp_path: Path, key: str) -> None:
-     registry, run_id, path, document = _entry_document(tmp_path)
-     del document[key]
-@@ -354,6 +379,8 @@ def test_an_entry_missing_a_continuation_record_is_unknown(tmp_path: Path, key:
++@pytest.mark.parametrize(
++    "keys",
++    [
++        ("continues",),
++        ("findings_from",),
++        ("providers",),
++        ("continues", "providers", "findings_from"),
++    ],
++)
++def test_an_entry_written_before_its_records_existed_resolves_without_them(
++    tmp_path: Path, keys: tuple[str, ...]
++) -> None:
++    """Plan P8 (operator, codex round 3): an entry older than a record lacks it. Its absence
++    says what that ``ha`` could not do -- continue, fix, or record a write's providers -- so
++    it reads as none; a present but malformed value stays unknown."""
++    registry, run_id, path, document = _entry_document(tmp_path)
++    for key in keys:
++        del document[key]
++    path.write_text(json.dumps(document))
++    entry = registry.resolve(run_id)
++    assert (entry.continues, entry.findings_from, entry.providers) == (None, None, ())
++
++
++def test_a_write_entry_missing_its_providers_is_unknown(tmp_path: Path) -> None:
++    """A write's authors are never invented: without providers, a lineage's entry is unknown."""
++    registry, run_id, path, document = _entry_document(tmp_path)
++    document["lineage"] = run_id
++    del document["providers"]
++    path.write_text(json.dumps(document))
++    with pytest.raises(Unknown, match="providers"):
+         registry.resolve(run_id)
+ 
+ 
+@@ -354,6 +403,8 @@ def test_an_entry_missing_a_continuation_record_is_unknown(tmp_path: Path, key:
      [
          ("continues", "nope"),
          ("continues", 7),
@@ -3926,7 +3958,7 @@ index 99fe2e4b..8ecece1a 100644
 - [ ] **Step 2: Run them.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_review.py tests/unit/headless_agents/test_runs.py tests/unit/headless_agents/test_show.py -q -p no:cacheprovider`
-Expected: `test_review.py: 10 failed, 32 passed; test_runs.py: 6 failed, 58 passed; test_show.py: 1 failed, 57 passed` — every failure is the missing feature:
+Expected: `test_review.py: 10 failed, 32 passed; test_runs.py: 9 failed, 57 passed; test_show.py: 1 failed, 57 passed` — every failure is the missing feature:
   - `test_review.py -- test_the_session_loop_implement_review_fix_review: TypeError: Request.__init__() got an unexpected keyword argument 'findings_...`
   - `test_review.py -- test_findings_take_no_task_and_never_read_stdin: TypeError: Request.__init__() got an unexpected keyword argument 'findings_...`
   - `test_review.py -- test_findings_still_read_after_ha_clean_of_the_review: TypeError: Request.__init__() got an unexpected keyword argument 'findings_...`
@@ -3938,8 +3970,8 @@ Expected: `test_review.py: 10 failed, 32 passed; test_runs.py: 6 failed, 58 pass
   - `test_runs.py -- test_create_writes_the_continuation_records: AttributeError: 'Entry' object has no attribute 'findings_from'`
   - `test_runs.py -- test_create_writes_the_review_a_fix_takes_its_findings_from: TypeError: Registry.create() got an unexpected keyword argument 'findings_f...`
   - `test_runs.py -- test_findings_outside_any_lineage_are_unknown: Failed: DID NOT RAISE Unknown`
-  - `test_runs.py -- test_an_entry_missing_a_continuation_record_is_unknown[findings_from]: KeyError: 'findings_from'`
-  - … and 3 more
+  - `test_runs.py -- test_an_entry_written_before_its_records_existed_resolves_without_them[keys0]: headless_agents.state.Unknown: /tmp/pytest-of-hawixs/pytest-1913/test_an_en...`
+  - … and 6 more
 
 - [ ] **Step 3: Implement.** Apply:
 
@@ -4136,10 +4168,19 @@ index 85fe6044..3c7628e4 100644
          say(f"step 1 run {role.name}: started")
          final = _run_links(
 diff --git a/packages/headless-agents/src/headless_agents/runs.py b/packages/headless-agents/src/headless_agents/runs.py
-index 000bfc46..ea8a53b6 100644
+index 000bfc46..b1244c2a 100644
 --- a/packages/headless-agents/src/headless_agents/runs.py
 +++ b/packages/headless-agents/src/headless_agents/runs.py
-@@ -52,6 +52,8 @@ class Entry:
+@@ -30,8 +30,6 @@ FINAL_STATUSES: Final = frozenset(
+ #: or a final status. ``incomplete`` is derived from the lifecycle lock, never stored.
+ STORED_STATUSES: Final = FINAL_STATUSES | {"running"}
+ MINT_ATTEMPTS: Final = 100
+-#: A key absent from an entry: never a value ``ha`` writes, so it reads as malformed.
+-_MISSING: Final = object()
+ 
+ 
+ class RegistryError(ValueError):
+@@ -52,6 +50,8 @@ class Entry:
      #: The providers of every link of the run's role, as it ran: a write run's
      #: ``implement_providers`` in its report (§3.10).
      providers: tuple[str, ...]
@@ -4148,7 +4189,7 @@ index 000bfc46..ea8a53b6 100644
  
  
  def _optional_path(value: object) -> Path | None:
-@@ -98,13 +100,14 @@ class Registry:
+@@ -98,13 +98,14 @@ class Registry:
          lineage: str | None,
          continues: str | None = None,
          providers: Sequence[str] = (),
@@ -4165,7 +4206,7 @@ index 000bfc46..ea8a53b6 100644
          """
          path = run_dir if run_dir is not None else self.runs_root / run_id
          document: dict[str, object] = {
-@@ -118,6 +121,7 @@ class Registry:
+@@ -118,6 +119,7 @@ class Registry:
              "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
              "continues": continues,
              "providers": list(providers),
@@ -4173,11 +4214,24 @@ index 000bfc46..ea8a53b6 100644
          }
          create_once(self._path(run_id), document)
          return self._entry(document, self._path(run_id))
-@@ -179,6 +183,14 @@ class Registry:
+@@ -171,7 +173,10 @@ class Registry:
+         created_at = document.get("created_at")
+         if not isinstance(created_at, str) or not created_at:
+             raise Unknown(f"{path}: created_at is malformed")
+-        continues = document.get("continues", _MISSING)
++        # An entry older than a record lacks it: an ``ha`` that could not continue, fix
++        # or record providers wrote none, so absence reads as none (plan P8). A present
++        # value that is not one ``ha`` writes stays unknown.
++        continues = document.get("continues")
+         if continues is not None and (
+             not isinstance(continues, str) or not RUN_ID_PATTERN.fullmatch(continues)
+         ):
+@@ -179,7 +184,16 @@ class Registry:
          if continues is not None and document.get("lineage") is None:
              # A continuation joins a lineage by definition (§3.6).
              raise Unknown(f"{path}: continues names a run, but the entry has no lineage")
-+        findings_from = document.get("findings_from", _MISSING)
+-        providers = document.get("providers")
++        findings_from = document.get("findings_from")
 +        if findings_from is not None and (
 +            not isinstance(findings_from, str) or not RUN_ID_PATTERN.fullmatch(findings_from)
 +        ):
@@ -4185,10 +4239,12 @@ index 000bfc46..ea8a53b6 100644
 +        if findings_from is not None and document.get("lineage") is None:
 +            # A fix is a write, and a write belongs to a lineage (§3.6).
 +            raise Unknown(f"{path}: findings_from names a review, but the entry has no lineage")
-         providers = document.get("providers")
++        providers = document.get("providers", [] if document.get("lineage") is None else None)
++        # A write's authors are never invented: a lineage's entry must name them.
          if not isinstance(providers, list) or not all(isinstance(p, str) and p for p in providers):
              raise Unknown(f"{path}: providers is malformed")
-@@ -192,6 +204,7 @@ class Registry:
+         return Entry(
+@@ -192,6 +206,7 @@ class Registry:
              cleaned_at=_optional_str(document.get("cleaned_at")),
              continues=continues,
              providers=tuple(providers),
@@ -4347,7 +4403,7 @@ index b52ed88c..65fb0ba0 100644
 - [ ] **Step 4: Run them again, then the gates.**
 
 Run: `.venv/bin/pytest tests/unit/headless_agents/test_review.py tests/unit/headless_agents/test_runs.py tests/unit/headless_agents/test_show.py -q -p no:cacheprovider`
-Expected: `test_review.py: 42 passed; test_runs.py: 64 passed; test_show.py: 58 passed`. Then the gates of the Global Constraints.
+Expected: `test_review.py: 42 passed; test_runs.py: 66 passed; test_show.py: 58 passed`. Then the gates of the Global Constraints.
 
 - [ ] **Step 5: Commit.**
 
