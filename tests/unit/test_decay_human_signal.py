@@ -1,6 +1,6 @@
 """The decay stops counting what the MACHINE re-reads — behind a setting.
 
-Spec `2026-08-08-dream-v2-design.md` §5.1, §5.2, §5.5.
+Spec `2026-08-08-dream-v2-design.md` (private brain-v42-internal repository) §5.1, §5.2, §5.5.
 
 The defect, as the focus names it: "INVERTED DECAY". `brain_service` passed
 `access_count` — the TOTAL counter — to the multiplier. The dream re-reads the

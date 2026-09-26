@@ -207,7 +207,7 @@ class PgProjectContextRepo(BasePgRepository):
         Includes base keys registered in ``project_contexts`` AND colon-
         sub-partitions scanned from knowledge tables whose base is in the
         group. See docs/superpowers/plans/2026-04-20-group-includes-colon-
-        subpartitions.md for rationale.
+        subpartitions.md (in the private brain-v42-internal repository) for rationale.
         """
         base_keys = (
             sa.select(project_contexts.c.project_key).where(

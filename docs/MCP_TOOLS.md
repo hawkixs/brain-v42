@@ -825,8 +825,9 @@ passed as `false`. A name already present in the same project, after trim and ex
 case-insensitive comparison, is refused. Invalid validation, a missing project, a duplicate, or
 an embedding that is unavailable, non-numeric, non-finite, or of a dimension different from
 `EMBEDDING_DIMENSION` (1536 by default) raises a `ToolError` without creating a feature. The scope of
-uniqueness and the choice of the two writers are documented in the
-[explicit creation decision](superpowers/specs/2026-07-23-explicit-roadmap-feature-creation-design.md).
+uniqueness and the choice of the two writers are documented in the explicit creation decision
+(`docs/superpowers/specs/2026-07-23-explicit-roadmap-feature-creation-design.md` in the
+private brain-v42-internal repository).
 
 **Example**: `brain_feature_create("Hybrid search", "Add FTS + vectors.", "brain-v42")`
 

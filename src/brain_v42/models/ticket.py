@@ -2,7 +2,8 @@
 
 Tickets are NOT knowledge entities: no embedding, no decay, no search,
 no domain classification, no graph sync (spec §1,
-docs/superpowers/specs/2026-07-04-cross-project-tickets-design.md).
+docs/superpowers/specs/2026-07-04-cross-project-tickets-design.md, in the private
+brain-v42-internal repository).
 The only bridge to memory is the extraction job (spec §6).
 
 Self-tickets (from_project == to_project) are allowed by design: they act
@@ -124,7 +125,8 @@ TRANSITIONS: dict[tuple[TicketKind, TicketStatus, TicketAction], tuple[Role, Tic
 
 # (kind, current_status, action) -> new_status — consulted INSTEAD OF TRANSITIONS
 # when from_project == to_project (self-ticket): a single party, hence no Role
-# field (docs/superpowers/specs/2026-08-03-self-ticket-lifecycle-design.md §4.1).
+# field (docs/superpowers/specs/2026-08-03-self-ticket-lifecycle-design.md §4.1, in the
+# private brain-v42-internal repository).
 # `resolve` closes directly (the common case becomes free); `resolve_pending`
 # stays available to stop explicitly at `resolved`. The table is complete, fyi
 # included: without (FYI, OPEN, ...), an fyi self-ticket would be untransitionable.

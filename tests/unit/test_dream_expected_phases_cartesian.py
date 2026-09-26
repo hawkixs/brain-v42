@@ -1,6 +1,6 @@
 """The expectation becomes `{phase} × {pool project}` — otherwise it disarms itself.
 
-Spec `2026-08-08-dream-project-pool-design.md` §6, "the non-negotiable constraint
+Spec `2026-08-08-dream-project-pool-design.md` (private brain-v42-internal repository) §6, "the non-negotiable constraint
 that comes with it".
 
 `expected_dream_phases()` turns "armed phase" into "alarm if absent from

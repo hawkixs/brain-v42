@@ -2,6 +2,7 @@
 # Nightly GitNexus reindex for brain-v42.
 # Invoked by user crontab at 04:30. See spec:
 #   docs/superpowers/specs/2026-04-20-gitnexus-integration-design.md
+#   (private brain-v42-internal repository, ticket 8dc6f0d2)
 
 set -u  # note: NOT -e — we want the script to keep going past a single reindex failure so the rotation step still runs.
 

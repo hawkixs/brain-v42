@@ -1,6 +1,6 @@
 """The global phases are OUTSIDE the per-project unit — pinned textually.
 
-Spec `2026-08-08-dream-project-pool-design.md` §7: `extract` and
+Spec `2026-08-08-dream-project-pool-design.md` (private brain-v42-internal repository) §7: `extract` and
 `sweep` have no project dimension and sit outside the loop. The decisive
 measurement, phase by phase:
 

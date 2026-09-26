@@ -91,24 +91,12 @@ id = "generic-api-key"
 
 [[rules.allowlists]]
 description = """
-Triaged 2026-08-16. Documentation copy of the load_env_file unit test. The \
-string is the test's own fixture input proving the parser splits on the FIRST \
-'=' only, so the VALUE is allowed to contain '=' — that is the whole point of \
-`abc=def`. `nvapi-` here is shape, not provenance: a real NVIDIA key is \
-`nvapi-` plus ~64 url-safe characters, this is seven. The key name is the \
-neutral `X_BACKFILL_TEST_*` the test deliberately uses so it cannot pollute \
-os.environ for the rest of the session.
-"""
-condition = "AND"
-regexTarget = "line"
-paths = ['''^docs/superpowers/plans/2026-07-03-domain-backfill-v1\.md$''']
-regexes = ['''X_BACKFILL_TEST_KEY=nvapi-abc=def''']
-
-[[rules.allowlists]]
-description = """
 Triaged 2026-08-16. Source of the same fixture: the load_env_file test that \
 proves KEY=VALUE splits on the first '=' only. Placeholder value, neutral \
-`X_BACKFILL_TEST_*` key name, no credential.
+`X_BACKFILL_TEST_*` key name, no credential. A documentation copy of this \
+fixture used to live at `docs/superpowers/plans/2026-07-03-domain-backfill-v1.md` \
+and had its own allowlist entry here; that plan moved to the private \
+brain-v42-internal repository (ticket 8dc6f0d2), so only this source entry remains.
 """
 condition = "AND"
 regexTarget = "line"

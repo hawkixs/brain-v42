@@ -1,7 +1,7 @@
 """The package-owned ``PreToolUse`` guard confining an agy workspace run.
 
 WHY IT EXISTS. This is the workspace half of the agy tool guard (spec
-2026-09-23-headless-agents-0.4.0-design.md section 3.3, decision 9): where
+2026-09-23-headless-agents-0.4.0-design.md section 3.3, decision 9, in the private brain-v42-internal repository): where
 ``scripts/dream/agy_tool_guard.sh`` is Dream's project-scoped allowlist,
 this module is the package-owned guard a `CapabilityProfile.workspace`
 composes on any rail. It runs standalone -- Task 7 copies this file, on its

@@ -10,7 +10,7 @@
 
 **MCP transport**: production = HTTP loopback `http://127.0.0.1:8765/mcp`; configuration default and dev/fallback = `stdio`.
 
-**Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; `deploy/dev-pc` is a superseded rollback/reference path.
+**Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
 
 ---
 
@@ -205,6 +205,20 @@ here: the repository is public, and this file is published with it. It lives in 
 where it belongs:
 `brain_get(entity_type="learning", entity_id="2a23883d")`, or
 `brain_search(query="dev machines access", project_key="brain-v42")`.
+
+---
+
+## Internal working material
+
+Plans, specs, design notes, receipts and handoffs are dated work notes, not product
+documentation, and this repository is public: they are written under `internal/`, the
+private `brain-v42-internal` repository cloned at the repository root
+(`git clone git@github.com:hawkixs/brain-v42-internal.git internal`; the clone is
+git-ignored). Write new ones at the same relative path this repository used before ticket
+`8dc6f0d2` moved the existing ones out, e.g. `internal/docs/superpowers/plans/<name>.md`,
+`internal/docs/receipts/<date>-release-<sha>.md` — **never** directly under `docs/`.
+`docs/` keeps only product documentation: how the software works, or how anyone would
+operate it.
 
 ---
 

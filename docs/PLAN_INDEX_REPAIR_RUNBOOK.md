@@ -18,6 +18,9 @@ day. `tests/unit/test_runbook_normative_values_have_one_source.py` enforces both
 rule, and it fails on the version of this file that shipped before 2026-08-22 — the day the gates
 here and the restore procedure below were found to be describing two different databases.
 
+The receipts this block cites by name (`ops/recovery/receipts/*.md`) live in the private
+brain-v42-internal repository (ticket 8dc6f0d2), at the same relative path under `internal/`.
+
 <!-- dr-current:start -->
 | Target | Value | Measured, and against what |
 | --- | --- | --- |
