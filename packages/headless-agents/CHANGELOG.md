@@ -24,6 +24,71 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## 0.5.0 — 2026-09-26, lot 5 of 5: the `live` suite, README and CHANGELOG (tag `headless-agents-v0.5.0` after merge)
+
+Lot 5 completes 0.5.0; the package version is `0.5.0`, so `ha --version` prints `ha 0.5.0`.
+The four lots before it -- roles and the engine (`run.json`, the `steps/` layout, the write
+protocol, the new `ha run` grammar), `ha show`/`ha runs`/tool counters, `workflows.toml` with
+the `implement` shape, and the `review` shape with the vendor rule -- shipped the whole
+surface below; this entry is where the release is written down and tagged.
+
+### Changed (breaking)
+- CLI grammar: `ha run TARGET [PROMPT | -] ...` replaces the 0.4.0 grammar. `-p`/`--provider`
+  and `--chain` are removed: the provider is the target (`ha run codex "..."`), and a chain
+  is declared on a role in `roles.toml`. Both flags still parse -- hidden from `--help` --
+  only to fail before anything runs, with a migration message, exit `2`.
+- `ha run --json` now prints `run.json` -- the run's own report, replaced atomically after
+  every step -- instead of a provider's `result.json`.
+- Every run directory gains a `steps/` subdirectory, for every target, read-only or write:
+  `steps/<NN>-<slot>-<role>/` holds that step's logs and its own `result.json`; a role's
+  fallback chain nests further under `steps/<NN>-<slot>-<role>/links/<index>-<provider>/`.
+  `run.json`, `prompt.md` and, for a write run, `change.patch` and the worktree stay at the
+  top of the run directory.
+- Executor isolation (security fix): the claude rail now runs every invocation under a
+  per-run `HOME` and `CLAUDE_CONFIG_DIR` holding nothing but a copy of the Claude login,
+  instead of the operator's real `HOME` -- closing the path by which a run could load the
+  operator's own `CLAUDE.md`, skills, plugins, hooks, settings or user MCP servers. codex
+  already isolates every invocation under an ephemeral `CODEX_HOME`; that is unchanged.
+
+### Added
+- `run.json`: `"kind": "run"` is written right after `"schema"` (schema stays `1`), so a
+  consumer can tell it apart from a step's `result.json` (schema 1, unchanged, still
+  carries `"provider"`, never a `"kind"`) before reading anything else. A `run.json`
+  written by a pre-release `main` build that predates this key has no `"kind"` and still
+  reads as a run.
+- The engine API, roles (`roles.toml`) and workflows (`workflows.toml`) with their two
+  shapes, `implement` and `review`, and `--run`, `--continue`, `--findings`; the vendor
+  rule, enforced before any review runs, that refuses a reviewer sharing a provider with
+  whoever wrote a commit of the reviewed range.
+- The state directory `~/.local/state/ha`: the run registry, lineages, review results,
+  per-commit provenance, and quarantines (repository and operator scope).
+- Residue commits after a failed write step, so no commit `ha` makes in a workspace is
+  ever unrecorded.
+- `ha show RUN_ID` / `ha show --dir PATH`, `ha roles`, `ha workflows`, `--version`,
+  per-step tool counts, and the `role` context scope (`context[].scope == "role"` on a run
+  that was given role instructions).
+
+### Unchanged
+- `result.json` schema 1 and the `AgentProvider` protocol (`build_command`,
+  `child_environment`, `prepare_home`, `tool_call_completed`, `run`) -- the versioned
+  contract this file opens with.
+- A provider's behaviour when a role gives it no instructions, except the executor
+  isolation above.
+
+### Migrating from 0.4.0
+- `ha run -p codex "task"` -> `ha run codex "task"`.
+- `ha run --chain codex:MODEL,claude:MODEL "task"` -> declare
+  `chain = ["codex:MODEL", "claude:MODEL"]` on a role in `roles.toml` and run that role:
+  `ha run <role> "task"`.
+- `ha run --json` readers: check `"kind"` first -- `"run"` names `run.json` (this file),
+  absent means `result.json` (a bare provider run, schema 1, `"provider"` set, no `"kind"`).
+  Read a step's own provider and model from `steps[].provider` / `steps[].model`, and its
+  full `result.json` from `run_dir / steps[].dir / "result.json"` -- `steps[].dir` is
+  already the relative path, e.g. `steps/01-run-codex/result.json`.
+- Library users are unaffected: `get_provider(name).run(spec)`, the `AgentProvider`
+  protocol and `result.json`'s schema-1 shape did not move. red-rail and red-arena call
+  the library, never the CLI, so this release changes nothing for them.
+
 ## 0.4.0 — lot 4 of 4: the `ha` CLI (tag `headless-agents-v0.4.0` after merge)
 
 Lot 4 completes 0.4.0; the package version is `0.4.0`. The four lot sections below
