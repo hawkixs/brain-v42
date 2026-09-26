@@ -31,6 +31,12 @@ Ticket ha-051-agy: headless-agents 0.5.0 refused the agy rail outright, because 
 `CLAUDE.md`/`AGENTS.md`/`GEMINI.md` reaching the model with no tool call involved.
 
 ### Fixed
+- **The ephemeral HOME agy starts in never sits under a git work tree.** Its root is the
+  first of `XDG_RUNTIME_DIR`, the system temporary directory, then the operator's
+  `~/.cache/headless-agents/agy-homes`, whose ancestry up to `/` carries no `.git`
+  (file or directory); if none qualifies the run is refused before anything starts.
+  Otherwise agy's upward walk would reach that repository's instruction files
+  (review of PR #228; on the operator's host `/tmp` itself is a repository).
 - **agy no longer loads the repository's instruction files natively.** Measured on agy
   1.2.11: with a workspace, the CLI walks from its own process `cwd` up to the nearest
   `.git` root and loads every `GEMINI.md`/`AGENTS.md` it finds along the way,
