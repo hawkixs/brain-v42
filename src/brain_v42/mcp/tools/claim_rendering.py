@@ -102,8 +102,12 @@ def _falsified_detail(state: ClaimState) -> str | None:
     resolved = state.claim.expected_resolved
     attendu = resolved.get("value", _MISSING) if isinstance(resolved, Mapping) else _MISSING
     measurement = conclusive.measurement
-    value_json = measurement.get("value_json") if isinstance(measurement, Mapping) else None
-    observed = _pointer_value(value_json, path)
+    # facts.model.measurement_to_json stores the parsed value under "value"
+    # (its own Measured.value_json field is the pre-parse canonical JSON TEXT,
+    # never a JSON key -- the coincidence of names is what caused this to read
+    # the wrong key: see facts/verification.py's append_verdict call).
+    measured_value = measurement.get("value") if isinstance(measurement, Mapping) else None
+    observed = _pointer_value(measured_value, path)
     if attendu is _MISSING or observed is _MISSING:
         return None
     return f"{state.claim.fact_name} mesuré {observed}, attendu {attendu}"

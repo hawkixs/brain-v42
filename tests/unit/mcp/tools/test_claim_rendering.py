@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
+from brain_v42.facts.model import FactTarget, Measured, SourceIdentity, measurement_to_json
 from brain_v42.mcp.tools.claim_rendering import (
     CLAIM_SUFFIX_UNAVAILABLE,
     claim_suffix_map,
@@ -24,6 +25,34 @@ from brain_v42.repositories.pg_claim_verdicts import VerdictRow
 from brain_v42.services.claim_read_service import ClaimReadError
 
 NOW = datetime(2026, 9, 26, tzinfo=UTC)
+
+
+def _real_measurement(value: dict[str, object]) -> dict[str, object]:
+    """The ACTUAL measurement_to_json(Measured) shape -- not a hand-written dict.
+
+    The write path (facts/verification.py) stores exactly this shape under the
+    verdict's ``measurement`` column; a hand-written fixture using a different
+    key for the observed value would silently agree with a rendering bug that
+    reads the wrong one, which is exactly what happened here (review finding
+    claim_rendering.py:105 vs. facts/model.py's measurement_to_json).
+    """
+    measured = Measured.from_value(
+        fact="lag",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        source=SourceIdentity(
+            system_identifier="123",
+            database="brain",
+            server_addr="127.0.0.1",
+            server_port=5432,
+        ),
+        value=value,
+        observation_id=uuid4(),
+        measured_at=NOW,
+        duration_ms=1,
+        ttl_seconds=30,
+    )
+    return measurement_to_json(measured)
 
 
 def _claim(
@@ -64,8 +93,10 @@ def _verdict(
     emitted: datetime,
     *,
     reason: str | None = None,
-    value_json: dict[str, object] | None = None,
+    value: dict[str, object] | None = None,
 ) -> VerdictRead:
+    # measurement_to_json stores the observed value under "value" (see
+    # _real_measurement above for the shape built from the actual helper).
     return VerdictRead(
         id=uuid4(),
         seq=seq,
@@ -74,7 +105,7 @@ def _verdict(
         emitted_at=emitted,
         recorded_at=NOW,
         observation_id=uuid4(),
-        measurement={"value_json": value_json} if value_json is not None else {},
+        measurement={"value": value} if value is not None else {},
     )
 
 
@@ -106,7 +137,7 @@ def test_holds_and_a_singular_falsified_carry_the_spec_example() -> None:
     """Spec 2026-09-19 section 6.6, first canonical example."""
     holds = [_state(_claim(), v, v) for v in (_verdict("holds", 1, NOW), _verdict("holds", 2, NOW))]
     falsified_verdict = _verdict(
-        "falsified", 3, datetime(2026, 9, 19, tzinfo=UTC), value_json={"head": "054"}
+        "falsified", 3, datetime(2026, 9, 19, tzinfo=UTC), value={"head": "054"}
     )
     falsified_claim = _claim(
         fact_name="alembic_head",
@@ -121,9 +152,36 @@ def test_holds_and_a_singular_falsified_carry_the_spec_example() -> None:
     )
 
 
+def test_falsified_detail_reads_the_real_measurement_to_json_value_key() -> None:
+    """The write path stores measurement_to_json's own shape under "value", not
+    "value_json" -- this must read what is actually stored, built from the real
+    helper rather than a hand-written dict that could re-agree with the bug."""
+    verdict = VerdictRead(
+        id=uuid4(),
+        seq=1,
+        verdict="falsified",
+        reason=None,
+        emitted_at=datetime(2026, 9, 19, tzinfo=UTC),
+        recorded_at=NOW,
+        observation_id=uuid4(),
+        measurement=_real_measurement({"lag": 12}),
+    )
+    claim = _claim(
+        fact_name="lag",
+        expected={"path": "/lag", "op": "lte", "value": 5},
+        expected_resolved={"path": "/lag", "op": "lte", "value": 5},
+        validity_seconds=31_536_000,
+    )
+    state = _state(claim, verdict, verdict)
+
+    assert render_claim_suffix([state]) == (
+        "[claims : 1 FALSIFIÉ le 2026-09-19 (lag mesuré 12, attendu 5)]"
+    )
+
+
 def test_two_falsified_omit_the_detail() -> None:
-    v1 = _verdict("falsified", 1, NOW, value_json={"head": "054"})
-    v2 = _verdict("falsified", 2, NOW, value_json={"head": "055"})
+    v1 = _verdict("falsified", 1, NOW, value={"head": "054"})
+    v2 = _verdict("falsified", 2, NOW, value={"head": "055"})
     claim = _claim(
         fact_name="alembic_head",
         expected={"path": "/head", "op": "eq", "value": "053"},
@@ -141,7 +199,7 @@ def test_a_singular_stale_hold_carries_the_spec_example() -> None:
 
 
 def test_a_singular_stale_falsification_names_its_previous_kind() -> None:
-    verdict = _verdict("falsified", 1, datetime(2026, 9, 1, tzinfo=UTC), value_json={"head": "054"})
+    verdict = _verdict("falsified", 1, datetime(2026, 9, 1, tzinfo=UTC), value={"head": "054"})
     claim = _claim(
         expected={"path": "/head", "op": "eq", "value": "053"},
         expected_resolved={"path": "/head", "op": "eq", "value": "053"},
