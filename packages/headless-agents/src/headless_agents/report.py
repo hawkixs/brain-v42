@@ -88,6 +88,14 @@ def step_entry(
     }
 
 
+def refused_step_entry(*, index: int, slot: str, role: str, step_dir: str) -> dict[str, object]:
+    """A step refused at its start -- its prompt too large once the diff is known (§3.4):
+    recorded with code ``2``, nothing measured because nothing ran."""
+    entry: dict[str, object] = dict.fromkeys(STEP_KEYS)
+    entry.update(index=index, slot=slot, role=role, dir=step_dir, exit_code=2)
+    return entry
+
+
 def with_step(report: Mapping[str, object], step: Mapping[str, object]) -> dict[str, object]:
     """A copy of ``report`` with ``step`` appended and the cost recomputed."""
     previous = report.get("steps")
@@ -112,6 +120,7 @@ __all__ = [
     "SCHEMA",
     "STEP_KEYS",
     "new_report",
+    "refused_step_entry",
     "step_dir_name",
     "step_entry",
     "with_step",

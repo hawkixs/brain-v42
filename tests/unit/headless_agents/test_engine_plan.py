@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from headless_agents.engine import Overrides, Request, UsageError, plan
+from headless_agents.engine import REVIEW_DEFAULT_TASK, Overrides, Request, UsageError, plan
 from headless_agents.registry import max_prompt_bytes
 from headless_agents.runs import Registry
 from headless_agents.templates import implement_prompt
@@ -58,6 +58,8 @@ class Env:
         repo: Path | None = None,
         run_dir: Path | None = None,
         continue_run: str | None = None,
+        head: str | None = None,
+        review_run: str | None = None,
     ) -> Request:
         return Request(
             target=target,
@@ -68,6 +70,8 @@ class Env:
             repo=repo,
             run_dir=run_dir,
             continue_run=continue_run,
+            head=head,
+            review_run=review_run,
             cwd=self.cwd,
             environ={"PATH": "/usr/bin:/bin", "HOME": str(self.home), **self.environ},
             home=self.home,
@@ -301,11 +305,104 @@ def test_a_workflow_target_refuses_every_override(
         plan(env.request("build", "task", overrides=overrides))
 
 
-def test_a_review_workflow_is_refused_until_its_shape_ships(env: Env) -> None:
-    """Spec §5, lot 4: no lot exposes a review that does not enforce the vendor rule."""
-    _workflows(env)
-    with pytest.raises(UsageError, match=r"review shape is not available.*ha run reviewer"):
-        plan(env.request("check", "task"))
+# ── a review target (lot 4) ────────────────────────────────────────────────
+
+
+def _panel(env: Env) -> None:
+    env.roles(
+        '[implementer]\nprovider = "codex"\nwrite = true\n\n'
+        '[reviewer]\nprovider = "claude"\n\n'
+        '[reviewer-oc]\nprovider = "opencode"\n\n'
+        '[judge]\nprovider = "codex"\n'
+    )
+    (env.config / "workflows.toml").write_text(
+        '[build]\nshape = "implement"\nimplement = "implementer"\n\n'
+        '[check]\nshape = "review"\nreview = "reviewer"\n\n'
+        '[panel]\nshape = "review"\nreview = ["reviewer", "reviewer-oc"]\njudge = "judge"\n'
+    )
+
+
+def test_a_review_target_plans_every_slot_of_its_panel_in_order(
+    env: Env, no_subprocess: list[object]
+) -> None:
+    """Spec §3.5: the reviewers, then the judge; plan() runs no git (§3.8.2)."""
+    _panel(env)
+    planned = plan(env.request("panel", "Look at the error paths."))
+    assert planned.workflow is not None and planned.workflow.shape == "review"
+    assert [(s.slot, s.role.name) for s in planned.panel] == [
+        ("review", "reviewer"),
+        ("review", "reviewer-oc"),
+        ("judge", "judge"),
+    ]
+    assert [dict(s.models) for s in planned.panel] == [
+        {"claude": "claude-default"},
+        {"opencode": "oc-default"},
+        {"codex": "codex-default"},
+    ]
+    assert planned.task == "Look at the error paths."
+    assert not planned.role.write
+
+
+@pytest.mark.parametrize("prompt", [None, "", "  \n"])
+def test_a_review_without_a_prompt_reviews_the_change(env: Env, prompt: str | None) -> None:
+    """Spec §3.9: a review's prompt is optional; on a terminal it is not refused."""
+    _panel(env)
+    planned = plan(env.request("check", prompt, stdin_is_tty=True))
+    assert planned.task == REVIEW_DEFAULT_TASK == "Review this change."
+
+
+def test_run_names_an_implement_run_and_its_lineage(env: Env, no_subprocess: list[object]) -> None:
+    _panel(env)
+    env.register(RUN, target=IMPLEMENT, lineage=OWNER)
+    planned = plan(env.request("check", None, review_run=RUN))
+    assert planned.reviews == RUN and planned.reviewed_lineage == OWNER
+
+
+@pytest.mark.parametrize("given", [{"head": "HEAD~1"}, {"base": "main"}])
+def test_run_excludes_head_and_base(env: Env, given: dict[str, str]) -> None:
+    _panel(env)
+    env.register(RUN, target=IMPLEMENT, lineage=OWNER)
+    with pytest.raises(UsageError, match="--run excludes --head and --base"):
+        plan(env.request("check", None, review_run=RUN, **given))  # type: ignore[arg-type]
+
+
+def test_run_refuses_a_run_that_is_not_an_implement_run(env: Env) -> None:
+    _panel(env)
+    env.register(RUN, target={"kind": "provider", "name": "codex"}, lineage=None)
+    with pytest.raises(UsageError, match=f"--run {RUN}: not an implement run"):
+        plan(env.request("check", None, review_run=RUN))
+
+
+@pytest.mark.parametrize(("run_id", "rule"), [("nope", "not a run id"), (RUN, f"no run {RUN}")])
+def test_run_refuses_what_names_no_registered_run(env: Env, run_id: str, rule: str) -> None:
+    _panel(env)
+    with pytest.raises(UsageError, match=rule):
+        plan(env.request("check", None, review_run=run_id))
+
+
+@pytest.mark.parametrize(
+    ("target", "fields", "rule"),
+    [
+        ("build", {"head": "HEAD"}, "--head needs a review workflow"),
+        ("build", {"review_run": RUN}, "--run needs a review workflow"),
+        ("codex", {"head": "HEAD"}, "--head needs a review workflow"),
+        ("codex", {"review_run": RUN}, "--run needs a review workflow"),
+        ("check", {"continue_run": RUN}, "--continue needs an implement workflow"),
+    ],
+)
+def test_each_option_belongs_to_its_shape(
+    env: Env, target: str, fields: dict[str, str], rule: str
+) -> None:
+    """Spec §3.9: --head and --run are the review's; --continue the implement's."""
+    _panel(env)
+    with pytest.raises(UsageError, match=rule):
+        plan(env.request(target, "task", **fields))  # type: ignore[arg-type]
+
+
+def test_a_review_refuses_every_override_too(env: Env) -> None:
+    _panel(env)
+    with pytest.raises(UsageError, match="runs its roles as declared, so -m is refused"):
+        plan(env.request("check", None, overrides=Overrides(model="m")))
 
 
 def test_an_implement_workflow_needs_a_task(env: Env) -> None:
