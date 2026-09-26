@@ -1105,14 +1105,21 @@ def build_server() -> BuiltServer:
 
     register_fact_tools(mcp, registry=services["fact_registry"])
 
-    # Claim verification (spec 2026-09-19, lot B3): a caller names a claim, the
-    # server measures it through the same registry and appends the verdict. No
-    # Dream phase reaches it before lot C binds a verified run id.
+    # Claims (spec 2026-09-19, lots B3/B4): a caller names a claim, the server
+    # measures it through the same registry and appends the verdict (B3). No
+    # Dream phase reaches brain_claim_verify before lot C binds a verified run
+    # id. brain_claim_list/brain_claim_history (B4) are bounded, SELECT-only
+    # reads over the same immutable ledger, sharing one ClaimReadService with
+    # the knowledge readers (brain_get, brain_search, the session briefing).
     from brain_v42.facts.verification import ClaimVerificationService  # noqa: PLC0415
     from brain_v42.mcp.tools.claim_tools import register_claim_tools  # noqa: PLC0415
+    from brain_v42.services.claim_read_service import ClaimReadService  # noqa: PLC0415
 
+    claim_read_svc = ClaimReadService(get_session_factory())
     register_claim_tools(
-        mcp, ClaimVerificationService(services["fact_registry"], get_session_factory())
+        mcp,
+        ClaimVerificationService(services["fact_registry"], get_session_factory()),
+        claim_read_svc,
     )
 
     if settings.brain_code_mode:

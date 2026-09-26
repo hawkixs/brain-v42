@@ -15,9 +15,12 @@ from uuid import UUID, uuid4
 from brain_v42.mcp.tools.claim_rendering import (
     CLAIM_SUFFIX_UNAVAILABLE,
     claim_suffix_map,
+    format_claim_history,
+    format_claim_list,
     render_claim_suffix,
 )
 from brain_v42.models.claim_read import ClaimRead, ClaimState, VerdictRead, evaluate_claim
+from brain_v42.repositories.pg_claim_verdicts import VerdictRow
 from brain_v42.services.claim_read_service import ClaimReadError
 
 NOW = datetime(2026, 9, 26, tzinfo=UTC)
@@ -214,3 +217,72 @@ async def test_claim_suffix_map_threads_the_trusted_project_scope() -> None:
     await claim_suffix_map(service, entries, trusted_project_key="brain-v42")
 
     service.batch_summaries.assert_awaited_once_with(entries, trusted_project_key="brain-v42")
+
+
+def test_format_claim_list_names_the_empty_page() -> None:
+    assert format_claim_list([], None) == "## 0 claims"
+
+
+def test_format_claim_list_renders_one_line_per_occurrence_with_its_state() -> None:
+    verdict = _verdict("holds", 1, NOW)
+    state = _state(_claim(), verdict, verdict)
+
+    rendered = format_claim_list([state], None)
+
+    assert rendered.startswith("## 1 claim\n")
+    assert str(state.claim.id) in rendered
+    assert state.claim.statement in rendered
+    assert "1 tient" in rendered
+    assert "[retired]" not in rendered
+
+
+def test_format_claim_list_names_a_retired_occurrence_and_the_next_page() -> None:
+    verdict = _verdict("holds", 1, NOW)
+    claim = replace(_claim(), retired_at=NOW)
+    state = _state(claim, verdict, verdict)
+
+    rendered = format_claim_list([state], 41)
+
+    assert "[retired]" in rendered
+    assert "after_seq=41" in rendered
+
+
+def test_format_claim_history_renders_claim_state_and_every_verdict_in_order() -> None:
+    verdict = _verdict("holds", 1, NOW)
+    state = _state(_claim(), verdict, verdict)
+    rows = (
+        VerdictRow(
+            id=uuid4(),
+            seq=1,
+            claim_id=state.claim.id,
+            verdict="unreadable",
+            reason="probe:timeout",
+            measurement={},
+            measurement_digest=None,
+            observation_id=uuid4(),
+            issuer_identity="mcp:codex",
+            issuer_kind="robot",
+            request_fingerprint="r" * 64,
+            outcome_fingerprint="o" * 64,
+            idempotency_key="k1",
+            emitted_at=NOW,
+            recorded_at=NOW,
+        ),
+    )
+
+    rendered = format_claim_history(state, rows, None)
+
+    assert str(state.claim.id) in rendered
+    assert "1 tient" in rendered
+    assert "seq 1" in rendered
+    assert "probe:timeout" in rendered
+
+
+def test_format_claim_history_names_an_empty_history_as_a_valid_result() -> None:
+    verdict = _verdict("holds", 1, NOW)
+    state = _state(_claim(), verdict, verdict)
+
+    rendered = format_claim_history(state, (), 7)
+
+    assert "(empty)" in rendered
+    assert "after_seq=7" in rendered

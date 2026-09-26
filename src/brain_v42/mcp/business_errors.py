@@ -68,6 +68,7 @@ from brain_v42.mcp.fact_errors import FactToolError
 from brain_v42.models.brain_session import BrainSessionError
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.models.delivery import DeliveryError
+from brain_v42.services.claim_read_service import ClaimReadError
 from brain_v42.services.consolidation import ConsolidationEntityNotFoundError
 from brain_v42.services.entity_maintenance_service import UnknownEntityTypeError
 from brain_v42.services.feature_creation_service import FeatureCreationError
@@ -93,6 +94,9 @@ SURFACED_BUSINESS_ERRORS: tuple[type[Exception], ...] = (
     # Closed codes with one constant text each (`models/claim_verdict.py`): the
     # message never carries caller input, a database error or a probe error.
     ClaimVerificationError,
+    # Same closed-code shape, read side (`services/claim_read_service.py`): a
+    # missing/out-of-scope claim and an unavailable read carry no row content.
+    ClaimReadError,
 )
 
 _SURFACED_MARKER = "__brain_business_errors_surfaced__"

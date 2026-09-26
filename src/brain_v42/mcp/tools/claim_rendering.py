@@ -22,6 +22,7 @@ from brain_v42.models.claim_read import ClaimState
 from brain_v42.services.claim_read_service import ClaimReadError
 
 if TYPE_CHECKING:
+    from brain_v42.repositories.pg_claim_verdicts import VerdictRow
     from brain_v42.services.claim_read_service import ClaimReadService
 
 #: Visible marker for a suffix lookup that failed -- never confused with silence,
@@ -171,6 +172,63 @@ def render_claim_suffix(states: Sequence[ClaimState]) -> str | None:
         buckets[state.status].append(state)
     parts = [_bucket_text(status, items) for status, items in buckets.items() if items]
     return f"[claims : {' · '.join(parts)}]"
+
+
+def _single_state_status_text(state: ClaimState) -> str:
+    """One claim's own status line, reusing the suffix's singular bucket vocabulary."""
+    return _bucket_text(state.status, [state])
+
+
+def format_claim_list(items: Sequence[ClaimState], next_after_seq: int | None) -> str:
+    """Render one page of scoped occurrences -- ``brain_claim_list``.
+
+    Every filter and scope has already been applied by the caller; this only
+    turns the page into text, one line per occurrence, retirement and paging
+    named explicitly rather than left for the reader to infer.
+    """
+    n = len(items)
+    header = f"## {n} claim{'s' if n != 1 else ''}"
+    if not items:
+        return header
+    lines = [header]
+    for state in items:
+        claim = state.claim
+        retired = " [retired]" if claim.retired_at is not None else ""
+        lines.append(
+            f"- {claim.id} ({claim.entity_type}/{claim.entry_id}) "
+            f'"{claim.statement}"{retired} — {_single_state_status_text(state)}'
+        )
+    if next_after_seq is not None:
+        lines.append(f"\n… (more results — after_seq={next_after_seq})")
+    return "\n".join(lines)
+
+
+def format_claim_history(
+    state: ClaimState, verdicts: Sequence[VerdictRow], next_after_seq: int | None
+) -> str:
+    """Render one claim's current state and its complete verdict page in order.
+
+    An empty history is a valid result for an existing claim (contract) and
+    renders explicitly as such, never as an omission.
+    """
+    claim = state.claim
+    retired = f" — retired {claim.retired_at.isoformat()}" if claim.retired_at else ""
+    lines = [
+        f"## Claim {claim.id}",
+        f'"{claim.statement}"{retired}',
+        f"State: {_single_state_status_text(state)}",
+        f"### History ({len(verdicts)})",
+    ]
+    if not verdicts:
+        lines.append("(empty)")
+    for verdict in verdicts:
+        detail = f" ({verdict.reason})" if verdict.reason else ""
+        lines.append(
+            f"- seq {verdict.seq}: {verdict.verdict}{detail} — {verdict.emitted_at.isoformat()}"
+        )
+    if next_after_seq is not None:
+        lines.append(f"\n… (more results — after_seq={next_after_seq})")
+    return "\n".join(lines)
 
 
 async def claim_suffix_map(
