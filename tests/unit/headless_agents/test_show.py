@@ -674,6 +674,26 @@ def _review(
     return entry.run_dir
 
 
+def test_a_fix_shows_the_review_it_took_its_findings_from_its_entry(home: Home) -> None:
+    """Lot 4: findings_from is a write run's record in its registry entry (§3.10)."""
+    fix = "20260925T160000-aabbccdd"
+    home.write_run(findings_from=OTHER)
+    home.registry().create(
+        fix,
+        run_dir=None,
+        target={"kind": "workflow", "name": "build", "shape": "implement"},
+        repository=home.root / "repo",
+        lineage=RUN,
+        continues=RUN,
+        providers=("codex",),
+        findings_from=REVIEW,
+    )
+    current = lineages.load(home.state, RUN)
+    lineages.save(home.state, replace(current, members={**current.members, fix: "committed"}))
+    assert home.rebuild(fix).report["findings_from"] == REVIEW
+    assert home.rebuild().report["findings_from"] is None
+
+
 def test_a_reviews_head_verdict_text_and_check_come_from_its_result(home: Home) -> None:
     _review(home)
     report = home.rebuild(REVIEW).report

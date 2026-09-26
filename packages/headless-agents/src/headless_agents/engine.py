@@ -25,7 +25,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from . import locks, review_flow, write_flow
+from . import locks, review_flow, reviews, write_flow
 from .capability import scoped_environment
 from .chain import run_chain
 from .cli_models import ModelsError, models_for
@@ -65,6 +65,7 @@ from .state import Unknown
 from .templates import (
     ReviewText,
     Verdict,
+    fix_prompt,
     implement_prompt,
     judge_prompt,
     read_verdict,
@@ -125,6 +126,8 @@ class Request:
     head: str | None = None
     #: ``--run RUN_ID`` of a review: an implement run whose lineage's tip is reviewed.
     review_run: str | None = None
+    #: ``--findings RUN_ID`` of an implement run: a review whose verdict was read (§3.6).
+    findings_run: str | None = None
 
 
 @dataclass(frozen=True)
@@ -162,6 +165,9 @@ class Plan:
     #: The run ``--run`` names, and the owner of its lineage, read from the registry.
     reviews: str | None = None
     reviewed_lineage: str | None = None
+    #: The review ``--findings`` names, read from the registry; its result is read by
+    #: ``execute``, which composes the fix prompt from it (§3.6).
+    findings_from: str | None = None
 
 
 def operator_environment(environ: Mapping[str, str]) -> dict[str, str]:
@@ -452,14 +458,71 @@ def _continued_lineage(run_id: str, *, state: Path, home: Path, option: str = "-
 REVIEW_DEFAULT_TASK: Final = "Review this change."
 
 
+def prompt_is_optional(
+    target: str, *, findings: bool, environ: Mapping[str, str], home: Path
+) -> bool:
+    """Whether ``target`` runs without a prompt: a review, or an implement taking findings.
+
+    §3.9: such a target never reads stdin unless given ``-``. The CLI asks before
+    reading; the configuration is read here, and an invalid one refuses (exit ``2``),
+    as :func:`plan` would.
+    """
+    if findings:
+        # Whatever the target: one that cannot take --findings is refused by plan(),
+        # and stdin is never read on the way there.
+        return True
+    workflow = load_config(environ, home).workflows.get(target)
+    return workflow is not None and workflow.shape == "review"
+
+
 def _refuse_options_of_other_shapes(request: Request, shape: str | None) -> None:
     """Spec §3.9: ``--head`` and ``--run`` belong to a review; ``--continue`` to an implement."""
     if shape != "review":
         for flag, value in (("--head", request.head), ("--run", request.review_run)):
             if value is not None:
                 raise UsageError(f"{flag} needs a review workflow as the target")
-    if shape != "implement" and request.continue_run is not None:
-        raise UsageError("--continue needs an implement workflow as the target")
+    if shape != "implement":
+        for flag, value in (
+            ("--continue", request.continue_run),
+            ("--findings", request.findings_run),
+        ):
+            if value is not None:
+                raise UsageError(f"{flag} needs an implement workflow as the target")
+
+
+def _findings_review(run_id: str, *, state: Path, home: Path) -> str:
+    """The review ``--findings`` names, from the registry only (§3.8.2): a review run."""
+    registry = Registry(state, runs_root=runs_root(home))
+    try:
+        entry = registry.resolve(run_id)
+    except RegistryError as exc:
+        raise UsageError(f"--findings: {exc}") from None
+    except Unknown as exc:
+        raise UsageError(f"--findings {run_id}: {exc}; recover it by hand") from None
+    target = entry.target
+    if (
+        entry.lineage is not None
+        or target.get("kind") != "workflow"
+        or target.get("shape") != "review"
+    ):
+        raise UsageError(f"--findings {run_id}: not a review run; findings come from a review")
+    return run_id
+
+
+def _findings(plan: Plan) -> reviews.ReviewResult | None:
+    """The result of the review ``--findings`` names, read from the state (§3.6), never its
+    report -- so it still reads after ``ha clean`` of that review."""
+    if plan.findings_from is None:
+        return None
+    request = plan.request
+    _findings_review(plan.findings_from, state=plan.state, home=request.home)
+    try:
+        return reviews.load_result(plan.state, plan.findings_from)
+    except Unknown as exc:
+        raise UsageError(
+            f"--findings {plan.findings_from}: the review result is missing or unknown ({exc}): "
+            "only a review whose verdict was read has findings"
+        ) from None
 
 
 def _slot_plan(slot: str, role: Role, request: Request, config: Config, name: str) -> SlotPlan:
@@ -544,12 +607,22 @@ def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan
     if rule is not None:
         raise UsageError(f"{workflow.name}: {rule}")
     models = _models(role, request)
-    task = _prompt(request)
-    prompt = implement_prompt(task)
+    state = state_dir(request.environ, home=request.home)
+    findings_from = (
+        _findings_review(request.findings_run, state=state, home=request.home)
+        if request.findings_run is not None
+        else None
+    )
+    if findings_from is not None:
+        # §3.9: with --findings the task is optional guidance; stdin is never read.
+        task = (request.prompt or "").strip()
+        prompt = fix_prompt(task, "")
+    else:
+        task = _prompt(request)
+        prompt = implement_prompt(task)
     _check_prompt_size(role, prompt, _bundle(role, request, None))
     mcp = _mcp(role, request)
     run_dir = _run_dir(request)
-    state = state_dir(request.environ, home=request.home)
     joins = (
         _continued_lineage(request.continue_run, state=state, home=request.home)
         if request.continue_run is not None
@@ -568,6 +641,7 @@ def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan
         task=task,
         continues=request.continue_run,
         joins=joins,
+        findings_from=findings_from,
     )
 
 
@@ -765,6 +839,7 @@ def _admit(
     joins: str | None = None,
     continues: str | None = None,
     providers: Sequence[str] = (),
+    findings_from: str | None = None,
 ) -> Entry:
     """Mint an id, take its lifecycle lock, then publish its entry (§3.8.3 step 1).
 
@@ -805,6 +880,7 @@ def _admit(
                     lineage=joins if joins is not None else (run_id if write else None),
                     continues=continues,
                     providers=providers,
+                    findings_from=findings_from,
                 )
             except FileExistsError:
                 continue
@@ -866,6 +942,7 @@ def _execute_write(
     started: float,
     unconfined: bool,
     say: Callable[[str], None],
+    findings_head: str | None = None,
 ) -> Outcome:
     """A write run -- a role's, or an ``implement`` workflow's: §3.8.3, then its report."""
     role, run_dir = plan.role, entry.run_dir
@@ -893,6 +970,7 @@ def _execute_write(
             unconfined=unconfined,
             joins=plan.joins,
             named=plan.continues,
+            findings_head=findings_head,
         )
     except write_flow.WriteRefused as exc:
         _refused(registry, entry)
@@ -918,6 +996,7 @@ def _execute_write(
         head=outcome.head,
         lineage=entry.lineage,
         continues=entry.continues,
+        findings_from=entry.findings_from,
         implement_providers=list(entry.providers),
         commits=[{"sha": sha, "made_by": made_by} for sha, made_by in outcome.commits],
         failure_reason=outcome.failure_reason,
@@ -1175,6 +1254,9 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         )
         if lineage != plan.reviewed_lineage:
             raise UsageError(f"--run {plan.reviews}: its lineage changed since the plan")
+    findings = _findings(plan)
+    if findings is not None:
+        plan = replace(plan, prompt=fix_prompt(plan.task or "", findings.text))
 
     runs = runs_root(request.home)
     registry = Registry(plan.state, runs_root=runs)
@@ -1207,6 +1289,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 continues=plan.continues,
                 # A write run's record (§3.10); a review writes nothing.
                 providers=() if plan.panel else role.providers,
+                findings_from=plan.findings_from,
             )
         except (LockTimeout, RegistryError) as exc:
             # A run that never started leaves nothing behind (codex review of #207).
@@ -1295,6 +1378,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 step_name=step_name,
                 started=started,
                 say=say,
+                findings_head=findings.head if findings is not None else None,
             )
         say(f"step 1 run {role.name}: started")
         final = _run_links(
@@ -1448,4 +1532,5 @@ __all__ = [
     "UsageError",
     "operator_environment",
     "plan",
+    "prompt_is_optional",
 ]

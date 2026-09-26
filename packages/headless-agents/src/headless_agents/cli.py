@@ -44,6 +44,7 @@ from .engine import (
     executable_for,
     execute,
     plan,
+    prompt_is_optional,
     runs_root,
 )
 from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, probe
@@ -79,19 +80,21 @@ exit codes of a run (a role or a provider):
   124 timeout
   130 interrupted (Ctrl-C); the run reads incomplete
 
-exit codes of a workflow (implement):
-  0 committed
-  5 the implementation changed nothing
-  1 a step failed (its residue committed), the tripwire fired, HEAD moved or a hook
-    refused; the step's own code is in run.json
-  2 invalid usage or configuration, a refused --continue, or its lineage in use for
-    more than 10 s; nothing ran
+exit codes of a workflow (implement, review):
+  0 committed (implement), approved (review)
+  6 changes requested (review)
+  5 the implementation changed nothing (implement)
+  1 a step failed (its residue committed), the tripwire fired, HEAD moved, a hook
+    refused, or the verdict is unreadable; the step's own code is in run.json
+  2 invalid usage or configuration, a refused --run, --continue or --findings, a
+    lineage in use for more than 10 s, or the vendor rule; nothing ran
   130 interrupted (Ctrl-C); the run reads incomplete
 
 examples:
   ha run codex -m gpt-6-luna "Explain what this repository does."
   ha run build "Add a --verbose flag to the CLI."
-  ha run build --continue 20260926T101500-ab12cd34 "Also document the flag."
+  ha run multi-review --run 20260926T101500-ab12cd34
+  ha run build --continue 20260926T101500-ab12cd34 --findings 20260926T104000-9f8e7d6c
 """
 
 
@@ -165,6 +168,25 @@ def _parser() -> argparse.ArgumentParser:
         metavar="RUN_ID",
         help="an implement workflow only: join the lineage of RUN_ID, an implement run, "
         "and work on its branch in its worktree",
+    )
+    run.add_argument(
+        "--findings",
+        dest="findings_run",
+        metavar="RUN_ID",
+        help="an implement workflow only: address the findings of RUN_ID, a review of the "
+        "commit this run starts from; the prompt becomes optional",
+    )
+    run.add_argument(
+        "--head",
+        metavar="REF",
+        help="a review workflow only: the commit reviewed (default HEAD)",
+    )
+    run.add_argument(
+        "--run",
+        dest="review_run",
+        metavar="RUN_ID",
+        help="a review workflow only: review the current tip of RUN_ID's lineage, from its "
+        "base; excludes --head and --base",
     )
     # Removed in 0.5.0: kept hidden so their use gets a message, not argparse's guess.
     run.add_argument("-p", "--provider", help=argparse.SUPPRESS)
@@ -241,12 +263,20 @@ def _providers(args: argparse.Namespace, io: Io) -> int:
 
 
 def _prompt(args: argparse.Namespace, io: Io) -> tuple[str | None, bool]:
-    """The task text and whether stdin is a terminal (§3.9: never wait on one)."""
+    """The task text and whether stdin is a terminal (§3.9: never wait on one).
+
+    A target whose prompt is optional -- a review, or an implement taking
+    findings -- never reads stdin unless given ``-``.
+    """
     is_tty = bool(getattr(io.stdin, "isatty", lambda: False)())
     if args.prompt == "-":
         return io.stdin.read(), is_tty
     if args.prompt is not None:
         return args.prompt, is_tty
+    if prompt_is_optional(
+        args.target, findings=args.findings_run is not None, environ=io.environ, home=io.home
+    ):
+        return None, is_tty
     return (None if is_tty else io.stdin.read()), is_tty
 
 
@@ -298,21 +328,34 @@ def _run(args: argparse.Namespace, io: Io) -> int:
         environ=io.environ,
         home=io.home,
         continue_run=args.continue_run,
+        head=args.head,
+        review_run=args.review_run,
+        findings_run=args.findings_run,
     )
     outcome = execute(plan(request), say=io.say)
-    branch = outcome.report.get("branch")
+    report = outcome.report
+    branch, verdict = report.get("branch"), report.get("verdict")
     if args.json:
-        io.stdout.write(json.dumps(outcome.report, ensure_ascii=False, indent=2) + "\n")
+        io.stdout.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+    elif isinstance(verdict, str):
+        # A review's verdict is its answer, APPROVE or CHANGES alike: the deciding text is
+        # what a session reads, and feeds back with --findings RUN_ID (§3.9).
+        io.stdout.write(f"run: {outcome.run_id}\nhead: {report.get('head')}\n\n")
+        text = report.get("text")
+        if isinstance(text, str) and text:
+            io.stdout.write(text if text.endswith("\n") else text + "\n")
     elif outcome.exit_code == 0 and outcome.final is not None:
         if isinstance(branch, str):
             io.stdout.write(_write_header(outcome, branch))
         text = outcome.final.text
         if text:
             io.stdout.write(text if text.endswith("\n") else text + "\n")
-    if outcome.exit_code != 0:
+    if outcome.exit_code != 0 and not isinstance(verdict, str):
         provider = outcome.final.provider if outcome.final is not None else args.target
+        reason = report.get("failure_reason")
+        because = f" ({reason})" if isinstance(reason, str) else ""
         io.say(
-            f"{provider} exited {outcome.exit_code}; run {outcome.run_id}, "
+            f"{provider} exited {outcome.exit_code}{because}; run {outcome.run_id}, "
             f"logs in {outcome.run_dir}"
         )
     return outcome.exit_code

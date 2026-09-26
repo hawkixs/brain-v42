@@ -208,6 +208,7 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
     # §3.10: a write run's continuation records, copied from its registry entry.
     document.update(
         continues=entry.continues,
+        findings_from=entry.findings_from,
         implement_providers=list(entry.providers) if entry.lineage is not None else None,
     )
     status: str | None = None
