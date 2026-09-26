@@ -33,7 +33,9 @@ import select
 import signal
 import subprocess
 import sys
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from typing import Any, Final
 
@@ -188,6 +190,40 @@ def start_watcher() -> Lifeline:
     return Lifeline(life_write, watcher)
 
 
+#: The providers started by the current thread while it runs inside :func:`collecting`.
+_collector = threading.local()
+_collector_lock = threading.Lock()
+
+
+@contextmanager
+def collecting(live: set[subprocess.Popen[Any]]) -> Iterator[None]:
+    """Record in ``live`` every provider this thread starts, for :func:`kill_collected`.
+
+    A rail kills its provider in an ``except BaseException`` around its wait,
+    but a signal reaches the main thread only: a provider waited on in a worker
+    thread -- a review's reviewers run in parallel -- would outlive a Ctrl-C.
+    The thread that received the interruption kills them through this set.
+    """
+    _collector.live = live
+    try:
+        yield
+    finally:
+        del _collector.live
+
+
+def kill_collected(live: set[subprocess.Popen[Any]]) -> None:
+    """``SIGKILL`` the process group of every provider in ``live`` still running.
+
+    The group id is the provider's pid: every rail starts it in its own session.
+    """
+    with _collector_lock:
+        processes = list(live)
+    for process in processes:
+        if process.poll() is None:
+            with suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+
+
 def spawn_watched(
     command: list[str], **popen_kwargs: Any
 ) -> tuple[subprocess.Popen[Any], Lifeline]:
@@ -209,7 +245,19 @@ def spawn_watched(
     except BaseException:
         lifeline.release()
         raise
+    live = getattr(_collector, "live", None)
+    if live is not None:
+        with _collector_lock:
+            live.add(process)
     return process, lifeline
 
 
-__all__ = ["PR_SET_PDEATHSIG", "Lifeline", "preexec_for", "spawn_watched", "start_watcher"]
+__all__ = [
+    "PR_SET_PDEATHSIG",
+    "Lifeline",
+    "collecting",
+    "kill_collected",
+    "preexec_for",
+    "spawn_watched",
+    "start_watcher",
+]

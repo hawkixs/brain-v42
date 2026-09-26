@@ -630,6 +630,119 @@ def test_an_exception_in_a_reviewer_removes_the_worktree_and_propagates(world: W
     assert world.registry().resolve(review_id).status == "running"
 
 
+def test_ctrl_c_during_the_reviewers_kills_their_providers_then_removes_the_worktree(
+    world: World,
+) -> None:
+    """Final review of lot 4: the rails kill their provider in an ``except BaseException``
+    around their wait, but a reviewer waits in a worker thread, where no signal arrives.
+    An interrupted review must kill every reviewer's process group, wait for its threads,
+    then remove the worktree and let the interruption propagate (§3.9: 130, incomplete)."""
+    import signal
+    import time
+
+    from headless_agents import procgroup
+
+    world.commit_by_hand()
+    barrier = threading.Barrier(3)  # the two reviewers, and the interrupter
+    spawned: list[subprocess.Popen[bytes]] = []
+    worktree_seen: list[bool] = []
+
+    def hang(spec: RunSpec) -> str:
+        process, lifeline = procgroup.spawn_watched(["sleep", "60"], start_new_session=True)
+        spawned.append(process)
+        barrier.wait(timeout=5)
+        try:
+            process.wait()
+            worktree_seen.append((spec.profile.workspace.path / "app.py").exists())  # type: ignore[union-attr]
+        finally:
+            lifeline.release()
+        return APPROVE
+
+    for name in ("agy", "opencode"):
+        world.agents[name].answer = hang
+
+    def interrupt() -> None:
+        barrier.wait(timeout=5)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    threading.Thread(target=interrupt, daemon=True).start()
+    started = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        world.review("panel")
+    assert time.monotonic() - started < 20
+    assert len(spawned) == 2 and all(p.poll() is not None for p in spawned)
+    # The providers died before the worktree they were reading was removed.
+    assert worktree_seen == [True, True]
+    assert _worktrees(world) == [str(world.repo.resolve())]
+
+
+def test_a_crash_writing_the_first_report_still_removes_the_worktree(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final review of lot 4: the report written after prepare() sat outside the cleanup."""
+    world.commit_by_hand()
+    real = engine.write_report
+
+    def failing(run_dir: Path, report: dict[str, object]) -> None:
+        if report.get("vendor_check") is not None:
+            raise OSError("disk full")
+        real(run_dir, report)
+
+    monkeypatch.setattr(engine, "write_report", failing)
+    with pytest.raises(OSError, match="disk full"):
+        world.review()
+    assert _worktrees(world) == [str(world.repo.resolve())]
+
+
+def test_a_state_write_that_fails_in_preparation_refuses_the_review(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Final review of lot 4: an OSError reading or writing the state escaped as a crash and
+    left the entry running; it is a refusal -- exit 2, nothing ran (§3.9)."""
+    world.commit_by_hand()
+
+    def failing(*args: object, **kwargs: object) -> None:
+        raise FileExistsError("check already written")
+
+    monkeypatch.setattr(reviews, "write_check", failing)
+    with pytest.raises(UsageError, match="check already written"):
+        world.review()
+    (review_id,) = [
+        run_id
+        for run_id in world.registry().run_ids()
+        if world.registry().resolve(run_id).target.get("shape") == "review"
+    ]
+    assert world.registry().resolve(review_id).status == "failed"
+
+
+def test_the_reviewers_never_call_say_at_the_same_time(world: World) -> None:
+    """Final review of lot 4: a library caller's ``say`` need not be thread-safe."""
+    import time
+
+    world.commit_by_hand()
+    # The two reviewers of the panel start together, so their say calls can meet.
+    shared = threading.Barrier(2)
+    world.agents["agy"].barrier = shared
+    world.agents["opencode"].barrier = shared
+    inside = threading.Lock()
+    overlaps: list[str] = []
+
+    def say(message: str) -> None:
+        if not inside.acquire(blocking=False):
+            overlaps.append(message)
+            return
+        try:
+            time.sleep(0.05)
+        finally:
+            inside.release()
+
+    world.agents["claude"].answer = lambda spec: (
+        "fine\nVERDICT: APPROVE" if "Judge the reviews below" in spec.prompt else APPROVE
+    )
+    execute(plan(world.request("panel", None)), say=say)
+    assert overlaps == []
+
+
 def test_a_prompt_too_large_for_a_reviewer_stops_the_phase_with_the_step_at_2(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:

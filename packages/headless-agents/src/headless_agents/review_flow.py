@@ -156,6 +156,42 @@ def prepare(
     reviewed_lineage: str | None,
     reviewers: Mapping[str, Sequence[str]],
 ) -> Prepared:
+    """Steps 1-6 of §3.8.4, then the patch and the detached worktree; :class:`ReviewRefused`.
+
+    A state or repository file that cannot be read or written before the
+    reviewers start refuses the review -- exit ``2``, nothing ran (§3.9) --
+    instead of escaping as a crash that leaves the run ``incomplete``.
+    """
+    try:
+        return _prepare(
+            run_id=run_id,
+            run_dir=run_dir,
+            state=state,
+            identity=identity,
+            start=start,
+            environ=environ,
+            head_ref=head_ref,
+            base_ref=base_ref,
+            reviewed_lineage=reviewed_lineage,
+            reviewers=reviewers,
+        )
+    except OSError as exc:
+        raise ReviewRefused(f"{exc}; nothing ran") from None
+
+
+def _prepare(
+    *,
+    run_id: str,
+    run_dir: Path,
+    state: Path,
+    identity: RepoIdentity,
+    start: Path,
+    environ: Mapping[str, str],
+    head_ref: str | None,
+    base_ref: str | None,
+    reviewed_lineage: str | None,
+    reviewers: Mapping[str, Sequence[str]],
+) -> Prepared:
     """Steps 1-6 of §3.8.4, then the patch and the detached worktree; :class:`ReviewRefused`."""
     common = identity.common_dir
     with ExitStack() as stack:
