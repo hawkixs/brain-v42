@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
@@ -69,6 +70,18 @@ def _historical_unreadable(claim: ScopedClaim, *, now: datetime) -> Unreadable:
     )
 
 
+def _reject_if_refresh_budget_exhausted(measurement: Measurement) -> None:
+    """Refuse cleanly instead of appending a durable verdict for an internal capacity limit.
+
+    `FactRegistry._unreadable` mints a fresh `observation_id` on every refusal, so an
+    exhausted refresh budget (`error_code="refresh_budget"`) never matches an existing
+    stored observation: unchecked, `_verify` would append one unprunable ledger row per
+    retry for a cause that has nothing to do with the claim itself (ticket 5c47578b).
+    """
+    if isinstance(measurement, Unreadable) and measurement.error_code == "refresh_budget":
+        raise ClaimVerificationError("refresh_budget_exhausted")
+
+
 def _comparison(claim: ScopedClaim, registry: FactRegistry, measurement: Measurement) -> Comparison:
     """Reject mismatched metadata before comparison can turn it into a false verdict."""
     if measurement.fact != claim.fact_name:
@@ -95,10 +108,18 @@ class ClaimVerificationService:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         clock: Callable[[], datetime] = _utcnow,
+        max_concurrent_verifications: int = 4,
     ) -> None:
+        if type(max_concurrent_verifications) is not int or max_concurrent_verifications < 1:
+            raise ValueError("max_concurrent_verifications must be a positive integer")
         self._registry = registry
         self._session_factory = session_factory
         self._clock = clock
+        # Owned-session verifications each open a connection from the shared pool
+        # (pool_size=20 + max_overflow=10). Bounding entry here, well below that
+        # capacity, keeps a burst of callers from starving every other MCP tool of
+        # connections instead of queuing safely inside this service (ticket 8acd4698).
+        self._verification_semaphore = asyncio.Semaphore(max_concurrent_verifications)
 
     async def verify(
         self,
@@ -120,10 +141,11 @@ class ClaimVerificationService:
             return await self._verify(
                 session, checked_id, issuer, kind, key, project_key=project_key
             )
-        async with self._session_factory() as owned_session, owned_session.begin():
-            return await self._verify(
-                owned_session, checked_id, issuer, kind, key, project_key=project_key
-            )
+        async with self._verification_semaphore:
+            async with self._session_factory() as owned_session, owned_session.begin():
+                return await self._verify(
+                    owned_session, checked_id, issuer, kind, key, project_key=project_key
+                )
 
     async def _verify(
         self,
@@ -160,8 +182,10 @@ class ClaimVerificationService:
             return existing
 
         measurement = await self._measure(claim)
+        _reject_if_refresh_budget_exhausted(measurement)
         if await lookup_observation(session, claim.id, measurement.observation_id) is not None:
             measurement = await self._measure(claim, force_fresh=True)
+            _reject_if_refresh_budget_exhausted(measurement)
             if await lookup_observation(session, claim.id, measurement.observation_id) is not None:
                 raise ClaimVerificationError("observation_already_verified")
 

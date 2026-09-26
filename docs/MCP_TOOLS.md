@@ -160,19 +160,26 @@ brain_claim_verify(claim_id, idempotency_key)
   verdict and measures nothing, unreadable verdicts included. A **new key** never
   reuses an observation another verdict of the claim already consumed: the server
   forces exactly one fresh reading, and refuses with `observation_already_verified`
-  if even that one is taken.
+  if even that one is taken. If that forced reading finds the shared per-fact or
+  per-target refresh budget spent, the call is refused with
+  `refresh_budget_exhausted` and writes no verdict -- the alternative would grow the
+  append-only ledger by one unprunable row per retry for a purely internal capacity
+  limit.
 - A retired claim takes no verdict (`claim_retired`), before any replay. A claim
   whose definition left the catalogue, or changed version, is
   `unreadable / definition_changed`, measured by nobody (`where: "catalogue"`).
 - Verification changes no entry, archives nothing and alters no ranking.
+- Concurrent owned-session verifications (no caller-supplied session) are admitted
+  through a service-owned semaphore, sized well below the shared connection pool, so
+  a burst of callers queues instead of starving every other MCP tool of connections.
 
 Refusals keep a closed code and a constant text through the masked MCP boundary:
 `invalid_argument` (a `claim_id` must be a UUID in canonical lowercase form, a key
 1 to 200 characters), `unknown_actor`, `claim_not_found`, `claim_retired`,
 `idempotency_conflict` (the key was used with other inputs),
-`observation_already_verified` and `invalid_emitted_at`. No Dream phase may call it
-yet: lot C adds a `verify` phase once a run id verified by the server can name the
-issuer.
+`observation_already_verified`, `invalid_emitted_at` and `refresh_budget_exhausted`
+(retry later). No Dream phase may call it yet: lot C adds a `verify` phase once a
+run id verified by the server can name the issuer.
 
 Declared, verified, replayed:
 

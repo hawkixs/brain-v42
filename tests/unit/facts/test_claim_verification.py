@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
@@ -78,6 +80,86 @@ def _service(registry: FactRegistry) -> ClaimVerificationService:
     return ClaimVerificationService(
         registry, session_factory=lambda: pytest.fail("unexpected factory")
     )
+
+
+def _registry_many(probes: list[_Probe]) -> FactRegistry:
+    """Register several independent facts so concurrent verifications never share a cache slot."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def source():
+        yield _Source()
+
+    registry = FactRegistry(
+        sources={FactTarget.PRODUCTION: source},
+        expected={FactTarget.PRODUCTION: _identity()},
+    )
+    for probe in probes:
+        registry.register(probe)
+    registry.freeze()
+    return registry
+
+
+def _claim_indexed(index: int) -> ScopedClaim:
+    """One distinct claim id and fact per index, so concurrent verifications never collide."""
+    return ScopedClaim(
+        id=UUID(int=index + 1),
+        project_key="project-a",
+        retired_at=None,
+        fact_name=f"verification_lag_{index}",
+        definition_version=1,
+        target="production",
+        expected_resolved={"path": "/lag", "op": "lte", "value": 5},
+        validity_seconds=600,
+        definition_ttl_seconds=30,
+    )
+
+
+class _NullAsyncContext:
+    """A no-op async context manager standing in for `AsyncSession.begin()`."""
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+
+class _FakeOwnedSession:
+    def begin(self) -> _NullAsyncContext:
+        return _NullAsyncContext()
+
+
+class _CountingSessionFactory:
+    """Fake `async_sessionmaker` that records how many owned sessions are open at once.
+
+    The delay lives INSIDE `__aenter__`, while the service's semaphore is still held:
+    this is what turns "several verifications race" into genuine overlap, instead of
+    a sequence of calls that never actually run concurrently.
+    """
+
+    def __init__(self, *, delay: float = 0.02) -> None:
+        self.active = 0
+        self.peak = 0
+        self.delay = delay
+
+    def __call__(self) -> _CountingSessionCM:
+        return _CountingSessionCM(self)
+
+
+class _CountingSessionCM:
+    def __init__(self, factory: _CountingSessionFactory) -> None:
+        self._factory = factory
+
+    async def __aenter__(self) -> _FakeOwnedSession:
+        self._factory.active += 1
+        self._factory.peak = max(self._factory.peak, self._factory.active)
+        await asyncio.sleep(self._factory.delay)
+        return _FakeOwnedSession()
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        self._factory.active -= 1
+        return False
 
 
 async def _memory_repository(
@@ -445,4 +527,148 @@ async def test_a_catalogue_refusal_says_that_no_probe_ran(
     assert verdict.measurement["error_code"] == "definition_drift"
     assert verdict.measurement["where"] == "catalogue"
     assert verdict.measurement["duration_ms"] == 0
+    assert probe.runs == 0
+
+
+def test_max_concurrent_verifications_must_be_a_positive_integer() -> None:
+    """A zero or negative limit would make every owned-session verification block forever."""
+    registry = _registry(_Probe())
+
+    with pytest.raises(ValueError, match="max_concurrent_verifications"):
+        ClaimVerificationService(
+            registry,
+            session_factory=lambda: pytest.fail("unexpected factory"),
+            max_concurrent_verifications=0,
+        )
+
+
+async def test_verify_bounds_concurrent_owned_sessions_below_the_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A semaphore acquired before opening any session keeps concurrent owned sessions
+    at the configured limit, however many verifications race at once.
+
+    Ticket 8acd4698: without it, N concurrent `verify()` calls with no caller-supplied
+    session each open a connection from the pool at once; ~30 concurrent verifications
+    against the production pool (20 + 10 overflow) saturate it, and the probe records a
+    durable `Unreadable probe:*` verdict for a purely internal capacity cause.
+    """
+    from brain_v42.facts import verification
+
+    count = 6
+    limit = 2
+    claims = {index: _claim_indexed(index) for index in range(count)}
+
+    async def lookup_locked_claim(session: object, claim_id: UUID, project_key: str | None):
+        return next((claim for claim in claims.values() if claim.id == claim_id), None)
+
+    async def lookup_request(session: object, **values: object):
+        return None
+
+    async def lookup_observation(session: object, claim_id: UUID, observation_id: UUID):
+        return None
+
+    appended: list[VerdictRow] = []
+
+    async def append_verdict(session: object, **values: object) -> VerdictRow:
+        row = VerdictRow(
+            id=uuid4(),
+            seq=len(appended) + 1,
+            claim_id=cast(UUID, values["claim_id"]),
+            verdict=values["verdict"],
+            reason=values["reason"],
+            measurement=values["measurement"],
+            measurement_digest=values["measurement_digest"],
+            observation_id=values["observation_id"],
+            issuer_identity=values["issuer_identity"],
+            issuer_kind=values["issuer_kind"],
+            request_fingerprint=values["request_fingerprint"],
+            outcome_fingerprint=values["outcome_fingerprint"],
+            idempotency_key=values["idempotency_key"],
+            emitted_at=values["emitted_at"],
+            recorded_at=datetime(2026, 9, 22, tzinfo=UTC),
+        )
+        appended.append(row)
+        return row
+
+    monkeypatch.setattr(verification, "lookup_locked_claim", lookup_locked_claim)
+    monkeypatch.setattr(verification, "lookup_request", lookup_request)
+    monkeypatch.setattr(verification, "lookup_observation", lookup_observation)
+    monkeypatch.setattr(verification, "append_verdict", append_verdict)
+
+    probes = []
+    for index in range(count):
+        probe = _Probe()
+        probe.name = f"verification_lag_{index}"
+        probes.append(probe)
+    registry = _registry_many(probes)
+
+    factory = _CountingSessionFactory()
+    service = ClaimVerificationService(
+        registry,
+        session_factory=factory,
+        max_concurrent_verifications=limit,  # type: ignore[arg-type]
+    )
+
+    results = await asyncio.gather(
+        *(
+            service.verify(
+                claims[index].id,
+                issuer_identity="mcp:codex",
+                issuer_kind="robot",
+                idempotency_key=f"concurrent-{index}",
+            )
+            for index in range(count)
+        )
+    )
+
+    assert len(results) == count
+    assert len(appended) == count
+    assert factory.peak <= limit
+    assert factory.active == 0
+    assert all(row.verdict != "unreadable" for row in appended)
+
+
+async def test_refresh_budget_exhaustion_is_refused_without_writing_a_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registry refusal for an exhausted refresh budget must not become a permanent verdict.
+
+    Ticket 5c47578b: `FactRegistry._unreadable` mints a fresh `observation_id` on every
+    call, so the `observation_already_verified` guard can never catch a `refresh_budget`
+    refusal -- without an explicit check, `append_verdict` would insert one unprunable
+    row per retry for a purely internal capacity limit.
+    """
+    probe = _Probe()
+    registry = _registry(probe)
+    service = _service(registry)
+    rows = await _memory_repository(monkeypatch, _claim())
+
+    async def exhausted_measurement(name: str, *, max_age: timedelta) -> Unreadable:
+        return Unreadable(
+            fact="verification_lag",
+            definition_version=1,
+            target=FactTarget.PRODUCTION,
+            error_code="refresh_budget",
+            where=None,
+            observation_id=uuid4(),
+            measured_at=datetime(2026, 9, 22, tzinfo=UTC),
+            duration_ms=0,
+            ttl_seconds=30,
+            source_kind="probe",
+        )
+
+    monkeypatch.setattr(registry, "measure", exhausted_measurement)
+
+    with pytest.raises(ClaimVerificationError) as error:
+        await service.verify(
+            _claim().id,
+            issuer_identity="mcp:codex",
+            issuer_kind="robot",
+            idempotency_key="fresh-key",
+            session=SimpleNamespace(),
+        )
+
+    assert error.value.code == "refresh_budget_exhausted"
+    assert rows == []
     assert probe.runs == 0

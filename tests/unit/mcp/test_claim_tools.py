@@ -256,6 +256,7 @@ async def test_extra_measurement_outcome_or_issuer_arguments_cannot_reach_the_co
         "idempotency_conflict",
         "observation_already_verified",
         "invalid_emitted_at",
+        "refresh_budget_exhausted",
     ],
 )
 @pytest.mark.parametrize("profile", ["native", "compact"])
@@ -349,6 +350,7 @@ def test_every_refusal_code_carries_its_own_safe_text() -> None:
         "idempotency_conflict",
         "observation_already_verified",
         "invalid_emitted_at",
+        "refresh_budget_exhausted",
     )
     messages = {str(ClaimVerificationError(code)) for code in codes}  # type: ignore[arg-type]
 

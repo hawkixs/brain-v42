@@ -30,7 +30,7 @@ from brain_v42.db.tables import (
 )
 from brain_v42.facts.canonical import MAX_CANONICAL_BYTES, canonical_json
 from brain_v42.facts.model import FactTarget, SourceIdentity
-from brain_v42.facts.registry import FactRegistry
+from brain_v42.facts.registry import FactRegistry, RefreshBudget
 from brain_v42.facts.verification import ClaimVerificationService
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.repositories.pg_claim_verdicts import VerdictRow
@@ -121,15 +121,19 @@ async def engine(migration_database_url: str) -> AsyncIterator[AsyncEngine]:
         await engine.dispose()
 
 
-def _registry(probe: _Probe) -> FactRegistry:
+def _registry(probe: _Probe, *, refresh_budget: RefreshBudget | None = None) -> FactRegistry:
     @asynccontextmanager
     async def source() -> AsyncIterator[_Source]:
         yield _Source()
 
     identity = SourceIdentity("1", "brain_test", "127.0.0.1", 5432)
+    kwargs: dict[str, object] = {}
+    if refresh_budget is not None:
+        kwargs["refresh_budget"] = refresh_budget
     registry = FactRegistry(
         sources={FactTarget.PRODUCTION: source},
         expected={FactTarget.PRODUCTION: identity},
+        **kwargs,
     )
     registry.register(probe)
     registry.freeze()
@@ -522,3 +526,43 @@ async def test_full_size_evidence_is_stored_whole_in_server_order(
         assert row["verdict"] == "holds"
         assert row["measurement"]["value"] == probe.full_value
         assert row["measurement_digest"] is not None
+
+
+async def test_refresh_budget_exhaustion_is_refused_without_a_verdict_row(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Draining the fact's forced-refresh budget must refuse cleanly, not store a verdict.
+
+    `FactRegistry._unreadable` mints a fresh observation id on every refusal, so the
+    `observation_already_verified` guard can never catch a `refresh_budget` refusal:
+    without ticket 5c47578b's fix, the append-only ledger would grow one unprunable
+    row per retry once the shared budget is spent. A budget of one token per fact and
+    per target lets the SECOND duplicate-observation retry (which always forces a
+    fresh probe run) spend the only token, so the THIRD is refused for real.
+    """
+    claim_id, fact_name, _ = await _claim(session_factory)
+    probe = _Probe(fact_name, value=3)
+    registry = _registry(
+        probe, refresh_budget=RefreshBudget(per_fact_per_minute=1, per_target_per_minute=1)
+    )
+    service = ClaimVerificationService(registry, session_factory)
+
+    first = await service.verify(
+        claim_id, issuer_identity="mcp:integration", issuer_kind="robot", idempotency_key="first"
+    )
+    second = await service.verify(
+        claim_id, issuer_identity="mcp:integration", issuer_kind="robot", idempotency_key="second"
+    )
+    assert first.observation_id != second.observation_id
+
+    with pytest.raises(ClaimVerificationError) as error:
+        await service.verify(
+            claim_id,
+            issuer_identity="mcp:integration",
+            issuer_kind="robot",
+            idempotency_key="third",
+        )
+
+    assert error.value.code == "refresh_budget_exhausted"
+    assert await _count(session_factory, knowledge_claim_verdicts, "claim_id", claim_id) == 2
+    assert probe.runs == 2

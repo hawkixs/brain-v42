@@ -13,6 +13,7 @@ ClaimVerificationErrorCode = Literal[
     "idempotency_conflict",
     "observation_already_verified",
     "invalid_emitted_at",
+    "refresh_budget_exhausted",
 ]
 
 #: One constant, caller-actionable text per code. Constant on purpose: nothing a
@@ -30,6 +31,9 @@ _SAFE_DETAILS: Final = MappingProxyType(
             "the fresh observation is already bound to a verdict of this claim; retry later"
         ),
         "invalid_emitted_at": "the measurement instant is later than the server accepts",
+        "refresh_budget_exhausted": (
+            "the fact's forced-refresh budget is exhausted for now; retry later"
+        ),
     }
 )
 
