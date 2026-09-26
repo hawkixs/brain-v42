@@ -124,13 +124,29 @@ def _unconfined_providers(state: Path) -> tuple[str, ...]:
         ) from None
     if document is None:
         return ()
+    if document.get("unreadable_before"):
+        # A write found the list unreadable and started a new one: the writers it lost are
+        # unknown, and unknown is never empty (§3.8.1).
+        raise VendorRefused(
+            f"{path} was rebuilt after it was unreadable: the unconfined writers it lost are "
+            "unknown, so a commit without provenance cannot be attributed; recover it by hand"
+        )
     writers = document.get("writers")
     if not isinstance(writers, list):
         raise VendorRefused(f"{path} is malformed: recover it by hand")
     found: list[str] = []
     for writer in writers:
+        # Every writer ha records names its run and at least one provider: a writer without
+        # one would leave the union empty and presume a hand where an unconfined write ran.
+        run_id = writer.get("run_id") if isinstance(writer, dict) else None
         providers = writer.get("providers") if isinstance(writer, dict) else None
-        if not isinstance(providers, list) or not all(isinstance(p, str) for p in providers):
+        if (
+            not isinstance(run_id, str)
+            or not run_id
+            or not isinstance(providers, list)
+            or not providers
+            or not all(isinstance(p, str) and p for p in providers)
+        ):
             raise VendorRefused(f"{path} is malformed: recover it by hand")
         found.extend(p for p in providers if p not in found)
     return tuple(found)

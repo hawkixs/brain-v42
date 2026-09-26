@@ -116,6 +116,40 @@ def test_an_unreadable_writers_list_refuses(tmp_path: Path) -> None:
         attribute(tmp_path, [(SHA_2, "fix: a typo")])
 
 
+@pytest.mark.parametrize(
+    "document",
+    [
+        {"writers": [{"run_id": OTHER, "repository": "/r", "providers": []}]},
+        {"writers": [{"run_id": OTHER, "repository": "/r", "providers": ["claude", ""]}]},
+        {"writers": [{"repository": "/r", "providers": ["claude"]}]},
+        {"writers": [{"run_id": "", "repository": "/r", "providers": ["claude"]}]},
+        {"writers": ["claude"]},
+        {"writers": {"claude": 1}},
+        {},
+    ],
+)
+def test_a_malformed_writers_list_refuses(tmp_path: Path, document: dict[str, object]) -> None:
+    """Codex review of PR A: a writer with no provider made the union empty, and a commit
+    without provenance was then presumed hand-written although an unconfined write ran."""
+    publish(tmp_path / "unconfined-writers.json", document)
+    with pytest.raises(VendorRefused, match="malformed"):
+        attribute(tmp_path, [(SHA_2, "fix: a typo")])
+
+
+def test_a_writers_list_rebuilt_after_it_was_unreadable_refuses(tmp_path: Path) -> None:
+    """A write that found the list unreadable starts a new one and marks it: the writers it
+    lost are unknown, so no commit without provenance can be presumed hand-written."""
+    publish(
+        tmp_path / "unconfined-writers.json",
+        {
+            "writers": [{"run_id": OTHER, "repository": "/r", "providers": ["claude"]}],
+            "unreadable_before": True,
+        },
+    )
+    with pytest.raises(VendorRefused, match="unreadable"):
+        attribute(tmp_path, [(SHA_2, "fix: a typo")])
+
+
 def test_independent_reviewers_pass_and_the_check_says_who_wrote_what(tmp_path: Path) -> None:
     _record(tmp_path, SHA_1, ["opencode", "codex"])
     commits = attribute(tmp_path, [(SHA_1, "chore(ha): x"), (SHA_2, "docs: by hand")])
