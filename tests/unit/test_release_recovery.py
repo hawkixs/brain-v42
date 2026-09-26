@@ -28,6 +28,12 @@ from brain_v42 import release_recovery as rr
 
 SCHEMA_HEAD = "058"
 RELEASE_SHA = "b" * 40
+#: `switch_live` validates its `sha` argument as a lowercase 40-character hex
+#: string (task c below) — the release *directory name* it names, not
+#: `RELEASE_SHA` above (the unrelated `source_sha` field inside
+#: `delivery-release.json`). Kept distinct so a literal collision between the
+#: two never hides a bug in either check.
+DIR_SHA = "c" * 40
 
 
 def _write_revision(directory: Path, revision: str, down_revision: str | None) -> None:
@@ -48,7 +54,7 @@ def _sha256(path: Path) -> str:
 def _build_release(
     tmp_path: Path,
     *,
-    sha: str = "cafef00d",
+    sha: str = DIR_SHA,
     schema_head: str = SCHEMA_HEAD,
     declared_schema_head: str | None = None,
     release_sha: str = RELEASE_SHA,
@@ -133,6 +139,115 @@ def test_publish_recovery_binding_copies_the_three_files_with_mode_0644(tmp_path
         assert copied.is_file()
         assert stat.S_IMODE(copied.stat().st_mode) == 0o644
         assert _sha256(copied) == asset["sha256"]
+
+
+def test_publish_recovery_binding_sets_exact_modes_and_fresh_inodes_under_a_permissive_umask(
+    tmp_path: Path,
+) -> None:
+    """A permissive process umask must never leak into `recovery/`'s modes.
+
+    `os.chmod` after every write already forces the exact mode regardless of
+    umask; this test is the guard against a regression that swaps a `chmod`
+    for a mode passed only to `open`/`mkdir`, which the umask would then
+    widen.
+    """
+    release_dir = _build_release(tmp_path)
+    previous_umask = os.umask(0o002)
+    try:
+        binding_path, _digest = rr.publish_recovery_binding(release_dir)
+    finally:
+        os.umask(previous_umask)
+
+    recovery_dir = binding_path.parent
+    assert stat.S_IMODE(recovery_dir.stat().st_mode) == 0o755
+    entries = list(recovery_dir.iterdir())
+    assert entries, "recovery/ must not be empty"
+    for path in entries:
+        info = path.lstat()
+        assert not path.is_symlink()
+        assert stat.S_ISREG(info.st_mode)
+        assert stat.S_IMODE(info.st_mode) == 0o644
+        assert info.st_nlink == 1
+
+
+def test_publish_recovery_binding_replaces_a_preexisting_hardlinked_destination(
+    tmp_path: Path,
+) -> None:
+    """Publishing over a destination that is a hard link must not corrupt the other link.
+
+    `shutil.copyfile` onto an existing destination opens it in place and
+    overwrites its content in-place: if that destination shared an inode with
+    another file (a hard link), the other file's content would change too.
+    Publishing must always land on a fresh inode instead.
+    """
+    release_dir = _build_release(tmp_path)
+    recovery_dir = release_dir / "recovery"
+    recovery_dir.mkdir(parents=True)
+    other = tmp_path / "other-hardlink-target.sql"
+    other.write_text("-- content shared by the hard link before publish\n", encoding="utf-8")
+    preexisting = recovery_dir / "brain-v42-v1.sql"
+    os.link(other, preexisting)
+    assert preexisting.stat().st_nlink == 2
+
+    binding_path, _digest = rr.publish_recovery_binding(release_dir)
+
+    data = json.loads(binding_path.read_text(encoding="utf-8"))
+    published = recovery_dir / data["attestation_sql"]["path"]
+    assert published == preexisting
+    assert published.stat().st_nlink == 1
+    assert other.stat().st_nlink == 1
+    assert other.read_text(encoding="utf-8") == "-- content shared by the hard link before publish\n"
+
+
+def test_publish_recovery_binding_refuses_an_asset_destination_name_with_an_unsafe_character(
+    tmp_path: Path,
+) -> None:
+    release_dir = _build_release(tmp_path)
+    source_root = release_dir / "brain-v42"
+    unsafe = source_root / "ops" / "recovery" / "weird name.sql"
+    unsafe.write_text("-- unsafe destination file name\n", encoding="utf-8")
+    current_path = source_root / "ops" / "recovery" / "current.json"
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    current["attestation_sql"] = {
+        "path": "ops/recovery/weird name.sql",
+        "sha256": _sha256(unsafe),
+    }
+    current_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(rr.RecoveryBindingError, match="not safe to publish"):
+        rr.publish_recovery_binding(release_dir)
+
+
+def test_publish_recovery_binding_refuses_an_asset_named_like_the_binding_itself(
+    tmp_path: Path,
+) -> None:
+    release_dir = _build_release(tmp_path)
+    source_root = release_dir / "brain-v42"
+    collision = source_root / "ops" / "recovery" / "recovery-binding.json"
+    collision.write_text("-- masquerading as the binding file itself\n", encoding="utf-8")
+    current_path = source_root / "ops" / "recovery" / "current.json"
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    current["manifest"] = {
+        "path": "ops/recovery/recovery-binding.json",
+        "sha256": _sha256(collision),
+    }
+    current_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(rr.RecoveryBindingError, match="not safe to publish"):
+        rr.publish_recovery_binding(release_dir)
+
+
+def test_publish_recovery_binding_refuses_a_binding_larger_than_the_byte_limit(
+    tmp_path: Path,
+) -> None:
+    release_dir = _build_release(tmp_path)
+    current_path = release_dir / "brain-v42" / "ops" / "recovery" / "current.json"
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    current["contract_id"] = "x" * 20000
+    current_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(rr.RecoveryBindingError, match=str(rr.MAX_BINDING_BYTES)):
+        rr.publish_recovery_binding(release_dir)
 
 
 def test_publish_recovery_binding_refuses_a_stale_schema_head(tmp_path: Path) -> None:
@@ -256,28 +371,30 @@ def test_record_binding_in_manifest_refuses_without_a_published_binding(tmp_path
 
 def test_switch_live_creates_a_relative_symlink(tmp_path: Path) -> None:
     releases_root = tmp_path / "releases"
-    release_dir = _build_release(tmp_path, sha="cafef00d")
+    release_dir = _build_release(tmp_path, sha=DIR_SHA)
     rr.publish_recovery_binding(release_dir)
 
-    live_path = rr.switch_live(releases_root, "cafef00d")
+    live_path = rr.switch_live(releases_root, DIR_SHA)
 
     assert live_path == releases_root / "live"
     assert live_path.is_symlink()
-    assert os.readlink(live_path) == "cafef00d"
+    assert os.readlink(live_path) == DIR_SHA
     assert not Path(os.readlink(live_path)).is_absolute()
 
 
 def test_switch_live_replaces_an_existing_link_atomically(tmp_path: Path) -> None:
     releases_root = tmp_path / "releases"
-    first = _build_release(tmp_path, sha="aaaaaaaa")
-    second = _build_release(tmp_path, sha="bbbbbbbb")
+    sha_one = "1" * 40
+    sha_two = "2" * 40
+    first = _build_release(tmp_path, sha=sha_one)
+    second = _build_release(tmp_path, sha=sha_two)
     rr.publish_recovery_binding(first)
     rr.publish_recovery_binding(second)
-    rr.switch_live(releases_root, "aaaaaaaa")
+    rr.switch_live(releases_root, sha_one)
 
-    rr.switch_live(releases_root, "bbbbbbbb")
+    rr.switch_live(releases_root, sha_two)
 
-    assert os.readlink(releases_root / "live") == "bbbbbbbb"
+    assert os.readlink(releases_root / "live") == sha_two
     assert list(releases_root.glob(".live.tmp-*")) == []
 
 
@@ -286,15 +403,63 @@ def test_switch_live_refuses_a_sha_without_a_release_directory(tmp_path: Path) -
     releases_root.mkdir(parents=True)
 
     with pytest.raises(rr.RecoveryBindingError, match="does not exist"):
-        rr.switch_live(releases_root, "ghost")
+        rr.switch_live(releases_root, "d" * 40)
 
 
 def test_switch_live_refuses_a_sha_without_a_recovery_binding(tmp_path: Path) -> None:
     releases_root = tmp_path / "releases"
-    _build_release(tmp_path, sha="cafef00d")  # never published
+    _build_release(tmp_path, sha=DIR_SHA)  # never published
 
     with pytest.raises(rr.RecoveryBindingError, match="recovery binding"):
+        rr.switch_live(releases_root, DIR_SHA)
+
+
+def test_switch_live_refuses_a_sha_that_is_too_short_before_touching_the_filesystem(
+    tmp_path: Path,
+) -> None:
+    releases_root = tmp_path / "releases"
+    # No `releases_root` on disk at all: a format failure must be raised
+    # before any filesystem access, not surface as "does not exist".
+    with pytest.raises(rr.RecoveryBindingError, match="not a valid release sha"):
         rr.switch_live(releases_root, "cafef00d")
+
+
+def test_switch_live_refuses_an_uppercase_sha(tmp_path: Path) -> None:
+    releases_root = tmp_path / "releases"
+
+    with pytest.raises(rr.RecoveryBindingError, match="not a valid release sha"):
+        rr.switch_live(releases_root, "D" * 40)
+
+
+def test_switch_live_refuses_a_sha_with_a_non_hex_character(tmp_path: Path) -> None:
+    releases_root = tmp_path / "releases"
+
+    with pytest.raises(rr.RecoveryBindingError, match="not a valid release sha"):
+        rr.switch_live(releases_root, "g" + "0" * 39)
+
+
+def test_switch_live_refuses_when_the_release_directory_is_a_symlink(tmp_path: Path) -> None:
+    releases_root = tmp_path / "releases"
+    releases_root.mkdir(parents=True)
+    real_target = tmp_path / "elsewhere"
+    real_target.mkdir()
+    (releases_root / DIR_SHA).symlink_to(real_target)
+
+    with pytest.raises(rr.RecoveryBindingError, match="not a symlink"):
+        rr.switch_live(releases_root, DIR_SHA)
+
+
+def test_switch_live_refuses_when_the_recovery_subdirectory_is_a_symlink(tmp_path: Path) -> None:
+    releases_root = tmp_path / "releases"
+    release_dir = _build_release(tmp_path, sha=DIR_SHA)
+    rr.publish_recovery_binding(release_dir)
+    real_recovery = release_dir / "recovery"
+    decoy = release_dir / "recovery-elsewhere"
+    real_recovery.rename(decoy)
+    real_recovery.symlink_to(decoy)
+
+    with pytest.raises(rr.RecoveryBindingError, match="not a symlink"):
+        rr.switch_live(releases_root, DIR_SHA)
 
 
 def test_read_live_returns_none_without_a_symlink(tmp_path: Path) -> None:
@@ -306,18 +471,18 @@ def test_read_live_returns_none_without_a_symlink(tmp_path: Path) -> None:
 
 def test_read_live_returns_the_sha(tmp_path: Path) -> None:
     releases_root = tmp_path / "releases"
-    release_dir = _build_release(tmp_path, sha="cafef00d")
+    release_dir = _build_release(tmp_path, sha=DIR_SHA)
     rr.publish_recovery_binding(release_dir)
-    rr.switch_live(releases_root, "cafef00d")
+    rr.switch_live(releases_root, DIR_SHA)
 
-    assert rr.read_live(releases_root) == "cafef00d"
+    assert rr.read_live(releases_root) == DIR_SHA
 
 
 def test_cli_publish_then_live_then_show_live(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     releases_root = tmp_path / "releases"
-    release_dir = _build_release(tmp_path, sha="cafef00d")
+    release_dir = _build_release(tmp_path, sha=DIR_SHA)
 
     assert rr.cli(["publish", str(release_dir)]) == 0
     published = json.loads(capsys.readouterr().out)
@@ -325,12 +490,12 @@ def test_cli_publish_then_live_then_show_live(
     manifest = json.loads((release_dir / "delivery-release.json").read_text(encoding="utf-8"))
     assert manifest["recovery_binding"]["sha256"] == published["sha256"]
 
-    assert rr.cli(["live", str(releases_root), "cafef00d"]) == 0
+    assert rr.cli(["live", str(releases_root), DIR_SHA]) == 0
     capsys.readouterr()
 
     assert rr.cli(["show-live", str(releases_root)]) == 0
     shown = json.loads(capsys.readouterr().out)
-    assert shown["sha"] == "cafef00d"
+    assert shown["sha"] == DIR_SHA
 
 
 def test_cli_reports_failure_on_stderr_with_a_nonzero_exit(
@@ -339,7 +504,7 @@ def test_cli_reports_failure_on_stderr_with_a_nonzero_exit(
     releases_root = tmp_path / "releases"
     releases_root.mkdir(parents=True)
 
-    exit_code = rr.cli(["live", str(releases_root), "ghost"])
+    exit_code = rr.cli(["live", str(releases_root), "d" * 40])
 
     assert exit_code == 1
     captured = capsys.readouterr()

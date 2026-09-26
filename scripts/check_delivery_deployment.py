@@ -35,6 +35,7 @@ from brain_v42.delivery_observer.auth import (
 from brain_v42.delivery_observer.config import load_observer_settings
 from brain_v42.delivery_observer.transport import GitHubTransport, ProviderError
 from brain_v42.release import shipped_alembic_head
+from brain_v42.release_recovery import is_safe_asset_filename
 
 _GUARD_SHA = "fcc9328ff6e7f061879af2540c69717fc3061434"
 _SHA256 = set("0123456789abcdef")
@@ -1189,6 +1190,14 @@ def check(
         # paths), but it would no longer be the flat name publish writes:
         # refuse it instead of accepting a shape publish never produces.
         if relative_path != Path(relative_path).name:
+            _fail("release_path_unsafe")
+        # Same file-name contract `release_recovery.publish_recovery_binding`
+        # enforces before it ever writes this path: no directory component
+        # (checked above), a safe charset, and never the binding's own name.
+        # Reused from there rather than a second copy of the regex, so this
+        # preflight and `publish_recovery_binding` cannot silently drift apart
+        # on what "safe" means.
+        if not is_safe_asset_filename(relative_path):
             _fail("release_path_unsafe")
         asset_files[asset_key] = _release_file(
             root, {"path": f"recovery/{relative_path}", "sha256": asset.get("sha256")}

@@ -32,6 +32,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -49,10 +50,37 @@ MANIFEST_FILENAME = "delivery-release.json"
 LIVE_LINK_NAME = "live"
 #: The three files `current.json` (and the binding it produces) name.
 ASSET_KEYS = ("manifest", "attestation_sql", "restored_attestation_sql")
+#: `recovery-binding.json` itself stays well under a normal filesystem block; a
+#: much bigger one is a sign that `current.json` was tampered with (a huge
+#: `contract_id`, say) rather than a real recovery contract, and every consumer
+#: that fetches this file expects it small.
+MAX_BINDING_BYTES = 16384
+#: Every asset's destination file name inside `recovery/`, and inside a
+#: published `recovery-binding.json`: no directory separator, no leading dot,
+#: no character a shell glob or a later path join could reinterpret.
+#: red-backup, the consumer, rejects anything else as `binding=invalid` — so
+#: this side refuses it before it is ever published, not after.
+ASSET_FILENAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+#: A release directory name: the lowercase, 40-character hex sha the release
+#: was cut from. `switch_live` refuses anything else before touching the
+#: filesystem — a short or mixed-case value would still resolve to *some*
+#: `releases_root` entry lexically, but never the one a real release publishes.
+_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
 
 class RecoveryBindingError(RuntimeError):
     """A release's recovery binding cannot be published, recorded, or trusted."""
+
+
+def is_safe_asset_filename(name: str) -> bool:
+    """Whether `name` is safe to publish as a `recovery/` asset file name.
+
+    Shared by `publish_recovery_binding` and the deployment preflight
+    (`scripts/check_delivery_deployment.py`), which reuses this function
+    rather than a second copy of the regex, so the two sides can never drift
+    apart on what "safe" means.
+    """
+    return bool(ASSET_FILENAME_RE.match(name)) and name != BINDING_FILENAME
 
 
 def _sha256_of(path: Path) -> str:
@@ -188,14 +216,32 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
                 f"{asset_key}: sha256 mismatch before copy for {source_path} "
                 f"(current.json declares {declared}, measured {measured_before})"
             )
-        destination = recovery_dir / source_path.name
+        destination_name = source_path.name
+        if not is_safe_asset_filename(destination_name):
+            raise RecoveryBindingError(
+                f"{asset_key}: destination file name {destination_name!r} is not safe to "
+                "publish into recovery/ (red-backup would refuse it as binding=invalid)"
+            )
+        destination = recovery_dir / destination_name
         if destination.is_symlink():
             raise RecoveryBindingError(
                 f"{asset_key}: destination {destination} already exists as a symlink; "
                 "refusing to write through it and escape recovery/"
             )
-        shutil.copyfile(source_path, destination)
-        os.chmod(destination, 0o644)
+        # A fresh inode every time, never a write through the destination's
+        # existing one: `shutil.copyfile` onto an existing destination opens
+        # it for writing in place, which would corrupt any other hard link
+        # sharing that inode. Copy into a sibling temporary file instead and
+        # `os.replace` it over the destination — the same atomic swap
+        # `_atomic_write` already uses for the binding itself.
+        tmp_destination = recovery_dir / f".{destination_name}.tmp-{os.getpid()}"
+        try:
+            shutil.copyfile(source_path, tmp_destination)
+            os.chmod(tmp_destination, 0o644)
+            os.replace(tmp_destination, destination)
+        except Exception:
+            tmp_destination.unlink(missing_ok=True)
+            raise
         measured_after = _sha256_of(destination)
         if measured_after != declared:
             raise RecoveryBindingError(
@@ -206,6 +252,12 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
 
     binding_path = recovery_dir / BINDING_FILENAME
     text = json.dumps(binding, indent=2, sort_keys=True) + "\n"
+    size = len(text.encode("utf-8"))
+    if size > MAX_BINDING_BYTES:
+        raise RecoveryBindingError(
+            f"recovery binding is {size} bytes, over the {MAX_BINDING_BYTES}-byte limit "
+            "red-backup enforces on recovery-binding.json"
+        )
     _atomic_write(binding_path, text, mode=0o644)
     return binding_path, _sha256_of(binding_path)
 
@@ -244,15 +296,32 @@ def switch_live(releases_root: Path, sha: str) -> Path:
     """Point `<releases_root>/live` at `sha`, atomically.
 
     Used both at a normal cutover and at a rollback: the swap is identical
-    either way, only the target sha differs. Refuses a sha whose release
-    directory does not exist, or that never published a recovery binding — a
-    release with no verifiable recovery contract must never become live.
+    either way, only the target sha differs. Refuses a sha that is not a
+    lowercase 40-character hex string before touching the filesystem at all;
+    refuses a sha whose release directory does not exist or is a symlink
+    rather than a real directory; and refuses a sha that never published a
+    recovery binding, or whose `recovery/` is itself a symlink — a release
+    with no verifiable, on-disk recovery contract must never become live.
     """
+    if not _SHA_RE.match(sha):
+        raise RecoveryBindingError(
+            f"not a valid release sha (lowercase, 40 hex characters): {sha!r}"
+        )
     releases_root = Path(releases_root)
     release_dir = releases_root / sha
+    if release_dir.is_symlink():
+        raise RecoveryBindingError(
+            f"release directory must be a real directory, not a symlink: {release_dir}"
+        )
     if not release_dir.is_dir():
         raise RecoveryBindingError(f"release directory does not exist: {release_dir}")
-    binding_path = release_dir / RECOVERY_DIRNAME / BINDING_FILENAME
+    recovery_dir = release_dir / RECOVERY_DIRNAME
+    if recovery_dir.is_symlink():
+        raise RecoveryBindingError(
+            f"release {sha!r} recovery directory must be a real directory, not a symlink: "
+            f"{recovery_dir}"
+        )
+    binding_path = recovery_dir / BINDING_FILENAME
     if not binding_path.is_file():
         raise RecoveryBindingError(f"release {sha!r} carries no recovery binding: {binding_path}")
 
