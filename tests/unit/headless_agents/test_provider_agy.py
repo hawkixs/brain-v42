@@ -570,11 +570,66 @@ class TestWorkspace:
         result, ws = _workspace_run(tmp_path, script)
         assert result.exit_code == 0
         assert result.workspace == {"path": str(ws), "write": False, "shell": False}
-        assert (tmp_path / "cwd").read_text().strip() == str(ws)
+        # NOT `ws`: agy walks from its process cwd up to a `.git` root and loads
+        # every GEMINI.md/AGENTS.md it finds along the way, natively and before
+        # any tool call (measured 2026-09-26, ticket ha-051-agy; see the module
+        # docstring). The ephemeral HOME has no such ancestry and carries
+        # neither file itself, so running there instead of in the real
+        # workspace directory is what keeps the workspace's own instruction
+        # files from being read outside the guard's view. Every tool argument
+        # stays an ABSOLUTE path checked against `ws` regardless of cwd (see
+        # `workspace_guard_holds`), so this costs nothing in confinement.
+        cwd = Path((tmp_path / "cwd").read_text().strip())
+        assert cwd != ws
+        assert cwd.name == "run"
+        assert cwd.is_relative_to(tmp_path / "root")
         prompt = (tmp_path / "prompt").read_text()
         assert "Your only read tool is view_file" in prompt
         assert f'<files root="{ws}">\n(not a git repository: no file list)\n</files>' in prompt
         assert prompt.endswith("<task>\nTASK\n</task>")
+
+    def test_the_process_cwd_is_never_the_workspace(self, tmp_path: Path) -> None:
+        """agy's native GEMINI.md/AGENTS.md discovery walks from the process's own
+        cwd, not from a tool argument: the guard (which checks tool arguments
+        only) cannot stop it. The only lever is where the process itself runs."""
+        script = f"pwd > {tmp_path}/cwd"
+        result, ws = _workspace_run(tmp_path, script, write=True)
+        assert result.exit_code == 0
+        cwd = Path((tmp_path / "cwd").read_text().strip())
+        assert cwd != ws
+        assert ws not in cwd.parents and cwd not in ws.parents
+
+    def test_a_repository_instruction_file_at_the_workspace_root_is_unreachable_from_cwd(
+        self, tmp_path: Path
+    ) -> None:
+        """The concrete scenario the live isolation proof measured failing on agy
+        1.2.11: GEMINI.md/AGENTS.md planted at the workspace root, native
+        discovery walking from cwd up to the nearest `.git`. Proven here without
+        a real agy binary: the run's cwd has no `.git` ancestor and does not
+        contain either file, so agy's own walk -- which this test cannot
+        simulate without the real CLI -- has nothing to find."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        subprocess.run(["git", "init", "-q", str(ws)], check=True)
+        (ws / "GEMINI.md").write_text("MARKER-REPO\n", encoding="utf-8")
+        (ws / "AGENTS.md").write_text("MARKER-REPO\n", encoding="utf-8")
+        fake = tmp_path / "agy"
+        fake.write_text(f"#!/usr/bin/env bash\npwd > {tmp_path}/cwd\n", encoding="utf-8")
+        fake.chmod(0o755)
+        (tmp_path / "root").mkdir(exist_ok=True)
+        provider = agy.AgyProvider(real_home=tmp_path, ephemeral_root=tmp_path / "root")
+        spec = RunSpec(
+            prompt="TASK",
+            executable=str(fake),
+            profile=CapabilityProfile(workspace=Workspace(path=ws)),
+            run_dir=tmp_path / "run",
+        )
+        result = provider.run(spec)
+        assert result.exit_code == 0
+        cwd = Path((tmp_path / "cwd").read_text().strip())
+        assert not (cwd / ".git").exists()
+        assert not (cwd / "GEMINI.md").exists()
+        assert not (cwd / "AGENTS.md").exists()
 
     def test_a_guard_failing_its_probe_refuses_the_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -24,6 +24,33 @@ probed there before the spawn; a profile carrying both is refused, since the
 two do not compose. agy's ``view_file`` cannot list a directory, so the
 prompt carries the workspace's file list.
 
+NATIVE INSTRUCTION-FILE DISCOVERY, MEASURED 2026-09-26 (ticket ha-051-agy). Wholly
+independent of any tool call, and therefore invisible to the ``PreToolUse`` guard above
+-- which gates TOOL arguments, not the CLI's own startup -- agy 1.2.11 walks from its
+process's cwd up to the nearest ``.git`` root and natively loads every ``GEMINI.md`` /
+``AGENTS.md`` it finds along the way, unconditionally, before the first turn (agy's own
+bundled documentation: "the agent walks up from your current working directory to the
+repository root ... loading these files"). There is no CLI flag for it (``agy --help``
+lists none) and no measured ``settings.json`` key that disables it: the only candidate
+found in the installed binary -- a Go struct field tagged ``json:"contextFileName"`` --
+sits nowhere near the "Rules" discovery code that same bundled documentation describes,
+and that documentation hardcodes ``GEMINI.md``/``AGENTS.md`` with no mention of an
+override. So this is MASKED, not configured: a workspace run's process ``cwd`` is
+always the ephemeral HOME (below), never ``workspace.path``. The HOME has no ``.git``
+ancestor and carries neither file itself, so the walk finds nothing. Every tool
+argument stays an ABSOLUTE path checked against ``workspace.path`` regardless of cwd
+(see :func:`workspace_guard_holds`), so this costs nothing in confinement.
+
+RESIDUAL, not fixed by this: the same documentation also says the agent walks up from a
+FILE's own directory when the model actually opens or edits it. A real tool call into a
+directory that carries a rule file can still load it. The live isolation proof
+deliberately calls no tool (see its own module docstring) and is unaffected; a workspace
+run that DOES edit files is not proven immune to this residual. A further, narrower
+residual: ``run_command``'s own default ``Cwd``, when the model omits it, now resolves
+inside the ephemeral HOME rather than inside the workspace -- ``run_command`` was already
+unconfined once ``shell`` is armed (see :mod:`headless_agents.guards.agy_workspace`), so
+this changes convenience, never the confinement guarantee.
+
 THE RAIL'S ONLY DEVIATION. agy's ``Authorization`` is a literal: its
 documentation describes no ``${VAR}`` interpolation. The bearer is therefore
 WRITTEN to a file where the other two rails pass it through the environment.
@@ -587,7 +614,11 @@ def run_agy(
                     stdin=subprocess.DEVNULL,
                     stdout=events_stream,
                     stderr=stderr_stream,
-                    cwd=home if workspace is None else workspace.path,
+                    # ALWAYS the ephemeral HOME, including with a workspace: see
+                    # "NATIVE INSTRUCTION-FILE DISCOVERY" in the module
+                    # docstring. Tool arguments are absolute and checked against
+                    # `workspace.path` regardless of where the process itself runs.
+                    cwd=home,
                     env=_child_environment(home, ambient, profile),
                     text=True,
                     start_new_session=True,
