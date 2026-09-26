@@ -1963,6 +1963,40 @@ def test_preflight_refuses_a_recovery_asset_path_with_a_directory_component(
     assert _receipt(result)["failure"] == "release_path_unsafe"
 
 
+@pytest.mark.parametrize(
+    "bad_path",
+    [
+        ".hidden.sql",
+        "weird name.sql",
+        "recovery-binding.json",
+    ],
+)
+def test_preflight_refuses_a_recovery_asset_path_that_is_not_a_safe_file_name(
+    deployment_case: DeploymentCase, bad_path: str
+) -> None:
+    """Same `is_safe_asset_filename` contract `publish_recovery_binding` enforces.
+
+    A leading dot, a space, or (worst) the binding's own file name must never
+    reach `_release_file`: any of the three would still resolve inside
+    `recovery/` lexically, but none of them is a shape `publish_recovery_binding`
+    would ever produce.
+    """
+    release = deployment_case.manifest.parent
+    binding_path = release / "recovery" / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text(encoding="utf-8"))
+    source = release / "recovery" / "recovery-attestation.sql"
+    target = release / "recovery" / bad_path
+    if not target.exists():
+        _write(target, source.read_bytes(), mode=0o644)
+    binding["attestation_sql"] = {"path": bad_path, "sha256": _sha256(target)}
+    _rebind(deployment_case, binding)
+
+    result = deployment_case.run()
+
+    assert result.returncode != 0
+    assert _receipt(result)["failure"] == "release_path_unsafe"
+
+
 def test_preflight_refuses_a_recovery_binding_whose_contract_id_disagrees_with_the_copied_manifest(
     deployment_case: DeploymentCase,
 ) -> None:
