@@ -581,6 +581,55 @@ def test_a_failed_cleanup_keeps_the_worktree_and_the_verdicts_exit(
     assert real is not failing
 
 
+def _worktrees(world: World) -> list[str]:
+    return [
+        line.split(" ", 1)[1]
+        for line in _git(world.repo, "worktree", "list", "--porcelain").splitlines()
+        if line.startswith("worktree ")
+    ]
+
+
+def test_a_worktree_add_that_fails_after_creating_the_worktree_removes_it(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Codex review of PR B: a refused review leaves no registered worktree behind."""
+    from headless_agents import review_flow
+
+    world.commit_by_hand()
+    real = review_flow._git
+
+    def git(identity: object, args: list[str], *rest: object) -> tuple[int, str, str]:
+        code, out, err = real(identity, args, *rest)  # type: ignore[arg-type]
+        if args[:2] == ["worktree", "add"]:
+            return 128, out, "fatal: simulated checkout failure"
+        return code, out, err
+
+    monkeypatch.setattr(review_flow, "_git", git)
+    with pytest.raises(UsageError, match="simulated checkout failure"):
+        world.review()
+    assert _worktrees(world) == [str(world.repo.resolve())]
+
+
+def test_an_exception_in_a_reviewer_removes_the_worktree_and_propagates(world: World) -> None:
+    """Codex review of PR B: a crash after the worktree exists still removes it; the run is
+    left non-final, so it reads incomplete, as any interrupted run does."""
+    world.commit_by_hand()
+
+    def crash(spec: RunSpec) -> str:
+        raise RuntimeError("provider crashed")
+
+    world.agents["claude"].answer = crash
+    with pytest.raises(RuntimeError, match="provider crashed"):
+        world.review()
+    assert _worktrees(world) == [str(world.repo.resolve())]
+    (review_id,) = [
+        run_id
+        for run_id in world.registry().run_ids()
+        if world.registry().resolve(run_id).target.get("shape") == "review"
+    ]
+    assert world.registry().resolve(review_id).status == "running"
+
+
 def test_a_prompt_too_large_for_a_reviewer_stops_the_phase_with_the_step_at_2(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:

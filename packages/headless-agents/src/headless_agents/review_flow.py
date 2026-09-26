@@ -240,7 +240,11 @@ def prepare(
         identity, ["worktree", "add", "-q", "--detach", str(worktree), head], environ, state
     )
     if code != 0:
-        raise ReviewRefused(f"git worktree add failed: {err.strip()}; nothing ran")
+        # git may have created and registered the worktree before failing: a refused
+        # review leaves none behind, or says why it could not.
+        kept = remove_worktree(worktree, identity, environ, state) if worktree.exists() else None
+        where = f"; its partial worktree is kept at {worktree} ({kept})" if kept else ""
+        raise ReviewRefused(f"git worktree add failed: {err.strip()}; nothing ran{where}")
     return Prepared(head=head, merge_base=merge_base, patch=patch, check=check, worktree=worktree)
 
 

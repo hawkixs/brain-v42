@@ -1057,45 +1057,55 @@ def _execute_review(
     )
     write_report(run_dir, report)
 
-    phase = _run_phase(
-        plan,
-        [(index, slot, review_prompt(task, prepared.patch)) for index, slot in reviewers],
-        run_id=entry.run_id,
-        run_dir=run_dir,
-        worktree=prepared.worktree,
-        say=say,
-    )
-    entries, failure = list(phase.entries), phase.failure_reason
-    deciding: RunResult | None = phase.results[0] if len(phase.results) == 1 else None
-    if failure is None and judge is not None:
-        index, slot = judge
-        answers = [
-            ReviewText(
-                role=slot_.role.name,
-                provider=result.provider,
-                model=result.model_reported or result.model or "",
-                text=result.text or "",
-            )
-            for (_, slot_), result in zip(reviewers, phase.results, strict=True)
-            if result is not None
-        ]
-        judged = _run_phase(
+    try:
+        phase = _run_phase(
             plan,
-            [(index, slot, judge_prompt(task, prepared.patch, answers))],
+            [(index, slot, review_prompt(task, prepared.patch)) for index, slot in reviewers],
             run_id=entry.run_id,
             run_dir=run_dir,
             worktree=prepared.worktree,
             say=say,
         )
-        entries.extend(judged.entries)
-        failure = judged.failure_reason
-        deciding = judged.results[0]
-    verdict: Verdict | None = None
-    text = deciding.text if deciding is not None else None
-    if failure is None:
-        verdict = read_verdict(text)
-        if verdict is None:
-            failure = "unreadable_verdict"
+        entries, failure = list(phase.entries), phase.failure_reason
+        deciding: RunResult | None = phase.results[0] if len(phase.results) == 1 else None
+        if failure is None and judge is not None:
+            index, slot = judge
+            answers = [
+                ReviewText(
+                    role=slot_.role.name,
+                    provider=result.provider,
+                    model=result.model_reported or result.model or "",
+                    text=result.text or "",
+                )
+                for (_, slot_), result in zip(reviewers, phase.results, strict=True)
+                if result is not None
+            ]
+            judged = _run_phase(
+                plan,
+                [(index, slot, judge_prompt(task, prepared.patch, answers))],
+                run_id=entry.run_id,
+                run_dir=run_dir,
+                worktree=prepared.worktree,
+                say=say,
+            )
+            entries.extend(judged.entries)
+            failure = judged.failure_reason
+            deciding = judged.results[0]
+        verdict: Verdict | None = None
+        text = deciding.text if deciding is not None else None
+        if failure is None:
+            verdict = read_verdict(text)
+            if verdict is None:
+                failure = "unreadable_verdict"
+    except BaseException:
+        # A crash or an interruption after the worktree exists: remove it, then let the
+        # run read incomplete, as any interrupted run does -- no verdict, no result.
+        kept = review_flow.remove_worktree(
+            prepared.worktree, identity, plan.environment, plan.state
+        )
+        if kept is not None:
+            say(f"the review's worktree was kept ({kept}): ha clean retries")
+        raise
     cleanup = review_flow.finish(
         run_id=entry.run_id,
         state=plan.state,
