@@ -132,6 +132,18 @@ through an SSH tunnel. The loopback publish is code-ready but not live proof: un
 rollout verifies the effective bind and listeners, treat `:8003` as LAN-exposed. Do not expose it
 to the Internet; independently verify the router/network boundary.
 
+### Reranker: GPU with CPU fallback
+
+`OnnxRerankBackend` (`services/embedding_shim/shim_backends.py`) prefers
+`CUDAExecutionProvider` (env `RERANK_DEVICE=auto|cuda|cpu`, default `auto`), falling back to
+`CPUExecutionProvider` when CUDA is unavailable or a CUDA run raises (retried once on CPU for
+that request). Candidates are sorted by real token length and scored in micro-batches (env
+`RERANK_BATCH_SIZE`, default 32), so each batch pads to its own local max instead of the whole
+request's. Measured 2026-09-26 (85/128 real knowledge-base candidates, same model + tokenizer):
+CPU single batch ~3.4 s; CPU sorted micro-batches of 32 ~1.9 s; CUDA sorted micro-batches of 32
+~0.3 s (85 candidates) / ~0.4 s (128) — a single CUDA batch of 128x512 OOMs the shared 6 GB GPU.
+CPU vs CUDA scores: max |diff| 0.00012, identical top-10.
+
 ## Storage layout
 
 | Store | Port | Role | Source files |
