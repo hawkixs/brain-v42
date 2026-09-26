@@ -11,6 +11,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -1170,6 +1171,29 @@ def test_show_of_a_cleaned_run_says_so_and_exits_0(world: _World) -> None:
     code, out, err = world.run("show", run_id)
     assert code == 0 and "removed by ha clean" in err
     assert out.splitlines()[0] == f"{run_id}  codex  exit -  answered"
+
+
+def test_show_dir_renders_a_run_directory_for_display_only(world: _World) -> None:
+    """Spec §3.8.6: readable even after the state directory is lost."""
+    code, out, _ = world.run("run", "codex", "--json", "go")
+    run_dir = world.home / ".cache" / "ha" / "runs" / json.loads(out)["run_id"]
+    shutil.rmtree(world.home / ".local" / "state" / "ha")
+    code, out, err = world.run("show", "--dir", str(run_dir))
+    assert code == 0 and "display only" in err
+    assert out.splitlines()[0].endswith("codex  exit 0  answered")
+    code, out, _ = world.run("show", "--dir", str(run_dir), "--json")
+    assert code == 0 and json.loads(out)["status"] == "answered"
+
+
+@pytest.mark.parametrize("argv", [("show",), ("show", "20260925T000000-00000000", "--dir", "/tmp")])
+def test_show_takes_a_run_id_or_a_dir_exactly(world: _World, argv: tuple[str, ...]) -> None:
+    code, _, err = world.run(*argv)
+    assert code == 2 and "a run id or --dir" in err
+
+
+def test_show_dir_refuses_a_directory_that_holds_no_report(world: _World, tmp_path: Path) -> None:
+    code, _, err = world.run("show", "--dir", str(tmp_path))
+    assert code == 2 and "run.json" in err
 
 
 def test_show_refuses_what_is_not_a_registered_run(world: _World) -> None:

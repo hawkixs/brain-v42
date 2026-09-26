@@ -8,6 +8,7 @@
     ha providers [--json]
     ha runs [--limit N] [--json]
     ha show RUN_ID [--json]
+    ha show --dir PATH [--json]               display only
     ha clean RUN_ID
     ha --version
 
@@ -182,7 +183,15 @@ def _parser() -> argparse.ArgumentParser:
     runs.add_argument("--json", action="store_true", help="print the list as JSON")
 
     show_parser = commands.add_parser("show", help="show one run, rebuilt from the state")
-    show_parser.add_argument("run_id", help="the run id, as ha run or ha runs printed it")
+    show_parser.add_argument(
+        "run_id", nargs="?", help="the run id, as ha run or ha runs printed it"
+    )
+    show_parser.add_argument(
+        "--dir",
+        type=Path,
+        metavar="PATH",
+        help="render a run directory's run.json instead, for display only",
+    )
     show_parser.add_argument("--json", action="store_true", help="print the rebuilt run.json")
 
     clean_parser = commands.add_parser("clean", help="remove one run's directory")
@@ -514,11 +523,19 @@ def _clean(args: argparse.Namespace, io: Io) -> int:
 
 
 def _show(args: argparse.Namespace, io: Io) -> int:
-    """``ha show RUN_ID``: rebuilt from the state (plan P6); 1 when part of it is unreadable."""
+    """``ha show RUN_ID``: rebuilt from the state (plan P6); 1 when part of it is unreadable.
+    ``ha show --dir PATH``: a run directory's report, for display only (§3.8.6)."""
+    if (args.run_id is None) == (args.dir is None):
+        raise UsageError("ha show takes a run id or --dir PATH, exactly one of them")
     try:
-        shown = show.rebuild(
-            args.run_id, state=state_dir(io.environ, home=io.home), runs_root=runs_root(io.home)
-        )
+        if args.dir is not None:
+            shown = show.from_dir(Path(os.path.abspath(io.cwd / args.dir)))
+        else:
+            shown = show.rebuild(
+                args.run_id,
+                state=state_dir(io.environ, home=io.home),
+                runs_root=runs_root(io.home),
+            )
     except show.NotShown as exc:
         raise UsageError(str(exc)) from None
     for note in shown.notes:
