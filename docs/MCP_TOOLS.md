@@ -1,13 +1,13 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-09-22
-**Repository registry:** 70 always-on + 2 graph-gated = 72 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 72 always-on + 2 graph-gated = 74 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
 Most tools return formatted markdown strings. The seven v4 session lifecycle tools return structured Pydantic results. Their repository contract is documented below. Lifecycle v4 has run in production since 24 July 2026, after revision 036, explicit schema proof and a restart-last MCP cutover with authenticated E2E canaries.
 
-Migration 057 is the repository target: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; no MCP tool reads them yet. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
+Migration 057 is the repository target: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
 so a reader can tell a PROVEN attribution (`derived_connection`, same connection) from a DEDUCED
 one (`derived_window`, sole covering session at the instant of creation) — and undo the second
 kind. Migration 047 removes the closing XOR, so a session whose ledger
@@ -76,6 +76,8 @@ rollout, and rollback are documented in
 | Discard a session without changing focus | `brain_session_abandon` |
 | Refresh bounded workflow guidance | `brain_workflow_guide` |
 | Check now whether a declared claim still holds | `brain_claim_verify` |
+| List an entry's active claims and their state | `brain_claim_list` |
+| See one claim's complete verdict history | `brain_claim_history` |
 
 `brain_learn` is the last-resort tool, never the default.
 
@@ -207,7 +209,110 @@ brain_claim_verify(
     claim_id="7d0b1f53-4c55-4c2e-9e57-a5b1b8d0c001", idempotency_key="check-2026-09-22"
 )
 # the same row, byte for byte: nothing was measured again
+
+brain_claim_history(claim_id="7d0b1f53-4c55-4c2e-9e57-a5b1b8d0c001")
+# ## Claim 7d0b1f53-4c55-4c2e-9e57-a5b1b8d0c001
+# "The graph projection lags less than five minutes."
+# State: tient
+# ### History (2)
+# - seq 40: holds — 2026-09-22T09:00:00Z
+# - seq 41: holds — 2026-09-22T09:00:00Z
 ```
+
+## Claim reads
+
+`brain_claim_list` and `brain_claim_history` (version 1.0, `claim_tools.py`) are the two
+scoped, SELECT-only reads over the same immutable claim/verdict ledger (spec 2026-09-19,
+section 6.6). Neither ever writes a verdict, refreshes a cache, measures a fact, touches
+ranking, or emits an access-log entry -- they render already-stored rows. Both refuse
+`read_unavailable` if the server ran without a configured read service (never the case
+in real composition, `mcp/server.py`), but are always REGISTERED regardless: the MCP
+tool census (`tests/unit/test_documentation_contract.py`) walks the composition root
+statically and cannot trace a runtime-conditional registration, so the optional
+dependency gates only behaviour, exactly like `brain_get`/`brain_search`'s optional
+claim suffix does.
+
+| Operation | Arguments | Result |
+| --- | --- | --- |
+| `brain_claim_list` | `project_key=None`, `entity_id=None`, `include_retired=False`, `after_seq=0`, `limit=50` | One page of scoped claim occurrences, ordered by insertion seq ascending |
+| `brain_claim_history` | `claim_id`, `after_seq=0`, `limit=50` | One claim's current state and its complete verdict page, ordered by verdict seq ascending |
+
+### brain_claim_list (`claim_tools.py`)
+
+```
+brain_claim_list(project_key=None, entity_id=None, include_retired=False, after_seq=0, limit=50)
+```
+
+Lists claim occurrences visible to the caller. `entity_id` is the entry's authoritative
+`brain_entities.source_uuid`, canonical lowercase UUID form; omitted, every scoped entry's
+claims are candidates. `include_retired=False` (default) shows only active occurrences;
+`True` also lists retired ones, each named explicitly (`[retired]`). `after_seq` is a
+nonnegative cursor -- only occurrences with a strictly greater `seq` -- and `limit` is
+bounded 1 to 100; the response names `after_seq=<next>` only when another page exists.
+Scope is server-owned exactly like `brain_list`: a Dream call scoped to one project
+overrides `project_key` with its own and refuses a caller-named project that disagrees
+(`project_argument_mismatch`); an unscoped ordinary caller keeps the existing unrestricted
+read semantics.
+
+### brain_claim_history (`claim_tools.py`)
+
+```
+brain_claim_history(claim_id, after_seq=0, limit=50)
+```
+
+Returns one claim's current state plus its verdict page, ordered by `seq` ascending
+(insertion order, never `emitted_at`, so a clock reversed between two verdicts still
+paginates correctly). An empty history is a valid result for an existing claim, rendered
+explicitly, never as an omission. A claim id that does not exist and one that exists but
+sits outside the caller's trusted project scope refuse identically
+(`claim_not_found`) -- this tool never confirms a claim's existence outside scope.
+
+### Freshness semantics (exact)
+
+Every read computes state against ONE UTC instant taken at the start of the response --
+never per row, never the wall clock read again mid-response:
+
+- **Latest attempt**: the verdict row with the greatest `seq` for the claim, whatever its
+  verdict (`holds`, `falsified` or `unreadable`).
+- **Last conclusive**: the greatest-`seq` row among `holds`/`falsified` only --
+  `unreadable` rows are never conclusive. Absent when no `holds`/`falsified` verdict was
+  ever recorded (state `unverified` if there is no verdict at all, `unreadable` if the
+  only verdicts so far are themselves `unreadable`).
+- **Validity ages from the conclusive verdict's `emitted_at`**, never `recorded_at`: an
+  observation measured five minutes ago and inserted a second ago is five minutes stale,
+  not one second. `valid_until = conclusive.emitted_at + validity_seconds`.
+- **Expiry is exclusive of the fresh window**: the claim renders `tient`/`FALSIFIÉ` for
+  the half-open window `[emitted_at, valid_until)`; the boundary instant itself, and every
+  instant after it, already renders `périmé` (stale) -- `now >= valid_until`, not `>`. A
+  small allowed clock skew never produces a negative rendered age (ages are floored at 0).
+- **Latest attempt and last conclusive are independent**: a newer `unreadable` attempt
+  after a fresh or stale conclusive result keeps BOTH visible -- the previous conclusive
+  kind/time is never dropped in favour of the newer failure, and vice versa.
+
+### Compact suffix forms (French, rendered)
+
+`brain_get`, `brain_search` and the session briefing recap append a bounded suffix built
+from these same three reads, one batch fetch per result set (never per-entity). No active
+claim on an entry appends nothing -- the pre-claims rendering stays byte-identical. A
+suffix lookup failure appends the visible marker `[claims : indisponible]` instead of
+silently rendering like "no active claim":
+
+| State | Example |
+| --- | --- |
+| Fresh `holds` | `[claims : 2 tiennent]` |
+| Fresh `falsified` | `[claims : 1 FALSIFIÉ le 2026-09-19 (graph_projection_lag mesuré 420, attendu 300)]` |
+| Stale former `holds`/`falsified` | `[claims : 1 périmé (tenait le 2026-09-01)]` |
+| `unreadable` (no conclusive result yet) | `[claims : 1 illisible (cible inattendue)]` |
+| Never verified | `[claims : 1 non vérifiée]` |
+| A newer failed attempt after a fresh/stale conclusive result | `[claims : 1 tient ; dernier essai illisible (timeout)]` |
+| Lookup failed | `[claims : indisponible]` |
+
+### Ranking and selection are unchanged
+
+`brain_search`'s scoring, ordering and filtering never read claim state: a `falsified`
+claim changes the rendered suffix of an entry, never its score, its position, or whether
+it is returned at all (spec 2026-09-19, section 6.6, last line). The suffix is appended
+strictly after selection and ranking are already final.
 
 ## Observable delivery workflows
 
@@ -1107,5 +1212,5 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
 | `delivery_tools.py` | observable delivery | 11 |
 | `fact_tools.py` | measured facts (registered by later server composition) | 2 |
-| `claim_tools.py` | claim verification (registered by later server composition) | 1 |
-| **Total** | | **70 always-on + 2 graph-gated = 72** |
+| `claim_tools.py` | claim verification + reads (registered by later server composition) | 3 |
+| **Total** | | **72 always-on + 2 graph-gated = 74** |

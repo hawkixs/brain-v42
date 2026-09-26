@@ -1,0 +1,550 @@
+"""Compact, French, bounded claim suffixes (spec 2026-09-19, section 6.6).
+
+Every string this module returns is rendered to a human operator and stays
+French, per the spec's own examples; the module, its tests and this docstring
+stay English like the rest of the codebase.
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import UTC, datetime
+from unittest.mock import AsyncMock
+from uuid import UUID, uuid4
+
+from brain_v42.facts.model import FactTarget, Measured, SourceIdentity, measurement_to_json
+from brain_v42.mcp.tools.claim_rendering import (
+    CLAIM_SUFFIX_UNAVAILABLE,
+    claim_suffix_map,
+    format_claim_history,
+    format_claim_list,
+    render_claim_suffix,
+)
+from brain_v42.models.claim_read import ClaimRead, ClaimState, VerdictRead, evaluate_claim
+from brain_v42.repositories.pg_claim_verdicts import VerdictRow
+from brain_v42.services.claim_read_service import ClaimReadError
+
+NOW = datetime(2026, 9, 26, tzinfo=UTC)
+
+
+def _real_measurement(value: dict[str, object]) -> dict[str, object]:
+    """The ACTUAL measurement_to_json(Measured) shape -- not a hand-written dict.
+
+    The write path (facts/verification.py) stores exactly this shape under the
+    verdict's ``measurement`` column; a hand-written fixture using a different
+    key for the observed value would silently agree with a rendering bug that
+    reads the wrong one, which is exactly what happened here (review finding
+    claim_rendering.py:105 vs. facts/model.py's measurement_to_json).
+    """
+    measured = Measured.from_value(
+        fact="lag",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        source=SourceIdentity(
+            system_identifier="123",
+            database="brain",
+            server_addr="127.0.0.1",
+            server_port=5432,
+        ),
+        value=value,
+        observation_id=uuid4(),
+        measured_at=NOW,
+        duration_ms=1,
+        ttl_seconds=30,
+    )
+    return measurement_to_json(measured)
+
+
+def _claim(
+    *,
+    fact_name: str = "lag",
+    expected: dict[str, object] | None = None,
+    expected_resolved: dict[str, object] | None = None,
+    validity_seconds: int = 60,
+) -> ClaimRead:
+    return ClaimRead(
+        id=uuid4(),
+        seq=1,
+        entry_id=uuid4(),
+        entity_type="learning",
+        project_key="project-a",
+        claim_key="a" * 64,
+        statement="Lag is bounded",
+        fact_name=fact_name,
+        definition_version=1,
+        target="production",
+        expected=expected or {"path": "/lag", "op": "lte", "value": 5},
+        expected_resolved=expected_resolved or {"path": "/lag", "op": "lte", "value": 5},
+        validity_seconds=validity_seconds,
+        provenance="declared",
+        declared_by="tester",
+        declared_at=NOW,
+        recorded_at=NOW,
+        retired_at=None,
+        replaces_id=None,
+        latest=None,
+        conclusive=None,
+    )
+
+
+def _verdict(
+    kind: str,
+    seq: int,
+    emitted: datetime,
+    *,
+    reason: str | None = None,
+    value: dict[str, object] | None = None,
+) -> VerdictRead:
+    # measurement_to_json stores the observed value under "value" (see
+    # _real_measurement above for the shape built from the actual helper).
+    return VerdictRead(
+        id=uuid4(),
+        seq=seq,
+        verdict=kind,
+        reason=reason,
+        emitted_at=emitted,
+        recorded_at=NOW,
+        observation_id=uuid4(),
+        measurement={"value": value} if value is not None else {},
+    )
+
+
+def _state(
+    claim: ClaimRead, latest: VerdictRead | None, conclusive: VerdictRead | None
+) -> ClaimState:
+    claim = replace(claim, latest=latest, conclusive=conclusive)
+    return evaluate_claim(claim, NOW)
+
+
+def test_no_states_renders_nothing() -> None:
+    assert render_claim_suffix([]) is None
+
+
+def test_a_single_fresh_hold_is_singular() -> None:
+    verdict = _verdict("holds", 1, NOW)
+    state = _state(_claim(), verdict, verdict)
+    assert render_claim_suffix([state]) == "[claims : 1 tient]"
+
+
+def test_two_holds_are_plural() -> None:
+    v1 = _verdict("holds", 1, NOW)
+    v2 = _verdict("holds", 2, NOW)
+    states = [_state(_claim(), v1, v1), _state(_claim(), v2, v2)]
+    assert render_claim_suffix(states) == "[claims : 2 tiennent]"
+
+
+def test_holds_and_a_singular_falsified_carry_the_spec_example() -> None:
+    """Spec 2026-09-19 section 6.6, first canonical example."""
+    holds = [_state(_claim(), v, v) for v in (_verdict("holds", 1, NOW), _verdict("holds", 2, NOW))]
+    falsified_verdict = _verdict(
+        "falsified", 3, datetime(2026, 9, 19, tzinfo=UTC), value={"head": "054"}
+    )
+    falsified_claim = _claim(
+        fact_name="alembic_head",
+        expected={"path": "/head", "op": "eq", "value": "053"},
+        expected_resolved={"path": "/head", "op": "eq", "value": "053"},
+        validity_seconds=31_536_000,
+    )
+    falsified = _state(falsified_claim, falsified_verdict, falsified_verdict)
+    suffix = render_claim_suffix([*holds, falsified])
+    assert suffix == (
+        "[claims : 2 tiennent · 1 FALSIFIÉ le 2026-09-19 (alembic_head mesuré 054, attendu 053)]"
+    )
+
+
+def test_falsified_detail_reads_the_real_measurement_to_json_value_key() -> None:
+    """The write path stores measurement_to_json's own shape under "value", not
+    "value_json" -- this must read what is actually stored, built from the real
+    helper rather than a hand-written dict that could re-agree with the bug."""
+    verdict = VerdictRead(
+        id=uuid4(),
+        seq=1,
+        verdict="falsified",
+        reason=None,
+        emitted_at=datetime(2026, 9, 19, tzinfo=UTC),
+        recorded_at=NOW,
+        observation_id=uuid4(),
+        measurement=_real_measurement({"lag": 12}),
+    )
+    claim = _claim(
+        fact_name="lag",
+        expected={"path": "/lag", "op": "lte", "value": 5},
+        expected_resolved={"path": "/lag", "op": "lte", "value": 5},
+        validity_seconds=31_536_000,
+    )
+    state = _state(claim, verdict, verdict)
+
+    assert render_claim_suffix([state]) == (
+        "[claims : 1 FALSIFIÉ le 2026-09-19 (lag mesuré 12, attendu 5)]"
+    )
+
+
+def test_two_falsified_omit_the_detail() -> None:
+    v1 = _verdict("falsified", 1, NOW, value={"head": "054"})
+    v2 = _verdict("falsified", 2, NOW, value={"head": "055"})
+    claim = _claim(
+        fact_name="alembic_head",
+        expected={"path": "/head", "op": "eq", "value": "053"},
+        expected_resolved={"path": "/head", "op": "eq", "value": "053"},
+    )
+    states = [_state(claim, v1, v1), _state(claim, v2, v2)]
+    assert render_claim_suffix(states) == "[claims : 2 FALSIFIÉS]"
+
+
+def test_falsified_detail_flattens_newlines_and_escapes_markdown_delimiters() -> None:
+    """A measured/expected scalar is arbitrary JSON-sourced text -- a raw newline
+    could forge an extra suffix-like line, a raw delimiter could reformat it."""
+    verdict = _verdict(
+        "falsified",
+        1,
+        datetime(2026, 9, 19, tzinfo=UTC),
+        value={"head": "05\n4*_[x]`#"},
+    )
+    claim = _claim(
+        fact_name="alembic_head",
+        expected={"path": "/head", "op": "eq", "value": "05\n3*_[y]`#"},
+        expected_resolved={"path": "/head", "op": "eq", "value": "05\n3*_[y]`#"},
+        validity_seconds=31_536_000,
+    )
+    state = _state(claim, verdict, verdict)
+
+    suffix = render_claim_suffix([state])
+
+    assert suffix is not None
+    assert "\n" not in suffix
+    assert "05 4\\*\\_\\[x\\]\\`\\#" in suffix
+    assert "05 3\\*\\_\\[y\\]\\`\\#" in suffix
+
+
+def test_falsified_detail_caps_a_long_measured_or_expected_scalar() -> None:
+    long_observed = "o" * 500
+    long_expected = "e" * 500
+    verdict = _verdict(
+        "falsified", 1, datetime(2026, 9, 19, tzinfo=UTC), value={"head": long_observed}
+    )
+    claim = _claim(
+        fact_name="alembic_head",
+        expected={"path": "/head", "op": "eq", "value": long_expected},
+        expected_resolved={"path": "/head", "op": "eq", "value": long_expected},
+        validity_seconds=31_536_000,
+    )
+    state = _state(claim, verdict, verdict)
+
+    suffix = render_claim_suffix([state])
+
+    assert suffix is not None
+    assert long_observed not in suffix
+    assert long_expected not in suffix
+    assert "…" in suffix
+
+
+def test_render_claim_suffix_caps_its_total_length_with_an_explicit_ellipsis() -> None:
+    """Five distinct statuses, each singular (so each keeps its own detail), add
+    up past the total cap even though every individual detail is already
+    bounded on its own -- the whole suffix still needs its own safety net."""
+    holds_conclusive = _verdict("holds", 1, NOW)
+    holds_latest = _verdict("unreadable", 2, NOW, reason="probe:timeout")
+    holds = _state(_claim(), holds_latest, holds_conclusive)
+
+    falsified_verdict = _verdict(
+        "falsified", 1, datetime(2026, 9, 19, tzinfo=UTC), value={"head": "o" * 100}
+    )
+    falsified_claim = _claim(
+        fact_name="alembic_head",
+        expected={"path": "/head", "op": "eq", "value": "e" * 100},
+        expected_resolved={"path": "/head", "op": "eq", "value": "e" * 100},
+        validity_seconds=31_536_000,
+    )
+    falsified = _state(falsified_claim, falsified_verdict, falsified_verdict)
+
+    stale_verdict = _verdict("holds", 1, datetime(2026, 9, 1, tzinfo=UTC))
+    stale = _state(_claim(validity_seconds=1), stale_verdict, stale_verdict)
+
+    unreadable_latest = _verdict("unreadable", 1, NOW, reason="target_mismatch")
+    unreadable = _state(_claim(), unreadable_latest, None)
+
+    unverified = _state(_claim(), None, None)
+
+    suffix = render_claim_suffix([holds, falsified, stale, unreadable, unverified])
+
+    assert suffix is not None
+    assert len(suffix) <= 300
+    assert suffix.endswith("…")
+
+
+def test_a_singular_stale_hold_carries_the_spec_example() -> None:
+    """Spec 2026-09-19 section 6.6, second canonical example."""
+    verdict = _verdict("holds", 1, datetime(2026, 9, 1, tzinfo=UTC))
+    state = _state(_claim(validity_seconds=1), verdict, verdict)
+    assert render_claim_suffix([state]) == "[claims : 1 périmé (tenait le 2026-09-01)]"
+
+
+def test_a_singular_stale_falsification_names_its_previous_kind() -> None:
+    verdict = _verdict("falsified", 1, datetime(2026, 9, 1, tzinfo=UTC), value={"head": "054"})
+    claim = _claim(
+        expected={"path": "/head", "op": "eq", "value": "053"},
+        expected_resolved={"path": "/head", "op": "eq", "value": "053"},
+        validity_seconds=1,
+    )
+    state = _state(claim, verdict, verdict)
+    assert render_claim_suffix([state]) == "[claims : 1 périmé (était FALSIFIÉ le 2026-09-01)]"
+
+
+def test_a_singular_unreadable_without_conclusive_carries_the_spec_example() -> None:
+    """Spec 2026-09-19 section 6.6, third canonical example."""
+    latest = _verdict("unreadable", 1, NOW, reason="target_mismatch")
+    state = _state(_claim(), latest, None)
+    assert render_claim_suffix([state]) == "[claims : 1 illisible (cible inattendue)]"
+
+
+def test_an_unverified_declaration_is_named_as_such() -> None:
+    state = _state(_claim(), None, None)
+    assert render_claim_suffix([state]) == "[claims : 1 non vérifiée]"
+
+
+def test_a_newer_unreadable_attempt_after_a_fresh_conclusive_stays_visible() -> None:
+    """Contract: 'if a newer attempt is unreadable after a conclusive verdict, retain both facts'."""
+    conclusive = _verdict("holds", 1, NOW)
+    latest = _verdict("unreadable", 2, NOW, reason="probe:timeout")
+    state = _state(_claim(), latest, conclusive)
+    assert (
+        render_claim_suffix([state])
+        == "[claims : 1 tient ; dernier essai illisible (sonde timeout)]"
+    )
+
+
+async def test_claim_suffix_map_makes_no_call_for_an_empty_batch() -> None:
+    service = AsyncMock()
+    result = await claim_suffix_map(service, [])
+    assert result == {}
+    service.batch_summaries.assert_not_called()
+
+
+async def test_claim_suffix_map_only_carries_entries_with_an_active_claim() -> None:
+    holding = _verdict("holds", 1, NOW)
+    key_with_claim = ("learning", uuid4())
+    key_without_claim = ("decision", uuid4())
+    service = AsyncMock()
+    service.batch_summaries.return_value = {
+        key_with_claim: (_state(_claim(), holding, holding),),
+        key_without_claim: (),
+    }
+
+    result = await claim_suffix_map(service, [key_with_claim, key_without_claim])
+
+    assert result == {key_with_claim: "[claims : 1 tient]"}
+    service.batch_summaries.assert_awaited_once_with(
+        [key_with_claim, key_without_claim], trusted_project_key=None
+    )
+
+
+async def test_claim_suffix_map_marks_every_requested_entry_on_failure_without_silence() -> None:
+    entries = [("learning", uuid4()), ("decision", uuid4())]
+    service = AsyncMock()
+    service.batch_summaries.side_effect = ClaimReadError("read_unavailable")
+
+    result = await claim_suffix_map(service, entries)
+
+    assert result == dict.fromkeys(entries, CLAIM_SUFFIX_UNAVAILABLE)
+
+
+async def test_claim_suffix_map_chunks_batches_over_the_service_limit() -> None:
+    """ClaimReadService.batch_summaries refuses more than 100 entries in one call.
+
+    A grouped caller (brain_search group_by_type=True) can combine several
+    types into a set bigger than that single-batch ceiling -- this must not
+    turn every claimable entry unavailable just because one call would have
+    exceeded the service's own limit.
+    """
+    entries = [("learning", uuid4()) for _ in range(150)]
+    holding = _verdict("holds", 1, NOW)
+    state = _state(_claim(), holding, holding)
+
+    async def _batch_summaries(
+        chunk: list[tuple[str, UUID]], *, trusted_project_key: str | None = None
+    ) -> dict[tuple[str, UUID], tuple[ClaimState, ...]]:
+        if len(chunk) > 100:
+            raise ClaimReadError("invalid_argument")
+        return dict.fromkeys(chunk, (state,))
+
+    service = AsyncMock()
+    service.batch_summaries.side_effect = _batch_summaries
+
+    result = await claim_suffix_map(service, entries)
+
+    assert len(result) == 150
+    assert all(value == "[claims : 1 tient]" for value in result.values())
+    assert service.batch_summaries.await_count == 2
+    call_sizes = sorted(len(call.args[0]) for call in service.batch_summaries.await_args_list)
+    assert call_sizes == [50, 100]
+
+
+async def test_claim_suffix_map_isolates_a_failing_batch_from_the_rest() -> None:
+    """One batch's failure marks only ITS OWN entries -- not a sibling batch's.
+
+    Chosen isolation semantics: a >100-entry request costs a small, bounded
+    number of queries (one per <=100-entry chunk), and a chunk that fails
+    degrades only the entries it was responsible for. Blanking out an entire
+    grouped result because one 100-entry slice of it failed would turn a
+    partial outage into a total one for no reason.
+    """
+    entries = [("learning", uuid4()) for _ in range(150)]
+    holding = _verdict("holds", 1, NOW)
+    state = _state(_claim(), holding, holding)
+    calls = 0
+
+    async def _batch_summaries(
+        chunk: list[tuple[str, UUID]], *, trusted_project_key: str | None = None
+    ) -> dict[tuple[str, UUID], tuple[ClaimState, ...]]:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return dict.fromkeys(chunk, (state,))
+        raise ClaimReadError("read_unavailable")
+
+    service = AsyncMock()
+    service.batch_summaries.side_effect = _batch_summaries
+
+    result = await claim_suffix_map(service, entries)
+
+    first_chunk, second_chunk = entries[:100], entries[100:]
+    assert all(result[key] == "[claims : 1 tient]" for key in first_chunk)
+    assert all(result[key] == CLAIM_SUFFIX_UNAVAILABLE for key in second_chunk)
+
+
+async def test_claim_suffix_map_threads_the_trusted_project_scope() -> None:
+    service = AsyncMock()
+    service.batch_summaries.return_value = {}
+    entries: list[tuple[str, UUID]] = [("learning", uuid4())]
+
+    await claim_suffix_map(service, entries, trusted_project_key="brain-v42")
+
+    service.batch_summaries.assert_awaited_once_with(entries, trusted_project_key="brain-v42")
+
+
+def test_format_claim_list_names_the_empty_page() -> None:
+    assert format_claim_list([], None) == "## 0 claims"
+
+
+def test_format_claim_list_renders_one_line_per_occurrence_with_its_state() -> None:
+    verdict = _verdict("holds", 1, NOW)
+    state = _state(_claim(), verdict, verdict)
+
+    rendered = format_claim_list([state], None)
+
+    assert rendered.startswith("## 1 claim\n")
+    assert str(state.claim.id) in rendered
+    assert state.claim.statement in rendered
+    assert "1 tient" in rendered
+    assert "[retired]" not in rendered
+
+
+def test_format_claim_list_names_a_retired_occurrence_and_the_next_page() -> None:
+    verdict = _verdict("holds", 1, NOW)
+    claim = replace(_claim(), retired_at=NOW)
+    state = _state(claim, verdict, verdict)
+
+    rendered = format_claim_list([state], 41)
+
+    assert "[retired]" in rendered
+    assert "after_seq=41" in rendered
+
+
+def test_format_claim_list_sanitizes_a_statement_with_newlines_and_markdown() -> None:
+    """A raw newline in the stored statement must not forge an extra list line,
+    and stored data itself stays untouched -- only the rendered text changes."""
+    verdict = _verdict("holds", 1, NOW)
+    claim = replace(_claim(), statement="Ok\n- forged bullet\n*bold* [link](evil) `code` #h")
+    state = _state(claim, verdict, verdict)
+
+    rendered = format_claim_list([state], None)
+
+    assert claim.statement == "Ok\n- forged bullet\n*bold* [link](evil) `code` #h"
+    assert "\n" not in rendered.split("\n", 1)[1]
+    assert rendered.count("\n- ") == 1
+    assert "\\*bold\\*" in rendered
+    assert "\\[link\\](evil)" in rendered
+    assert "\\`code\\`" in rendered
+    assert "\\#h" in rendered
+
+
+def test_format_claim_list_caps_a_long_statement() -> None:
+    long_statement = "s" * 500
+    verdict = _verdict("holds", 1, NOW)
+    claim = replace(_claim(), statement=long_statement)
+    state = _state(claim, verdict, verdict)
+
+    rendered = format_claim_list([state], None)
+
+    assert long_statement not in rendered
+    assert "…" in rendered
+
+
+def test_format_claim_history_renders_claim_state_and_every_verdict_in_order() -> None:
+    verdict = _verdict("holds", 1, NOW)
+    state = _state(_claim(), verdict, verdict)
+    rows = (
+        VerdictRow(
+            id=uuid4(),
+            seq=1,
+            claim_id=state.claim.id,
+            verdict="unreadable",
+            reason="probe:timeout",
+            measurement={},
+            measurement_digest=None,
+            observation_id=uuid4(),
+            issuer_identity="mcp:codex",
+            issuer_kind="robot",
+            request_fingerprint="r" * 64,
+            outcome_fingerprint="o" * 64,
+            idempotency_key="k1",
+            emitted_at=NOW,
+            recorded_at=NOW,
+        ),
+    )
+
+    rendered = format_claim_history(state, rows, None)
+
+    assert str(state.claim.id) in rendered
+    assert "1 tient" in rendered
+    assert "seq 1" in rendered
+    assert "probe:timeout" in rendered
+
+
+def test_format_claim_history_names_an_empty_history_as_a_valid_result() -> None:
+    verdict = _verdict("holds", 1, NOW)
+    state = _state(_claim(), verdict, verdict)
+
+    rendered = format_claim_history(state, (), 7)
+
+    assert "(empty)" in rendered
+    assert "after_seq=7" in rendered
+
+
+def test_format_claim_history_sanitizes_a_statement_with_newlines_and_markdown() -> None:
+    """A raw newline in the statement must not forge an extra "### History" or
+    "seq N" line; stored data itself stays untouched."""
+    verdict = _verdict("holds", 1, NOW)
+    claim = replace(_claim(), statement="Ok\n### History (0)\n*bold* [x](y) `c` #h")
+    state = _state(claim, verdict, verdict)
+
+    rendered = format_claim_history(state, (), None)
+
+    assert claim.statement == "Ok\n### History (0)\n*bold* [x](y) `c` #h"
+    assert rendered.count("### History") == 1
+    assert "\\*bold\\*" in rendered
+    assert "\\[x\\](y)" in rendered
+    assert "\\`c\\`" in rendered
+    assert "\\#h" in rendered
+
+
+def test_format_claim_history_caps_a_long_statement() -> None:
+    long_statement = "s" * 500
+    verdict = _verdict("holds", 1, NOW)
+    claim = replace(_claim(), statement=long_statement)
+    state = _state(claim, verdict, verdict)
+
+    rendered = format_claim_history(state, (), None)
+
+    assert long_statement not in rendered
+    assert "…" in rendered

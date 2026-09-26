@@ -1,7 +1,7 @@
 # Architecture — brain_v42
 
 **Updated:** 2026-07-24
-**Repository and production state:** migrations 001–057 defined, 46 PG tables modeled; MCP catalog: 70 always-on + 2 graph-gated = 72. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
+**Repository and production state:** migrations 001–057 defined, 46 PG tables modeled; MCP catalog: 72 always-on + 2 graph-gated = 74. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
 
 **Repository target: 057.** Revision 057 adds `search_log.embedding_model` (text, nullable, no default, no backfill): a prerequisite for judging the codestral embedding trial (ticket 4fac067a, operator decision 1669d429), attributed at insert time from the same live identity as `config.py`'s `embedding_model` — the configured model NAME only, never its `embedding_backend`, and never a caller-supplied value or the `SecretStr` API key beside it. `NULL` means a pre-057 row, a search that ran `search_mode == "fts_fallback"` (the embedding service was down and the search was served by FTS alone, `brain_service.py`), or a search whose `project_group` resolved to no project (answered empty before any embedding call) — no embedding model produced that row, so none is attributed. Its downgrade carries no named opt-in, unlike 056 or 049: `search_log` already expires every row after 30 days (`MetricsFlusher`), so nothing this column attributes outlives a migration window regardless. Revision 056 gives `project_contexts` its first and only lifecycle: `archived_at` and `archived_reason`, nullable with no default and no backfill, so `archived_at IS NULL` IS the definition of active and none of the 63 existing rows is rewritten. Nothing existing was reusable — `current_phase` is free prose one project already uses to say it is dormant, `project_group` is a grouping whose real value a lifecycle would destroy, and `metadata` is empty on every row. A CHECK keeps the pair honest (a reason without a date describes nothing) and a partial index on `project_key WHERE archived_at IS NOT NULL` serves the default-view filter, which asks for a handful of keys out of 63. Archiving deletes nothing: an archived project keeps every learning, decision, snippet, runbook, ADR and plan, and only leaves the default views. **Fail-closed** downgrade — dropping the columns un-archives every project at once, silently, so it refuses while any project is archived; opt-in `-x allow_archival_downgrade=yes`. Revision 055 adds the claim ledgers of lot B (spec 2026-09-19, measured facts and claims): `knowledge_fact_definitions`, the immutable history of the fact catalogue keyed by `(fact_name, definition_version)` and guarded by a digest over the seven declared fields, so a definition that changes without a version bump is detected at server start rather than believed; `knowledge_claims`, where a claim KEY is content identity and a claim OCCURRENCE is a row with its own lifecycle, uniqueness binding ACTIVE occurrences only so a retired key can be re-asserted with `replaces_id` naming its predecessor; and `knowledge_claim_verdicts`, append-only, ordered by a `seq` that is `GENERATED ALWAYS AS IDENTITY` — the first identity columns in this schema, because the server insertion order IS the read order and a `bigserial` DEFAULT could be overridden by the writer whose order it records. Immutability is enforced BY SQL: two refuse-always triggers, a narrow UPDATE gate that admits only `retired_at` moving from NULL once, an anchor gate that refuses a claim whose `entity_type`, `project_key`, `scope_kind` or `lifecycle` disagrees with its `brain_entities` row, and a chain gate that accepts only the LATEST retired occurrence as predecessor so the chain can neither fork nor skip. Grants are written too, but measured 2026-09-21 they buy nothing today: the application role is a superuser and privilege checks are bypassed — the triggers, not the grants, carry the guarantee. The deterministic view `knowledge_claim_current` projects the latest attempt and the latest CONCLUSIVE verdict with no clock, staleness being derived at read time (decision d8c016fc). **Fail-closed** downgrade naming the rows of each of the three tables it would destroy; opt-in `-x allow_claims_downgrade=yes`. Revision 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest` and `brain_delivery_attestation_list` (ticket 04bc1f4a, the ledger/policy boundary with red-rail): Brain stores the fact and validates its form — kind shape, JSON-object payload, server-computed digest, one idempotency key per issuer and ticket — and never judges its kind; the downgrade is fail-closed and names the rows it would destroy. Revision 053 adds versioned delivery workflows: immutable contracts and dependency identities, proposed PR bindings, append-only provider confirmation subjects, receipts and idempotency events. Required repository-document context is a workflow-level observation subject before any PR exists; both it and an artifact binding retain separate latest-success and latest-attempt confirmation pointers. This is a repository target only: no production rollout or live recovery attestation is implied. Revision 051 is M-C of the projects/sessions overhaul: `brain_session_checkpoints`, an append-only ledger of session JUDGMENT — progress, blocker and next step published together in one call. Append-only is enforced by a `BEFORE UPDATE OR DELETE` trigger rather than by the absence of a code path, and its FK carries `ON DELETE RESTRICT` so that guard needs no exception for cascades — with the consequence, named rather than discovered, that a session holding checkpoints becomes indelible. Idempotence comes from `UNIQUE(session_id, seq)` + `ON CONFLICT DO NOTHING` instead of a CAS, because agent retries are the norm; the same `seq` with different content is refused rather than absorbed. It writes no `last_heartbeat_at` (ADR §0bis.4, D4 amended in place). Its downgrade is fail-closed behind `-x allow_checkpoint_downgrade=yes` and names the sessions whose judgment it would destroy. Revision 050 is M-D of the projects/sessions overhaul, the head 049 reserved for it: `project_focus_history`, an append-only audit trail of every focus revision, seeded from the contexts present at upgrade time (NULL focuses included). It ships a DEFERRED CONSTRAINT TRIGGER on `project_contexts`, scoped `AFTER UPDATE OF current_focus` so the plan-index repair stays out of its reach, and **created DISABLED** — arming it is a named operator gesture after the MCP restart, because until then the live process writes no history row and the trigger would abort every `brain_session_end` that applies a focus. Its downgrade is fail-closed outside the seed behind `-x allow_focus_history_downgrade=yes`. Revision 049 carries three objects of one family (nullable ADD COLUMN + widened CHECK), grouped under criterion (c) of decision 9d22bc6a — their downgrades fail independently, each behind its own named opt-in: `dream_runs.closed_inactive_count` (the per-night series of inactivity closures, kept distinct from abandonments), `dream_runs.thinking_tokens` (the agy rail was under-declaring ~38% of its tokens), and the `freshness_source` vocabulary widened with `manual_update` and `plan_reindex` on the six decay tables — the plan upsert now declares its provenance. Revision 048 adds `brain_session_artifacts.attribution_mode`,
 which records BY WHICH KEY a row was attributed: `explicit` (a human named the UUID),
@@ -46,7 +46,7 @@ is the dev/fallback mode.
                                  v
  +-------------------------------+--+  +----------------------+  +----------------------+
  | FastMCP server (Python 3.12+)     |  | Metrics runtime      |  | Automation runtime   |
- | 70 always-on + 2 graph-gated = 72 |  | 127.0.0.1:9200       |  | 127.0.0.1:9201       |
+ | 72 always-on + 2 graph-gated = 74 |  | 127.0.0.1:9200       |  | 127.0.0.1:9201       |
  | service layer + search fan-out    |  | /metrics / cockpit   |  | health / webhook     |
  | MCP background flushers/indexer   |  | optional legacy owner|  | dedup scheduler      |
  +----------------+------------------+  +----------+-----------+  +-----------+----------+
@@ -392,6 +392,53 @@ All 6 knowledge repositories subclass `BasePgRepository` (`src/brain_v42/reposit
 - `search_vector(embedding, ...)` — semantic search via `op("<=>", return_type=sa.Float)` (ADR #8). The explicit `return_type=Float` cast is mandatory: without it, pgvector returns `bytea` and SQLAlchemy cannot compare or sort the result.
 
 Constructor takes `session_factory: async_sessionmaker[AsyncSession]` for consistent DI and testability.
+
+## Claim reads (lot B4)
+
+`brain_claim_list` and `brain_claim_history` (spec 2026-09-19, section 6.6) are bounded,
+SELECT-only reads layered strictly downward, with no dependency from
+services/repositories/models to `facts`:
+
+- `repositories/pg_claim_reads.py` reads immutable claim and verdict rows in one batched
+  SQL query per caller-supplied entry set — never one query per entry, never one per claim.
+- `models/claim_read.py`'s `evaluate_claim(claim, now)` is a pure leaf function that computes
+  validity at ONE supplied UTC instant; it never reads the clock itself and never mutates a
+  stored row.
+- `services/claim_read_service.py`'s `ClaimReadService` batches entry lookups, enforces the
+  caller's trusted project scope before revealing an occurrence or its history, and masks
+  every unexpected fault behind a closed `ClaimReadError` code
+  (`invalid_argument`, `claim_not_found`, `read_unavailable`) — never a raw exception or a DB
+  message.
+- `mcp/tools/claim_tools.py` registers the two tools unconditionally (see "MCP tool census"
+  below) and `mcp/tools/claim_rendering.py` turns a batch of `ClaimState` rows into the
+  compact suffix `brain_get`, `brain_search` and the session briefing recap append.
+
+**Freshness is computed, never stored.** `valid_until = conclusive.emitted_at +
+validity_seconds`, ageing from the conclusive verdict's `emitted_at` (never `recorded_at`,
+so an observation measured five minutes ago and inserted a second ago is five minutes
+stale). The claim is fresh on the half-open window `[emitted_at, valid_until)` and already
+`stale` at the boundary instant itself (`now >= valid_until`, not `>`); a small allowed
+clock skew never renders a negative age. The **latest attempt** (greatest-`seq` verdict,
+whatever its outcome) and the **last conclusive** result (greatest-`seq` among
+`holds`/`falsified` only) are independent: a newer `unreadable` attempt after a fresh or
+stale conclusive result keeps both visible, never overwriting the older one.
+
+**Ranking and selection are unchanged.** `brain_search`'s scoring, ordering and filtering
+never read claim state; a `falsified` claim changes the rendered suffix of an entry, never
+its score, its position, or whether it is returned at all. The suffix is appended strictly
+after selection and ranking are already final, from one batch fetch per result set.
+
+**MCP tool census constraint.** `register_claim_tools`'s `read_service` parameter is
+optional (existing standalone tests exercising only `brain_claim_verify` omit it), but both
+read tools are always REGISTERED regardless — only their behaviour is gated, raising
+`read_unavailable` without one. `tests/unit/test_documentation_contract.py` walks
+`mcp/server.py`'s composition root statically to census every registered tool and cannot
+trace a runtime-conditional registration; a `if read_service is None: return` guard placed
+before a tool's `@mcp.tool`/`@claims.tool` definition made the census fail with "dynamic
+control flow can bypass registration calls" (ticket-less regression from `3f8ed541`, fixed
+in the same lot). The same pattern already used by `brain_get`/`brain_search`'s optional
+`claim_read_svc` — register unconditionally, gate only the runtime behaviour — is the one
+constraint every future optional-dependency tool in this repository must follow.
 
 ## Background workers
 
@@ -910,7 +957,7 @@ brain_v42/
 │   └── mcp/
 │       ├── server.py             # entry point (stdio+http), build_services(), app_lifecycle()
 │       ├── http_security.py      # HostOriginGuard + BearerTokenGuard ASGI middleware
-│       └── tools/                # 70 always-on + 2 graph-gated = 72
+│       └── tools/                # 72 always-on + 2 graph-gated = 74
 ├── alembic/versions/             # migrations 001 .. 057 defined in the repository
 ├── scripts/                      # legacy import + projection inventory/recovery CLIs
 ├── tests/                        # unit/ + integration/
@@ -933,7 +980,7 @@ brain_v42/
 | Embeddings | sentence-transformers / PyTorch in-process | Local GPU service :8003 (Qodo-Embed-1-1.5B, 1536d) |
 | Reranker | none | Cross-encoder :8003 unified endpoint, BatchingRerankerClient (20 ms window) |
 | MCP transport | stdio | HTTP loopback 127.0.0.1:8765 + HostOriginGuard + bearer obligatoire sous systemd (optionnel en HTTP dev direct) |
-| MCP tools | 21 | 70 always-on + 2 graph-gated = 72 |
+| MCP tools | 21 | 72 always-on + 2 graph-gated = 74 |
 | Tables | 6 | 31 (knowledge, audit, plans, dream, webhook, coordination, sessions, graph ledger) |
 | Maintenance | manual | Dream mode nightly + DecayFlusher + ConsolidationJob |
 | Observability | none | /metrics :9200 + /api/cockpit + process_metrics |
