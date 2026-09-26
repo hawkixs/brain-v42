@@ -242,7 +242,7 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
     else:
         document.update(dict.fromkeys(_WRITE_FIELDS))
     if is_review(entry):
-        unknown = _review_records(document, report, state, run_id, notes) or unknown
+        unknown = _review_records(document, report, state, entry, notes) or unknown
     if status is None:
         status = registry.effective_status(entry, lineage_status)
     if report is not None and report.get("status") != status:
@@ -269,11 +269,12 @@ def _review_records(
     document: dict[str, object],
     report: Mapping[str, object] | None,
     state: Path,
-    run_id: str,
+    entry: Entry,
     notes: list[str],
 ) -> bool:
     """A review's head, verdict, text and check from its records (§3.8.6); ``True`` when one
     cannot be read. Its ``cleanup`` has no record in the state: the report's, for display."""
+    run_id = entry.run_id
     unknown = False
     result = None
     # The report's copies are never shown as the review's: only its result names them.
@@ -284,8 +285,8 @@ def _review_records(
         except Unknown as exc:
             notes.append(f"{exc}: the review result cannot be read")
             unknown = True
-    elif document.get("status") in ("approved", "changes"):
-        # A verdict was recorded, so its result was written before: it is lost.
+    elif entry.status in ("approved", "changes"):
+        # The registry recorded a verdict, so its result was written before: it is lost.
         notes.append("the review result is missing although a verdict was recorded")
         unknown = True
     check = result.check if result is not None else None

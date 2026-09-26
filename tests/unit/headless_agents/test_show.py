@@ -737,6 +737,21 @@ def test_a_failed_review_has_no_result_and_that_is_not_unknown(home: Home) -> No
     assert not shown.unknown and shown.report["text"] is None
 
 
+@pytest.mark.parametrize(
+    ("stored", "reported", "lost"), [("changes", "failed", True), ("failed", "changes", False)]
+)
+def test_a_lost_review_result_is_judged_from_the_registry_not_the_report(
+    home: Home, stored: str, reported: str, lost: bool
+) -> None:
+    """Codex review of PR B, round 3: a run.json claiming a status decided whether a missing
+    result was lost -- the registry's status is the one authority."""
+    run_dir = _review(home, verdict=None, status=stored)
+    document = json.loads((run_dir / "run.json").read_text())
+    document["status"] = reported
+    (run_dir / "run.json").write_text(json.dumps(document))
+    assert home.rebuild(REVIEW).unknown is lost
+
+
 GOLDEN_REVIEW = """\
 20260925T150000-9f8e7d6c  panel  exit 6  changes requested  cleanup failed: fatal: busy
 task    Review this change.
