@@ -158,6 +158,20 @@ ClusterGuard) regardless of whether qodo is running.
 `embedding-llama` and answer with an upstream error while it is stopped — this is
 expected, not a regression, for any caller that has not migrated off `/embed` yet.
 
+**The `qodo` Compose profile change alone does not stop a container already running
+from the old default stack.** `docker compose up` only skips starting
+`embedding-llama` on a fresh bring-up; it does not touch a container that a previous
+`docker compose up` (before this change) already started and left running. Stop it
+explicitly on any host that ran the old default stack:
+
+```bash
+docker stop brain_v42_embedding_llama
+```
+
+Verify with `docker ps -a`: the container should show as `Exited`, not `Up`, once
+stopped (it stays present, just not running, unless also `docker rm`d). This was done
+by the operator on the production host on 2026-09-26, alongside this change.
+
 To bring qodo back deliberately (e.g. to serve a caller that still needs `/embed`):
 
 ```bash
