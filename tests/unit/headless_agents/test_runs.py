@@ -338,14 +338,63 @@ def test_create_writes_the_continuation_records(tmp_path: Path) -> None:
     )
     entry = registry.resolve(run_id)
     assert entry.continues == owner and entry.providers == ("opencode", "codex")
+    assert entry.findings_from is None
 
 
-@pytest.mark.parametrize("key", ["continues", "providers"])
-def test_an_entry_missing_a_continuation_record_is_unknown(tmp_path: Path, key: str) -> None:
+def test_create_writes_the_review_a_fix_takes_its_findings_from(tmp_path: Path) -> None:
+    """Lot 4: findings_from is a write run's record, like continues (§3.6, §3.10)."""
+    registry = Registry(tmp_path / "state", runs_root=tmp_path / "runs")
+    run_id, review = "20260926T100000-cccccccc", "20260926T095000-eeeeeeee"
+    registry.create(
+        run_id,
+        run_dir=None,
+        target={"kind": "workflow", "name": "build", "shape": "implement"},
+        repository=None,
+        lineage=run_id,
+        findings_from=review,
+    )
+    assert registry.resolve(run_id).findings_from == review
+
+
+def test_findings_outside_any_lineage_are_unknown(tmp_path: Path) -> None:
+    """A fix is a write: an entry with findings_from and no lineage is not ha's writing."""
     registry, run_id, path, document = _entry_document(tmp_path)
-    del document[key]
+    document["findings_from"] = "20260926T090000-dddddddd"
     path.write_text(json.dumps(document))
-    with pytest.raises(Unknown, match=key):
+    with pytest.raises(Unknown, match="findings_from names a review, but the entry has no lineage"):
+        registry.resolve(run_id)
+
+
+@pytest.mark.parametrize(
+    "keys",
+    [
+        ("continues",),
+        ("findings_from",),
+        ("providers",),
+        ("continues", "providers", "findings_from"),
+    ],
+)
+def test_an_entry_written_before_its_records_existed_resolves_without_them(
+    tmp_path: Path, keys: tuple[str, ...]
+) -> None:
+    """Plan P8 (operator, codex round 3): an entry older than a record lacks it. Its absence
+    says what that ``ha`` could not do -- continue, fix, or record a write's providers -- so
+    it reads as none; a present but malformed value stays unknown."""
+    registry, run_id, path, document = _entry_document(tmp_path)
+    for key in keys:
+        del document[key]
+    path.write_text(json.dumps(document))
+    entry = registry.resolve(run_id)
+    assert (entry.continues, entry.findings_from, entry.providers) == (None, None, ())
+
+
+def test_a_write_entry_missing_its_providers_is_unknown(tmp_path: Path) -> None:
+    """A write's authors are never invented: without providers, a lineage's entry is unknown."""
+    registry, run_id, path, document = _entry_document(tmp_path)
+    document["lineage"] = run_id
+    del document["providers"]
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match="providers"):
         registry.resolve(run_id)
 
 
@@ -354,6 +403,8 @@ def test_an_entry_missing_a_continuation_record_is_unknown(tmp_path: Path, key: 
     [
         ("continues", "nope"),
         ("continues", 7),
+        ("findings_from", "nope"),
+        ("findings_from", 7),
         ("providers", None),
         ("providers", "codex"),
         ("providers", [""]),

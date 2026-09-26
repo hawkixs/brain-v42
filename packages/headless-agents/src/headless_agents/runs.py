@@ -30,8 +30,6 @@ FINAL_STATUSES: Final = frozenset(
 #: or a final status. ``incomplete`` is derived from the lifecycle lock, never stored.
 STORED_STATUSES: Final = FINAL_STATUSES | {"running"}
 MINT_ATTEMPTS: Final = 100
-#: A key absent from an entry: never a value ``ha`` writes, so it reads as malformed.
-_MISSING: Final = object()
 
 
 class RegistryError(ValueError):
@@ -52,6 +50,8 @@ class Entry:
     #: The providers of every link of the run's role, as it ran: a write run's
     #: ``implement_providers`` in its report (§3.10).
     providers: tuple[str, ...]
+    #: The review ``--findings`` named, for a fix; ``None`` otherwise (§3.6, §3.10).
+    findings_from: str | None = None
 
 
 def _optional_path(value: object) -> Path | None:
@@ -98,13 +98,14 @@ class Registry:
         lineage: str | None,
         continues: str | None = None,
         providers: Sequence[str] = (),
+        findings_from: str | None = None,
     ) -> Entry:
         """Create the entry of ``run_id`` once; ``FileExistsError`` when it is taken.
 
         The engine calls this while holding the id's lifecycle lock, so no
         registered run is ever seen with a free lock before it starts (§3.8.3).
-        ``continues`` and ``providers`` are the continuation records of §3.10:
-        their one authority is this entry, written once, never the report.
+        ``continues``, ``providers`` and ``findings_from`` are a write run's records
+        (§3.10): their one authority is this entry, written once, never the report.
         """
         path = run_dir if run_dir is not None else self.runs_root / run_id
         document: dict[str, object] = {
@@ -118,6 +119,7 @@ class Registry:
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "continues": continues,
             "providers": list(providers),
+            "findings_from": findings_from,
         }
         create_once(self._path(run_id), document)
         return self._entry(document, self._path(run_id))
@@ -171,7 +173,10 @@ class Registry:
         created_at = document.get("created_at")
         if not isinstance(created_at, str) or not created_at:
             raise Unknown(f"{path}: created_at is malformed")
-        continues = document.get("continues", _MISSING)
+        # An entry older than a record lacks it: an ``ha`` that could not continue, fix
+        # or record providers wrote none, so absence reads as none (plan P8). A present
+        # value that is not one ``ha`` writes stays unknown.
+        continues = document.get("continues")
         if continues is not None and (
             not isinstance(continues, str) or not RUN_ID_PATTERN.fullmatch(continues)
         ):
@@ -179,7 +184,16 @@ class Registry:
         if continues is not None and document.get("lineage") is None:
             # A continuation joins a lineage by definition (§3.6).
             raise Unknown(f"{path}: continues names a run, but the entry has no lineage")
-        providers = document.get("providers")
+        findings_from = document.get("findings_from")
+        if findings_from is not None and (
+            not isinstance(findings_from, str) or not RUN_ID_PATTERN.fullmatch(findings_from)
+        ):
+            raise Unknown(f"{path}: findings_from is malformed")
+        if findings_from is not None and document.get("lineage") is None:
+            # A fix is a write, and a write belongs to a lineage (§3.6).
+            raise Unknown(f"{path}: findings_from names a review, but the entry has no lineage")
+        providers = document.get("providers", [] if document.get("lineage") is None else None)
+        # A write's authors are never invented: a lineage's entry must name them.
         if not isinstance(providers, list) or not all(isinstance(p, str) and p for p in providers):
             raise Unknown(f"{path}: providers is malformed")
         return Entry(
@@ -192,6 +206,7 @@ class Registry:
             cleaned_at=_optional_str(document.get("cleaned_at")),
             continues=continues,
             providers=tuple(providers),
+            findings_from=findings_from,
         )
 
     def run_ids(self) -> list[str]:

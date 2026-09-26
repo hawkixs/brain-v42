@@ -734,3 +734,123 @@ def test_ha_clean_of_a_finished_review_removes_its_directory(world: World) -> No
     outcome = world.review()
     assert _clean(world, outcome.run_id) == 0
     assert not outcome.run_dir.exists()
+
+
+# ── implement --findings (§3.6) ─────────────────────────────────────────────
+
+
+def _fix(root: Path) -> None:
+    (root / "app.py").write_text("print('v1')\nFLAG = 1\nprint(FLAG)\n")
+
+
+def test_the_session_loop_implement_review_fix_review(world: World) -> None:
+    """§4: implement, review --run (CHANGES), implement --continue --findings committing a
+    fix on the same branch, review --run (APPROVE)."""
+    built = world.implement()
+    world.agents["claude"].answer = CHANGES
+    first = world.review("check", review_run=built.run_id)
+    assert first.exit_code == 6
+    world.agents["codex"].edit = _fix
+    fixed = world.implement("Keep it short.", continue_run=built.run_id, findings_run=first.run_id)
+    subjects = _git(world.repo, "log", "--format=%s", f"main..ha/{built.run_id}").splitlines()
+    assert subjects[0] == f"chore(ha): {fixed.run_id} fix via codex/codex-served"
+    prompt = world.agents["codex"].specs[-1].prompt
+    assert f"<findings>\n{CHANGES}\n</findings>" in prompt
+    assert "<task>\nKeep it short.\n</task>" in prompt
+    report = _report(fixed)
+    assert report["findings_from"] == first.run_id
+    assert world.registry().resolve(fixed.run_id).findings_from == first.run_id
+    world.agents["claude"].answer = APPROVE
+    second = world.review("check", review_run=built.run_id)
+    assert second.exit_code == 0
+    assert len(_report(second)["vendor_check"]["commits"]) == 2  # type: ignore[index]
+
+
+def test_findings_take_no_task_and_never_read_stdin(world: World) -> None:
+    built = world.implement()
+    world.agents["claude"].answer = CHANGES
+    review = world.review("check", review_run=built.run_id)
+    world.agents["codex"].edit = _fix
+    world.implement(None, continue_run=built.run_id, findings_run=review.run_id, stdin_is_tty=True)  # type: ignore[arg-type]
+    assert "<task>\nAddress the findings below.\n</task>" in world.agents["codex"].specs[-1].prompt
+
+
+def test_findings_still_read_after_ha_clean_of_the_review(world: World) -> None:
+    """§3.6: read from the review result in the state, never from its report."""
+    built = world.implement()
+    world.agents["claude"].answer = CHANGES
+    review = world.review("check", review_run=built.run_id)
+    assert _clean(world, review.run_id) == 0
+    world.agents["codex"].edit = _fix
+    fixed = world.implement(continue_run=built.run_id, findings_run=review.run_id)
+    assert fixed.exit_code == 0
+
+
+def test_findings_of_a_review_without_a_verdict_are_refused(world: World) -> None:
+    built = world.implement()
+    world.agents["claude"].answer = "no verdict here"
+    review = world.review("check", review_run=built.run_id)
+    assert review.exit_code == 1
+    with pytest.raises(UsageError, match=f"--findings {review.run_id}: .*review result"):
+        world.implement(continue_run=built.run_id, findings_run=review.run_id)
+
+
+def test_stale_findings_are_refused_and_the_lineage_left_as_it_was(world: World) -> None:
+    """§3.6: findings about another revision would steer the implementer against code it
+    cannot see -- the lineage's tip moved since the review pinned its head."""
+    built = world.implement()
+    world.agents["claude"].answer = CHANGES
+    review = world.review("check", review_run=built.run_id)
+    world.agents["codex"].edit = lambda root: (root / "app.py").write_text("moved\n")
+    world.implement("Move on.", continue_run=built.run_id)
+    before = lineage.load(world.state, built.run_id)
+    runs = sorted(world.registry().run_ids())
+    with pytest.raises(UsageError, match="another revision"):
+        world.implement(continue_run=built.run_id, findings_run=review.run_id)
+    assert lineage.load(world.state, built.run_id) == before
+    assert sorted(world.registry().run_ids()) == runs
+
+
+def test_a_new_run_takes_findings_about_its_base(world: World) -> None:
+    head = world.commit_by_hand()
+    world.agents["claude"].answer = CHANGES
+    review = world.review()
+    assert reviews.load_result(world.state, review.run_id).head == head
+    world.agents["codex"].edit = _fix
+    fixed = world.implement(findings_run=review.run_id)
+    assert _git(world.repo, "log", "-1", "--format=%s", f"ha/{fixed.run_id}").startswith(
+        f"chore(ha): {fixed.run_id} fix via"
+    )
+
+
+def test_a_new_run_from_another_base_refuses_the_findings_and_leaves_no_lineage(
+    world: World,
+) -> None:
+    world.commit_by_hand()
+    world.agents["claude"].answer = CHANGES
+    review = world.review()
+    owners = lineage.owners(world.state)
+    runs = sorted(world.registry().run_ids())
+    with pytest.raises(UsageError, match="another revision"):
+        world.implement(findings_run=review.run_id, base="main~1")
+    assert lineage.owners(world.state) == owners
+    assert sorted(world.registry().run_ids()) == runs
+    assert _git(world.repo, "worktree", "list").count("\n") == 1
+
+
+@pytest.mark.parametrize(
+    ("target", "rule"),
+    [
+        ("check", "--findings needs an implement workflow"),
+        ("codex", "--findings needs an implement workflow"),
+    ],
+)
+def test_findings_belong_to_an_implement_workflow(world: World, target: str, rule: str) -> None:
+    with pytest.raises(UsageError, match=rule):
+        plan(world.request(target, "x", findings_run="20260926T000000-aaaaaaaa"))
+
+
+def test_findings_must_name_a_review_run(world: World) -> None:
+    built = world.implement()
+    with pytest.raises(UsageError, match=f"--findings {built.run_id}: not a review run"):
+        plan(world.request("build", "x", findings_run=built.run_id))

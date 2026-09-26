@@ -106,6 +106,8 @@ class _Write:
     lineage: LineageState | None = None
     #: A continuation's lineage as admission read it: restored if preparation refuses.
     before: LineageState | None = None
+    #: The head a review pinned, for a run taking its findings (``--findings``, §3.6).
+    findings_head: str | None = None
 
     def __post_init__(self) -> None:
         self.owner = self.owner or self.run_id
@@ -395,8 +397,9 @@ class _PreparationFailed(Exception):
     pass
 
 
-class _ContinuationRefused(Exception):  # noqa: N818 - a refusal, not a crash
-    """A continuation's worktree cannot be continued: nothing ran (§3.8.3 step 3)."""
+class _PreparationRefused(Exception):  # noqa: N818 - a refusal, not a crash
+    """Preparation refuses the write: nothing ran (§3.8.3 step 3) -- a continuation's
+    worktree that cannot be continued, or findings about another revision (§3.6)."""
 
 
 def _prepare_continued(write: _Write) -> str:
@@ -408,27 +411,48 @@ def _prepare_continued(write: _Write) -> str:
     worktree, branch = write.worktree, write.branch
     code, out, err = write.git(worktree, ["status", "--porcelain"])
     if code != 0:
-        raise _ContinuationRefused(f"git status failed in {worktree}: {err.strip()}")
+        raise _PreparationRefused(f"git status failed in {worktree}: {err.strip()}")
     if out.strip():
-        raise _ContinuationRefused(
+        raise _PreparationRefused(
             f"the worktree {worktree} has uncommitted changes: commit or discard them first"
         )
     code, out, _ = write.git(worktree, ["symbolic-ref", "-q", "HEAD"])
     if code != 0 or out.strip() != f"refs/heads/{branch}":
-        raise _ContinuationRefused(
+        raise _PreparationRefused(
             f"the worktree {worktree} is not on its branch {branch}: check it out again first"
         )
-    base = write.current.base
-    if _tip(write) is None or base is None:
-        raise _ContinuationRefused(f"the branch {branch} or the lineage's base is missing")
+    base, tip = write.current.base, _tip(write)
+    if tip is None or base is None:
+        raise _PreparationRefused(f"the branch {branch} or the lineage's base is missing")
+    _check_findings(write, tip)
     write.git_dir = resolve_git_dir(worktree)
     return base
 
 
+def _check_findings(write: _Write, start: str) -> None:
+    """Findings are about the commit this run starts from, or they are refused (§3.6).
+
+    Findings about another revision would steer the implementer against code it
+    cannot see; a session that wants them anyway passes them in the task.
+    """
+    head = write.findings_head
+    if head is not None and head != start:
+        raise _PreparationRefused(
+            f"--findings: the review read {head[:12]}, this run starts from {start[:12]}: "
+            "findings about another revision are refused; pass them in the task instead"
+        )
+
+
 def _withdraw(write: _Write) -> None:
-    """A refused continuation leaves its lineage as admission found it: nothing ran."""
-    assert write.before is not None, "admission read the lineage"
-    write.save(write.before)
+    """A refused preparation leaves the lineages as admission found them: nothing ran.
+
+    A continuation's lineage is restored; a new lineage, whose state its intent
+    created and nothing else touched yet (no worktree, no branch), is removed.
+    """
+    if write.before is not None:
+        write.save(write.before)
+    else:
+        lineages.lineage_path(write.state, write.owner).unlink(missing_ok=True)
     if write.unconfined:
         # This run never ran: it names no unconfined writer. Left listed, it would make
         # every later commit without provenance its providers' (Opus review of lot 3).
@@ -458,6 +482,7 @@ def _prepare(write: _Write) -> str:
     if code != 0:
         raise _PreparationFailed(f"cannot resolve --base {base_ref!r}: {err.strip()}")
     base = out.strip()
+    _check_findings(write, base)
     code, _, err = write.git(
         repository, ["worktree", "add", "-q", "-b", write.branch, str(write.worktree), base]
     )
@@ -696,12 +721,14 @@ def run_write_step(
     unconfined: bool = False,
     joins: str | None = None,
     named: str | None = None,
+    findings_head: str | None = None,
 ) -> WriteOutcome:
     """§3.8.3 for one write run; :class:`WriteRefused` when admission refuses.
 
     ``joins`` names the lineage a continuation joins (its owner) and ``named``
     the member ``--continue`` named (§3.6); without them the write starts a
-    lineage of its own.
+    lineage of its own. ``findings_head`` is the head a review pinned, for a
+    run taking its findings: preparation refuses unless the run starts there.
     """
     with ExitStack() as locks:
         write = _Write(
@@ -716,6 +743,7 @@ def run_write_step(
             locks=locks,
             owner=joins or run_id,
             named=named,
+            findings_head=findings_head,
         )
         with ExitStack() as registry:
             try:
@@ -727,7 +755,7 @@ def run_write_step(
         # The registry lock is released: the lineage exists with its intent.
         try:
             base = _prepare(write)
-        except _ContinuationRefused as exc:
+        except _PreparationRefused as exc:
             _withdraw(write)
             raise WriteRefused(f"{exc}; nothing ran") from None
         except _PreparationFailed as exc:
@@ -840,7 +868,8 @@ def run_write_step(
             return _outcome(NO_CHANGE_EXIT_CODE, "no_change", None, write, head=head, final=final)
 
         model = final.model_reported or final.model or "unknown"
-        verb = "residue" if failed_step else "implement"
+        # §3.6: "fix" instead of "implement" for a run taking a review's findings.
+        verb = "residue" if failed_step else ("fix" if findings_head is not None else "implement")
         message = f"chore(ha): {run_id} {verb} via {final.provider}/{model}"
         reason, commits, head = _commit(write, message, tip, step_dir)
         _crash_after("commit")
