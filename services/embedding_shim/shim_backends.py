@@ -177,8 +177,11 @@ class OnnxRerankBackend:
         self._tokenizer = None
         self._cpu_session = None
         # rerank() runs in a worker thread: two concurrent first calls can
-        # cross the lazy-load without this lock.
-        self._lock = threading.Lock()
+        # cross the lazy-load, the CPU fallback session creation or a breaker
+        # transition without this lock. Reentrant because _load()'s CUDA
+        # construction-failure path calls _record_cuda_failure() while already
+        # holding it.
+        self._lock = threading.RLock()
         self._cuda_cooldown_seconds = cuda_cooldown_seconds
         self._clock = clock or time.monotonic
         # None: breaker closed. Set to the clock reading of the failure that
@@ -244,10 +247,11 @@ class OnnxRerankBackend:
         return self._session, self._tokenizer
 
     def _load_cpu_fallback(self) -> Any:
-        if self._cpu_session is None:
-            self._cpu_session = self._create_session(["CPUExecutionProvider"])
-            _LOGGER.info("rerank_cpu_fallback_session_loaded")
-        return self._cpu_session
+        with self._lock:
+            if self._cpu_session is None:
+                self._cpu_session = self._create_session(["CPUExecutionProvider"])
+                _LOGGER.info("rerank_cpu_fallback_session_loaded")
+            return self._cpu_session
 
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         if not candidates:
@@ -289,22 +293,24 @@ class OnnxRerankBackend:
         return (self._clock() - self._cuda_open_since) < self._cuda_cooldown_seconds
 
     def _record_cuda_failure(self) -> None:
-        if self._cuda_cooldown_seconds <= 0:
-            return
-        if self._cuda_open_since is None:
-            # Structured, no payload: a cooldown value only, never query or
-            # candidate text.
-            _LOGGER.warning(
-                "rerank_cuda_breaker_open cooldown_seconds=%s", self._cuda_cooldown_seconds
-            )
-        # Refresh the window even if already open (a post-cooldown retry that
-        # fails again): the breaker stays open, this is not a new transition,
-        # so no second "open" log.
-        self._cuda_open_since = self._clock()
+        with self._lock:
+            if self._cuda_cooldown_seconds <= 0:
+                return
+            if self._cuda_open_since is None:
+                # Structured, no payload: a cooldown value only, never query or
+                # candidate text.
+                _LOGGER.warning(
+                    "rerank_cuda_breaker_open cooldown_seconds=%s", self._cuda_cooldown_seconds
+                )
+            # Refresh the window even if already open (a post-cooldown retry
+            # that fails again): the breaker stays open, this is not a new
+            # transition, so no second "open" log.
+            self._cuda_open_since = self._clock()
 
     def _close_cuda_breaker(self) -> None:
-        _LOGGER.info("rerank_cuda_breaker_closed")
-        self._cuda_open_since = None
+        with self._lock:
+            _LOGGER.info("rerank_cuda_breaker_closed")
+            self._cuda_open_since = None
 
     def _score(
         self, session: Any, tokenizer: Any, query: str, candidates: list[str]

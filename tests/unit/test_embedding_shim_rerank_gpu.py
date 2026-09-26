@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -272,6 +274,38 @@ def test_load_cpu_only_construction_failure_still_raises(monkeypatch):
 
     with pytest.raises(RuntimeError, match="model file is corrupt"):
         backend._load()
+
+
+def test_load_cpu_fallback_concurrent_first_calls_create_exactly_one_session():
+    """MINOR review finding (PR #231): CPU fallback session creation was
+    unlocked. Two threads racing _load_cpu_fallback() on its first call (both
+    reading self._cpu_session as None before either assigns it) would each
+    construct their own session.
+
+    The (monkeypatched) session construction sleeps just long enough to widen
+    the check-then-act window well past the gap between the two threads'
+    near-simultaneous start() calls, so the race — if unprotected — reproduces
+    deterministically rather than depending on scheduler luck.
+    """
+    backend = OnnxRerankBackend("m.onnx", "t.json")
+    created: list[object] = []
+
+    def slow_create_session(providers: list[str]) -> object:
+        time.sleep(0.05)
+        session = RecordingSession(providers)
+        created.append(session)
+        return session
+
+    backend._create_session = slow_create_session  # type: ignore[method-assign]
+
+    threads = [threading.Thread(target=backend._load_cpu_fallback) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert len(created) == 1
+    assert backend._cpu_session is created[0]
 
 
 # --- length sorting + order restoration --------------------------------------
