@@ -132,9 +132,7 @@ class _FencedWriter:
         require_no_prior_cursor: bool = False,
     ) -> ProjectionActivation:
         if require_no_prior_cursor:
-            self.trace.append(
-                ("writer.activate_generation", leadership, require_no_prior_cursor)
-            )
+            self.trace.append(("writer.activate_generation", leadership, require_no_prior_cursor))
         else:
             self.trace.append(("writer.activate_generation", leadership))
         if self.activation_results:
