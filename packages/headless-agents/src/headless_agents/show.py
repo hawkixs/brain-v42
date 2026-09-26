@@ -135,7 +135,9 @@ def read_run_dir(entry: Entry) -> tuple[dict[str, object] | None, bool, str | No
 
     Ticket 1a76fe55: a report with no ``"kind"`` predates the discriminator and is
     tolerated as a run; a ``"kind"`` other than ``"run"`` is not a run.json at all,
-    and disowns the directory the same as a report naming another run.
+    and disowns the directory the same as a report naming another run. An ABSENT key
+    is the only thing tolerated besides ``"run"`` -- an explicit ``"kind": null`` is a
+    ``"kind"`` other than ``"run"``, not a missing one, and is rejected the same way.
     """
     path = entry.run_dir / RUN_JSON
     if entry.cleaned_at is not None:
@@ -149,7 +151,7 @@ def read_run_dir(entry: Entry) -> tuple[dict[str, object] | None, bool, str | No
     if (
         not isinstance(document, dict)
         or document.get("run_id") != entry.run_id
-        or document.get("kind") not in (None, KIND)
+        or ("kind" in document and document["kind"] != KIND)
     ):
         return None, False, f"{path} names another run: its directory is ignored"
     report = {key: document.get(key) for key in RUN_KEYS}
@@ -332,7 +334,7 @@ def from_dir(run_dir: Path) -> Shown:
     if (
         not isinstance(document, dict)
         or not (isinstance(run_id, str) and RUN_ID_PATTERN.fullmatch(run_id))
-        or document.get("kind") not in (None, KIND)
+        or ("kind" in document and document["kind"] != KIND)
     ):
         raise NotShown(f"{path} is not a run.json of ha")
     report = {key: document.get(key) for key in RUN_KEYS}
