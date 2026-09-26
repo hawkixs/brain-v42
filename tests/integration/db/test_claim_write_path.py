@@ -35,7 +35,11 @@ from brain_v42.facts.probe import SourceSession
 from brain_v42.facts.registry import FactRegistry
 from brain_v42.facts.verification import ClaimVerificationService
 from brain_v42.mcp.tools import claim_writes
-from brain_v42.mcp.tools.claim_writes import persist_claims, resolve_claim_inputs
+from brain_v42.mcp.tools.claim_writes import (
+    claims_confirmation,
+    persist_claims,
+    resolve_claim_inputs,
+)
 from brain_v42.mcp.tools.crud_tools import register_crud_tools
 from brain_v42.models.adr import ADRCreate
 from brain_v42.models.learning import LearningCreate, LearningUpdate
@@ -836,6 +840,99 @@ async def test_measured_holds_write_stores_measured_provenance_and_one_verdict_r
     assert len(rows) == 1
     assert rows[0]["verdict"] == "holds"
     assert rows[0]["idempotency_key"] == f"write:{outcome.claim_id}"
+
+
+async def test_write_verdict_retry_replays_inside_the_entry_transaction(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A repeated append must preserve the transaction and its single durable verdict."""
+    registry = _measurable_registry()
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-write-replay-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    data = LearningCreate(
+        topic="Write verdict retry",
+        insight="The same entry transaction can retry its first verdict append.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(registry, [_measurable_claim("The lag holds.")])
+    verification = ClaimVerificationService(registry, session_factory)
+
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+        claim_id = outcomes[0].claim_id
+        original_id = await session.scalar(
+            sa.select(_knowledge_claim_verdicts.c.id).where(
+                _knowledge_claim_verdicts.c.claim_id == claim_id
+            )
+        )
+        retry_measurement = await verification.measure_for_write(resolved[0])
+        replay = await verification.record_write_verdict(
+            session,
+            claim_id=claim_id,
+            resolved=resolved[0],
+            write_measurement=retry_measurement,
+            issuer_identity="mcp:integration-test",
+            issuer_kind="robot",
+        )
+        assert replay is not None
+        assert replay.id == original_id
+
+    assert len(await _verdict_rows_for_claim(session_factory, claim_id)) == 1
+
+
+async def test_unattributed_measured_write_commits_declared_without_a_probe_or_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An unknown caller's entry persists while no server observation is attempted."""
+    registry = _measurable_registry()
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-unattributed-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    data = LearningCreate(
+        topic="Unattributed measured write",
+        insight="The claim stays declared when the caller cannot own a verdict.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(registry, [_measurable_claim("The lag holds.")])
+    verification = ClaimVerificationService(registry, session_factory)
+    probe_calls = 0
+
+    async def count_measure(*args: object, **kwargs: object) -> object:
+        nonlocal probe_calls
+        probe_calls += 1
+        raise AssertionError("an unattributed caller must not measure")
+
+    monkeypatch.setattr(registry, "measure", count_measure)
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="unknown",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+
+    claim_id = outcomes[0].claim_id
+    assert probe_calls == 0
+    assert await _claim_provenance(session_factory, claim_id) == "declared"
+    assert await _verdict_rows_for_claim(session_factory, claim_id) == []
+    assert "declared (unattributed caller)" in claims_confirmation(outcomes)
 
 
 async def test_measured_falsified_write_is_not_refused(
