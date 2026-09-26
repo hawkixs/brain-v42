@@ -1,0 +1,259 @@
+"""Tests of the GPU-reranking behaviour of services/embedding_shim/shim_backends.py.
+
+Focused module, next to test_embedding_shim.py: provider selection, length
+sorting + micro-batching, and the CUDA-failure-falls-back-to-CPU path. All
+doubles are FAKE session/tokenizer objects — no real onnxruntime or GPU here.
+"""
+
+from __future__ import annotations
+
+import logging
+import sys
+from pathlib import Path
+
+import pytest
+
+SHIM_DIR = Path(__file__).resolve().parents[2] / "services" / "embedding_shim"
+sys.path.insert(0, str(SHIM_DIR))
+
+from shim_backends import OnnxRerankBackend, _resolve_providers  # noqa: E402
+
+
+class _FakeInput:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def _fake_inputs() -> list[_FakeInput]:
+    return [_FakeInput("input_ids"), _FakeInput("attention_mask"), _FakeInput("token_type_ids")]
+
+
+class _Encoding:
+    def __init__(self, ids: list[int], attention_mask: list[int], type_ids: list[int]) -> None:
+        self.ids = ids
+        self.attention_mask = attention_mask
+        self.type_ids = type_ids
+
+
+class TaggedFakeTokenizer:
+    """encode_batch pads (like a real tokenizer) to the call's own longest
+    candidate, keeps the real per-row length recoverable via attention_mask,
+    and stamps a caller-chosen identity tag in ids[0] so a test can check
+    which output row belongs to which candidate regardless of any internal
+    re-ordering."""
+
+    def __init__(self, spec: dict[str, tuple[int, int]]) -> None:
+        # candidate text -> (real_token_length, identity_tag)
+        self._spec = spec
+        self.batches: list[list[tuple[str, str]]] = []
+
+    def encode_batch(self, pairs: list[tuple[str, str]]) -> list[_Encoding]:
+        self.batches.append(list(pairs))
+        real_lengths = [self._spec[c][0] for _, c in pairs]
+        padded = max(real_lengths, default=0)
+        encodings = []
+        for _, c in pairs:
+            real_length, tag = self._spec[c]
+            ids = [tag] + [0] * (padded - 1) if padded else [tag]
+            attention_mask = [1] * real_length + [0] * (padded - real_length)
+            type_ids = [0] * len(ids)
+            encodings.append(_Encoding(ids, attention_mask, type_ids))
+        return encodings
+
+
+class TaggedFakeSession:
+    """run() returns the ids[0] tag of every row (as a float) — the test
+    checks the returned scores against the tags it assigned to candidates."""
+
+    def __init__(self, providers: list[str] | None = None) -> None:
+        self.batch_sizes: list[int] = []
+        self._providers = providers or ["CPUExecutionProvider"]
+
+    def get_inputs(self) -> list[_FakeInput]:
+        return _fake_inputs()
+
+    def get_providers(self) -> list[str]:
+        return self._providers
+
+    def run(self, _outputs, feeds):
+        n = feeds["input_ids"].shape[0]
+        self.batch_sizes.append(n)
+        return [feeds["input_ids"][:, 0].astype(float).reshape(-1, 1)]
+
+
+def _tagged_backend(spec: dict[str, tuple[int, int]], batch_size: int = 32) -> OnnxRerankBackend:
+    backend = OnnxRerankBackend("unused.onnx", "unused.json", batch_size=batch_size)
+    backend._session = TaggedFakeSession()
+    backend._tokenizer = TaggedFakeTokenizer(spec)
+    return backend
+
+
+# --- construction validation -------------------------------------------------
+
+
+def test_construction_rejects_invalid_device():
+    with pytest.raises(ValueError):
+        OnnxRerankBackend("m.onnx", "t.json", device="tpu")
+
+
+@pytest.mark.parametrize("batch_size", [0, -1, -5])
+def test_construction_rejects_non_positive_batch_size(batch_size):
+    with pytest.raises(ValueError):
+        OnnxRerankBackend("m.onnx", "t.json", batch_size=batch_size)
+
+
+# --- provider selection -------------------------------------------------------
+
+
+def test_resolve_providers_auto_prefers_cuda_when_available():
+    assert _resolve_providers("auto", ["CUDAExecutionProvider", "CPUExecutionProvider"]) == [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+
+
+def test_resolve_providers_auto_falls_back_to_cpu_when_unavailable():
+    assert _resolve_providers("auto", ["CPUExecutionProvider"]) == ["CPUExecutionProvider"]
+
+
+def test_resolve_providers_cpu_forces_cpu_even_when_cuda_available():
+    assert _resolve_providers("cpu", ["CUDAExecutionProvider", "CPUExecutionProvider"]) == [
+        "CPUExecutionProvider"
+    ]
+
+
+def test_resolve_providers_cuda_requested_and_available():
+    assert _resolve_providers("cuda", ["CUDAExecutionProvider", "CPUExecutionProvider"]) == [
+        "CUDAExecutionProvider",
+        "CPUExecutionProvider",
+    ]
+
+
+def test_resolve_providers_cuda_requested_but_unavailable_falls_back_to_cpu(caplog):
+    with caplog.at_level(logging.WARNING, logger="shim_backends"):
+        result = _resolve_providers("cuda", ["CPUExecutionProvider"])
+    assert result == ["CPUExecutionProvider"]
+    assert "rerank_cuda_requested_unavailable" in caplog.text
+
+
+# --- length sorting + order restoration --------------------------------------
+
+
+def test_rerank_restores_original_order_after_length_sort():
+    candidates = ["ccc", "a", "bb"]
+    spec = {"ccc": (3, 300), "a": (1, 100), "bb": (2, 200)}
+    backend = _tagged_backend(spec, batch_size=10)
+
+    scores = backend.rerank("q", candidates)
+
+    assert scores == [300.0, 100.0, 200.0]
+
+
+def test_rerank_restores_original_order_with_tied_lengths():
+    candidates = ["xx", "yy", "zz"]
+    spec = {"xx": (2, 10), "yy": (2, 20), "zz": (2, 30)}
+    backend = _tagged_backend(spec, batch_size=10)
+
+    scores = backend.rerank("q", candidates)
+
+    assert scores == [10.0, 20.0, 30.0]
+
+
+def test_rerank_single_candidate():
+    spec = {"only": (4, 42)}
+    backend = _tagged_backend(spec, batch_size=10)
+
+    assert backend.rerank("q", ["only"]) == [42.0]
+
+
+# --- micro-batch boundaries ---------------------------------------------------
+
+
+def _sequential_spec(candidates: list[str]) -> dict[str, tuple[int, int]]:
+    return {c: (len(c), (i + 1) * 100) for i, c in enumerate(candidates)}
+
+
+def test_rerank_microbatch_exact_batch_size_is_a_single_call():
+    candidates = ["a", "bb"]
+    backend = _tagged_backend(_sequential_spec(candidates), batch_size=2)
+
+    scores = backend.rerank("q", candidates)
+
+    assert backend._session.batch_sizes == [2]
+    assert scores == [100.0, 200.0]
+
+
+def test_rerank_microbatch_one_over_batch_size_splits_in_two_calls():
+    candidates = ["a", "bb", "ccc"]
+    backend = _tagged_backend(_sequential_spec(candidates), batch_size=2)
+
+    scores = backend.rerank("q", candidates)
+
+    assert backend._session.batch_sizes == [2, 1]
+    assert scores == [100.0, 200.0, 300.0]
+
+
+# --- CUDA failure falls back to CPU -------------------------------------------
+
+
+class FailingCudaSession:
+    def __init__(self) -> None:
+        self.run_calls = 0
+
+    def get_inputs(self) -> list[_FakeInput]:
+        return _fake_inputs()
+
+    def get_providers(self) -> list[str]:
+        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+    def run(self, _outputs, feeds):
+        self.run_calls += 1
+        raise RuntimeError("CUDA allocation failed")
+
+
+class FixedScoreCpuSession:
+    def get_inputs(self) -> list[_FakeInput]:
+        return _fake_inputs()
+
+    def get_providers(self) -> list[str]:
+        return ["CPUExecutionProvider"]
+
+    def run(self, _outputs, feeds):
+        import numpy as np
+
+        n = feeds["input_ids"].shape[0]
+        return [np.array([[42.0] for _ in range(n)])]
+
+
+def test_rerank_cuda_failure_falls_back_to_cpu_and_returns_cpu_scores(caplog):
+    pytest.importorskip("numpy")
+    backend = OnnxRerankBackend("m.onnx", "t.json")
+    backend._session = FailingCudaSession()
+    backend._tokenizer = TaggedFakeTokenizer({"c1": (2, 1), "c2": (3, 2)})
+    backend._cpu_session = FixedScoreCpuSession()
+
+    with caplog.at_level(logging.WARNING, logger="shim_backends"):
+        scores = backend.rerank("q", ["c1", "c2"])
+
+    assert scores == [42.0, 42.0]
+    assert backend._session.run_calls == 1
+    assert "rerank_cuda_run_failed_retrying_cpu" in caplog.text
+
+
+def test_rerank_cpu_session_failure_is_not_swallowed():
+    class FailingCpuSession:
+        def get_inputs(self) -> list[_FakeInput]:
+            return _fake_inputs()
+
+        def get_providers(self) -> list[str]:
+            return ["CPUExecutionProvider"]
+
+        def run(self, _outputs, feeds):
+            raise RuntimeError("boom")
+
+    backend = OnnxRerankBackend("m.onnx", "t.json")
+    backend._session = FailingCpuSession()
+    backend._tokenizer = TaggedFakeTokenizer({"c1": (2, 1)})
+
+    with pytest.raises(RuntimeError, match="boom"):
+        backend.rerank("q", ["c1"])

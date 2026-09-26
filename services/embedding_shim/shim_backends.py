@@ -14,11 +14,16 @@ only — absent from the dev venv, present in the container.
 
 from __future__ import annotations
 
+import logging
 import math
 import threading
 from typing import Any
 
 import httpx
+
+_LOGGER = logging.getLogger(__name__)
+
+_RERANK_DEVICES = frozenset({"auto", "cuda", "cpu"})
 
 # ~5-7k tokens: stays under the llama server's n_ctx=8192. The historical
 # client cap is 15000 chars (ADR #7); 20000 leaves room for direct calls
@@ -95,20 +100,64 @@ class LlamaEmbedBackend:
             self._client = None
 
 
+def _resolve_providers(device: str, available: list[str]) -> list[str]:
+    """Ordered onnxruntime provider list for the requested device.
+
+    ``cpu`` forces CPUExecutionProvider. ``cuda`` prefers CUDAExecutionProvider
+    when the runtime reports it available, else logs a warning and falls back
+    to CPU rather than failing session creation. ``auto`` (default) picks CUDA
+    when available, CPU otherwise. When CUDA is requested/picked, CPU stays
+    listed second so onnxruntime itself can fall back for ops with no CUDA
+    kernel.
+    """
+    if device == "cpu":
+        return ["CPUExecutionProvider"]
+    if "CUDAExecutionProvider" not in available:
+        if device == "cuda":
+            _LOGGER.warning("rerank_cuda_requested_unavailable available_providers=%s", available)
+        return ["CPUExecutionProvider"]
+    return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
+
 class OnnxRerankBackend:
-    """Cross-encoder ms-marco-MiniLM-L-6-v2 via onnxruntime (CPU).
+    """Cross-encoder ms-marco-MiniLM-L-6-v2 via onnxruntime (GPU with CPU fallback).
 
     Returns the RAW logits (no sigmoid) — exact parity with the legacy
     PyTorch service's CrossEncoder.predict (scores observed in production:
     -1.37 relevant / -11.34 not relevant).
+
+    Measured 2026-09-26 (85/128 real knowledge-base candidates, same model +
+    tokenizer): a single CPU batch takes ~3.4 s, dominated by
+    ``tokenizer.enable_padding()`` padding the whole batch to its longest
+    candidate (near-always 512 tokens) plus CPU inference on a loaded host.
+    Sorting candidates by token length and scoring them in micro-batches of
+    ``batch_size`` caps padding within each micro-batch instead of across the
+    whole request: ~1.9 s on CPU, ~0.3-0.4 s on CUDA (a single CUDA batch of
+    128x512 OOMs the shared 6 GB GPU — a 1.6 GB attention buffer next to the
+    llama.cpp embedder's 2.5 GB). CPU vs CUDA scores: max |diff| 0.00012,
+    identical top-10.
     """
 
-    def __init__(self, model_path: str, tokenizer_path: str, max_length: int = 512) -> None:
+    def __init__(
+        self,
+        model_path: str,
+        tokenizer_path: str,
+        max_length: int = 512,
+        device: str = "auto",
+        batch_size: int = 32,
+    ) -> None:
+        if device not in _RERANK_DEVICES:
+            raise ValueError(f"RERANK_DEVICE must be one of {sorted(_RERANK_DEVICES)}: {device!r}")
+        if batch_size < 1:
+            raise ValueError(f"RERANK_BATCH_SIZE must be >= 1: {batch_size!r}")
         self._model_path = model_path
         self._tokenizer_path = tokenizer_path
         self._max_length = max_length
+        self._device = device
+        self._batch_size = batch_size
         self._session = None
         self._tokenizer = None
+        self._cpu_session = None
         # rerank() runs in a worker thread: two concurrent first calls can
         # cross the lazy-load without this lock.
         self._lock = threading.Lock()
@@ -119,28 +168,78 @@ class OnnxRerankBackend:
                 import onnxruntime  # container only (lazy)
                 from tokenizers import Tokenizer  # container only (lazy)
 
-                self._session = onnxruntime.InferenceSession(
-                    self._model_path, providers=["CPUExecutionProvider"]
+                # Needed by onnxruntime-gpu before a CUDA session on some
+                # platforms (loads the bundled CUDA/cuDNN wheel DLLs); absent
+                # from CPU-only onnxruntime builds.
+                if hasattr(onnxruntime, "preload_dlls"):
+                    onnxruntime.preload_dlls()
+
+                providers = _resolve_providers(self._device, onnxruntime.get_available_providers())
+                self._session = onnxruntime.InferenceSession(self._model_path, providers=providers)
+                # Structured, no text payloads (query/candidates never logged here).
+                _LOGGER.info(
+                    "rerank_provider_loaded requested_device=%s provider=%s",
+                    self._device,
+                    self._session.get_providers()[0],
                 )
+
                 tokenizer = Tokenizer.from_file(self._tokenizer_path)
                 tokenizer.enable_truncation(max_length=self._max_length)
                 tokenizer.enable_padding()
                 self._tokenizer = tokenizer
         return self._session, self._tokenizer
 
+    def _load_cpu_fallback(self) -> Any:
+        if self._cpu_session is None:
+            import onnxruntime  # container only (lazy)
+
+            self._cpu_session = onnxruntime.InferenceSession(
+                self._model_path, providers=["CPUExecutionProvider"]
+            )
+            _LOGGER.info("rerank_cpu_fallback_session_loaded")
+        return self._cpu_session
+
     def rerank(self, query: str, candidates: list[str]) -> list[float]:
         if not candidates:
             return []
         session, tokenizer = self._load()
+        try:
+            return self._score(session, tokenizer, query, candidates)
+        except Exception as exc:
+            if session.get_providers()[0] != "CUDAExecutionProvider":
+                raise
+            _LOGGER.warning("rerank_cuda_run_failed_retrying_cpu error_type=%s", type(exc).__name__)
+            cpu_session = self._load_cpu_fallback()
+            return self._score(cpu_session, tokenizer, query, candidates)
+
+    def _score(
+        self, session: Any, tokenizer: Any, query: str, candidates: list[str]
+    ) -> list[float]:
         import numpy as np  # container only (lazy)
 
-        encodings = tokenizer.encode_batch([(query, c) for c in candidates])
-        feeds = {
-            "input_ids": np.array([e.ids for e in encodings], dtype=np.int64),
-            "attention_mask": np.array([e.attention_mask for e in encodings], dtype=np.int64),
-            "token_type_ids": np.array([e.type_ids for e in encodings], dtype=np.int64),
-        }
-        wanted = {i.name for i in session.get_inputs()}
-        feeds = {k: v for k, v in feeds.items() if k in wanted}
-        logits = session.run(None, feeds)[0]
-        return [float(x) for x in logits.reshape(-1)]
+        pairs = [(query, c) for c in candidates]
+        # One padded pass to read the real (truncated) token length per
+        # candidate off the attention mask. Cheap: it runs no inference, only
+        # tokenization. Sorting on it below keeps each scoring micro-batch's
+        # own padding close to its true max instead of the whole request's —
+        # the dominant cost on CPU (see class docstring).
+        length_encodings = tokenizer.encode_batch(pairs)
+        lengths = [sum(e.attention_mask) for e in length_encodings]
+        order = sorted(range(len(candidates)), key=lambda i: lengths[i])
+
+        scores: list[float] = [0.0] * len(candidates)
+        for start in range(0, len(order), self._batch_size):
+            batch_idx = order[start : start + self._batch_size]
+            batch_pairs = [pairs[i] for i in batch_idx]
+            encodings = tokenizer.encode_batch(batch_pairs)
+            feeds = {
+                "input_ids": np.array([e.ids for e in encodings], dtype=np.int64),
+                "attention_mask": np.array([e.attention_mask for e in encodings], dtype=np.int64),
+                "token_type_ids": np.array([e.type_ids for e in encodings], dtype=np.int64),
+            }
+            wanted = {i.name for i in session.get_inputs()}
+            feeds = {k: v for k, v in feeds.items() if k in wanted}
+            logits = session.run(None, feeds)[0]
+            for idx, value in zip(batch_idx, logits.reshape(-1), strict=True):
+                scores[idx] = float(value)
+        return scores
