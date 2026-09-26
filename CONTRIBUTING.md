@@ -61,7 +61,7 @@ docker compose up -d
 # The ONLY variable the integration suite reads. `POSTGRES_URL` is deliberately
 # ignored here, so a shell configured for a live database cannot redirect the
 # suite. Point it at an isolated test database — never at `brain`.
-export BRAIN_V42_TEST_DB_URL="postgresql+asyncpg://brain:REPLACE_WITH_PASSWORD@localhost:5433/brain_test"
+export BRAIN_V42_TEST_DB_URL="postgresql+asyncpg://brain:change-me-locally@localhost:5433/brain_test"
 pytest tests/integration -v
 ```
 

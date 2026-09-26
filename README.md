@@ -114,13 +114,13 @@ this does not affect you.
 git clone https://github.com/hawkixs/brain-v42 && cd brain-v42
 uv sync --extra dev --python 3.12      # creates .venv; see "Development" for why not pip
 source .venv/bin/activate
-cp .env.example .env                   # fill in real values before step 2
+cp .env.example .env                   # set POSTGRES_PASSWORD, and the same value in POSTGRES_URL
 
 # 1. Secrets docker-compose.yml expects on the host, and the network the
 #    embedding services attach to (compose refuses to start without either).
 docker network create brain-net
 install -d -m 0700 .secrets
-read -rsp "Neo4j password (same value as NEO4J_PASSWORD in .env): " PW
+read -rsp "Neo4j password (written to .secrets/neo4j-auth, the file compose mounts): " PW
 (umask 0022; printf 'neo4j/%s\n' "$PW" > .secrets/neo4j-auth); unset PW
 (umask 0177; openssl rand -hex 32 > .secrets/embedding-shim-bearer)
 
@@ -132,7 +132,7 @@ read -rsp "Neo4j password (same value as NEO4J_PASSWORD in .env): " PW
 docker compose up -d
 
 # 3. Migrations
-export POSTGRES_URL="postgresql+asyncpg://brain:REPLACE_WITH_PASSWORD@localhost:5433/brain"
+export POSTGRES_URL="$(grep -E '^POSTGRES_URL=' .env | cut -d= -f2-)"   # alembic reads the environment, not .env
 BRAIN_ALEMBIC_ALLOW_PROD=1 alembic upgrade head
 
 # 4. Run the MCP server (stdio)
@@ -255,7 +255,7 @@ The full lifecycle contract (capture rules, focus semantics, briefing) lives in
 
 ```bash
 # Required
-POSTGRES_URL=postgresql+asyncpg://brain:REPLACE_WITH_PASSWORD@localhost:5433/brain
+POSTGRES_URL=postgresql+asyncpg://brain:change-me-locally@localhost:5433/brain
 
 # Optional — semantic search and reranking
 EMBEDDING_SERVICE_URL=http://localhost:8003
