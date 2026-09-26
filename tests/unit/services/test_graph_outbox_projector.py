@@ -52,6 +52,7 @@ class _FencedOutboxRepo:
         self.delivered: list[_ProjectionClaim] = []
         self.failed: list[tuple[_ProjectionClaim, str, int]] = []
         self.acquired = asyncio.Event()
+        self.advance_result: _ProjectionLeadership | None = None
 
     async def acquire_leadership(
         self,
@@ -106,6 +107,15 @@ class _FencedOutboxRepo:
     async def release_leadership(self, leadership: _ProjectionLeadership) -> bool:
         self.trace.append(("repo.release_leadership", leadership))
         return True
+
+    async def advance_confirmed_generation(
+        self,
+        leadership: _ProjectionLeadership,
+        *,
+        lease_seconds: int,
+    ) -> _ProjectionLeadership | None:
+        self.trace.append(("repo.advance_confirmed_generation", leadership, lease_seconds))
+        return self.advance_result
 
 
 class _FencedWriter:
@@ -316,10 +326,110 @@ async def test_fenced_batch_blocks_when_neo_generation_is_ahead() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fenced_batch_blocks_same_generation_owner_conflict() -> None:
+async def test_fenced_batch_advances_generation_once_after_confirmed_unarmed_activation() -> None:
+    """Replays ticket 416266ec: after a watchdog/SIGTERM restart, PostgreSQL held
+    generation 70 unarmed with owner NULL while Neo4j's fence still held
+    generation 70 for the dead predecessor. This process only ever receives a
+    ``leadership`` at all because PostgreSQL's own row-level CAS already proved
+    the predecessor's PG lease had expired (acquire_leadership's WHERE clause) --
+    so once Neo4j's rejection response independently confirms it is durably at
+    exactly this generation (not ahead, not behind), PostgreSQL is safe to award
+    exactly one bounded advance and the projector recovers without recovery 035.
+    """
     subject = _subject()
     subject.writer.activation_results = [
         ProjectionActivation(False, subject.leadership.generation),
+    ]
+    advanced = _ProjectionLeadership(
+        subject.projector._worker_id,
+        subject.leadership.generation + 1,
+        subject.leadership.lease_until,
+        armed=False,
+    )
+    subject.repo.advance_result = advanced
+
+    await subject.projector._project_batch()
+
+    assert subject.trace == [
+        ("repo.acquire_leadership", subject.projector._worker_id, 11),
+        ("writer.activate_generation", subject.leadership),
+        ("repo.advance_confirmed_generation", subject.leadership, 11),
+        ("writer.activate_generation", advanced),
+        ("repo.arm_leadership", advanced),
+        ("repo.claim_pending", advanced, 2, 11, 3),
+        ("repo.renew_claim", subject.claims[0], 11),
+        ("writer.apply", subject.renewed[0]),
+        ("repo.mark_delivered", subject.renewed[0]),
+    ]
+    assert subject.repo.delivered == [subject.renewed[0]]
+    assert subject.repo.failed == []
+
+
+@pytest.mark.asyncio
+async def test_fenced_batch_refuses_bounded_advance_for_a_live_conflicting_owner() -> None:
+    """Safety counterpart: PostgreSQL already recorded THIS generation as armed
+    (it previously activated and confirmed it), yet Neo4j still rejects at the
+    same generation. Unlike the fresh, never-confirmed case above, PostgreSQL
+    offers no proof here that the conflicting Neo4j owner is dead -- refuse, do
+    not advance, and keep requiring recovery."""
+    subject = _subject(event_count=0)
+    armed_leadership = _ProjectionLeadership(
+        subject.projector._worker_id,
+        subject.leadership.generation,
+        subject.leadership.lease_until,
+        armed=True,
+    )
+    subject.repo.leadership = armed_leadership
+    subject.writer.activation_results = [
+        ProjectionActivation(False, armed_leadership.generation),
+    ]
+
+    await subject.projector._project_batch()
+
+    assert subject.trace == [
+        ("repo.acquire_leadership", subject.projector._worker_id, 11),
+        ("writer.activate_generation", armed_leadership),
+        ("repo.release_leadership", armed_leadership),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fenced_batch_falls_back_to_standard_rejection_when_advance_is_denied() -> None:
+    """PostgreSQL can still refuse the bounded advance (its own lease already
+    moved on) -- the projector must fall back to the ordinary fence_rejected path
+    rather than assume it succeeded."""
+    subject = _subject()
+    subject.writer.activation_results = [
+        ProjectionActivation(False, subject.leadership.generation),
+    ]
+    subject.repo.advance_result = None
+
+    await subject.projector._project_batch()
+
+    assert subject.trace == [
+        ("repo.acquire_leadership", subject.projector._worker_id, 11),
+        ("writer.activate_generation", subject.leadership),
+        ("repo.advance_confirmed_generation", subject.leadership, 11),
+        ("repo.release_leadership", subject.leadership),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_fenced_batch_gives_up_after_one_failed_bounded_advance() -> None:
+    """The advance is bounded to exactly one attempt per batch: if Neo4j still
+    rejects the advanced generation, the projector releases and waits for the
+    next tick instead of retrying in a loop."""
+    subject = _subject()
+    advanced = _ProjectionLeadership(
+        subject.projector._worker_id,
+        subject.leadership.generation + 1,
+        subject.leadership.lease_until,
+        armed=False,
+    )
+    subject.repo.advance_result = advanced
+    subject.writer.activation_results = [
+        ProjectionActivation(False, subject.leadership.generation),
+        ProjectionActivation(False, advanced.generation + 9),
     ]
 
     await subject.projector._project_batch()
@@ -327,7 +437,9 @@ async def test_fenced_batch_blocks_same_generation_owner_conflict() -> None:
     assert subject.trace == [
         ("repo.acquire_leadership", subject.projector._worker_id, 11),
         ("writer.activate_generation", subject.leadership),
-        ("repo.release_leadership", subject.leadership),
+        ("repo.advance_confirmed_generation", subject.leadership, 11),
+        ("writer.activate_generation", advanced),
+        ("repo.release_leadership", advanced),
     ]
 
 

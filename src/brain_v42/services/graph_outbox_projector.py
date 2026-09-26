@@ -81,6 +81,30 @@ class GraphOutboxProjector:
         try:
             activation = await self._graph.activate_generation(leadership)
             if not activation.accepted:
+                # 'crash between Neo4j activation and PG arm' hole (decision
+                # 3d3d72e4 / ticket 416266ec): a predecessor activated this exact
+                # generation in Neo4j and then died before confirming the arm in
+                # PostgreSQL. We only ever hold `leadership` because PostgreSQL's
+                # own row-level CAS already proved the predecessor's PG lease had
+                # expired, so once Neo4j's own rejection response independently
+                # confirms it is durably at exactly this generation (neither
+                # ahead nor behind), a single bounded advance is no riskier than
+                # the ordinary armed handover. If PostgreSQL was already armed
+                # here, a conflicting live owner cannot be ruled out this way:
+                # refuse and fall through to recovery, unchanged.
+                if (
+                    not leadership.armed
+                    and activation.current_generation == leadership.generation
+                ):
+                    advanced = await self._repo.advance_confirmed_generation(
+                        leadership,
+                        lease_seconds=self._lease_seconds,
+                    )
+                    if advanced is not None:
+                        leadership = advanced
+                        self._leadership = leadership
+                        activation = await self._graph.activate_generation(leadership)
+            if not activation.accepted:
                 release_after_batch = True
                 reason = (
                     "neo4j_fence_ahead"
