@@ -6,12 +6,14 @@
 
 set -u  # note: NOT -e — we want the script to keep going past a single reindex failure so the rotation step still runs.
 
-REPO_DIR="/home/hawixs/hawkixs_infra/git_repo/brain_v42"
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LOG_DIR="/tmp"
 LOG_FILE="${LOG_DIR}/gitnexus-nightly.log"
-# Literal, not "${GITNEXUS_BIN:-...}": test_container_image_pins.py refuses an
-# executable path that an env var can redirect, so the pinned-binary audit stays
-# decidable by reading this file alone.
+# Literal, not "${GITNEXUS_BIN:-...}" and not "$HOME/...": test_container_image_pins.py
+# (test_repository_consumers_match_catalog) refuses an executable path built from ANY
+# variable expansion, so the pinned-binary audit stays decidable by reading this file
+# alone. This hardcodes the operator's home on purpose -- see the showcase-scrub report
+# (brain ticket 8dc6f0d2) for why it is listed as an exception rather than computed.
 GITNEXUS_BIN="/home/hawixs/.npm-global/bin/gitnexus"
 # The registry entry name `gitnexus list` uses for this repo (see project_context).
 GITNEXUS_ENTRY_NAME="brain-v42"

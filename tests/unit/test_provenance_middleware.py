@@ -81,7 +81,7 @@ async def test_actor_and_session_are_posted_from_headers() -> None:
         with patch(
             "brain_v42.mcp.provenance_middleware.get_http_headers",
             return_value={
-                "x-brain-agent": "/home/hawixs/git/red-lab",
+                "x-brain-agent": "/home/user/git/red-lab",
                 "x-brain-session": "3d7a88d7-791b-45da-b8b9-75727e3c9eec",
             },
         ):
@@ -139,7 +139,7 @@ async def test_reporter_receives_actor_then_session_in_that_order() -> None:
     with patch(
         "brain_v42.mcp.provenance_middleware.get_http_headers",
         return_value={
-            "x-brain-agent": "/home/hawixs/git/red-lab",
+            "x-brain-agent": "/home/user/git/red-lab",
             "x-brain-session": SESSION_UUID,
         },
     ):

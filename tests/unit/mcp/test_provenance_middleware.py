@@ -84,7 +84,7 @@ class TestProvenanceMiddleware:
         """
         monkeypatch.setattr(
             "brain_v42.mcp.provenance_middleware.get_http_headers",
-            lambda **_kw: {"x-brain-agent": "/home/hawixs/hawkixs_infra/git_repo/red-lab"},
+            lambda **_kw: {"x-brain-agent": "/home/user/hawkixs_infra/git_repo/red-lab"},
         )
         seen: list[str] = []
 

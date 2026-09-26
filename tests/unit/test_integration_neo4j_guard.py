@@ -120,7 +120,7 @@ def test_destructive_recovery_requires_explicit_opt_in_and_loopback(
 
     monkeypatch.setenv("BRAIN_V42_TEST_NEO4J_DESTRUCTIVE_RECOVERY", "yes")
     with pytest.raises(ValueError, match="loopback"):
-        guard("bolt://192.168.1.12:7687")
+        guard("bolt://192.0.2.12:7687")
 
     guard("bolt://localhost:7687")
 

@@ -1935,9 +1935,10 @@ def test_documented_embedding_topology_matches_restored_local_default() -> None:
 
     for document in _docs_including_claude(README, ARCHITECTURE):
         assert contract in document
-        assert "192.168.1.11:8003" not in document
+        assert "192.0.2.11:8003" not in document
     assert endpoint in SCHEMA
     assert "192.168.1.11:8003" not in SCHEMA
+    assert "192.0.2.11:8003" not in SCHEMA
     # deploy/dev-pc/README.md carried its own consistency checks here ("SUPERSEDED FOR
     # ACTIVE BRAIN TRAFFIC" and two negative wordings). deploy/dev-pc/ moved to the private
     # brain-v42-internal repository (ticket 8dc6f0d2); those checks moved with it, to

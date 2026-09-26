@@ -97,7 +97,7 @@ def test_a_secret_value_in_the_file_is_refused(tmp_path: Path, key: str) -> None
         '[p]\nurl = "http://127.0.0.1/mcp"\ntools = ["a"]\n',  # no bearer_env
         '[p]\nbearer_env = "T"\ntools = ["a"]\n',  # no url
         '[p]\nurl = "http://127.0.0.1/mcp"\nbearer_env = "T"\ntools = ["a"]\nbogus = 1\n',
-        '[p]\nurl = "http://192.168.1.2/mcp"\nbearer_env = "T"\ntools = ["a"]\n',  # not loopback
+        '[p]\nurl = "http://192.0.2.2/mcp"\nbearer_env = "T"\ntools = ["a"]\n',  # not loopback
         '[p]\nurl = "http://127.0.0.1/mcp"\nbearer_env = "T"\ntools = ["a"]\nallowed_networks = "all"\n',
         "p = 1\n",  # not a table
         "[p\n",  # not TOML

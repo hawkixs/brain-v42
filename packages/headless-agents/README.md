@@ -9,7 +9,7 @@ workspace member of the [brain-v42](https://github.com/hawkixs/brain-v42)
 repository and installable on its own:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.4.0#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.0#subdirectory=packages/headless-agents"
 ```
 
 Versions are tagged `headless-agents-vX.Y.Z` on this repository; `CHANGELOG.md` lists the
@@ -362,7 +362,7 @@ repository planted there is discovered from inside it.
 Hand a task to any provider from a terminal or a session. Install it as a tool:
 
 ```sh
-uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.4.0#subdirectory=packages/headless-agents"
+uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.0#subdirectory=packages/headless-agents"
 ```
 
 ```text
@@ -384,8 +384,7 @@ ha --version
 `TARGET` is a provider (`ha run codex "..."`), a role declared in
 `~/.config/ha/roles.toml` -- an executor: one provider, or a `chain` of them, with optional
 instructions -- or a workflow declared in `~/.config/ha/workflows.toml`. `-p` and `--chain`
-were removed in 0.5.0: the provider is the target, and a chain is declared in a role. This
-section is being rewritten with the 0.5.0 lots.
+were removed in 0.5.0: the provider is the target, and a chain is declared in a role.
 
 - **A workflow** names the roles that fill the slots of a shape coded in the package.
   `shape = "implement"` takes one role with `write = true` in its `implement` slot: `ha run
@@ -454,7 +453,7 @@ section is being rewritten with the 0.5.0 lots.
   [brain-read]
   url = "http://127.0.0.1:8765/mcp"
   bearer_env = "BRAIN_TOKEN"   # the variable NAME; the value never sits in this file
-  tools = ["brain_search", "brain_get", "brain_recall", "brain_ticket_get"]
+  tools = ["brain_search", "brain_get", "brain_fact_get", "brain_ticket_get"]
   headers = { "X-Brain-Tool-Profile" = "native", "X-Brain-Agent" = "ha" }
   # allowed_networks = ["10.8.0.0/24"]   # default loopback only; "any" = no restriction
   ```
@@ -469,24 +468,46 @@ section is being rewritten with the 0.5.0 lots.
 
 - **`--base-url` / `--key-env`**: required with the `openai-compat` target, refused otherwise;
   `--key-env` takes the variable name, never the key.
-- **Runs**: every run writes `~/.cache/ha/runs/<run_id>/` (logs, `result.json` schema 1,
-  and for `--write` the worktree, `change.patch`, `commit.log`). `ha runs` lists them
-  newest first; `ha clean RUN_ID` removes one (its worktree through git, its branch kept).
-- **Exit codes**: `0` answer; `1` failure; `2` invalid usage (nothing ran); `3` provider
-  unavailable, chain exhausted; `4` timeout with no tool call started; `5` `--write`
-  finished with no change; `124` timeout.
+- **Runs**: every run writes `~/.cache/ha/runs/<run_id>/`, with `run.json` at its top --
+  the run's own report, schema 1, `"kind": "run"` right after `"schema"`, written at the
+  start (`status: "running"`) and replaced atomically after every step; `null` means "not
+  measured" or "not applicable", never zero. Its keys: `run_id`, `target`, `status`,
+  `exit_code`, `verdict`, `text`, `repository`, `base`, `head`, `branch`, `lineage`,
+  `continues`, `findings_from`, `implement_providers`, `commits`, `failure_reason`,
+  `vendor_check`, `cleanup`, `pid`, `started_at`, `duration_seconds`, `cost_usd`,
+  `cost_complete` and `steps`. Also at the top: `prompt.md` (the task, written once), and
+  for `--write` the worktree and `change.patch`. Each entry of `steps` names its `provider`,
+  `model`, `exit_code`, `tokens`, `cost_usd`, `tools` and `dir` -- the run-relative path of
+  that step's own directory, `steps/<NN>-<slot>-<role>/`, holding its logs, its `commit.log`
+  for a write step, and its own `result.json` (schema 1, unchanged, no `"kind"`, still
+  `"provider"`): `run.json` is the run's report, `result.json` stays each provider's own
+  contract, unaffected by anything above -- a chained role's own link result lands under
+  `steps/<NN>-<slot>-<role>/links/<index>-<provider>/` and is copied up to the step's
+  `result.json` for the link that answered. `ha runs` lists runs newest first; `ha clean
+  RUN_ID` removes one (its worktree through git, its branch kept).
+- **Exit codes**: `0` answer, or a review's APPROVE; `1` failure; `2` invalid usage
+  (nothing ran); `3` provider unavailable, chain exhausted; `4` timeout with no tool call
+  started; `5` `--write` finished with no change; `6` a review's CHANGES verdict; `124`
+  timeout.
 
 ## Live tests
 
-`tests/live/headless_agents/` replays the workspace confinement above against the real
-CLIs of the machine it runs on -- not mocks. Every test spends real provider quota and
-needs the operator's logged-in CLIs, so it is opt-in: marked `live`, excluded from the
-default run, and skipped unless `HA_LIVE=1`. Run it deliberately, from a directory outside
-`~/.claude` (the claude rail's own configuration lives there):
+`tests/live/headless_agents/` replays the workspace confinement above, and now the roles
+and workflows layer, against the real CLIs of the machine it runs on -- not mocks. Every
+test spends real provider quota and needs the operator's logged-in CLIs, so it is opt-in:
+marked `live`, excluded from the default run, and skipped unless `HA_LIVE=1`. Run it
+deliberately, from a directory outside `~/.claude` (the claude rail's own configuration
+lives there):
 
 ```sh
 HA_LIVE=1 .venv/bin/pytest -m live tests/live -v -rA
 ```
+
+`tests/live/headless_agents/test_workflows_live.py` (0.5.0) exercises the engine end to
+end: a one-step read-only run through a role, a real `implement` write run on a toy
+repository, and a `review` run under the vendor rule -- reviewers and their judge on a
+small real diff, refusing to run if a reviewer shares a provider with whoever wrote the
+range.
 
 Historical full run (2026-09-23, lot 2, against claude 2.1.280, codex-cli 0.156.0,
 opencode 1.18.30, agy 1.2.9): `34 passed in 449.20s (0:07:29)`, 0 skipped, 0 failed. The

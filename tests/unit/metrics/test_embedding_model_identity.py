@@ -1,7 +1,7 @@
 """Ticket 3a4ed612 — the sidecar's top-level ``model`` was the literal
 ``"Qodo-Embed-1-1.5B"`` (``collector.py:560``), frozen at the day PR #181 shipped
 ``embedding_service.usage`` and never updated for the codestral trial (4fac067a)
-or the dev-pc rollback path (``deploy/dev-pc``).
+or the gpu-host rollback path (``deploy/dev-pc``).
 
 The fix, per the W2 plan (sidecar-synthesis.md §4):
 
@@ -61,14 +61,14 @@ class TestFlushIdentity:
         with patch(
             "brain_v42.metrics.collector.get_settings",
             return_value=_settings(
-                backend="openai", model="text-embed-3", url="http://dev-pc:8003"
+                backend="openai", model="text-embed-3", url="http://gpu-host:8003"
             ),
         ):
             collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
             fd = collector.get_flush_data()
 
         identity = fd["_process"]["embedding"]["identity"]
-        assert identity == {"backend": "openai", "model": "text-embed-3", "host": "dev-pc"}
+        assert identity == {"backend": "openai", "model": "text-embed-3", "host": "gpu-host"}
 
     def test_identity_host_is_hostname_only_not_the_full_url(self) -> None:
         with patch(
@@ -161,7 +161,7 @@ class TestCollectProcessMetricsIdentity:
                 ),
                 _row(
                     "_process",
-                    {"identity": {"backend": "openai", "model": "codestral", "host": "dev-pc"}},
+                    {"identity": {"backend": "openai", "model": "codestral", "host": "gpu-host"}},
                 ),
             ]
         )
@@ -348,7 +348,7 @@ class TestServerEmbeddingServicePayload:
                     "embedding_identity": {
                         "model": "codestral",
                         "backend": "openai",
-                        "endpoint_host": "dev-pc",
+                        "endpoint_host": "gpu-host",
                         "models_seen": ["codestral"],
                     },
                 }
@@ -360,7 +360,7 @@ class TestServerEmbeddingServicePayload:
 
         assert metrics["embedding_service"]["model"] == "codestral"
         assert metrics["embedding_service"]["backend"] == "openai"
-        assert metrics["embedding_service"]["endpoint_host"] == "dev-pc"
+        assert metrics["embedding_service"]["endpoint_host"] == "gpu-host"
         assert metrics["embedding_service"]["models_seen"] == ["codestral"]
         assert metrics["embedding_service"]["model_source"] == "live_processes"
         # Deprecated alias — never a second source of truth.

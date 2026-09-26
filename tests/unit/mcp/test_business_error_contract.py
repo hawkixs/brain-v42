@@ -150,7 +150,7 @@ async def test_whitelisted_business_families_surface_their_message(exc: Exceptio
     "exc",
     [
         pytest.param(
-            PlanScanPathError("/home/hawixs/secret/plans", "symlink_refused"),
+            PlanScanPathError("/home/user/secret/plans", "symlink_refused"),
             id="filesystem-path",
         ),
         pytest.param(RepairSafetyError("marker-ops-internal"), id="ops-internal"),

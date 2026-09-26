@@ -61,7 +61,7 @@ def _enforced_environment(**overrides: str) -> dict[str, str]:
         "BRAIN_DREAM_CAPABILITY_ENFORCEMENT": "true",
         "MCP_HTTP_TOKEN": ADMIN_TOKEN,
         "MCP_HTTP_DREAM_TOKENS": _registry(),
-        "HOME": "/home/hawixs",
+        "HOME": "/home/user",
         "PATH": "/usr/bin:/bin",
     }
     environment.update(overrides)
@@ -79,7 +79,7 @@ def test_the_ephemeral_home_carries_the_phase_scoped_bearer(tmp_path: Path) -> N
         phase="scan",
         project_key="brain-v42",
         environ=_enforced_environment(),
-        real_home=Path("/home/hawixs"),
+        real_home=Path("/home/user"),
     )
 
     config = json.loads((home / ".gemini" / "config" / "mcp_config.json").read_text())
@@ -99,7 +99,7 @@ def test_each_phase_gets_a_different_bearer(tmp_path: Path) -> None:
             phase=phase,
             project_key="brain-v42",
             environ=_enforced_environment(),
-            real_home=Path("/home/hawixs"),
+            real_home=Path("/home/user"),
         )
         config = json.loads((home / ".gemini" / "config" / "mcp_config.json").read_text())
         seen.add(config["mcpServers"]["brain-v42"]["headers"]["Authorization"])
@@ -118,7 +118,7 @@ def test_the_mcp_config_declares_only_brain_v42_on_loopback(tmp_path: Path) -> N
         phase="scan",
         project_key="brain-v42",
         environ=_enforced_environment(),
-        real_home=Path("/home/hawixs"),
+        real_home=Path("/home/user"),
     )
     config = json.loads((home / ".gemini" / "config" / "mcp_config.json").read_text())
 
@@ -135,7 +135,7 @@ def test_the_agent_header_names_the_phase(tmp_path: Path) -> None:
             phase=phase,
             project_key="brain-v42",
             environ=_enforced_environment(),
-            real_home=Path("/home/hawixs"),
+            real_home=Path("/home/user"),
         )
         config = json.loads((home / ".gemini" / "config" / "mcp_config.json").read_text())
 
@@ -151,7 +151,7 @@ def test_the_secret_bearing_file_is_not_world_readable(tmp_path: Path) -> None:
         phase="scan",
         project_key="brain-v42",
         environ=_enforced_environment(),
-        real_home=Path("/home/hawixs"),
+        real_home=Path("/home/user"),
     )
     config_path = home / ".gemini" / "config" / "mcp_config.json"
 
@@ -173,7 +173,7 @@ def test_the_hook_points_at_the_versioned_guard(tmp_path: Path) -> None:
         phase="scan",
         project_key="brain-v42",
         environ=_enforced_environment(),
-        real_home=Path("/home/hawixs"),
+        real_home=Path("/home/user"),
     )
     hooks = json.loads((home / ".gemini" / "config" / "hooks.json").read_text())
     entry = next(iter(hooks.values()))
@@ -214,7 +214,7 @@ def test_a_missing_project_profile_fails_closed(tmp_path: Path) -> None:
             phase="scan",
             project_key="un-projet-sans-profil",
             environ=_enforced_environment(),
-            real_home=Path("/home/hawixs"),
+            real_home=Path("/home/user"),
         )
 
 

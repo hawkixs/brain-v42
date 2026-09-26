@@ -47,11 +47,17 @@ def _report() -> dict[str, object]:
 def test_the_run_key_set_is_the_spec_one() -> None:
     assert tuple(_report()) == RUN_KEYS
     assert RUN_KEYS == (
-        "schema", "run_id", "target", "status", "exit_code", "verdict", "text",
+        "schema", "kind", "run_id", "target", "status", "exit_code", "verdict", "text",
         "repository", "base", "head", "branch", "lineage", "continues", "findings_from",
         "implement_providers", "commits", "failure_reason", "vendor_check", "cleanup", "pid",
         "started_at", "duration_seconds", "cost_usd", "cost_complete", "steps",
     )  # fmt: skip
+
+
+def test_a_new_report_names_its_kind_as_run() -> None:
+    """Ticket 1a76fe55: ``run.json`` and ``result.json`` both carry ``schema: 1``; only
+    ``kind`` tells a consumer apart which one it is reading."""
+    assert _report()["kind"] == "run"
 
 
 def test_a_new_report_is_running_with_every_unmeasured_field_null() -> None:
