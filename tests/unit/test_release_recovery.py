@@ -196,7 +196,9 @@ def test_publish_recovery_binding_replaces_a_preexisting_hardlinked_destination(
     assert published == preexisting
     assert published.stat().st_nlink == 1
     assert other.stat().st_nlink == 1
-    assert other.read_text(encoding="utf-8") == "-- content shared by the hard link before publish\n"
+    assert (
+        other.read_text(encoding="utf-8") == "-- content shared by the hard link before publish\n"
+    )
 
 
 def test_publish_recovery_binding_refuses_an_asset_destination_name_with_an_unsafe_character(
@@ -510,3 +512,22 @@ def test_cli_reports_failure_on_stderr_with_a_nonzero_exit(
     captured = capsys.readouterr()
     assert captured.out == ""
     assert "does not exist" in captured.err
+
+
+def test_publish_recovery_binding_never_writes_through_a_symlink_planted_at_a_temporary_name(
+    tmp_path: Path,
+) -> None:
+    """Review of PR #227: a predictable temporary name let a planted symlink
+    redirect the copy outside recovery/. Every name the copy could use is
+    pre-planted here; none of their targets may change."""
+    release_dir = _build_release(tmp_path)
+    recovery_dir = release_dir / "recovery"
+    recovery_dir.mkdir(parents=True)
+    planted_target = tmp_path / "outside.txt"
+    planted_target.write_text("untouched\n")
+    for name in ("brain-v42-v1.json", "brain-v42-v1.sql", "brain-v42-v1-pgrestore.sql"):
+        (recovery_dir / f".{name}.tmp-{os.getpid()}").symlink_to(planted_target)
+
+    rr.publish_recovery_binding(release_dir)
+
+    assert planted_target.read_text(encoding="utf-8") == "untouched\n"

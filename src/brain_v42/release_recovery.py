@@ -36,6 +36,7 @@ import re
 import shutil
 import stat
 import sys
+import tempfile
 from pathlib import Path
 
 from brain_v42.release import head_of_versions_strict
@@ -234,9 +235,14 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
         # sharing that inode. Copy into a sibling temporary file instead and
         # `os.replace` it over the destination — the same atomic swap
         # `_atomic_write` already uses for the binding itself.
-        tmp_destination = recovery_dir / f".{destination_name}.tmp-{os.getpid()}"
+        # The temporary file is created by mkstemp (O_CREAT | O_EXCL, random
+        # name) and written through its own descriptor: a symlink planted at
+        # any name in recovery/ can never redirect the copy outside it.
+        fd, tmp_name = tempfile.mkstemp(prefix=f".{destination_name}.tmp-", dir=recovery_dir)
+        tmp_destination = Path(tmp_name)
         try:
-            shutil.copyfile(source_path, tmp_destination)
+            with os.fdopen(fd, "wb") as sink, source_path.open("rb") as source:
+                shutil.copyfileobj(source, sink)
             os.chmod(tmp_destination, 0o644)
             os.replace(tmp_destination, destination)
         except Exception:
