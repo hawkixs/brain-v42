@@ -297,6 +297,11 @@ claim on an entry appends nothing -- the pre-claims rendering stays byte-identic
 suffix lookup failure appends the visible marker `[claims : indisponible]` instead of
 silently rendering like "no active claim":
 
+The suffix is capped at 300 characters. Every present status keeps its count and the
+closing bracket remains intact; optional status details are omitted, with an ellipsis,
+when needed to fit. Claim statements and measured or expected text flatten control
+characters and escape Markdown delimiters and HTML angle brackets in rendered output.
+
 | State | Example |
 | --- | --- |
 | Fresh `holds` | `[claims : 2 tiennent]` |
