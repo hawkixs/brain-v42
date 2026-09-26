@@ -13,7 +13,8 @@ and plugin events included. None of that must reach the registry exposed over
 HTTP.
 
 The oracle for attribute names is ``tests/fixtures/claude_otlp_logs.json``; the
-full survey is in ``docs/upstream/2026-08-06-claude-otlp-session-join.md``.
+full survey (measured 2026-08-06, private brain-v42-internal repository) is in
+``docs/upstream/2026-08-06-claude-otlp-session-join.md``.
 """
 
 from __future__ import annotations

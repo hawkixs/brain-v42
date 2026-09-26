@@ -55,20 +55,17 @@ dates. This inventory names the eight tracked references without copying that me
 | `pgvector-pg16` | `pgvector/pgvector:pg16` | CI service and main Compose |
 | `llama-server-cuda` | `ghcr.io/ggml-org/llama.cpp:server-cuda` | main Compose |
 | `pytorch-2-7-1-cuda12-8-cudnn9-runtime` | `pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime` | Qodo service |
-| `nvidia-cuda-12-4-1-base-ubuntu22-04` | `nvidia/cuda:12.4.1-base-ubuntu22.04` | dev-pc probe and supervisor |
+| `nvidia-cuda-12-4-1-base-ubuntu22-04` | `nvidia/cuda:12.4.1-base-ubuntu22.04` | supervisor |
 | `llama-full` | `ghcr.io/ggml-org/llama.cpp:full` | GGUF build |
 | `neo4j-5-26-21` | `neo4j:5.26.21` | main Compose |
 
-Two images are local and therefore carry no registry digest:
-
-| Local image | Build context |
-|---|---|
-| `brain-embedding-supervisor:local` | `services/embedding_supervisor` |
-| `brain-embedding-qodo:local` | `services/embedding_qodo` |
-
-The file [`deploy/dev-pc/docker-compose.yml`](../deploy/dev-pc/docker-compose.yml) must keep
-a `build:` block and `pull_policy: build` for each of them. The gate refuses a local exception without
-these two properties.
+`local_images` in the catalog is currently empty: no image is local. It used to track two
+build-time images, `brain-embedding-supervisor:local` (`services/embedding_supervisor`) and
+`brain-embedding-qodo:local` (`services/embedding_qodo`), built by
+`deploy/dev-pc/docker-compose.yml` — the personal, superseded dev-pc deployment, now in the
+private brain-v42-internal repository (ticket 8dc6f0d2). Should a public compose file build
+them again, re-add both entries with a `build:` block and `pull_policy: build`; the gate
+refuses a local exception without these two properties.
 
 The tag `brain-v42-ci-smoke:${CI_COMMIT_SHA}` is not a third local lock entry. The
 `build:docker` job creates it once from the literal context `.`, then runs it
@@ -145,14 +142,20 @@ the catalog and all its consumers together.
    uv run pytest tests/unit/test_container_image_pins.py tests/unit/test_github_workflows.py \
      tests/unit/test_docker_compose.py \
      tests/unit/test_rotate_neo4j_credential.py \
-     tests/unit/services/embedding_supervisor/test_state_machine.py \
-     tests/dev_pc/test_validate_headless.py \
-     tests/dev_pc/test_container_lifecycle_contracts.py -q
-   bash -n deploy/dev-pc/setup-docker-ce.sh scripts/embedding_gguf_build.sh \
-     scripts/rotate_neo4j_container.sh
+     tests/unit/services/embedding_supervisor/test_state_machine.py -q
+   bash -n scripts/embedding_gguf_build.sh scripts/rotate_neo4j_container.sh
    docker compose config --quiet --no-interpolate --no-env-resolution
    docker compose config --images
-   docker compose -f deploy/dev-pc/docker-compose.yml config --images
+   ```
+
+   If `deploy/dev-pc/` is cloned locally (private brain-v42-internal repository, ticket
+   `8dc6f0d2`), also run its own checks from there:
+
+   ```bash
+   uv run pytest internal/tests/dev_pc/test_validate_headless.py \
+     internal/tests/dev_pc/test_container_lifecycle_contracts.py -q
+   bash -n internal/deploy/dev-pc/setup-docker-ce.sh
+   docker compose -f internal/deploy/dev-pc/docker-compose.yml config --images
    ```
 
 6. Reread the eight exact references from the registries, then run the branch gates:

@@ -128,7 +128,7 @@ Lot 4 completes 0.4.0; the package version is `0.4.0`. The four lot sections bel
 ## Unreleased — 0.4.0, lot 1 of 4: the facade
 
 Nothing here is tagged yet: 0.4.0 ships after lot 4 (the `ha` CLI), per
-`docs/specs/2026-09-23-headless-agents-0.4.0-design.md`.
+`docs/specs/2026-09-23-headless-agents-0.4.0-design.md`, in the private brain-v42-internal repository.
 
 ### Added
 - `registry`: `get_provider(name)`, `PROVIDER_NAMES`, `UnknownProvider` (a `ValueError`
@@ -197,7 +197,7 @@ to `.git/config` with its file tools:
 
 ## Unreleased — 0.4.0, lot 3 of 4: `openai-compat` and its presets
 
-Per `docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.2).
+Per `docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.2, in the private brain-v42-internal repository).
 
 ### Added
 - `providers.openai_compat.OpenAICompatProvider`: text-only chat completions over HTTP,
@@ -230,7 +230,7 @@ Per `docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.2).
 
 ## Unreleased — 0.4.0, lot 2 of 4: the workspace capability
 
-Per `docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.3), with the amendments in
+Per `docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.3, in the private brain-v42-internal repository), with the amendments in
 its section 8 ("Measurement amendments (2026-09-23, lot 2)"): live measurement against the
 four rails' real CLIs changed three points the design left open — decisions 9-12.
 

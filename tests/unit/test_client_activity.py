@@ -4,7 +4,8 @@ The merge brings together two sources that do not overlap: a CLI's OTLP
 telemetry (tokens, turns, cost) and the activity observed on the brain side (tool
 calls). The join key is the HMAC pseudonym of the session UUID.
 
-Measured on 2026-08-06 (``docs/upstream/2026-08-06-claude-otlp-session-join.md``):
+Measured on 2026-08-06 (``docs/upstream/2026-08-06-claude-otlp-session-join.md``, in
+the private brain-v42-internal repository):
 no client today knows how to declare its session in an MCP header. The NOMINAL
 case is therefore two disjoint rows — one OTLP-only, one "unattributed" — and not
 a joined row. Both situations are pinned here: the join because the code must

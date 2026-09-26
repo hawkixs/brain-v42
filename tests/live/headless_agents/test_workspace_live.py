@@ -1,5 +1,5 @@
 """Replay, against the real CLIs of THIS machine, the workspace confinement
-measured on 2026-09-23 (spec 2026-09-23-headless-agents-0.4.0-design.md, 3.3).
+measured on 2026-09-23 (spec 2026-09-23-headless-agents-0.4.0-design.md, 3.3, in the private brain-v42-internal repository).
 
 WHY IT IS OPT-IN. Every test here spends real provider quota and needs the
 operator's logged-in CLIs: it carries the ``live`` marker, excluded by

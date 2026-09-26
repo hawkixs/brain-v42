@@ -149,7 +149,7 @@ becomes the session title. The subscription credential to declare is
 
 A `Workspace` gives an agent a directory to read, or read and edit, and nothing outside
 it -- confined by each rail's own mechanism, per
-`docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.3) and its measurement
+`docs/specs/2026-09-23-headless-agents-0.4.0-design.md` (3.3, in the private brain-v42-internal repository) and its measurement
 amendments in section 8:
 
 ```python

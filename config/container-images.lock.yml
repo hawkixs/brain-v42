@@ -124,7 +124,6 @@ images:
     resolved_at: "2026-07-23"
     resolution: docker buildx imagetools inspect --raw tag@digest
     consumers:
-      - deploy/dev-pc/setup-docker-ce.sh
       - services/embedding_supervisor/main.py
 
   llama-full:
@@ -170,12 +169,7 @@ images:
     consumers:
       - .github/workflows/continuous-integration.yml
 
-local_images:
-  brain-embedding-supervisor:local:
-    compose: deploy/dev-pc/docker-compose.yml
-    service: embedding-supervisor
-    context: services/embedding_supervisor
-  brain-embedding-qodo:local:
-    compose: deploy/dev-pc/docker-compose.yml
-    service: embedding-qodo
-    context: services/embedding_qodo
+# deploy/dev-pc/ (the personal, superseded host these local images were built for)
+# moved to the private brain-v42-internal repository (ticket 8dc6f0d2); it is no
+# longer part of this repository's build/discovery scope.
+local_images: {}

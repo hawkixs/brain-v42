@@ -224,9 +224,10 @@ Each host release lives under
 `~/.local/share/brain-v42/releases/<full-source-sha>/` and retains the same-SHA
 source archive, wheel, lock, copied Python 3.12 environment, and hashed manifest.
 The archive supplies Dream and root scripts that the wheel does not install. Build
-and installed-wheel checks do not attest a rollout. Follow the
-[immutable delivery release and canary runbook](docs/runbooks/2026-09-07-observable-delivery-workflows.md)
-for preflight, activation, evidence capture, and compatible forward rollback.
+and installed-wheel checks do not attest a rollout. Follow the immutable delivery
+release and canary runbook (`docs/runbooks/2026-09-07-observable-delivery-workflows.md`
+in the private brain-v42-internal repository) for preflight, activation, evidence
+capture, and compatible forward rollback.
 
 ## Sessions
 
@@ -288,7 +289,7 @@ gates: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
 The deployment targets personal agents on a trusted LAN. MCP, PostgreSQL and Neo4j
 bind to loopback; metrics and automation default to loopback.
 
-**Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; `deploy/dev-pc` is a superseded rollback/reference path.
+**Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
 
 The reranker shares the unified embedding endpoint `:8003/rerank`. Treat `:8003` as
 LAN-exposed until you have proved the live bind yourself, and never expose it — or the
@@ -358,7 +359,8 @@ canonical JSON value and a digest over it, or `Unreadable`, carrying a closed
 Three targets ship today (`production`, `live_release`, `host`) and the catalogue is
 declared in `src/brain_v42/facts/composition.py`. Read it with `brain_fact_list` and
 `brain_fact_get`; facts declared `briefing=true` also render as lines in the session
-briefing. Design: [`docs/superpowers/specs/2026-09-19-measured-facts-and-claims-design.md`](docs/superpowers/specs/2026-09-19-measured-facts-and-claims-design.md).
+briefing. Design: `docs/superpowers/specs/2026-09-19-measured-facts-and-claims-design.md`
+in the private brain-v42-internal repository.
 
 ## Development
 
@@ -428,7 +430,8 @@ migrations, and attaches both to the GitHub release.
   definition exists, and **056** refuses while a project is archived; those two accept a
   named operator opt-in.
 - Follow the release's operator runbook for recovery. For **0.6.1** (as for 0.6.0 and 0.5.0), use the
-  [compatible forward rollback](docs/runbooks/2026-09-07-observable-delivery-workflows.md#compatible-forward-rollback)
+  compatible forward rollback section of that runbook (`docs/runbooks/2026-09-07-observable-
+  delivery-workflows.md` in the private brain-v42-internal repository)
   and keep the repository's migration target in place: the head the release ships, never a
   lower one.
   Rollback means selecting a release that supports that head or deploying a forward fix;

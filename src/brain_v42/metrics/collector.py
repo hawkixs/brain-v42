@@ -31,7 +31,7 @@ def _endpoint_host(url: str) -> str:
 
     Used for ``embedding_service.endpoint_host`` and the per-process
     ``identity.host`` flushed to ``process_metrics``: red-monitor's need is
-    spotting WHICH host serves embeddings (``localhost`` vs a ``deploy/dev-pc``
+    spotting WHICH host serves embeddings (``localhost`` vs the personal ``dev-pc``
     rollback target), never the scheme, port or path -- those belong to
     ``embedding_service.url`` already. Falls back to the raw string when
     ``urlparse`` finds no hostname (a bare ``"localhost:8003"`` with no

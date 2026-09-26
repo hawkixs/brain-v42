@@ -34,10 +34,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from scripts.roadmap_curate import VALID_OPS, WET_APPLYABLE_OPS
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-PLAN = REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-07-04-roadmap-curation.md"
+#: docs/superpowers/plans/2026-07-04-roadmap-curation.md moved to the private
+#: brain-v42-internal repository (ticket 8dc6f0d2), cloned at the repository root as
+#: `internal/`. The checks below still run for real for whoever has it cloned there;
+#: everywhere else (a fresh clone, CI) they skip rather than fail, since the document
+#: they govern is deliberately not public.
+PLAN = REPO_ROOT / "internal" / "docs" / "superpowers" / "plans" / "2026-07-04-roadmap-curation.md"
 
 #: The two live normative statements, each anchored by text a rewrite cannot keep
 #: by accident. They are the only regions this module governs.
@@ -63,6 +69,11 @@ _WIDE_CLAIMS = (
 
 
 def _plan_lines() -> list[str]:
+    if not PLAN.is_file():
+        pytest.skip(
+            "internal/ is not cloned; the roadmap curation plan moved to the "
+            "private brain-v42-internal repository (ticket 8dc6f0d2)"
+        )
     return PLAN.read_text(encoding="utf-8").splitlines()
 
 

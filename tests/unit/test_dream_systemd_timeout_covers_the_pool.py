@@ -1,6 +1,6 @@
 """The systemd cap covers the pool, and it is DERIVED, not retyped.
 
-Spec `2026-08-08-dream-project-pool-design.md` §4.3 and §10.
+Spec `2026-08-08-dream-project-pool-design.md` (private brain-v42-internal repository) §4.3 and §10.
 
 `TimeoutStartSec` must be set on bound (b) — the CONFIGURED cap — and not on the
 measured average, because systemd kills at the bound. The calculation:

@@ -142,10 +142,12 @@ in SQL frozen in a migration. None references the others.
 
 ## 5. Brick 4 — The numbers, and how to replay them
 
-**Do not copy any number from this section.** Replay it:
+**Do not copy any number from this section.** Replay it with
+`docs/design/refonte-projets-sessions/baseline/snapshot.py`, in the private
+brain-v42-internal repository:
 
 ```bash
-python3 docs/design/refonte-projets-sessions/baseline/snapshot.py
+python3 internal/docs/design/refonte-projets-sessions/baseline/snapshot.py
 ```
 
 Measured on **2026-08-19** (Alembic head `045`), given as an order of magnitude and not

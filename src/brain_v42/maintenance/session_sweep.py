@@ -2,6 +2,7 @@
 
 Spec: docs/superpowers/specs/2026-08-07-session-lifecycle-sweep-design.md
 M-G: docs/design/refonte-projets-sessions/SPEC-M-G.md §4 (eligibility threshold).
+Both in the private brain-v42-internal repository (ticket 8dc6f0d2).
 
 Deterministic and model-free: no LLM call, no network. The ``dream_runs`` row
 therefore carries ``model = NULL`` — an already accepted shape, observed on

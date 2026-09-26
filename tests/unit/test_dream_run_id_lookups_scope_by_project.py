@@ -1,6 +1,6 @@
 """The three `dream_runs.id` lookups filter on the project.
 
-Spec `2026-08-08-dream-project-pool-design.md` §12, the argument that mandates 042
+Spec `2026-08-08-dream-project-pool-design.md` (private brain-v42-internal repository) §12, the argument that mandates 042
 BEFORE the loop: "Three readers WRITE on the row they misidentified:
 promote_validate marks `partial` and backfills dream_promotions.dream_run_id,
 connect_validate marks `partial`, REORG_RUN_ID likewise. Shipping the loop first

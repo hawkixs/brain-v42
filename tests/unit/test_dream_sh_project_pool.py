@@ -1,6 +1,6 @@
 """The project pool — the loop EXECUTED, not merely the script's text.
 
-Spec `2026-08-08-dream-project-pool-design.md` §3, §6, §9, §10.
+Spec `2026-08-08-dream-project-pool-design.md` (private brain-v42-internal repository) §3, §6, §9, §10.
 
 These tests launch a real copy of `dream.sh` with stubs for `uv`, `claude` and
 `codex`. No network call, no database write: we observe the log and the

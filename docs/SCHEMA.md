@@ -47,7 +47,8 @@ columns and 045 adds none — it widens an existing column — so the count held
 Measured on `brain` on 2026-09-03 at 11:20 CEST, right after the 051→052 upgrade: **35**
 `public` base tables. The earlier reading of 34, taken the same day after the 049→051 cutover,
 is what 052 moved. Contract v9 was replayed live at 11:27 and reads 30/30 (receipt
-`ops/recovery/receipts/2026-09-03-live-v9-052.md`). The count is read with
+`ops/recovery/receipts/2026-09-03-live-v9-052.md`, in the private brain-v42-internal
+repository). The count is read with
 `select count(*) from information_schema.tables where table_schema='public' and
 table_type='BASE TABLE'` — re-measure it rather than copying this line. Migration 036 also maintains
 ten `codex_*` views in total: nine new views and `codex_brain_entity_v1`, created in
@@ -1160,4 +1161,4 @@ class GPUEmbeddingService:
     async def embed_batch(self, texts: list[str]) -> list[list[float]]: ...
 ```
 
-**Note**: The `Settings.embedding_service_url` default and the constructor's default are both `http://localhost:8003`. The `deploy/dev-pc` path is a rollback reference that has been obsolete since the return to the local GPU service on 6 July 2026. The interface stays `embed()` / `embed_batch()` in async via httpx. The `DIMENSION = 1536` constant is not defined in `GPUEmbeddingService` — the dimension is configured via `Settings.embedding_dimension`.
+**Note**: The `Settings.embedding_service_url` default and the constructor's default are both `http://localhost:8003`. The personal `dev-pc` deployment (`deploy/dev-pc`, now in the private brain-v42-internal repository) is a rollback reference that has been obsolete since the return to the local GPU service on 6 July 2026. The interface stays `embed()` / `embed_batch()` in async via httpx. The `DIMENSION = 1536` constant is not defined in `GPUEmbeddingService` — the dimension is configured via `Settings.embedding_dimension`.

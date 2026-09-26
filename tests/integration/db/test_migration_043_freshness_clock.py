@@ -1,6 +1,6 @@
 """Migration 043 — dating the freshness STATUS, which `updated_at` cannot do.
 
-Spec `2026-08-08-dream-v2-design.md` §4.3 and §6.2. This is the **purge's hard
+Spec `2026-08-08-dream-v2-design.md` (private brain-v42-internal repository) §4.3 and §6.2. This is the **purge's hard
 precondition**, not a scheduling preference.
 
 The deletion criterion already exists in the repository — `decay_tools.py`,
