@@ -35,6 +35,7 @@ from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.claim_writes import (
+    claim_write_log_fields,
     claims_confirmation,
     persist_claims,
     resolve_claim_inputs,
@@ -60,6 +61,7 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from brain_v42.facts.registry import FactRegistry
+    from brain_v42.facts.verification import ClaimVerificationService
     from brain_v42.models.brain import SearchResponse, WhatDoIKnowResponse
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.adr_service import ADRService
@@ -89,9 +91,6 @@ from brain_v42.mcp.tools.snippet_tools import register_snippet_tools
 from brain_v42.mcp.tools.workflow_guide_tools import register_workflow_guide_tools
 
 logger = structlog.get_logger(__name__)
-
-_CLAIM_VERIFICATION_REASON = "verification_unavailable"
-
 
 def _no_embedding_model_served(response: SearchResponse | WhatDoIKnowResponse) -> bool:
     """True when no embedding model took part in serving this search.
@@ -123,11 +122,15 @@ def register_tools(
     access_logger: AccessLogger | None = None,
     fact_registry: FactRegistry | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    claim_verification_svc: ClaimVerificationService | None = None,
 ) -> None:
     """Register all brain_* tools on the FastMCP instance.
 
     Called once at server startup from server.py __main__ block.
     Tools are defined as closures capturing the injected service instances.
+    `claim_verification_svc` is optional: standalone tests keep working without it,
+    and every writer still refuses (`ValueError`) a claim asking to be measured while
+    it is `None`.
     """
     logger.info("brain_v42.tools.register_tools.called")
 
@@ -149,6 +152,7 @@ def register_tools(
         claim_write_arguments = {
             "fact_registry": fact_registry,
             "session_factory": session_factory,
+            "claim_verification_svc": claim_verification_svc,
         }
     register_snippet_tools(
         mcp,
@@ -218,7 +222,7 @@ def register_tools(
         declared_at = datetime.now(UTC)
         async with claim_session_factory() as session, session.begin():
             decision = await decision_svc.create(data, session=session)
-            claim_ids = await persist_claims(
+            outcomes = await persist_claims(
                 session,
                 entry_id=decision.id,
                 entity_type="decision",
@@ -226,21 +230,21 @@ def register_tools(
                 resolved=resolved,
                 declared_by=get_current_actor(),
                 declared_at=declared_at,
+                verification=claim_verification_svc,
             )
         decision = await decision_svc.enrich_created(decision, data, related_to=validated_relations)
         logger.info(
             "mcp.brain_log_decision",
             title=title,
             project_key=project_key,
-            claim_count=len(claim_ids),
-            claim_verification_reason=_CLAIM_VERIFICATION_REASON,
+            **claim_write_log_fields(outcomes),
         )
         return format_confirmation(
             "Decision logged",
             title,
             id=str(decision.id),
             project=project_key,
-            claims=claims_confirmation(claim_ids),
+            claims=claims_confirmation(outcomes),
         )
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
@@ -494,7 +498,7 @@ def register_tools(
         declared_at = datetime.now(UTC)
         async with claim_session_factory() as session, session.begin():
             learning = await learning_svc.create(data, session=session)
-            claim_ids = await persist_claims(
+            outcomes = await persist_claims(
                 session,
                 entry_id=learning.id,
                 entity_type="learning",
@@ -502,6 +506,7 @@ def register_tools(
                 resolved=resolved,
                 declared_by=get_current_actor(),
                 declared_at=declared_at,
+                verification=claim_verification_svc,
             )
         learning = await learning_svc.enrich_created(
             learning,
@@ -509,15 +514,14 @@ def register_tools(
             related_to=validated_relations,
             authorization=cast("RelationAuthorization", scope) if scope is not None else None,
         )
-        extra = {"claims": claims_confirmation(claim_ids)}
+        extra = {"claims": claims_confirmation(outcomes)}
         if learning.graph_warnings:
             extra["warnings"] = "; ".join(learning.graph_warnings)
         logger.info(
             "mcp.brain_learn",
             topic=topic,
             project_key=project_key,
-            claim_count=len(claim_ids),
-            claim_verification_reason=_CLAIM_VERIFICATION_REASON,
+            **claim_write_log_fields(outcomes),
         )
         return format_confirmation(
             "Learned",
@@ -628,7 +632,7 @@ def register_tools(
         declared_at = datetime.now(UTC)
         async with claim_session_factory() as session, session.begin():
             adr = await adr_svc.create(data, session=session)
-            claim_ids = await persist_claims(
+            outcomes = await persist_claims(
                 session,
                 entry_id=adr.id,
                 entity_type="adr",
@@ -636,6 +640,7 @@ def register_tools(
                 resolved=resolved,
                 declared_by=get_current_actor(),
                 declared_at=declared_at,
+                verification=claim_verification_svc,
             )
         adr = await adr_svc.enrich_created(
             adr,
@@ -647,15 +652,14 @@ def register_tools(
             "mcp.brain_propose_adr",
             adr_id=str(adr.id),
             project_key=project_key,
-            claim_count=len(claim_ids),
-            claim_verification_reason=_CLAIM_VERIFICATION_REASON,
+            **claim_write_log_fields(outcomes),
         )
         return format_confirmation(
             f"ADR #{adr.number} proposed",
             title,
             id=str(adr.id),
             project=project_key,
-            claims=claims_confirmation(claim_ids),
+            claims=claims_confirmation(outcomes),
         )
 
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)

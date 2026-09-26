@@ -12,6 +12,7 @@ import structlog
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.claim_writes import (
+    claim_write_log_fields,
     claims_confirmation,
     persist_claims,
     resolve_claim_inputs,
@@ -34,14 +35,13 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from brain_v42.facts.registry import FactRegistry
+    from brain_v42.facts.verification import ClaimVerificationService
     from brain_v42.metrics.collector import MetricsCollector
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.graph_helpers import RelationAuthorization
     from brain_v42.services.snippet_service import SnippetService
 
 logger = structlog.get_logger(__name__)
-
-_CLAIM_VERIFICATION_REASON = "verification_unavailable"
 
 
 def register_snippet_tools(
@@ -51,6 +51,7 @@ def register_snippet_tools(
     access_logger: AccessLogger | None = None,
     fact_registry: FactRegistry | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    claim_verification_svc: ClaimVerificationService | None = None,
 ) -> None:
     """Register snippet MCP tools on the FastMCP instance via closures."""
 
@@ -120,7 +121,7 @@ def register_snippet_tools(
         declared_at = datetime.now(UTC)
         async with session_factory() as session, session.begin():
             snippet = await snippet_svc.create(data, session=session)
-            claim_ids = await persist_claims(
+            outcomes = await persist_claims(
                 session,
                 entry_id=snippet.id,
                 entity_type="snippet",
@@ -128,6 +129,7 @@ def register_snippet_tools(
                 resolved=resolved,
                 declared_by=get_current_actor(),
                 declared_at=declared_at,
+                verification=claim_verification_svc,
             )
         snippet = await snippet_svc.enrich_created(
             snippet,
@@ -139,15 +141,14 @@ def register_snippet_tools(
             "mcp.brain_save_snippet",
             title_length=len(title),
             language_supplied=bool(snippet.language),
-            claim_count=len(claim_ids),
-            claim_verification_reason=_CLAIM_VERIFICATION_REASON,
+            **claim_write_log_fields(outcomes),
         )
         return format_confirmation(
             "Snippet saved",
             snippet.title,
             id=str(snippet.id),
             lang=snippet.language,
-            claims=claims_confirmation(claim_ids),
+            claims=claims_confirmation(outcomes),
         )
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)

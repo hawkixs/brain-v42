@@ -225,7 +225,7 @@ async def _learning_with_claims(
     resolved = await resolve_claim_inputs(registry, [_claim(statement) for statement in statements])
     async with session_factory() as session, session.begin():
         learning = await service.create(data, session=session)
-        claim_ids = await persist_claims(
+        outcomes = await persist_claims(
             session,
             entry_id=learning.id,
             entity_type="learning",
@@ -234,7 +234,7 @@ async def _learning_with_claims(
             declared_by="integration-test",
             declared_at=datetime.now(UTC),
         )
-    return service, learning, claim_ids
+    return service, learning, [outcome.claim_id for outcome in outcomes]
 
 
 async def _claim_rows(
@@ -320,7 +320,7 @@ async def test_learning_and_two_claims_commit_together_then_enrich(
     try:
         async with session_factory() as session, session.begin():
             learning = await service.create(data, session=session)
-            claim_ids = await persist_claims(
+            outcomes = await persist_claims(
                 session,
                 entry_id=learning.id,
                 entity_type="learning",
@@ -333,7 +333,8 @@ async def test_learning_and_two_claims_commit_together_then_enrich(
         event.remove(engine.sync_engine, "commit", record_commit)
 
     assert commits == 1
-    assert len(claim_ids) == 2
+    assert len(outcomes) == 2
+    assert all(outcome.provenance == "declared" and outcome.detail is None for outcome in outcomes)
     async with session_factory() as session:
         anchor_id = await session.scalar(
             sa.select(brain_entities.c.id).where(brain_entities.c.source_uuid == learning.id)
@@ -379,7 +380,7 @@ async def test_adr_and_claim_commit_together_then_enrich(
     try:
         async with session_factory() as session, session.begin():
             adr = await service.create(data, session=session)
-            claim_ids = await persist_claims(
+            outcomes = await persist_claims(
                 session,
                 entry_id=adr.id,
                 entity_type="adr",
@@ -392,7 +393,8 @@ async def test_adr_and_claim_commit_together_then_enrich(
         event.remove(engine.sync_engine, "commit", record_commit)
 
     assert commits == 1
-    assert len(claim_ids) == 1
+    assert len(outcomes) == 1
+    assert outcomes[0].provenance == "declared" and outcomes[0].detail is None
     async with session_factory() as session:
         anchor_id = await session.scalar(
             sa.select(brain_entities.c.id).where(brain_entities.c.source_uuid == adr.id)

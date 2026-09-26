@@ -18,7 +18,11 @@ from brain_v42.mcp.dream_project_authorization import (
     DreamProjectAuthorizationError,
     get_dream_project_scope,
 )
-from brain_v42.mcp.tools.claim_writes import ClaimMutationError, replace_claims
+from brain_v42.mcp.tools.claim_writes import (
+    ClaimMutationError,
+    describe_claim_outcome,
+    replace_claims,
+)
 from brain_v42.mcp.tools.formatters import (
     clamp_list_limit,
     format_adr_detail,
@@ -55,6 +59,7 @@ from brain_v42.services.graph_helpers import graph_create_relation_logged
 
 if TYPE_CHECKING:
     from brain_v42.facts.registry import FactRegistry
+    from brain_v42.facts.verification import ClaimVerificationService
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.adr_service import ADRService
     from brain_v42.services.decision_service import DecisionService
@@ -195,6 +200,7 @@ def register_crud_tools(
     session_factory: async_sessionmaker[AsyncSession],
     access_logger: AccessLogger | None = None,
     fact_registry: FactRegistry | None = None,
+    claim_verification_svc: ClaimVerificationService | None = None,
 ) -> None:
     """Register generic CRUD MCP tools (brain_get, brain_delete, brain_update, brain_list)."""
 
@@ -483,6 +489,7 @@ def register_crud_tools(
                         claims=claims,
                         expected_active_claim_ids=expected_active_claim_ids,
                         declared_by=get_current_actor(),
+                        verification=claim_verification_svc,
                     )
             except (ClaimMutationError, ValueError) as exc:
                 return format_error(str(exc))
@@ -523,14 +530,14 @@ def register_crud_tools(
         logger.info("brain_update", entity_type=entity_type, entity_id=entity_id)
         if claim_replacement is None:
             return format_confirmation("Updated", "", id=str(entity_id), type=entity_type)
-        created_ids = ", ".join(str(claim_id) for claim_id in claim_replacement.created_ids)
+        created_ids = ", ".join(describe_claim_outcome(outcome) for outcome in claim_replacement.created)
         return format_confirmation(
             "Updated",
             "",
             id=str(entity_id),
             type=entity_type,
             claims=(
-                f"kept:{claim_replacement.kept}, created:{len(claim_replacement.created_ids)} "
+                f"kept:{claim_replacement.kept}, created:{len(claim_replacement.created)} "
                 f"[{created_ids}], retired:{claim_replacement.retired}"
             ),
         )
