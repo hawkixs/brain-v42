@@ -54,10 +54,15 @@ OPTIONAL MATCH (fence:BrainProjectionFence {name: 'canonical'})
 FOREACH (_ IN CASE WHEN fence IS NULL THEN [] ELSE [1] END |
     SET fence._lock = randomUUID()
 )
+WITH fence
+OPTIONAL MATCH (cursor:BrainProjectionCursor)
+WHERE $require_no_prior_cursor AND cursor.lease_generation = $generation - 1
+WITH fence, count(cursor) > 0 AS has_prior_cursor
 WITH fence,
      fence IS NOT NULL
      AND fence.protocol_version = 2
      AND fence.recovery_id IS NULL
+     AND NOT has_prior_cursor
      AND (
          (
              $allow_advance
@@ -248,12 +253,30 @@ class Neo4jGraphProjectionWriter:
     async def activate_generation(
         self,
         leadership: ProjectionLeadership,
+        *,
+        require_no_prior_cursor: bool = False,
     ) -> ProjectionActivation:
-        """Advance the Neo4j barrier monotonically for a PostgreSQL leader."""
+        """Advance the Neo4j barrier monotonically for a PostgreSQL leader.
+
+        ``require_no_prior_cursor`` folds the 'no cursor already carries
+        generation - 1' check into this SAME locked transaction, right beside
+        the ``SET fence._lock`` every projection write takes on the fence node
+        (second independent review of PR #230). A standalone pre-check
+        (``has_cursor_evidence``, called separately and unlocked) leaves a
+        window: an in-flight predecessor write can commit between that read
+        and this advance. Because both this activation and ``apply``'s
+        ``_LOCK_FENCE_AND_CURSOR`` take a write lock on the same fence node
+        before touching anything else, whichever transaction reaches that
+        lock second is guaranteed to observe the other's committed outcome --
+        either the prior cursor is already visible here (refuse), or the
+        fence has already moved past the predecessor's generation by the time
+        it resumes (its own lock-scoped generation check then rejects it).
+        """
         params = {
             "owner_id": leadership.owner_id,
             "generation": leadership.generation,
             "allow_advance": not leadership.armed,
+            "require_no_prior_cursor": require_no_prior_cursor,
         }
         async with self._driver.session() as session:
             transaction = await session.begin_transaction(timeout=self._timeout)
@@ -279,7 +302,7 @@ class Neo4jGraphProjectionWriter:
                 raise
 
     async def has_cursor_evidence(self, generation: int) -> bool:
-        """Prove whether Neo4j already durably applied anything at ``generation``.
+        """Cheap, unlocked early exit -- NOT the proof the bounded advance relies on.
 
         Equal Neo4j/PostgreSQL generation numbers alone do not prove the
         'crash between Neo4j activation and PG arm' story (decision
@@ -290,8 +313,17 @@ class Neo4jGraphProjectionWriter:
         content"). ``_ADVANCE_CURSOR`` stamps every successfully applied
         aggregate's cursor with the lease generation that touched it, so a
         cursor carrying this exact generation is durable, independent proof
-        that it was used for a real projection. ``GraphOutboxProjector``
-        refuses its bounded advance whenever this returns ``True``.
+        that it was used for a real projection.
+
+        This method reads that evidence in a standalone, unlocked transaction
+        -- it cannot serialize with a concurrent in-flight write, so a ``True``
+        here is trustworthy (refuse immediately, skip the PG round trip) but a
+        ``False`` is not (second independent review of PR #230: the write could
+        land microseconds later). ``GraphOutboxProjector`` uses it only to skip
+        the PostgreSQL CAS attempt early when refusal is already certain; the
+        actual authority is ``activate_generation(require_no_prior_cursor=True)``,
+        which re-checks this exact evidence inside the same locked transaction
+        as the advance itself.
         """
         params = {"generation": generation}
         async with self._driver.session() as session:

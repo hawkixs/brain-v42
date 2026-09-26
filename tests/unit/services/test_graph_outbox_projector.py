@@ -128,8 +128,15 @@ class _FencedWriter:
     async def activate_generation(
         self,
         leadership: _ProjectionLeadership,
+        *,
+        require_no_prior_cursor: bool = False,
     ) -> ProjectionActivation:
-        self.trace.append(("writer.activate_generation", leadership))
+        if require_no_prior_cursor:
+            self.trace.append(
+                ("writer.activate_generation", leadership, require_no_prior_cursor)
+            )
+        else:
+            self.trace.append(("writer.activate_generation", leadership))
         if self.activation_results:
             return self.activation_results.pop(0)
         return ProjectionActivation(True, leadership.generation)
@@ -360,7 +367,7 @@ async def test_fenced_batch_advances_generation_once_after_confirmed_unarmed_act
         ("writer.activate_generation", subject.leadership),
         ("writer.has_cursor_evidence", subject.leadership.generation),
         ("repo.advance_confirmed_generation", subject.leadership, 11),
-        ("writer.activate_generation", advanced),
+        ("writer.activate_generation", advanced, True),
         ("repo.arm_leadership", advanced),
         ("repo.claim_pending", advanced, 2, 11, 3),
         ("repo.renew_claim", subject.claims[0], 11),
@@ -475,7 +482,7 @@ async def test_fenced_batch_gives_up_after_one_failed_bounded_advance() -> None:
         ("writer.activate_generation", subject.leadership),
         ("writer.has_cursor_evidence", subject.leadership.generation),
         ("repo.advance_confirmed_generation", subject.leadership, 11),
-        ("writer.activate_generation", advanced),
+        ("writer.activate_generation", advanced, True),
         ("repo.release_leadership", advanced),
     ]
 

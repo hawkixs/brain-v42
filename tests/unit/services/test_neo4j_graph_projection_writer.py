@@ -76,6 +76,15 @@ class _Neo4jState:
     transactions: list[_ExplicitTransaction] = field(default_factory=list)
     implicit_runs: int = 0
     missing_anchor_keys: set[str] = field(default_factory=set)
+    # Models the write lock Neo4j takes on the fence node for every query
+    # that sets `fence._lock`: any two transactions touching the fence must
+    # serialize on it exactly like real Neo4j does (proof of the fix for the
+    # second independent review of PR #230, ticket 416266ec).
+    fence_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    pause_query_substring: str | None = None
+    fence_locked_signal: asyncio.Event | None = None
+    resume_signal: asyncio.Event | None = None
+    paused_once: bool = False
     cancel_on_run: bool = False
     run_error: BaseException | None = None
     cancel_on_rollback: bool = False
@@ -118,6 +127,7 @@ class _ExplicitTransaction:
         self.cancelled = False
         self._is_closed = False
         self._observed_outcome: str | None = None
+        self._holds_fence_lock = False
 
     async def run(
         self,
@@ -134,6 +144,9 @@ class _ExplicitTransaction:
         text = _query_text(query)
         self.queries.append((text, params))
         self.parameters.update(params)
+        if "BrainProjectionFence" in text and not self._holds_fence_lock:
+            await self._state.fence_lock.acquire()
+            self._holds_fence_lock = True
         if "has_evidence" in text:
             generation = params.get("generation")
             has_evidence = any(
@@ -146,7 +159,25 @@ class _ExplicitTransaction:
             return _Result(None)
         if not system_query and self._state.missing_mutation_anchors:
             record.pop("anchors", None)
-        return _Result(record)
+        result = _Result(record)
+        if (
+            self._state.pause_query_substring is not None
+            and self._state.pause_query_substring in text
+            and not self._state.paused_once
+        ):
+            self._state.paused_once = True
+            fence_locked_signal = self._state.fence_locked_signal
+            resume_signal = self._state.resume_signal
+            assert fence_locked_signal is not None
+            assert resume_signal is not None
+            fence_locked_signal.set()
+            await resume_signal.wait()
+        return result
+
+    def _release_fence_lock_if_held(self) -> None:
+        if self._holds_fence_lock:
+            self._holds_fence_lock = False
+            self._state.fence_lock.release()
 
     def _record_for_current_state(self, query: str) -> dict[str, Any]:
         generation = self.parameters.get(
@@ -168,11 +199,20 @@ class _ExplicitTransaction:
                 self._state.fence_generation = requested_generation - 1
             self._state.activation_attempts += 1
             allow_advance = bool(self.parameters.get("allow_advance"))
-            accepted = generation is not None and (
-                (allow_advance and requested_generation == self._state.fence_generation + 1)
-                or (
-                    requested_generation == self._state.fence_generation
-                    and self._state.fence_owner_id in {None, owner_id}
+            require_no_prior_cursor = bool(self.parameters.get("require_no_prior_cursor"))
+            has_prior_cursor = require_no_prior_cursor and any(
+                cursor.lease_generation == requested_generation - 1
+                for cursor in self._state.cursors.values()
+            )
+            accepted = (
+                generation is not None
+                and not has_prior_cursor
+                and (
+                    (allow_advance and requested_generation == self._state.fence_generation + 1)
+                    or (
+                        requested_generation == self._state.fence_generation
+                        and self._state.fence_owner_id in {None, owner_id}
+                    )
                 )
             )
             current = requested_generation if accepted else self._state.fence_generation
@@ -224,6 +264,7 @@ class _ExplicitTransaction:
     async def commit(self) -> None:
         if self._state.commit_error is not None:
             self._is_closed = True
+            self._release_fence_lock_if_held()
             raise self._state.commit_error
         if self._observed_outcome == "stale_generation":
             raise AssertionError("a stale generation transaction must be rolled back")
@@ -237,6 +278,7 @@ class _ExplicitTransaction:
             self._state.fence_owner_id = str(self.parameters["owner_id"])
             self.committed = True
             self._is_closed = True
+            self._release_fence_lock_if_held()
             return
 
         if self._observed_outcome in {"applied", "already_current"}:
@@ -265,18 +307,22 @@ class _ExplicitTransaction:
             )
         self.committed = True
         self._is_closed = True
+        self._release_fence_lock_if_held()
 
     async def rollback(self) -> None:
         if self._state.cancel_on_rollback:
+            self._release_fence_lock_if_held()
             raise asyncio.CancelledError
         if self.closed():
             raise AssertionError("a closed transaction must not be rolled back")
         self.rolled_back = True
         self._is_closed = True
+        self._release_fence_lock_if_held()
 
     def cancel(self) -> None:
         self.cancelled = True
         self._is_closed = True
+        self._release_fence_lock_if_held()
 
     def closed(self) -> bool:
         return self._is_closed
@@ -475,6 +521,116 @@ async def test_has_cursor_evidence_is_true_when_neo4j_already_projected_under_th
 
     assert await writer.has_cursor_evidence(70) is True
     assert await writer.has_cursor_evidence(71) is False
+
+
+@pytest.mark.asyncio
+async def test_bounded_advance_allows_a_genuine_gap_with_no_prior_cursor() -> None:
+    """``require_no_prior_cursor=True`` behaves like the ordinary bounded
+    advance when nothing was ever durably projected under the generation
+    being skipped -- the genuine 'crash before any arm ever succeeded' case
+    from ticket 416266ec still recovers without recovery 035."""
+    driver = _Driver()
+    driver.state.fence_generation = 70
+    driver.state.fence_owner_id = "predecessor"
+    writer = Neo4jGraphProjectionWriter(driver, timeout=0.2)
+
+    activation = await writer.activate_generation(
+        _leadership(71, owner="successor"),
+        require_no_prior_cursor=True,
+    )
+
+    assert activation == ProjectionActivation(True, 71)
+
+
+@pytest.mark.asyncio
+async def test_bounded_advance_refuses_sequentially_when_evidence_already_committed() -> None:
+    """Second independent review of PR #230: even with no concurrency at all,
+    a cursor already durably stamped with the generation being skipped must
+    refuse the bounded advance -- this is the floor the atomic check must
+    never regress below."""
+    driver = _Driver()
+    writer = Neo4jGraphProjectionWriter(driver, timeout=0.2)
+    await writer.activate_generation(_leadership(70, owner="predecessor"))
+    await writer.apply(_entity_claim(generation=70, revision=1, owner_id="predecessor"))
+
+    activation = await writer.activate_generation(
+        _leadership(71, owner="successor"),
+        require_no_prior_cursor=True,
+    )
+
+    assert activation == ProjectionActivation(False, 70)
+
+
+@pytest.mark.asyncio
+async def test_bounded_advance_refuses_an_inflight_predecessor_write_that_commits_first() -> None:
+    """BLOCKER fix (second independent review of PR #230): a standalone,
+    unlocked ``has_cursor_evidence`` pre-check leaves a window between 'no
+    evidence yet' and the advance -- a predecessor's in-flight write for
+    generation 70 can commit inside that window. Folding the check into the
+    SAME locked transaction as the advance closes it: whichever side reaches
+    the fence's write lock second observes the other's outcome. Here the
+    predecessor's write is paused holding the fence lock; the successor's
+    atomic advance must block on that exact lock (not merely on the earlier,
+    now-stale 'no evidence' read) and then refuse once it sees the cursor the
+    predecessor just committed."""
+    driver = _Driver()
+    writer = Neo4jGraphProjectionWriter(driver, timeout=0.2)
+    await writer.activate_generation(_leadership(70, owner="predecessor"))
+    predecessor_claim = _entity_claim(generation=70, revision=1, owner_id="predecessor")
+
+    driver.state.pause_query_substring = "MERGE (cursor:BrainProjectionCursor"
+    driver.state.fence_locked_signal = asyncio.Event()
+    driver.state.resume_signal = asyncio.Event()
+
+    apply_task = asyncio.create_task(writer.apply(predecessor_claim))
+    await asyncio.wait_for(driver.state.fence_locked_signal.wait(), timeout=1.0)
+
+    advance_task = asyncio.create_task(
+        writer.activate_generation(
+            _leadership(71, owner="successor"),
+            require_no_prior_cursor=True,
+        )
+    )
+    await asyncio.sleep(0)
+    assert advance_task.done() is False, (
+        "the atomic advance must block on the same fence lock the in-flight "
+        "predecessor write holds, not race past it"
+    )
+
+    driver.state.resume_signal.set()
+    assert await asyncio.wait_for(apply_task, timeout=1.0) is ProjectionOutcome.APPLIED
+    advance = await asyncio.wait_for(advance_task, timeout=1.0)
+
+    assert advance == ProjectionActivation(False, 70)
+    assert driver.state.fence_generation == 70
+    assert driver.state.fence_owner_id == "predecessor"
+
+
+@pytest.mark.asyncio
+async def test_bounded_advance_then_rejects_the_predecessors_delayed_write() -> None:
+    """Mirror ordering of the interleaving above: the atomic advance to
+    generation 71 lands first (no prior cursor existed yet at that point), so
+    the predecessor's delayed write for generation 70 must be rejected by the
+    new fence rather than silently landing -- the exact failure mode the
+    second independent review of PR #230 named ('Neo4j retains a fact absent
+    from restored PostgreSQL')."""
+    driver = _Driver()
+    writer = Neo4jGraphProjectionWriter(driver, timeout=0.2)
+    await writer.activate_generation(_leadership(70, owner="predecessor"))
+    predecessor_claim = _entity_claim(generation=70, revision=1, owner_id="predecessor")
+
+    advance = await writer.activate_generation(
+        _leadership(71, owner="successor"),
+        require_no_prior_cursor=True,
+    )
+    assert advance == ProjectionActivation(True, 71)
+
+    outcome = await writer.apply(predecessor_claim)
+
+    assert outcome is ProjectionOutcome.STALE_GENERATION
+    assert driver.state.cursors == {}
+    assert driver.state.fence_generation == 71
+    assert driver.state.fence_owner_id == "successor"
 
 
 @pytest.mark.asyncio

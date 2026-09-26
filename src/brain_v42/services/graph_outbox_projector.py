@@ -98,11 +98,19 @@ class GraphOutboxProjector:
                 # can resurrect this same unarmed shape at a generation Neo4j
                 # actually armed and used for real deliveries before this
                 # process ever started (the runbook's own admitted residual --
-                # "same generation does not mean same content"). Ask Neo4j
-                # whether it already holds a cursor stamped with this exact
-                # generation; if it does, that is durable proof of real prior
-                # activity the restored PostgreSQL no longer remembers, so
-                # refuse the advance and fall through to recovery instead.
+                # "same generation does not mean same content"). A standalone,
+                # unlocked ``has_cursor_evidence`` read cannot close that hole
+                # by itself (second independent review of PR #230): a
+                # predecessor's in-flight write can commit between that read
+                # and the advance below, landing under a fence this process
+                # believes it just claimed unopposed. Use it here only as a
+                # cheap early exit -- skip the PostgreSQL CAS entirely when
+                # refusal is already certain -- and let the real authority be
+                # ``require_no_prior_cursor=True`` on the retry activation
+                # below, which re-checks the exact same evidence inside the
+                # SAME locked Neo4j transaction that performs the advance, so
+                # an in-flight predecessor write and this advance always
+                # serialize on the fence's own write lock.
                 if (
                     not leadership.armed
                     and activation.current_generation == leadership.generation
@@ -115,7 +123,10 @@ class GraphOutboxProjector:
                     if advanced is not None:
                         leadership = advanced
                         self._leadership = leadership
-                        activation = await self._graph.activate_generation(leadership)
+                        activation = await self._graph.activate_generation(
+                            leadership,
+                            require_no_prior_cursor=True,
+                        )
             if not activation.accepted:
                 release_after_batch = True
                 reason = (
