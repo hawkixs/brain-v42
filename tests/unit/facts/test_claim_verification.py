@@ -627,3 +627,48 @@ async def test_verify_bounds_concurrent_owned_sessions_below_the_limit(
     assert factory.peak <= limit
     assert factory.active == 0
     assert all(row.verdict != "unreadable" for row in appended)
+
+
+async def test_refresh_budget_exhaustion_is_refused_without_writing_a_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registry refusal for an exhausted refresh budget must not become a permanent verdict.
+
+    Ticket 5c47578b: `FactRegistry._unreadable` mints a fresh `observation_id` on every
+    call, so the `observation_already_verified` guard can never catch a `refresh_budget`
+    refusal -- without an explicit check, `append_verdict` would insert one unprunable
+    row per retry for a purely internal capacity limit.
+    """
+    probe = _Probe()
+    registry = _registry(probe)
+    service = _service(registry)
+    rows = await _memory_repository(monkeypatch, _claim())
+
+    async def exhausted_measurement(name: str, *, max_age: timedelta) -> Unreadable:
+        return Unreadable(
+            fact="verification_lag",
+            definition_version=1,
+            target=FactTarget.PRODUCTION,
+            error_code="refresh_budget",
+            where=None,
+            observation_id=uuid4(),
+            measured_at=datetime(2026, 9, 22, tzinfo=UTC),
+            duration_ms=0,
+            ttl_seconds=30,
+            source_kind="probe",
+        )
+
+    monkeypatch.setattr(registry, "measure", exhausted_measurement)
+
+    with pytest.raises(ClaimVerificationError) as error:
+        await service.verify(
+            _claim().id,
+            issuer_identity="mcp:codex",
+            issuer_kind="robot",
+            idempotency_key="fresh-key",
+            session=SimpleNamespace(),
+        )
+
+    assert error.value.code == "refresh_budget_exhausted"
+    assert rows == []
+    assert probe.runs == 0

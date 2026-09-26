@@ -70,6 +70,18 @@ def _historical_unreadable(claim: ScopedClaim, *, now: datetime) -> Unreadable:
     )
 
 
+def _reject_if_refresh_budget_exhausted(measurement: Measurement) -> None:
+    """Refuse cleanly instead of appending a durable verdict for an internal capacity limit.
+
+    `FactRegistry._unreadable` mints a fresh `observation_id` on every refusal, so an
+    exhausted refresh budget (`error_code="refresh_budget"`) never matches an existing
+    stored observation: unchecked, `_verify` would append one unprunable ledger row per
+    retry for a cause that has nothing to do with the claim itself (ticket 5c47578b).
+    """
+    if isinstance(measurement, Unreadable) and measurement.error_code == "refresh_budget":
+        raise ClaimVerificationError("refresh_budget_exhausted")
+
+
 def _comparison(claim: ScopedClaim, registry: FactRegistry, measurement: Measurement) -> Comparison:
     """Reject mismatched metadata before comparison can turn it into a false verdict."""
     if measurement.fact != claim.fact_name:
@@ -170,8 +182,10 @@ class ClaimVerificationService:
             return existing
 
         measurement = await self._measure(claim)
+        _reject_if_refresh_budget_exhausted(measurement)
         if await lookup_observation(session, claim.id, measurement.observation_id) is not None:
             measurement = await self._measure(claim, force_fresh=True)
+            _reject_if_refresh_budget_exhausted(measurement)
             if await lookup_observation(session, claim.id, measurement.observation_id) is not None:
                 raise ClaimVerificationError("observation_already_verified")
 
