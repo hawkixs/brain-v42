@@ -71,7 +71,7 @@ def _routes(app: Any) -> set[tuple[str, str]]:
 
 
 class TestTheBindIsRefusedWithoutAnOptIn:
-    @pytest.mark.parametrize("host", ["0.0.0.0", "10.0.0.5", "192.168.1.12", "::"])
+    @pytest.mark.parametrize("host", ["0.0.0.0", "10.0.0.5", "192.0.2.12", "::"])
     def test_a_non_loopback_host_refuses_to_build_settings(self, host: str) -> None:
         with pytest.raises(ValidationError) as caught:
             _settings(metrics_host=host)

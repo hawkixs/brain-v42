@@ -2018,9 +2018,9 @@ def test_documented_embedding_topology_matches_restored_local_default() -> None:
 
     for document in _docs_including_claude(README, ARCHITECTURE):
         assert contract in document
-        assert "192.168.1.11:8003" not in document
+        assert "192.0.2.11:8003" not in document
     assert endpoint in SCHEMA
-    assert "192.168.1.11:8003" not in SCHEMA
+    assert "192.0.2.11:8003" not in SCHEMA
     assert "SUPERSEDED FOR ACTIVE BRAIN TRAFFIC" in DEV_PC_RUNBOOK
     assert "is the backbone of the whole ReD ecosystem" not in DEV_PC_RUNBOOK
     assert "(and every `brain_*` consumer) keeps" not in DEV_PC_RUNBOOK

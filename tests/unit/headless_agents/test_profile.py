@@ -52,7 +52,7 @@ class TestMcpServer:
     @pytest.mark.parametrize(
         "url",
         [
-            "http://192.168.1.12:8765/mcp",
+            "http://192.0.2.12:8765/mcp",
             "http://example.test/mcp",
             "ftp://127.0.0.1/mcp",
             "http://user:pw@127.0.0.1:8765/mcp",

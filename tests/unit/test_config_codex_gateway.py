@@ -71,7 +71,7 @@ def test_codex_gateway_env_bind_all_interfaces_is_refused_without_the_opt_in(
     assert settings.brain_codex_gateway_host != "0.0.0.0"
 
 
-@pytest.mark.parametrize("host", ["192.168.1.12", "gateway.example.com"])
+@pytest.mark.parametrize("host", ["192.0.2.12", "gateway.example.com"])
 def test_codex_gateway_rejects_unapproved_bind_hosts(host: str) -> None:
     with pytest.raises(ValidationError, match="approved private bind"):
         _settings(brain_codex_gateway_host=host)
