@@ -676,6 +676,50 @@ def test_ctrl_c_during_the_reviewers_kills_their_providers_then_removes_the_work
     assert _worktrees(world) == [str(world.repo.resolve())]
 
 
+def test_a_provider_started_after_the_interruption_is_killed_too(world: World) -> None:
+    """Codex review of PR #222: a killed provider exits, and the chain may start its next
+    link after the kill -- that provider must die as well, or the interruption waits for
+    its timeout."""
+    import signal
+    import time
+
+    from headless_agents import procgroup
+
+    world.commit_by_hand()
+    barrier = threading.Barrier(3)
+    late: list[subprocess.Popen[bytes]] = []
+
+    def hang_then_fall_through(spec: RunSpec) -> str:
+        process, lifeline = procgroup.spawn_watched(["sleep", "60"], start_new_session=True)
+        barrier.wait(timeout=5)
+        try:
+            process.wait()
+        finally:
+            lifeline.release()
+        # The next link of the chain, started after the kill.
+        second, second_lifeline = procgroup.spawn_watched(["sleep", "60"], start_new_session=True)
+        late.append(second)
+        try:
+            second.wait()
+        finally:
+            second_lifeline.release()
+        return APPROVE
+
+    for name in ("agy", "opencode"):
+        world.agents[name].answer = hang_then_fall_through
+
+    def interrupt() -> None:
+        barrier.wait(timeout=5)
+        os.kill(os.getpid(), signal.SIGINT)
+
+    threading.Thread(target=interrupt, daemon=True).start()
+    started = time.monotonic()
+    with pytest.raises(KeyboardInterrupt):
+        world.review("panel")
+    assert time.monotonic() - started < 20
+    assert len(late) == 2 and all(p.poll() is not None for p in late)
+
+
 def test_a_crash_writing_the_first_report_still_removes_the_worktree(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -190,19 +190,32 @@ def start_watcher() -> Lifeline:
     return Lifeline(life_write, watcher)
 
 
-#: The providers started by the current thread while it runs inside :func:`collecting`.
+class Collected:
+    """The providers a phase's worker threads started, and whether the phase was stopped.
+
+    Once :func:`kill_collected` ran, a provider started later -- the next link
+    of a chain whose provider was just killed -- is killed as soon as it starts:
+    the check and the registration share one lock with the kill.
+    """
+
+    def __init__(self) -> None:
+        self.processes: set[subprocess.Popen[Any]] = set()
+        self.stopped = False
+
+
+#: The :class:`Collected` of the current thread while it runs inside :func:`collecting`.
 _collector = threading.local()
 _collector_lock = threading.Lock()
 
 
 @contextmanager
-def collecting(live: set[subprocess.Popen[Any]]) -> Iterator[None]:
+def collecting(live: Collected) -> Iterator[None]:
     """Record in ``live`` every provider this thread starts, for :func:`kill_collected`.
 
     A rail kills its provider in an ``except BaseException`` around its wait,
     but a signal reaches the main thread only: a provider waited on in a worker
     thread -- a review's reviewers run in parallel -- would outlive a Ctrl-C.
-    The thread that received the interruption kills them through this set.
+    The thread that received the interruption kills them through ``live``.
     """
     _collector.live = live
     try:
@@ -211,17 +224,20 @@ def collecting(live: set[subprocess.Popen[Any]]) -> Iterator[None]:
         del _collector.live
 
 
-def kill_collected(live: set[subprocess.Popen[Any]]) -> None:
-    """``SIGKILL`` the process group of every provider in ``live`` still running.
+def _kill_group(process: subprocess.Popen[Any]) -> None:
+    # The group id is the provider's pid: every rail starts it in its own session.
+    if process.poll() is None:
+        with suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
 
-    The group id is the provider's pid: every rail starts it in its own session.
-    """
+
+def kill_collected(live: Collected) -> None:
+    """Stop ``live``: ``SIGKILL`` every running provider's group, and any started later."""
     with _collector_lock:
-        processes = list(live)
+        live.stopped = True
+        processes = list(live.processes)
     for process in processes:
-        if process.poll() is None:
-            with suppress(ProcessLookupError, PermissionError):
-                os.killpg(process.pid, signal.SIGKILL)
+        _kill_group(process)
 
 
 def spawn_watched(
@@ -245,15 +261,19 @@ def spawn_watched(
     except BaseException:
         lifeline.release()
         raise
-    live = getattr(_collector, "live", None)
+    live: Collected | None = getattr(_collector, "live", None)
     if live is not None:
         with _collector_lock:
-            live.add(process)
+            live.processes.add(process)
+            stopped = live.stopped
+        if stopped:
+            _kill_group(process)
     return process, lifeline
 
 
 __all__ = [
     "PR_SET_PDEATHSIG",
+    "Collected",
     "Lifeline",
     "collecting",
     "kill_collected",

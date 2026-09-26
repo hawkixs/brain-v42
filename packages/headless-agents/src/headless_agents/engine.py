@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -25,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Final
+from typing import Final
 
 from . import locks, procgroup, review_flow, reviews, write_flow
 from .capability import scoped_environment
@@ -1070,7 +1069,7 @@ def _run_phase(
         with said_lock:
             say(message)
 
-    live: set[subprocess.Popen[Any]] = set()
+    live = procgroup.Collected()
 
     def run_one(step: tuple[int, SlotPlan, str]) -> RunResult:
         index, slot, prompt = step
