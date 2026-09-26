@@ -188,10 +188,15 @@ services:
       embedding-llama:
         condition: service_healthy
     healthcheck:
-      # A real end-to-end healthcheck: POST /embed crosses the shim AND the
-      # llama server (the same philosophy as the legacy healthcheck after
-      # incident 410eb227 — never a /healthz-only false green).
-      test: ["CMD", "python3", "-c", "import urllib.request,json; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/embed',data=json.dumps({'texts':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=15); assert r.read(2)==b'[['"]
+      # A real healthcheck: POST /rerank crosses the shim AND its ONNX
+      # cross-encoder model (the same philosophy as the legacy healthcheck
+      # after incident 410eb227 — never a /healthz-only false green). /embed
+      # crossed llama.cpp/qodo instead, until qodo was retired from the
+      # default stack (2026-09-26, docs/ARCHITECTURE.md): with
+      # embedding-llama stopped, a /embed probe would report the shim
+      # unhealthy even though /rerank — the endpoint brain actually calls —
+      # works.
+      test: ["CMD", "python3", "-c", "import urllib.request,json; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/rerank',data=json.dumps({'query':'healthcheck','candidates':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=20); assert 'scores' in json.loads(r.read())"]
       interval: 60s
       timeout: 20s
       retries: 5

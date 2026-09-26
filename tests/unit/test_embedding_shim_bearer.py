@@ -289,7 +289,7 @@ class TestLoopbackExemption:
     route_localnet=0), and connections published by Docker arrive with the bridge
     gateway's address, never 127.0.0.1. Anyone who can already execute inside the
     container owns the process: asking them for a bearer protects nothing. The
-    compose healthcheck (POST /embed with no Authorization, run inside the
+    compose healthcheck (POST /rerank with no Authorization, run inside the
     container) lives exactly there.
     """
 
@@ -315,11 +315,17 @@ class TestLoopbackExemption:
 class TestComposeHealthcheckContract:
     """The ONLY production prober is the compose healthcheck — pinned from the YAML.
 
-    The PR 43 review reproduced the failure mode: in armed mode, this POST /embed
-    with no Authorization returned 401 → a container unhealthy for life, while the
-    /healthz canary stayed green. The test replays the REAL request (URL, body and
-    absence of Authorization extracted from the compose, never retyped) against the
-    app in armed mode AND in no-secret mode.
+    The PR 43 review reproduced the failure mode: in armed mode, this POST with no
+    Authorization returned 401 → a container unhealthy for life, while the /healthz
+    canary stayed green. The test replays the REAL request (URL, body and absence of
+    Authorization extracted from the compose, never retyped) against the app in
+    armed mode AND in no-secret mode.
+
+    The probed endpoint moved from /embed to /rerank on 2026-09-26, when qodo was
+    retired from the default stack (docs/ARCHITECTURE.md): with embedding-llama
+    stopped, an /embed probe would report the shim unhealthy for a reason unrelated
+    to the shim itself, while /rerank — served locally by the ONNX cross-encoder —
+    still works.
     """
 
     @staticmethod
@@ -352,8 +358,8 @@ class TestComposeHealthcheckContract:
             response = await client.post(path, json=body)
 
         assert response.status_code == 200
-        # The compose's script literally checks r.read(2) == b'[['.
-        assert response.content[:2] == b"[["
+        # The compose's script literally checks 'scores' in json.loads(r.read()).
+        assert "scores" in response.json()
 
     @pytest.mark.asyncio
     async def test_the_real_healthcheck_stays_green_without_any_secret(self) -> None:
