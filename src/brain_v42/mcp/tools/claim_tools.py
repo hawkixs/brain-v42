@@ -126,11 +126,19 @@ def register_claim_tools(
     verifier: ClaimVerificationService,
     read_service: ClaimReadService | None = None,
 ) -> None:
-    """Register the verification write and, when supplied, the two scoped reads.
+    """Register the verification write and the two scoped, SELECT-only reads.
 
     `read_service` is optional so existing standalone tests that only exercise
-    `brain_claim_verify` keep registering exactly one tool; real composition
-    (`mcp/server.py`) always supplies it.
+    `brain_claim_verify` can omit it -- but the two read tools are always
+    REGISTERED regardless. `mcp/server.py`'s composition root is walked
+    statically by the MCP tool census (`tests/unit/test_documentation_contract.py`),
+    which cannot trace a runtime-conditional tool registration ("dynamic
+    control flow can bypass registration calls"): only the tools' BEHAVIOUR is
+    gated on `read_service`, exactly like the optional `claim_read_svc` already
+    gates `brain_get`/`brain_search` (crud_tools.py, brain_tools.py) without
+    ever skipping their registration. Real composition (`mcp/server.py`)
+    always supplies a `read_service`; without one, both read tools refuse
+    every call with `read_unavailable`.
     """
     claims = _FactsRegistry(mcp)
 
@@ -164,9 +172,6 @@ def register_claim_tools(
         )
         return _verdict_json(verdict)
 
-    if read_service is None:
-        return
-
     @claims.tool(version="1.0", annotations=_READ_ANNOTATIONS)
     async def brain_claim_list(
         project_key: str | None = None,
@@ -190,6 +195,8 @@ def register_claim_tools(
             after_seq: cursor -- only occurrences with a greater seq (default 0).
             limit: page size, 1 to 100 (default 50).
         """
+        if read_service is None:
+            raise ClaimReadError("read_unavailable")
         entry_id = _canonical_read_uuid(entity_id) if entity_id is not None else None
         after_seq = _bounded_seq(after_seq)
         limit = _bounded_limit(limit)
@@ -235,6 +242,8 @@ def register_claim_tools(
             after_seq: cursor -- only verdicts with a greater seq (default 0).
             limit: page size, 1 to 100 (default 50).
         """
+        if read_service is None:
+            raise ClaimReadError("read_unavailable")
         checked_id = _canonical_read_uuid(claim_id)
         after_seq = _bounded_seq(after_seq)
         limit = _bounded_limit(limit)

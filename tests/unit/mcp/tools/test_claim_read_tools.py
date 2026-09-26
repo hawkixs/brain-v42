@@ -277,8 +277,19 @@ def test_build_server_wires_one_read_service_into_register_claim_tools() -> None
     assert len(register_call.args) + len(register_call.keywords) >= 3
 
 
-async def test_omitting_the_read_service_registers_neither_read_tool() -> None:
-    """The optional dependency preserves the standalone brain_claim_verify test seam."""
+async def test_omitting_the_read_service_still_registers_both_read_tools() -> None:
+    """The two read tools stay REGISTERED even without a read_service.
+
+    `mcp/server.py`'s composition root is walked statically by the MCP tool
+    census (tests/unit/test_documentation_contract.py); that walk cannot trace
+    a runtime-conditional tool registration ("dynamic control flow can bypass
+    registration calls"). So the optional dependency that preserves the
+    standalone `brain_claim_verify` test seam can no longer skip REGISTERING
+    the two read tools -- it now gates only their BEHAVIOUR, exactly like the
+    optional `claim_read_svc` already does for `brain_get`/`brain_search`
+    (crud_tools.py, brain_tools.py): every call refuses with `read_unavailable`
+    until a real `read_service` is supplied.
+    """
     from brain_v42.mcp.tools.claim_tools import register_claim_tools
 
     app = FastMCP("claims", mask_error_details=True)
@@ -287,7 +298,14 @@ async def test_omitting_the_read_service_registers_neither_read_tool() -> None:
 
     async with Client(app) as client:
         names = {tool.name for tool in await client.list_tools()}
+        assert {"brain_claim_list", "brain_claim_history", "brain_claim_verify"} <= names
 
-    assert "brain_claim_list" not in names
-    assert "brain_claim_history" not in names
-    assert "brain_claim_verify" in names
+        list_result = await client.call_tool("brain_claim_list", {}, raise_on_error=False)
+        history_result = await client.call_tool(
+            "brain_claim_history", {"claim_id": str(CLAIM_ID)}, raise_on_error=False
+        )
+
+    assert list_result.is_error
+    assert "read_unavailable" in str(list_result.content)
+    assert history_result.is_error
+    assert "read_unavailable" in str(history_result.content)
