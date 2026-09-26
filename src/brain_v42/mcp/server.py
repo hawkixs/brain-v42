@@ -1047,6 +1047,7 @@ def build_server() -> BuiltServer:
         schema_state_svc=SchemaStateService(_session_factory),
         delivery_svc=services["delivery_svc"],
         fact_registry=services.get("fact_registry"),
+        claim_read_svc=claim_read_svc,
     )
 
     # Roadmap tools
