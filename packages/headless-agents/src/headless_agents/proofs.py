@@ -16,10 +16,28 @@ its installed version, and classifies a write role unconfined without a
 passing confinement proof. HTTP providers need none (plan decision P4): they
 run no local executor and load no operator configuration. A record that
 cannot be read counts as none.
+
+ISOLATION PROOF BINDING (ticket ha-051-agy, 2026-09-26). The CLI's own ``--version``
+string is not enough: it names the EXECUTOR, not how THIS package runs it. Two rails at
+the same CLI version can be isolated differently across a headless-agents upgrade or a
+regression -- the exact failure this ticket fixed for agy (0.5.0 ran it with a leaking
+``cwd``; 0.5.1 does not, and agy's own version string, "agy 1.2.11", never changed
+either time). :func:`isolation_fingerprint` binds a proof to the installed package's OWN
+source for that rail, so :func:`isolation_ok` refuses a proof recorded under one
+isolation behaviour before trusting it for another -- without forcing every rail to be
+re-recorded on every unrelated release: a rail whose isolation-relevant file did not
+change keeps the same fingerprint, hence the same proof. Deliberately scoped to
+isolation only, not confinement: confinement was not reported broken, and narrowing the
+blast radius keeps this change reviewable. A record written before this shipped carries
+no ``fingerprint`` key -- grandfathered as a match (see :func:`isolation_ok`), since
+nothing was ever measured to compare it against; from here forward, a rail's own next
+re-record starts binding it.
 """
 
 from __future__ import annotations
 
+import hashlib
+import importlib.resources
 import json
 import os
 import subprocess
@@ -34,6 +52,48 @@ from .state import Unknown, publish, read_optional
 
 CLI_RAILS: Final = ("claude", "codex", "agy", "opencode")
 
+#: The installed package's own file(s) whose content determines how each CLI
+#: rail builds its per-run isolation (the ephemeral HOME, its cwd, what gets
+#: copied into it). Read relative to the ``headless_agents`` package root
+#: through :mod:`importlib.resources`, so this works from an installed wheel,
+#: never from the caller's own working directory.
+_ISOLATION_SOURCE_FILES: Final[dict[str, tuple[str, ...]]] = {
+    "claude": ("providers/claude.py",),
+    "codex": ("providers/codex.py",),
+    "agy": ("providers/agy.py", "sandbox.py"),
+    "opencode": ("providers/opencode.py",),
+}
+
+
+def isolation_fingerprint(rail: str) -> str | None:
+    """A stable fingerprint of the source that builds ``rail``'s per-run isolation.
+
+    Computed from the INSTALLED package's own files, never from a caller-supplied
+    value: a proof records this at the moment it passed
+    (:func:`record_proof`), and :func:`isolation_ok` recomputes it fresh before
+    trusting that proof. A mismatch means the isolation-relevant code changed
+    since the proof was recorded -- an upgrade that fixed a leak, or a
+    regression that reopened one -- and the proof no longer describes what
+    would actually run now.
+
+    ``None`` for a rail :data:`_ISOLATION_SOURCE_FILES` does not cover, or
+    whose source cannot be read (a broken install): the caller decides what
+    that means -- :func:`isolation_ok` treats it the same as a record that
+    predates this check.
+    """
+    sources = _ISOLATION_SOURCE_FILES.get(rail)
+    if sources is None:
+        return None
+    digest = hashlib.sha256()
+    try:
+        package = importlib.resources.files("headless_agents")
+        for relative in sources:
+            digest.update(package.joinpath(relative).read_bytes())
+    except (OSError, ModuleNotFoundError):
+        return None
+    return digest.hexdigest()[:16]
+
+
 #: A root codex's sandbox treats as writable: a confinement probe plants a
 #: repository under it, in a fresh ``mkdtemp`` directory the live test removes.
 _SYSTEM_TMP: Final = Path("/tmp")  # nosec B108 - a probe target root, never a fixed path written to
@@ -43,6 +103,9 @@ _SYSTEM_TMP: Final = Path("/tmp")  # nosec B108 - a probe target root, never a f
 class Proof:
     passed: bool
     date: str
+    # Isolation only (see "ISOLATION PROOF BINDING" above): always `None` on a
+    # confinement `Proof`, and on an isolation one recorded before this shipped.
+    fingerprint: str | None = None
 
 
 @dataclass(frozen=True)
@@ -63,7 +126,10 @@ def _proof(value: object) -> Proof | None:
     passed, date = value.get("passed"), value.get("date")
     if not isinstance(passed, bool) or not isinstance(date, str):
         return None
-    return Proof(passed=passed, date=date)
+    fingerprint = value.get("fingerprint")
+    return Proof(
+        passed=passed, date=date, fingerprint=fingerprint if isinstance(fingerprint, str) else None
+    )
 
 
 def read_proof(state: Path, rail: str) -> ProofRecord | None:
@@ -99,16 +165,21 @@ def record_proof(
     record = ProofRecord(
         rail=rail,
         version=version,
-        isolation=Proof(isolation, date)
+        isolation=Proof(passed=isolation, date=date, fingerprint=isolation_fingerprint(rail))
         if isolation is not None
         else (keep.isolation if keep else None),
-        confinement=Proof(confinement, date)
+        confinement=Proof(passed=confinement, date=date)
         if confinement is not None
         else (keep.confinement if keep else None),
     )
 
     def as_dict(proof: Proof | None) -> dict[str, object] | None:
-        return None if proof is None else {"passed": proof.passed, "date": proof.date}
+        if proof is None:
+            return None
+        data: dict[str, object] = {"passed": proof.passed, "date": proof.date}
+        if proof.fingerprint is not None:
+            data["fingerprint"] = proof.fingerprint
+        return data
 
     publish(
         proof_path(state, rail),
@@ -123,16 +194,21 @@ def record_proof(
 
 
 def isolation_ok(state: Path, rail: str, version: str | None) -> bool:
-    """May ``rail`` execute? HTTP providers always; a CLI rail with a passing proof."""
+    """May ``rail`` execute? HTTP providers always; a CLI rail with a passing proof
+    recorded under the isolation source still installed (see :func:`isolation_fingerprint`
+    and "ISOLATION PROOF BINDING" above)."""
     if rail not in CLI_RAILS:
         return True
     record = read_proof(state, rail)
-    return (
-        record is not None
-        and record.version == version
-        and record.isolation is not None
-        and record.isolation.passed
-    )
+    if (
+        record is None
+        or record.version != version
+        or record.isolation is None
+        or not record.isolation.passed
+    ):
+        return False
+    fingerprint = record.isolation.fingerprint
+    return fingerprint is None or fingerprint == isolation_fingerprint(rail)
 
 
 def confinement(state: Path, rail: str, version: str | None) -> tuple[str, str | None]:
@@ -321,8 +397,12 @@ def isolation_label(state: Path, rail: str, version: str | None) -> str:
         return "not proven"
     if record.version != version:
         return f"not proven for this version (proof of {record.version})"
-    state_word = "isolated" if record.isolation.passed else "failed"
-    return f"{state_word} ({record.isolation.date})"
+    if not record.isolation.passed:
+        return f"failed ({record.isolation.date})"
+    fingerprint = record.isolation.fingerprint
+    if fingerprint is not None and fingerprint != isolation_fingerprint(rail):
+        return f"stale ({record.isolation.date}: the isolation source changed since; re-record)"
+    return f"isolated ({record.isolation.date})"
 
 
 __all__ = [
@@ -330,6 +410,7 @@ __all__ = [
     "Proof",
     "ProofRecord",
     "confinement",
+    "isolation_fingerprint",
     "plant_confinement_targets",
     "refused_attempts",
     "isolation_label",

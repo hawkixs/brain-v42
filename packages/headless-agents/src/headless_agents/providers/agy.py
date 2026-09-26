@@ -24,6 +24,33 @@ probed there before the spawn; a profile carrying both is refused, since the
 two do not compose. agy's ``view_file`` cannot list a directory, so the
 prompt carries the workspace's file list.
 
+NATIVE INSTRUCTION-FILE DISCOVERY, MEASURED 2026-09-26 (ticket ha-051-agy). Wholly
+independent of any tool call, and therefore invisible to the ``PreToolUse`` guard above
+-- which gates TOOL arguments, not the CLI's own startup -- agy 1.2.11 walks from its
+process's cwd up to the nearest ``.git`` root and natively loads every ``GEMINI.md`` /
+``AGENTS.md`` it finds along the way, unconditionally, before the first turn (agy's own
+bundled documentation: "the agent walks up from your current working directory to the
+repository root ... loading these files"). There is no CLI flag for it (``agy --help``
+lists none) and no measured ``settings.json`` key that disables it: the only candidate
+found in the installed binary -- a Go struct field tagged ``json:"contextFileName"`` --
+sits nowhere near the "Rules" discovery code that same bundled documentation describes,
+and that documentation hardcodes ``GEMINI.md``/``AGENTS.md`` with no mention of an
+override. So this is MASKED, not configured: a workspace run's process ``cwd`` is
+always the ephemeral HOME (below), never ``workspace.path``. The HOME has no ``.git``
+ancestor and carries neither file itself, so the walk finds nothing. Every tool
+argument stays an ABSOLUTE path checked against ``workspace.path`` regardless of cwd
+(see :func:`workspace_guard_holds`), so this costs nothing in confinement.
+
+RESIDUAL, not fixed by this: the same documentation also says the agent walks up from a
+FILE's own directory when the model actually opens or edits it. A real tool call into a
+directory that carries a rule file can still load it. The live isolation proof
+deliberately calls no tool (see its own module docstring) and is unaffected; a workspace
+run that DOES edit files is not proven immune to this residual. A further, narrower
+residual: ``run_command``'s own default ``Cwd``, when the model omits it, now resolves
+inside the ephemeral HOME rather than inside the workspace -- ``run_command`` was already
+unconfined once ``shell`` is armed (see :mod:`headless_agents.guards.agy_workspace`), so
+this changes convenience, never the confinement guarantee.
+
 THE RAIL'S ONLY DEVIATION. agy's ``Authorization`` is a literal: its
 documentation describes no ``${VAR}`` interpolation. The bearer is therefore
 WRITTEN to a file where the other two rails pass it through the environment.
@@ -35,6 +62,7 @@ from __future__ import annotations
 
 import json
 import os
+import pwd
 import subprocess
 import tempfile
 import time
@@ -447,6 +475,81 @@ def _effective_timeout(timeout_seconds: float, deadline: float | None) -> float:
     return max(0.0, min(timeout_seconds, deadline - time.monotonic()))
 
 
+def _nearest_git_ancestor(path: Path) -> Path | None:
+    """The ``.git`` entry -- file or directory, a linked worktree's ``.git``
+    is a file -- of the nearest directory at or above ``path``, or ``None``
+    when no ancestor up to ``/`` carries one.
+
+    This is exactly the boundary agy's own native upward walk (module
+    docstring, "NATIVE INSTRUCTION-FILE DISCOVERY") stops at: an ephemeral
+    HOME rooted here, or below, is not masked against it.
+    """
+    current = path.resolve()
+    while True:
+        candidate = current / ".git"
+        if candidate.exists():
+            return candidate
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
+
+
+def _agy_ephemeral_root_candidates(environ: Mapping[str, str]) -> list[Path]:
+    """Ordered candidates for the ephemeral-HOME root, before the git-ancestry
+    filter below: ``XDG_RUNTIME_DIR`` (a tmpfs, when it is set to an existing
+    directory), the operator's own cache directory for headless-agents --
+    ``pwd.getpwuid(os.getuid()).pw_dir``, read from the OS's user database,
+    NEVER an environment variable such as ``HOME``, exactly like
+    :func:`headless_agents.providers.codex._choose_codex_home_root`'s own
+    fallback -- then the system temporary directory.
+    """
+    candidates: list[Path] = []
+    xdg = default_ephemeral_root(environ)
+    if xdg is not None:
+        candidates.append(xdg)
+    try:
+        operator_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        # No passwd entry (a container's arbitrary uid): skip this candidate,
+        # never fall back to HOME, which a nested sandbox's own environment
+        # can set to its own writable directory.
+        pass
+    else:
+        candidates.append(operator_home / ".cache" / "headless-agents" / "agy-homes")
+    # Last resort: any local user can create a .git in a world-writable temp
+    # directory, so it comes after the two roots only the operator (or root)
+    # can write above.
+    candidates.append(Path(tempfile.gettempdir()))
+    return candidates
+
+
+def _choose_agy_ephemeral_root(
+    environ: Mapping[str, str], workspace: Workspace | None = None
+) -> tuple[Path | None, Path | None]:
+    """The first candidate of :func:`_agy_ephemeral_root_candidates` with no
+    ``.git`` ancestor, created (``0700``) if it does not exist yet.
+
+    Returns ``(root, None)`` on success. When every candidate is blocked,
+    returns ``(None, blocking_git)`` -- the ``.git`` entry of the FIRST
+    blocked candidate, named in the caller's refusal message -- rather than
+    build a HOME agy's native upward walk could still escape from.
+    """
+    first_block: Path | None = None
+    for candidate in _agy_ephemeral_root_candidates(environ):
+        if workspace is not None:
+            # Refused before anything is created, whatever its git ancestry.
+            refuse_home_under_workspace(candidate, workspace)
+        blocker = _nearest_git_ancestor(candidate)
+        if blocker is None:
+            candidate.mkdir(parents=True, exist_ok=True)
+            candidate.chmod(0o700)
+            return candidate, None
+        if first_block is None:
+            first_block = blocker
+    return None, first_block
+
+
 def _child_environment(
     home: Path, environ: Mapping[str, str], profile: CapabilityProfile
 ) -> dict[str, str]:
@@ -485,10 +588,14 @@ def run_agy(
     ``environment`` is the AMBIENT environment to read ``PATH``/``LANG`` and
     the profile's passthrough variables from; the child gets a rebuilt one
     whose ``HOME`` is the ephemeral directory. ``real_home`` defaults to the
-    ambient ``HOME``; ``ephemeral_root`` to ``XDG_RUNTIME_DIR`` when it exists,
-    else the system temporary directory. ``guard_proven=True`` skips the probe
-    for a caller that has just run :func:`guard_denies_machine_tools` on the
-    same path itself -- the path checks below still apply.
+    ambient ``HOME``. When ``ephemeral_root`` is omitted, the root is chosen
+    by :func:`_choose_agy_ephemeral_root`: ``XDG_RUNTIME_DIR`` when it exists,
+    else the operator's own cache directory, else the system temporary
+    directory -- the FIRST of those with no ``.git`` ancestor, since agy's own
+    native upward walk (see the module docstring) would otherwise find real
+    instruction files. ``guard_proven=True`` skips the probe for a caller that
+    has just run :func:`guard_denies_machine_tools` on the same path itself --
+    the path checks below still apply.
 
     ``profile.workspace`` runs the agent in that directory under the
     package's own guard instead; ``prompt`` is then expected to carry the
@@ -498,16 +605,29 @@ def run_agy(
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     ambient = dict(environment) if environment is not None else dict(os.environ)
-    root = ephemeral_root if ephemeral_root is not None else default_ephemeral_root(ambient)
-    if workspace is not None:
-        # Every HOME of this run is created under this root: refuse it here,
-        # as ValueError like the caller-guard refusal, before any file exists.
-        refuse_home_under_workspace(
-            root if root is not None else Path(tempfile.gettempdir()), workspace
-        )
+
+    # Every HOME of this run is created under this root. A root inside the
+    # workspace is refused as ValueError, like the caller-guard refusal,
+    # BEFORE any file exists (the chooser checks each candidate the same way).
+    blocking_git: Path | None = None
+    root: Path | None
+    if ephemeral_root is not None:
+        root = ephemeral_root
+        if workspace is not None:
+            refuse_home_under_workspace(root, workspace)
+    else:
+        root, blocking_git = _choose_agy_ephemeral_root(ambient, workspace)
 
     for path in (events_log, report_log, stderr_log):
         path.parent.mkdir(parents=True, exist_ok=True)
+    if root is None:
+        stderr_log.write_text(
+            "agy refused: every ephemeral-HOME root candidate has a .git ancestor"
+            f" ({blocking_git}); agy's own native upward walk (see the module"
+            " docstring) would load its instruction files from there\n",
+            encoding="utf-8",
+        )
+        return PROVIDER_FALLBACK_EXIT_CODE
     report_log.write_text("", encoding="utf-8")
 
     # Fail-closed BEFORE launching anything: without a proven guard, an agy
@@ -577,6 +697,21 @@ def run_agy(
             )
             return TIMEOUT_EXIT_CODE
 
+        # Checked again right before the launch (review of PR #228): a .git
+        # that appeared above the HOME since its root was chosen would let
+        # agy's upward walk reach that repository's instruction files. What
+        # remains is a writer racing this very check -- only the operator or
+        # root under XDG_RUNTIME_DIR or the operator's cache, any local user
+        # only under the temp-directory fallback.
+        late_git = _nearest_git_ancestor(home)
+        if late_git is not None:
+            stderr_log.write_text(
+                f"agy not launched: {late_git} appeared above the ephemeral HOME"
+                " after its root was chosen\n",
+                encoding="utf-8",
+            )
+            return PROVIDER_FALLBACK_EXIT_CODE
+
         with (
             events_log.open("w", encoding="utf-8") as events_stream,
             stderr_log.open("w", encoding="utf-8") as stderr_stream,
@@ -587,7 +722,11 @@ def run_agy(
                     stdin=subprocess.DEVNULL,
                     stdout=events_stream,
                     stderr=stderr_stream,
-                    cwd=home if workspace is None else workspace.path,
+                    # ALWAYS the ephemeral HOME, including with a workspace: see
+                    # "NATIVE INSTRUCTION-FILE DISCOVERY" in the module
+                    # docstring. Tool arguments are absolute and checked against
+                    # `workspace.path` regardless of where the process itself runs.
+                    cwd=home,
                     env=_child_environment(home, ambient, profile),
                     text=True,
                     start_new_session=True,

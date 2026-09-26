@@ -18,11 +18,73 @@ commit that shipped it — deliberately outside the `v*` pattern, which names br
 version and drives its release workflow. Pin it:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.0#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.1#subdirectory=packages/headless-agents"
 ```
 
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
+
+## 0.5.1 — 2026-09-26 (tag `headless-agents-v0.5.1` after merge)
+
+Ticket ha-051-agy: headless-agents 0.5.0 refused the agy rail outright, because agy
+1.2.11 had no passing isolation proof -- the live proof measured the repository's own
+`CLAUDE.md`/`AGENTS.md`/`GEMINI.md` reaching the model with no tool call involved.
+
+### Fixed
+- **The ephemeral HOME agy starts in never sits under a git work tree.** Its root is the
+  first of `XDG_RUNTIME_DIR`, the operator's `~/.cache/headless-agents/agy-homes`, then
+  the system temporary directory, whose ancestry up to `/` carries no `.git` (file or
+  directory); if none qualifies the run is refused before anything starts, and the
+  ancestry is checked again right before agy launches. Otherwise agy's upward walk
+  would reach that repository's instruction files (review of PR #228; on the
+  operator's host `/tmp` itself is a repository). Residual: a writer racing that last
+  check -- only the operator or root above the first two roots, any local user only
+  under the temp-directory fallback.
+- **agy no longer loads the repository's instruction files natively.** Measured on agy
+  1.2.11: with a workspace, the CLI walks from its own process `cwd` up to the nearest
+  `.git` root and loads every `GEMINI.md`/`AGENTS.md` it finds along the way,
+  unconditionally and before the first turn -- invisible to the `PreToolUse` guard,
+  which gates a tool's ARGUMENTS, never the CLI's own startup. Measured alongside it:
+  `agy --help` has no flag for this, and no `settings.json` key was found that disables
+  it either (the one candidate in the installed binary, a Go struct field tagged
+  `json:"contextFileName"`, sits nowhere near the "Rules" discovery code agy's own
+  bundled documentation describes, which hardcodes `GEMINI.md`/`AGENTS.md` with no
+  mention of an override). The fix masks the files from agy's view instead of
+  configuring it away: a workspace run's process `cwd` is now always the ephemeral HOME,
+  never the workspace directory itself. The HOME has no `.git` ancestor and carries
+  neither file, so the walk finds nothing to load. Every tool argument stays an absolute
+  path checked against the workspace root regardless of cwd
+  (`agy.workspace_guard_holds`), so confinement is unaffected. Residual, not fixed by
+  this: agy also walks up from a file's own directory when a tool call actually opens or
+  edits it, per the same bundled documentation -- see the "NATIVE INSTRUCTION-FILE
+  DISCOVERY" section of `providers/agy.py`'s module docstring. A further, narrower
+  residual: `run_command`'s own default `Cwd`, when the model omits it, now resolves
+  inside the ephemeral HOME rather than inside the workspace -- `run_command` was already
+  unconfined once `shell` is armed, so this changes convenience, never confinement.
+- **The isolation proof now binds to a fingerprint of the installed package's own
+  isolation-building source for that rail** (`proofs.isolation_fingerprint`), not to the
+  executor's `--version` string alone. The CLI's version never says whether
+  headless-agents itself changed how it runs it: a proof recorded while agy 1.2.11 ran
+  under the fix above must not silently cover a later downgrade, or a future
+  regression, back to the leaking `cwd` -- agy's own version string would be identical
+  either time. `isolation_ok` now refuses a proof whose recorded fingerprint does not
+  match the rail's currently installed source. Proofs recorded before this shipped
+  carry no fingerprint at all and are grandfathered as a match, so claude's, codex's and
+  opencode's existing proofs stay valid -- their rails did not change in this release.
+  Scoped to isolation only; confinement proofs are unaffected.
+
+**Operators must re-record the agy proof** after installing 0.5.1: the one recorded
+under 0.5.0 is both a documented failure (`"passed": false`) and, from here on, missing
+the fingerprint this release binds to.
+
+```sh
+HA_LIVE=1 pytest -m live tests/live/headless_agents/test_proofs_live.py -k "isolation and agy"
+```
+
+### Unchanged
+- Everything under contract at the top of this file. claude's, codex's and opencode's
+  isolation proofs, if already passing for their installed version, need no
+  re-recording: this release did not touch their rails.
 
 ## 0.5.0 — 2026-09-26, lot 5 of 5: the `live` suite, README and CHANGELOG (tag `headless-agents-v0.5.0` after merge)
 

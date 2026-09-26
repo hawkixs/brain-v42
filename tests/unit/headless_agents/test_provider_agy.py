@@ -7,6 +7,9 @@ from __future__ import annotations
 import functools
 import json
 import subprocess
+import tempfile
+import types
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -247,6 +250,30 @@ def _logs(tmp_path: Path) -> dict[str, Path]:
     }
 
 
+@pytest.fixture(autouse=True)
+def _host_git_ancestry_stops_at_tmp_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """On a host where /tmp itself is a git repository, every tmp_path sits under
+    a .git and agy's pre-launch ancestry check would refuse every run. The walk
+    stops at tmp_path's boundary for paths inside it, so a test sees exactly the
+    .git entries it creates; paths outside tmp_path keep the real walk."""
+    real = agy._nearest_git_ancestor
+    boundary = tmp_path.resolve()
+
+    def bounded(path: Path) -> Path | None:
+        current = Path(path).resolve()
+        if current != boundary and boundary not in current.parents:
+            return real(path)
+        while True:
+            candidate = current / ".git"
+            if candidate.exists():
+                return candidate
+            if current == boundary:
+                return None
+            current = current.parent
+
+    monkeypatch.setattr(agy, "_nearest_git_ancestor", bounded)
+
+
 def _run(tmp_path: Path, **overrides: object) -> int:
     real_home = tmp_path / "real-home"
     (real_home / ".x").mkdir(parents=True, exist_ok=True)
@@ -440,6 +467,162 @@ class TestRefusalsBeforeLaunch:
         assert Path(str(kwargs["cwd"])).parent.name.startswith("caller-")
 
 
+def _git_free_root() -> Path:
+    """A directory with no ``.git`` ancestor, for the fixtures below that
+    must be provably SAFE. NOT ``tmp_path``: pytest's own fixture lives under
+    the real ``/tmp`` on this machine, and this operator's own ``/tmp`` IS a
+    git repository (a stray ``/tmp/.git``) -- ticket ha-051-agy's own trigger
+    case. ``/dev/shm`` is a tmpfs outside that ancestry on this ecosystem's
+    Linux hosts; ``tempfile.gettempdir()`` (clean elsewhere, e.g. hosted CI)
+    is the fallback where it does not exist.
+    """
+    shm = Path("/dev/shm")
+    return shm if shm.is_dir() else Path(tempfile.gettempdir())
+
+
+@pytest.fixture()
+def git_free_dir() -> Iterator[Path]:
+    with tempfile.TemporaryDirectory(dir=str(_git_free_root()), prefix="ha-051-agy-") as name:
+        yield Path(name)
+
+
+class TestAgyEphemeralRootGitAncestry:
+    """ticket ha-051-agy: without an explicit ``ephemeral_root``, the chosen
+    root must have no ``.git`` ancestor up to ``/`` -- agy's own native
+    upward walk (module docstring, "NATIVE INSTRUCTION-FILE DISCOVERY") stops
+    at exactly that boundary and would otherwise load real instruction
+    files. On the operator's own host ``/tmp`` is itself a git repository,
+    so the plain XDG-or-system-temp fallback used to land right inside it.
+    """
+
+    def _fake_operator_pwd(self, monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+        # Mirrors codex's own fallback: the OS user database, never HOME --
+        # HOME is exactly what a nested sandbox's own environment can rewrite.
+        monkeypatch.setattr(
+            agy.pwd, "getpwuid", lambda uid: types.SimpleNamespace(pw_dir=str(home))
+        )
+
+    def test_a_git_ancestor_under_xdg_runtime_dir_falls_through(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, git_free_dir: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        xdg = repo / "run" / "user" / "1000"
+        xdg.mkdir(parents=True)
+        operator_home = git_free_dir / "operator-home"
+        operator_home.mkdir()
+        self._fake_operator_pwd(monkeypatch, operator_home)
+
+        code = _run(
+            tmp_path,
+            ephemeral_root=None,
+            environment={"PATH": "/usr/bin", "LANG": "C", "XDG_RUNTIME_DIR": str(xdg)},
+        )
+
+        assert code == 0
+        kwargs = captured["kwargs"]
+        assert isinstance(kwargs, dict)
+        home = Path(str(kwargs["cwd"])).resolve()
+        cache_root = (operator_home / ".cache" / "headless-agents" / "agy-homes").resolve()
+        assert cache_root in home.parents
+        assert xdg.resolve() not in (home, *home.parents)
+
+    def test_a_git_file_ancestor_counts_as_a_git_ancestor(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, git_free_dir: Path
+    ) -> None:
+        """A linked worktree's ``.git`` is a FILE, not a directory: it must
+        block a candidate just the same."""
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        (worktree / ".git").write_text("gitdir: /elsewhere\n", encoding="utf-8")
+        xdg = worktree / "xdg"
+        xdg.mkdir()
+        operator_home = git_free_dir / "operator-home"
+        operator_home.mkdir()
+        self._fake_operator_pwd(monkeypatch, operator_home)
+
+        code = _run(
+            tmp_path,
+            ephemeral_root=None,
+            environment={"PATH": "/usr/bin", "LANG": "C", "XDG_RUNTIME_DIR": str(xdg)},
+        )
+
+        assert code == 0
+        home = Path(str(captured["kwargs"]["cwd"])).resolve()  # type: ignore[index]
+        cache_root = (operator_home / ".cache" / "headless-agents" / "agy-homes").resolve()
+        assert cache_root in home.parents
+
+    def test_every_candidate_blocked_refuses_before_any_spawn(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        xdg = repo / "xdg"
+        xdg.mkdir()
+        operator_home = repo / "operator-home"
+        operator_home.mkdir()
+        self._fake_operator_pwd(monkeypatch, operator_home)
+        monkeypatch.setattr(agy.tempfile, "gettempdir", lambda: str(repo / "systemtmp"))
+
+        code = _run(
+            tmp_path,
+            ephemeral_root=None,
+            environment={"PATH": "/usr/bin", "LANG": "C", "XDG_RUNTIME_DIR": str(xdg)},
+        )
+
+        assert code == PROVIDER_FALLBACK_EXIT_CODE
+        assert "command" not in captured
+        stderr = (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
+        assert str((repo / ".git").resolve()) in stderr
+
+    def test_a_git_ancestor_appearing_before_the_launch_refuses_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, git_free_dir: Path
+    ) -> None:
+        """Review of PR #228: the ancestry is checked again right before agy
+        starts; a .git that appeared since the root was chosen refuses the run."""
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        xdg = git_free_dir / "xdg"
+        xdg.mkdir()
+        calls = {"n": 0}
+
+        def late_git(path: Path) -> Path | None:
+            calls["n"] += 1
+            return None if calls["n"] == 1 else Path("/late/.git")
+
+        monkeypatch.setattr(agy, "_nearest_git_ancestor", late_git)
+
+        code = _run(
+            tmp_path,
+            ephemeral_root=None,
+            environment={"PATH": "/usr/bin", "LANG": "C", "XDG_RUNTIME_DIR": str(xdg)},
+        )
+
+        assert code == PROVIDER_FALLBACK_EXIT_CODE
+        assert "command" not in captured
+        stderr = (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
+        assert "/late/.git" in stderr
+
+    def test_no_git_ancestor_keeps_the_existing_xdg_choice(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, git_free_dir: Path
+    ) -> None:
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        xdg = git_free_dir / "xdg-safe"
+        xdg.mkdir()
+
+        code = _run(
+            tmp_path,
+            ephemeral_root=None,
+            environment={"PATH": "/usr/bin", "LANG": "C", "XDG_RUNTIME_DIR": str(xdg)},
+        )
+
+        assert code == 0
+        home = Path(str(captured["kwargs"]["cwd"])).resolve()  # type: ignore[index]
+        assert xdg.resolve() in home.parents
+
+
 class TestAgyProvider:
     def test_prepare_home_and_run(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         real_home = tmp_path / "rh"
@@ -570,11 +753,66 @@ class TestWorkspace:
         result, ws = _workspace_run(tmp_path, script)
         assert result.exit_code == 0
         assert result.workspace == {"path": str(ws), "write": False, "shell": False}
-        assert (tmp_path / "cwd").read_text().strip() == str(ws)
+        # NOT `ws`: agy walks from its process cwd up to a `.git` root and loads
+        # every GEMINI.md/AGENTS.md it finds along the way, natively and before
+        # any tool call (measured 2026-09-26, ticket ha-051-agy; see the module
+        # docstring). The ephemeral HOME has no such ancestry and carries
+        # neither file itself, so running there instead of in the real
+        # workspace directory is what keeps the workspace's own instruction
+        # files from being read outside the guard's view. Every tool argument
+        # stays an ABSOLUTE path checked against `ws` regardless of cwd (see
+        # `workspace_guard_holds`), so this costs nothing in confinement.
+        cwd = Path((tmp_path / "cwd").read_text().strip())
+        assert cwd != ws
+        assert cwd.name == "run"
+        assert cwd.is_relative_to(tmp_path / "root")
         prompt = (tmp_path / "prompt").read_text()
         assert "Your only read tool is view_file" in prompt
         assert f'<files root="{ws}">\n(not a git repository: no file list)\n</files>' in prompt
         assert prompt.endswith("<task>\nTASK\n</task>")
+
+    def test_the_process_cwd_is_never_the_workspace(self, tmp_path: Path) -> None:
+        """agy's native GEMINI.md/AGENTS.md discovery walks from the process's own
+        cwd, not from a tool argument: the guard (which checks tool arguments
+        only) cannot stop it. The only lever is where the process itself runs."""
+        script = f"pwd > {tmp_path}/cwd"
+        result, ws = _workspace_run(tmp_path, script, write=True)
+        assert result.exit_code == 0
+        cwd = Path((tmp_path / "cwd").read_text().strip())
+        assert cwd != ws
+        assert ws not in cwd.parents and cwd not in ws.parents
+
+    def test_a_repository_instruction_file_at_the_workspace_root_is_unreachable_from_cwd(
+        self, tmp_path: Path
+    ) -> None:
+        """The concrete scenario the live isolation proof measured failing on agy
+        1.2.11: GEMINI.md/AGENTS.md planted at the workspace root, native
+        discovery walking from cwd up to the nearest `.git`. Proven here without
+        a real agy binary: the run's cwd has no `.git` ancestor and does not
+        contain either file, so agy's own walk -- which this test cannot
+        simulate without the real CLI -- has nothing to find."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        subprocess.run(["git", "init", "-q", str(ws)], check=True)
+        (ws / "GEMINI.md").write_text("MARKER-REPO\n", encoding="utf-8")
+        (ws / "AGENTS.md").write_text("MARKER-REPO\n", encoding="utf-8")
+        fake = tmp_path / "agy"
+        fake.write_text(f"#!/usr/bin/env bash\npwd > {tmp_path}/cwd\n", encoding="utf-8")
+        fake.chmod(0o755)
+        (tmp_path / "root").mkdir(exist_ok=True)
+        provider = agy.AgyProvider(real_home=tmp_path, ephemeral_root=tmp_path / "root")
+        spec = RunSpec(
+            prompt="TASK",
+            executable=str(fake),
+            profile=CapabilityProfile(workspace=Workspace(path=ws)),
+            run_dir=tmp_path / "run",
+        )
+        result = provider.run(spec)
+        assert result.exit_code == 0
+        cwd = Path((tmp_path / "cwd").read_text().strip())
+        assert not (cwd / ".git").exists()
+        assert not (cwd / "GEMINI.md").exists()
+        assert not (cwd / "AGENTS.md").exists()
 
     def test_a_guard_failing_its_probe_refuses_the_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -9,7 +9,7 @@ workspace member of the [brain-v42](https://github.com/hawkixs/brain-v42)
 repository and installable on its own:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.0#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.1#subdirectory=packages/headless-agents"
 ```
 
 Versions are tagged `headless-agents-vX.Y.Z` on this repository; `CHANGELOG.md` lists the
@@ -362,7 +362,7 @@ repository planted there is discovered from inside it.
 Hand a task to any provider from a terminal or a session. Install it as a tool:
 
 ```sh
-uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.0#subdirectory=packages/headless-agents"
+uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.1#subdirectory=packages/headless-agents"
 ```
 
 ```text
