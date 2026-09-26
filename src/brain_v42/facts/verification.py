@@ -304,36 +304,42 @@ class ClaimVerificationService:
 
         Shares `_comparison` with `_verify`: this is the only place besides `_verify` that
         may decide `holds` / `falsified` / `unreadable`.
+
+        The WHOLE pre-insert step -- measuring, the refresh-budget check, AND the
+        comparison itself (source-identity lookup included) -- shares one bounded
+        handler. MAJOR review finding (PR #233): a first version wrapped only
+        `registry.measure`, so a raise from `_comparison` (its `registry.expected_identity`
+        lookup, or `compare()`) escaped uncaught and rolled back the caller's entry
+        transaction instead of committing it `declared` with no verdict, exactly like
+        every other unexpected failure in this method.
         """
         try:
             measurement = await self._registry.measure(
                 resolved.fact_name, max_age=timedelta(seconds=resolved.validity_seconds)
             )
+            _reject_if_refresh_budget_exhausted(measurement)
+            comparison = _comparison(
+                fact_name=resolved.fact_name,
+                definition_version=resolved.definition_version,
+                target=resolved.target.value,
+                expected_resolved=resolved.expected_resolved,
+                registry=self._registry,
+                measurement=measurement,
+            )
         except asyncio.CancelledError:
             raise
+        except ClaimVerificationError:
+            return WriteMeasurement("declared", "retry later: refresh budget", None, None)
         except Exception:
             # Bounded on purpose: no probe payload, no DB text, one structured event.
-            # A measurement failure here must never surface an internal detail through
-            # the claim confirmation text (spec 2026-09-19 section 6.3).
+            # A measurement or comparison failure here must never surface an internal
+            # detail through the claim confirmation text (spec 2026-09-19 section 6.3).
             logger.warning(
                 "brain_v42.claim_write.measurement_error",
                 fact_name=resolved.fact_name,
             )
             return WriteMeasurement("declared", "unexpected error", None, None)
 
-        try:
-            _reject_if_refresh_budget_exhausted(measurement)
-        except ClaimVerificationError:
-            return WriteMeasurement("declared", "retry later: refresh budget", None, None)
-
-        comparison = _comparison(
-            fact_name=resolved.fact_name,
-            definition_version=resolved.definition_version,
-            target=resolved.target.value,
-            expected_resolved=resolved.expected_resolved,
-            registry=self._registry,
-            measurement=measurement,
-        )
         if comparison.verdict == "unreadable":
             reason = comparison.reason or "unreadable"
             return WriteMeasurement("declared", f"unreadable: {reason}", measurement, comparison)

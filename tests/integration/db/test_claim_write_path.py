@@ -1038,3 +1038,119 @@ async def test_unexpected_measurement_error_commits_the_entry_declared(
             )
             == 1
         )
+
+
+async def test_unexpected_error_from_identity_lookup_commits_the_entry_declared(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raising source-identity lookup during comparison must not roll back the entry.
+
+    MAJOR review finding (PR #233): the pre-insert measure+compare step originally
+    wrapped only `registry.measure`; a raise from `_comparison`'s
+    `registry.expected_identity` lookup escaped uncaught and rolled back the caller's
+    entry transaction instead of committing it `declared` with zero verdict rows.
+    """
+    registry = _measurable_registry(value=3)
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-measure-identity-error-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    topic = f"Identity lookup error {uuid4()}"
+    data = LearningCreate(
+        topic=topic,
+        insight="A raising identity lookup must not roll back an otherwise valid entry.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(
+        registry, [_measurable_claim("The measured lag holds (identity lookup errors).")]
+    )
+    verification = ClaimVerificationService(registry, session_factory)
+
+    def boom(target: FactTarget) -> SourceIdentity | None:
+        raise RuntimeError("forced identity lookup failure")
+
+    monkeypatch.setattr(registry, "expected_identity", boom)
+
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provenance == "declared"
+    assert outcome.detail == "unexpected error"
+    assert await _claim_provenance(session_factory, outcome.claim_id) == "declared"
+    assert await _verdict_rows_for_claim(session_factory, outcome.claim_id) == []
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                sa.select(sa.func.count()).select_from(learnings).where(learnings.c.topic == topic)
+            )
+            == 1
+        )
+
+
+async def test_unexpected_error_from_compare_commits_the_entry_declared(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raising `compare()` during the pre-insert step must not roll back the entry.
+
+    MAJOR review finding (PR #233): companion case to the identity-lookup raise above --
+    any exception past `registry.measure` inside the same step used to escape uncaught.
+    """
+    from brain_v42.facts import verification as verification_module
+
+    registry = _measurable_registry(value=3)
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-measure-compare-error-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    topic = f"Compare error {uuid4()}"
+    data = LearningCreate(
+        topic=topic,
+        insight="A raising compare() must not roll back an otherwise valid entry.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(
+        registry, [_measurable_claim("The measured lag holds (compare errors).")]
+    )
+    verification = ClaimVerificationService(registry, session_factory)
+
+    def boom(expected_resolved: object, measurement: object) -> object:
+        raise RuntimeError("forced comparison failure")
+
+    monkeypatch.setattr(verification_module, "compare", boom)
+
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provenance == "declared"
+    assert outcome.detail == "unexpected error"
+    assert await _claim_provenance(session_factory, outcome.claim_id) == "declared"
+    assert await _verdict_rows_for_claim(session_factory, outcome.claim_id) == []
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                sa.select(sa.func.count()).select_from(learnings).where(learnings.c.topic == topic)
+            )
+            == 1
+        )

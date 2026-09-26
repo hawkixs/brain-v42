@@ -11,6 +11,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from brain_v42.facts.claims import ResolvedClaim, resolve_claim
+from brain_v42.facts.compare import Comparison
 from brain_v42.facts.model import FactTarget, Measured, Measurement, SourceIdentity, Unreadable
 from brain_v42.facts.registry import FactRegistry
 from brain_v42.facts.verification import ClaimVerificationService, WriteMeasurement
@@ -804,6 +805,62 @@ async def test_measure_for_write_unexpected_error_keeps_no_measurement(
         raise RuntimeError("network blip")
 
     registry.measure = boom  # type: ignore[method-assign]
+
+    result = await service.measure_for_write(resolved)
+
+    assert result.provenance == "declared"
+    assert result.detail == "unexpected error"
+    assert result.measurement is None
+    assert result.comparison is None
+
+
+async def test_measure_for_write_unexpected_error_from_identity_lookup_commits_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A source-identity lookup failure during comparison must not raise past this method.
+
+    MAJOR review finding (PR #233): only `registry.measure` was ever wrapped, so a
+    raise from `_comparison`'s `registry.expected_identity` call rolled back the
+    caller's entry transaction instead of committing it `declared` with no verdict.
+    """
+    probe = _Probe(value=3)
+    registry = _registry(probe)
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+
+    def boom(target: FactTarget) -> SourceIdentity | None:
+        raise RuntimeError("identity lookup blew up")
+
+    monkeypatch.setattr(registry, "expected_identity", boom)
+
+    result = await service.measure_for_write(resolved)
+
+    assert result.provenance == "declared"
+    assert result.detail == "unexpected error"
+    assert result.measurement is None
+    assert result.comparison is None
+
+
+async def test_measure_for_write_unexpected_error_from_compare_commits_declared(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A raising `compare()` must not roll back the write; it downgrades to declared, no verdict.
+
+    MAJOR review finding (PR #233): the pre-insert measure+compare step had only one
+    bounded raise point (`registry.measure`); a raise anywhere later in the same step
+    escaped uncaught.
+    """
+    from brain_v42.facts import verification as verification_module
+
+    probe = _Probe(value=3)
+    registry = _registry(probe)
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+
+    def boom(expected_resolved: object, measurement: object) -> Comparison:
+        raise RuntimeError("comparison blew up")
+
+    monkeypatch.setattr(verification_module, "compare", boom)
 
     result = await service.measure_for_write(resolved)
 
