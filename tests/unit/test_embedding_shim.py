@@ -171,7 +171,13 @@ def test_rerank_builds_pairs_and_returns_raw_logits():
 
     scores = backend.rerank("q", ["cand a", "cand b"])
     assert scores == [0.0, -1.0]
-    assert tok.batches == [[("q", "cand a"), ("q", "cand b")]]
+    # Two calls since the GPU-rerank path (2026-09-26): one unpadded-length
+    # pass to sort candidates by real token length, then one scoring pass per
+    # micro-batch — here a single micro-batch since batch_size (32) > 2.
+    assert tok.batches == [
+        [("q", "cand a"), ("q", "cand b")],
+        [("q", "cand a"), ("q", "cand b")],
+    ]
 
 
 class FakeEmbedBackend:
