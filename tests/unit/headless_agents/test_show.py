@@ -709,6 +709,34 @@ def test_an_unreadable_review_result_is_unknown(home: Home) -> None:
     assert any("cannot be read" in note for note in shown.notes)
 
 
+@pytest.mark.parametrize("damage", ["unreadable", "missing"])
+def test_a_review_whose_result_cannot_be_read_shows_nothing_from_its_report(
+    home: Home, damage: str
+) -> None:
+    """Codex review of PR B, round 2: the report's head and text stayed on show as if they
+    came from the state. A final verdict without its result is unknown, never the report's."""
+    _review(home)
+    path = reviews.result_path(home.state, REVIEW)
+    path.chmod(0o600)
+    if damage == "unreadable":
+        path.write_text("{not json")
+    else:
+        path.unlink()
+    shown = home.rebuild(REVIEW)
+    assert shown.unknown
+    assert (shown.report["verdict"], shown.report["head"], shown.report["text"]) == (
+        None,
+        None,
+        None,
+    )
+
+
+def test_a_failed_review_has_no_result_and_that_is_not_unknown(home: Home) -> None:
+    _review(home, verdict=None, status="failed", failure_reason="step_failed")
+    shown = home.rebuild(REVIEW)
+    assert not shown.unknown and shown.report["text"] is None
+
+
 GOLDEN_REVIEW = """\
 20260925T150000-9f8e7d6c  panel  exit 6  changes requested  cleanup failed: fatal: busy
 task    Review this change.

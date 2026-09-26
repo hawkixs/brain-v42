@@ -276,12 +276,18 @@ def _review_records(
     cannot be read. Its ``cleanup`` has no record in the state: the report's, for display."""
     unknown = False
     result = None
+    # The report's copies are never shown as the review's: only its result names them.
+    document.update(verdict=None, head=None, text=None)
     if reviews.result_path(state, run_id).exists():
         try:
             result = reviews.load_result(state, run_id)
         except Unknown as exc:
             notes.append(f"{exc}: the review result cannot be read")
             unknown = True
+    elif document.get("status") in ("approved", "changes"):
+        # A verdict was recorded, so its result was written before: it is lost.
+        notes.append("the review result is missing although a verdict was recorded")
+        unknown = True
     check = result.check if result is not None else None
     if result is None:
         try:
