@@ -378,3 +378,55 @@ with no host port and no systemd unit; follow the
 blocked while the PostgreSQL `codex_ro` and `brain` credentials use their development
 defaults, or while `/ready` doesn't validate the SQL contract, including the
 `security_barrier` of the seven views scoped to the `red` group.
+
+## Release: recovery binding
+
+`ops/recovery/current.json` answers which recovery contract covers the schema
+the WORKING CHECKOUT ships (`tests/unit/test_recovery_current_binding.py`).
+`red-backup` needs the operational half of that answer: which recovery contract
+covers the schema of the LIVE release, found WITHOUT brain running and WITHOUT
+reading brain's working checkout — a checkout moves under a release the moment
+`main` advances. `brain_v42.release_recovery` (`src/brain_v42/release_recovery.py`)
+is that bridge, and the out-of-repo release script calls it at three points:
+
+- **Build** — once `current.json`'s source tree and `delivery-release.json` exist
+  in the new release directory:
+
+  ```bash
+  python -m brain_v42.release_recovery publish "$RELEASE"
+  ```
+
+  Copies the three files `<release>/brain-v42/ops/recovery/current.json` names
+  into `<release>/recovery/` (sha256-verified before AND after the copy, and
+  `schema_head` checked against the release's own shipped Alembic head), writes
+  `<release>/recovery/recovery-binding.json` atomically, and records that
+  binding's own sha256 into `<release>/delivery-release.json` under
+  `recovery_binding`. `scripts/check_delivery_deployment.py` refuses, fail-closed,
+  any manifest missing this key or disagreeing with it — with no
+  backward-compatibility grace period, unlike `pyvenv_cfg`.
+
+- **Cutover** — once the new release's units are active and the dormant/canary
+  preflight is green:
+
+  ```bash
+  python -m brain_v42.release_recovery live "$RELEASES_ROOT" "$SHA"
+  ```
+
+  Atomically replaces `<releases_root>/live` (a temporary symlink created next
+  to it, then `os.replace`) so no reader ever observes a missing or half-written
+  link. Refuses a `SHA` with no release directory or no published recovery
+  binding.
+
+- **Rollback** — identical swap, pointed at the predecessor:
+
+  ```bash
+  python -m brain_v42.release_recovery live "$RELEASES_ROOT" "$PREDECESSOR_SHA"
+  ```
+
+`red-backup` reads `<releases_root>/live/recovery/recovery-binding.json` — never
+brain's working checkout, and never a running brain process. Show the current
+target at any time with:
+
+```bash
+python -m brain_v42.release_recovery show-live "$RELEASES_ROOT"
+```
