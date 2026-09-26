@@ -1009,6 +1009,7 @@ def build_server() -> BuiltServer:
         access_logger=usage_access_logger,
         fact_registry=services["fact_registry"],
         session_factory=get_session_factory(),
+        claim_read_svc=claim_read_svc,
     )
 
     # Session tools
