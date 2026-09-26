@@ -45,7 +45,7 @@ _MISSING = object()
 # JSON-pointer-derived measured/expected scalar): none of this touches the
 # stored row, only what this module turns it into.
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
-_MARKDOWN_SPECIAL_RE = re.compile(r"([\\`*_\[\]#])")
+_MARKDOWN_SPECIAL_RE = re.compile(r"([\\`*_\[\]#<>])")
 _DETAIL_VALUE_MAX_LENGTH = 80
 _STATEMENT_MAX_LENGTH = 200
 _SUFFIX_MAX_LENGTH = 300
@@ -66,9 +66,9 @@ def _render_safe(text: str, *, max_length: int) -> str:
     """Flatten control characters and escape Markdown syntax, then cap length.
 
     A raw newline in stored user text can forge an extra list/history line
-    indistinguishable from a genuine one; a raw Markdown delimiter can
-    reformat or link arbitrary text. Both are neutralised only in what gets
-    RENDERED here -- the caller's stored row is never touched.
+    indistinguishable from a genuine one; a raw Markdown delimiter or HTML
+    bracket can reformat or link arbitrary text. Both are neutralised only in
+    what gets RENDERED here -- the caller's stored row is never touched.
     """
     flattened = _CONTROL_CHARS_RE.sub(" ", text)
     escaped = _MARKDOWN_SPECIAL_RE.sub(r"\\\1", flattened)

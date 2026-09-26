@@ -216,6 +216,20 @@ def test_falsified_detail_flattens_newlines_and_escapes_markdown_delimiters() ->
     assert "05 3\\*\\_\\[y\\]\\`\\#" in suffix
 
 
+def test_falsified_detail_escapes_raw_html_in_measured_text() -> None:
+    """A measured scalar must not become an HTML element in rendered Markdown."""
+    verdict = _verdict("falsified", 1, NOW, value={"head": "a<br>b"})
+    claim = _claim(
+        expected={"path": "/head", "op": "eq", "value": "c"},
+        expected_resolved={"path": "/head", "op": "eq", "value": "c"},
+    )
+
+    suffix = render_claim_suffix([_state(claim, verdict, verdict)])
+
+    assert suffix is not None
+    assert "a\\<br\\>b" in suffix
+
+
 def test_falsified_detail_caps_a_long_measured_or_expected_scalar() -> None:
     long_observed = "o" * 500
     long_expected = "e" * 500
@@ -497,6 +511,16 @@ def test_format_claim_list_sanitizes_a_statement_with_newlines_and_markdown() ->
     assert "\\[link\\](evil)" in rendered
     assert "\\`code\\`" in rendered
     assert "\\#h" in rendered
+
+
+def test_format_claim_list_escapes_raw_html_in_statement() -> None:
+    """A stored statement must render HTML syntax as literal text."""
+    verdict = _verdict("holds", 1, NOW)
+    claim = replace(_claim(), statement="Before<br>after")
+
+    rendered = format_claim_list([_state(claim, verdict, verdict)], None)
+
+    assert "Before\\<br\\>after" in rendered
 
 
 def test_format_claim_list_caps_a_long_statement() -> None:
