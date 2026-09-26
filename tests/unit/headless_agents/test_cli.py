@@ -588,6 +588,93 @@ def test_the_readme_synopsis_lists_ha_workflows() -> None:
     assert "ha workflows [--json]" in readme
 
 
+# ── a review and --findings through the CLI (lot 4) ─────────────────────────
+
+
+class _UnreadableStdin(io.StringIO):
+    """A piped stdin a target whose prompt is optional must never read (§3.9)."""
+
+    def read(self, *args: object) -> str:  # type: ignore[override]
+        raise AssertionError("stdin was read")
+
+
+def _review_workflows(world: _World) -> None:
+    world.roles(
+        '[reviewer]\nprovider = "claude"\n\n[implementer]\nprovider = "codex"\nwrite = true\n'
+    )
+    _workflows(
+        world,
+        '[check]\nshape = "review"\nreview = "reviewer"\n\n'
+        '[build]\nshape = "implement"\nimplement = "implementer"\n',
+    )
+
+
+def _run_with_stdin(world: _World, stdin: io.StringIO, *argv: str) -> tuple[int, str, str]:
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.main(
+        list(argv),
+        environ=world.environ,
+        stdin=stdin,
+        stdout=out,
+        stderr=err,
+        cwd=world.repo,
+        home=world.home,
+    )
+    return code, out.getvalue(), err.getvalue()
+
+
+def test_a_review_without_a_prompt_never_reads_a_piped_stdin(world: _World) -> None:
+    _review_workflows(world)
+    code, _, err = _run_with_stdin(world, _UnreadableStdin("piped"), "run", "check")
+    # The engine goes on to the review, which the test repository cannot give a base to.
+    assert code == 2 and "stdin was read" not in err
+
+
+def test_findings_without_a_prompt_never_read_a_piped_stdin(world: _World) -> None:
+    _review_workflows(world)
+    run_id = "20260926T000000-aaaaaaaa"
+    code, _, err = _run_with_stdin(
+        world, _UnreadableStdin("piped"), "run", "build", "--findings", run_id
+    )
+    assert code == 2 and f"no run {run_id}" in err
+
+
+def test_a_dash_still_reads_stdin_for_a_review(world: _World) -> None:
+    _review_workflows(world)
+    code, _, err = _run_with_stdin(world, io.StringIO("Mind the errors."), "run", "check", "-")
+    assert code == 2 and "stdin was read" not in err
+
+
+@pytest.mark.parametrize(
+    ("argv", "rule"),
+    [
+        (("run", "check", "--run", "20260926T000000-aaaaaaaa", "--head", "HEAD"), "--run excludes"),
+        (("run", "build", "--head", "HEAD", "task"), "--head needs a review workflow"),
+        (
+            ("run", "check", "--findings", "20260926T000000-aaaaaaaa"),
+            "--findings needs an implement",
+        ),
+    ],
+)
+def test_the_cli_passes_head_run_and_findings_to_the_engine(
+    world: _World, argv: tuple[str, ...], rule: str
+) -> None:
+    _review_workflows(world)
+    code, _, err = world.run(*argv)
+    assert code == 2 and rule in err
+
+
+def test_run_help_names_the_review_exit_codes_and_a_review_example(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        cli.main(["run", "--help"])
+    text = capsys.readouterr().out
+    assert "  6 changes requested" in text
+    assert "--run RUN_ID" in text and "--findings RUN_ID" in text and "--head REF" in text
+    assert "ha run multi-review --run" in text
+
+
 # ── ha runs / ha clean ─────────────────────────────────────────────────────
 
 

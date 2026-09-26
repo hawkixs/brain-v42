@@ -736,6 +736,47 @@ def test_ha_clean_of_a_finished_review_removes_its_directory(world: World) -> No
     assert not outcome.run_dir.exists()
 
 
+# ── the CLI's output (§3.9) ─────────────────────────────────────────────────
+
+
+def _cli(world: World, *argv: str) -> tuple[int, str, str]:
+    import io
+
+    from headless_agents import cli
+
+    out, err = io.StringIO(), io.StringIO()
+    code = cli.main(
+        list(argv),
+        environ={"PATH": os.environ["PATH"], "HOME": str(world.home)},
+        stdin=io.StringIO(""),
+        stdout=out,
+        stderr=err,
+        cwd=world.repo,
+        home=world.home,
+    )
+    return code, out.getvalue(), err.getvalue()
+
+
+@pytest.mark.parametrize(("answer", "code"), [(APPROVE, 0), (CHANGES, 6)])
+def test_the_cli_prints_the_deciding_text_of_a_review_whatever_its_verdict(
+    world: World, answer: str, code: int
+) -> None:
+    """A verdict is an answer: exit 6 prints the findings a session feeds to --findings."""
+    world.commit_by_hand()
+    world.agents["claude"].answer = answer
+    exit_code, out, err = _cli(world, "run", "check")
+    assert exit_code == code
+    assert out.startswith("run: ") and out.endswith(answer + "\n")
+    assert "exited" not in err
+
+
+def test_the_cli_says_why_a_review_failed(world: World) -> None:
+    world.commit_by_hand()
+    world.agents["claude"].answer = "no verdict"
+    exit_code, out, err = _cli(world, "run", "check")
+    assert exit_code == 1 and "unreadable_verdict" in err
+
+
 # ── implement --findings (§3.6) ─────────────────────────────────────────────
 
 

@@ -458,6 +458,21 @@ def _continued_lineage(run_id: str, *, state: Path, home: Path, option: str = "-
 REVIEW_DEFAULT_TASK: Final = "Review this change."
 
 
+def prompt_is_optional(
+    target: str, *, findings: bool, environ: Mapping[str, str], home: Path
+) -> bool:
+    """Whether ``target`` runs without a prompt: a review, or an implement taking findings.
+
+    §3.9: such a target never reads stdin unless given ``-``. The CLI asks before
+    reading; the configuration is read here, and an invalid one refuses (exit ``2``),
+    as :func:`plan` would.
+    """
+    workflow = load_config(environ, home).workflows.get(target)
+    if workflow is None:
+        return False
+    return workflow.shape == "review" or findings
+
+
 def _refuse_options_of_other_shapes(request: Request, shape: str | None) -> None:
     """Spec §3.9: ``--head`` and ``--run`` belong to a review; ``--continue`` to an implement."""
     if shape != "review":
@@ -1515,4 +1530,5 @@ __all__ = [
     "UsageError",
     "operator_environment",
     "plan",
+    "prompt_is_optional",
 ]

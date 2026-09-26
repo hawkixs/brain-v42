@@ -370,6 +370,7 @@ ha run TARGET [PROMPT | -] [-m MODEL] [--effort E] [--timeout SECONDS]
        [--context full|global|none] [--context-parents] [--mcp PROFILE]
        [--base-url URL --key-env VAR] [--repo PATH] [--json] [--run-dir DIR]
        [--write [--shell] [--base REF]]
+       [--continue RUN_ID] [--findings RUN_ID] [--head REF] [--run RUN_ID]
 ha roles [--json]
 ha workflows [--json]
 ha providers [--json]
@@ -394,8 +395,18 @@ section is being rewritten with the 0.5.0 lots.
   instead: the next run works in the same worktree, on the same branch, from its tip --
   commits made there by hand included -- once the worktree is clean. A workflow runs its
   roles as declared: `-m`, `--write` and the other role options are refused. `ha workflows`
-  lists what `workflows.toml` declares; `shape = "review"` is validated there and arrives
-  with the vendor rule in a later 0.5.0 lot.
+  lists what `workflows.toml` declares.
+- **A review** (`shape = "review"`: one reviewer role or more, and a judge with two or
+  more) reads a change read-only: `ha run multi-review --run RUN_ID` reviews the current
+  tip of an implement run's lineage from its base; `--head REF` and `--base REF` (default
+  `origin/HEAD`) name any other range. Before anything runs, the vendor rule proves that no
+  reviewer shares a provider with whoever wrote a commit of the range -- from the
+  provenance `ha` records for its own commits -- and refuses the review otherwise (exit
+  `2`). The reviewers run in parallel, the judge weighs their findings, and the last line
+  of the deciding text is the verdict: exit `0` APPROVE, `6` CHANGES. `ha run build
+  --continue RUN_ID --findings REVIEW_ID` then hands those findings to the implementer, on
+  the commit the review read; `ha show REVIEW_ID` renders the review, its vendor check
+  included, from the state directory, and `ha show --dir PATH` a run directory's report.
 
 - **Read-only** (default): a CLI rail reads the current repository through a read-only
   workspace (no write tool; no shell, except codex, whose shell is its only read tool and
