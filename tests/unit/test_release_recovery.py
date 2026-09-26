@@ -132,7 +132,7 @@ def test_publish_recovery_binding_copies_the_three_files_with_mode_0644(tmp_path
 
     data = json.loads(binding_path.read_text(encoding="utf-8"))
     recovery_dir = binding_path.parent
-    assert stat.S_IMODE(recovery_dir.stat().st_mode) == 0o755
+    assert stat.S_IMODE(recovery_dir.stat().st_mode) == 0o700
     for asset_key in ("manifest", "attestation_sql", "restored_attestation_sql"):
         asset = data[asset_key]
         copied = recovery_dir / asset["path"]
@@ -159,7 +159,7 @@ def test_publish_recovery_binding_sets_exact_modes_and_fresh_inodes_under_a_perm
         os.umask(previous_umask)
 
     recovery_dir = binding_path.parent
-    assert stat.S_IMODE(recovery_dir.stat().st_mode) == 0o755
+    assert stat.S_IMODE(recovery_dir.stat().st_mode) == 0o700
     entries = list(recovery_dir.iterdir())
     assert entries, "recovery/ must not be empty"
     for path in entries:

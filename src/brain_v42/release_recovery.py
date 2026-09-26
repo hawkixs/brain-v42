@@ -189,8 +189,8 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
         raise RecoveryBindingError(f"{release_dir / MANIFEST_FILENAME} carries no source_sha")
 
     recovery_dir = release_dir / RECOVERY_DIRNAME
-    recovery_dir.mkdir(mode=0o755, exist_ok=True)
-    os.chmod(recovery_dir, 0o755)
+    recovery_dir.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(recovery_dir, 0o700)
 
     binding: dict[str, object] = {
         "contract_id": current.get("contract_id"),
