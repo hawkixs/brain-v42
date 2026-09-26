@@ -183,11 +183,45 @@ def test_a_hand_written_commit_constrains_nothing(tmp_path: Path) -> None:
 
 def test_a_check_round_trips_through_its_document() -> None:
     check = VendorCheck(
-        commits=(AttributedCommit(sha=SHA_1, run_id=RUN, made_by="agent", providers=("claude",)),),
-        authors=("claude",),
+        commits=(
+            AttributedCommit(sha=SHA_1, run_id=RUN, made_by="agent", providers=("claude",)),
+            AttributedCommit(sha=SHA_2, run_id=None, made_by="hand", providers=()),
+            AttributedCommit(sha=SHA_3, run_id=None, made_by="unknown", providers=("agy",)),
+        ),
+        authors=("agy", "claude"),
         reviewers={"r": ("codex",)},
     )
     assert VendorCheck.from_document(check.to_document(), where="x") == check
+
+
+def _commit(**change: object) -> dict[str, object]:
+    return {"sha": SHA_1, "run_id": RUN, "made_by": "engine", "providers": ["claude"], **change}
+
+
+@pytest.mark.parametrize(
+    ("commits", "authors", "reviewers"),
+    [
+        ([_commit()], [], {"r": ["codex"]}),
+        ([_commit()], ["claude", "agy"], {"r": ["codex"]}),
+        ([_commit(made_by="hand", run_id=None)], ["claude"], {"r": ["codex"]}),
+        ([_commit(made_by="hand", providers=[])], [], {"r": ["codex"]}),
+        ([_commit(run_id=None)], ["claude"], {"r": ["codex"]}),
+        ([_commit(providers=[])], [], {"r": ["codex"]}),
+        ([_commit(made_by="unknown", run_id=None, providers=[])], [], {"r": ["codex"]}),
+        ([_commit()], ["claude"], {"r": ["codex", "claude"]}),
+        ([_commit()], ["claude"], {}),
+        ([_commit()], ["claude"], {"r": []}),
+    ],
+)
+def test_a_check_ha_could_not_have_made_is_unknown(
+    commits: list[object], authors: list[str], reviewers: dict[str, object]
+) -> None:
+    """Codex review of PR A, round 2: every field well-typed is not enough -- the authors are
+    the union of the commits' providers, each commit's fields are an attribution ``ha``
+    makes, and every reviewer is independent of them."""
+    document = {"commits": commits, "authors": authors, "reviewers": reviewers}
+    with pytest.raises(Unknown, match="where"):
+        VendorCheck.from_document(document, where="where")
 
 
 @pytest.mark.parametrize(

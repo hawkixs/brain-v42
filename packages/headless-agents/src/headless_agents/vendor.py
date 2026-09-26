@@ -109,7 +109,31 @@ class VendorCheck:
             )
         authors = texts(document.get("authors"))
         reviewers = {str(role): texts(providers) for role, providers in raw_reviewers.items()}
+        union: set[str] = set()
+        for commit in commits:
+            if not _attribution_ha_makes(commit):
+                raise Unknown(f"{where}: vendor check holds an attribution ha never makes")
+            union.update(commit.providers)
+        # What check_independence writes: the sorted union, and reviewers independent of it.
+        if authors != tuple(sorted(union)):
+            raise Unknown(f"{where}: vendor check authors are not its commits' providers")
+        if not reviewers or any(
+            not providers or set(providers) & union for providers in reviewers.values()
+        ):
+            raise Unknown(f"{where}: vendor check reviewers are not independent of its authors")
         return cls(commits=tuple(commits), authors=authors, reviewers=reviewers)
+
+
+def _attribution_ha_makes(commit: AttributedCommit) -> bool:
+    """Whether :func:`attribute` can produce ``commit``: a recorded commit names its run and
+    providers; without provenance it is a hand (no provider) or an unconfined writer's."""
+    if commit.run_id is not None:
+        return (
+            bool(commit.run_id) and commit.made_by in _RECORDED_MADE_BY and bool(commit.providers)
+        )
+    if commit.made_by == "hand":
+        return not commit.providers
+    return commit.made_by == "unknown" and bool(commit.providers)
 
 
 def _unconfined_providers(state: Path) -> tuple[str, ...]:
