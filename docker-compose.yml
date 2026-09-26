@@ -174,6 +174,16 @@ services:
       - SHIM_BEARER_MODE=optional
     secrets:
       - embedding_shim_bearer
+    # GPU reranking (2026-09-26): OnnxRerankBackend prefers CUDAExecutionProvider
+    # when available, falls back to CPU otherwise — same device reservation as
+    # the other two GPU services above.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     depends_on:
       embedding-llama:
         condition: service_healthy
