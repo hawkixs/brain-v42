@@ -60,6 +60,7 @@ class _Cursor:
     claim_version: int
     event_id: UUID
     operation: str
+    lease_generation: int = 0
 
 
 @dataclass(slots=True)
@@ -133,6 +134,12 @@ class _ExplicitTransaction:
         text = _query_text(query)
         self.queries.append((text, params))
         self.parameters.update(params)
+        if "has_evidence" in text:
+            generation = params.get("generation")
+            has_evidence = any(
+                cursor.lease_generation == generation for cursor in self._state.cursors.values()
+            )
+            return _Result({"has_evidence": has_evidence})
         record = self._record_for_current_state(text)
         system_query = "BrainProjectionFence" in text or "BrainProjectionCursor" in text
         if not system_query and self._state.missing_mutation_record:
@@ -254,6 +261,7 @@ class _ExplicitTransaction:
                 claim_version=int(self.parameters["claim_version"]),
                 event_id=UUID(str(self.parameters["event_id"])),
                 operation=operation,
+                lease_generation=int(self.parameters["lease_generation"]),
             )
         self.committed = True
         self._is_closed = True
@@ -430,6 +438,43 @@ async def test_activation_barrier_is_monotone_and_idempotent() -> None:
     assert driver.state.implicit_runs == 0
     assert [tx.committed for tx in driver.state.transactions] == [True, True, False]
     assert driver.state.transactions[-1].rolled_back is True
+
+
+@pytest.mark.asyncio
+async def test_has_cursor_evidence_is_false_when_nothing_was_ever_applied_at_that_generation() -> (
+    None
+):
+    """BLOCKER fix (independent review of PR #230): equal Neo4j/PostgreSQL
+    generation numbers alone do not prove the 'crash between Neo4j activation
+    and PG arm' story -- a PostgreSQL restore can resurrect an unarmed row at a
+    generation Neo4j actually armed and used for real deliveries before this
+    process ever started. A generation with no cursor evidence at all is
+    consistent with the genuine crash: nothing was ever durably projected
+    under it."""
+    driver = _Driver()
+    writer = Neo4jGraphProjectionWriter(driver, timeout=0.2)
+
+    assert await writer.has_cursor_evidence(70) is False
+    assert driver.state.implicit_runs == 0
+    assert driver.state.transactions[-1].rolled_back is True
+    assert driver.state.transactions[-1].committed is False
+
+
+@pytest.mark.asyncio
+async def test_has_cursor_evidence_is_true_when_neo4j_already_projected_under_that_generation() -> (
+    None
+):
+    """The counter-example: Neo4j durably applied a claim under generation 70
+    (a real, prior armed tenure) before this process ever started. Advancing
+    past 70 without recovery would silently keep those facts in a projection
+    canonical PostgreSQL, restored to an unarmed 70, no longer remembers."""
+    driver = _Driver()
+    writer = Neo4jGraphProjectionWriter(driver, timeout=0.2)
+    await writer.activate_generation(_leadership(70, owner="predecessor"))
+    await writer.apply(_entity_claim(generation=70, revision=1, owner_id="predecessor"))
+
+    assert await writer.has_cursor_evidence(70) is True
+    assert await writer.has_cursor_evidence(71) is False
 
 
 @pytest.mark.asyncio
@@ -704,6 +749,7 @@ async def test_exact_event_replay_is_idempotent(kind: str) -> None:
         claim_version=1,
         event_id=claim.event.event_id,
         operation=claim.event.operation,
+        lease_generation=30,
     )
     projected = driver.state.entity_keys if kind == "entity" else driver.state.relation_keys
     assert projected == {aggregate_key}

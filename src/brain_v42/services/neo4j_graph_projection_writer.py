@@ -76,6 +76,13 @@ RETURN accepted,
        coalesce(fence.generation, -1) AS current_generation
 """
 
+_CURSOR_EVIDENCE_FOR_GENERATION = """
+OPTIONAL MATCH (cursor:BrainProjectionCursor)
+WHERE cursor.lease_generation = $generation
+RETURN cursor IS NOT NULL AS has_evidence
+LIMIT 1
+"""
+
 _OBSERVE_RECOVERY_FENCE = """
 OPTIONAL MATCH (fence:BrainProjectionFence {name: 'canonical'})
 FOREACH (_ IN CASE WHEN fence IS NULL THEN [] ELSE [1] END |
@@ -264,6 +271,39 @@ class Neo4jGraphProjectionWriter:
                     return activation
                 await transaction.commit()
                 return activation
+            except asyncio.CancelledError:
+                transaction.cancel()
+                raise
+            except BaseException as exc:
+                await self._rollback_preserving_error(transaction, exc)
+                raise
+
+    async def has_cursor_evidence(self, generation: int) -> bool:
+        """Prove whether Neo4j already durably applied anything at ``generation``.
+
+        Equal Neo4j/PostgreSQL generation numbers alone do not prove the
+        'crash between Neo4j activation and PG arm' story (decision
+        3d3d72e4 / ticket 416266ec): a PostgreSQL restore can resurrect an
+        unarmed row at a generation Neo4j, untouched, legitimately armed and
+        used for real deliveries before this process ever started -- the
+        runbook's own admitted residual ("same generation does not mean same
+        content"). ``_ADVANCE_CURSOR`` stamps every successfully applied
+        aggregate's cursor with the lease generation that touched it, so a
+        cursor carrying this exact generation is durable, independent proof
+        that it was used for a real projection. ``GraphOutboxProjector``
+        refuses its bounded advance whenever this returns ``True``.
+        """
+        params = {"generation": generation}
+        async with self._driver.session() as session:
+            transaction = await session.begin_transaction(timeout=self._timeout)
+            try:
+                result = await transaction.run(
+                    self._query(_CURSOR_EVIDENCE_FOR_GENERATION),
+                    params,
+                )
+                record = await result.single()
+                await transaction.rollback()
+                return bool(record and record.get("has_evidence"))
             except asyncio.CancelledError:
                 transaction.cancel()
                 raise

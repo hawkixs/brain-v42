@@ -92,7 +92,22 @@ class GraphOutboxProjector:
                 # the ordinary armed handover. If PostgreSQL was already armed
                 # here, a conflicting live owner cannot be ruled out this way:
                 # refuse and fall through to recovery, unchanged.
-                if not leadership.armed and activation.current_generation == leadership.generation:
+                #
+                # Equal generations are not, by themselves, proof of that exact
+                # story (independent review of PR #230): a PostgreSQL restore
+                # can resurrect this same unarmed shape at a generation Neo4j
+                # actually armed and used for real deliveries before this
+                # process ever started (the runbook's own admitted residual --
+                # "same generation does not mean same content"). Ask Neo4j
+                # whether it already holds a cursor stamped with this exact
+                # generation; if it does, that is durable proof of real prior
+                # activity the restored PostgreSQL no longer remembers, so
+                # refuse the advance and fall through to recovery instead.
+                if (
+                    not leadership.armed
+                    and activation.current_generation == leadership.generation
+                    and not await self._graph.has_cursor_evidence(leadership.generation)
+                ):
                     advanced = await self._repo.advance_confirmed_generation(
                         leadership,
                         lease_seconds=self._lease_seconds,

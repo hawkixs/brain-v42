@@ -800,6 +800,9 @@ async def test_advance_confirmed_generation_bumps_only_the_live_unarmed_owner() 
     assert "owner = :owner_id" in sql
     assert "generation = :generation" in sql
     assert "leased_until > clock_timestamp()" in sql
+    assert "not exists" in sql
+    assert "graph_outbox" in sql
+    assert "lease_generation = :generation" in sql
     assert params["owner_id"] == "projector-a"
     assert params["generation"] == 70
     assert params["lease_seconds"] == 30
