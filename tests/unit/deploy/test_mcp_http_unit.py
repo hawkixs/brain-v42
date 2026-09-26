@@ -152,6 +152,20 @@ class TestMcpHttpWatchdogServiceTemplate:
         assert re.search(r"curl[^\n]* -m \d+", content)
 
 
+def _collapse_systemd_dollar_escapes(command: str) -> str:
+    """Simulate systemd's OWN ExecStart preprocessing before bash ever runs.
+
+    Per systemd.service(5), systemd expands bare ``$VAR``/``${VAR}`` in an
+    ExecStart= line using its own environment-substitution grammar -- not
+    bash's -- and only a doubled ``$$`` collapses to a literal single ``$``
+    that reaches the shell unchanged. Executing the raw template text
+    directly through a shell (as this suite historically did) skips this
+    step entirely and would keep passing even if an unescaped ``${...}``
+    were left for systemd's unrelated substitution to mangle before bash
+    ever saw it."""
+    return command.replace("$$", "$")
+
+
 class TestMcpHttpWatchdogRequiresTwoConsecutiveFailures:
     """Ticket 416266ec: the 2026-09-07 restart fired on a SINGLE failed /health
     probe during a ~2 minute host-wide stall brain-mcp-http did not cause, and
@@ -164,7 +178,8 @@ class TestMcpHttpWatchdogRequiresTwoConsecutiveFailures:
     def _exec_start_command() -> str:
         content = _read("brain-mcp-http-watchdog.service.tmpl")
         line = next(raw for raw in content.splitlines() if raw.startswith("ExecStart="))
-        return line[len("ExecStart=") :].replace("__MCP_PORT__", "8765")
+        command = line[len("ExecStart=") :].replace("__MCP_PORT__", "8765")
+        return _collapse_systemd_dollar_escapes(command)
 
     @staticmethod
     def _fake_environment(tmp_path: Path, *, curl_exit: int) -> tuple[dict[str, str], Path, Path]:
@@ -228,6 +243,34 @@ class TestMcpHttpWatchdogRequiresTwoConsecutiveFailures:
         assert (
             not systemctl_log.exists() or "restart brain-mcp-http" not in systemctl_log.read_text()
         )
+
+
+class TestMcpHttpWatchdogExecStartReachesSystemdUnescaped:
+    """MAJOR (independent review of ticket 416266ec's own fix): systemd expands
+    bare ``$VAR``/``${VAR}`` inside ExecStart= BEFORE bash ever runs, using its
+    own substitution grammar (systemd.service(5)) -- not bash's. A construct
+    like ``${STATE_DIRECTORY:-/tmp}`` is not valid systemd substitution syntax
+    and systemd does not understand bash's default-value fallback either; every
+    ``$`` meant to reach bash must be escaped as ``$$`` so systemd hands bash a
+    literal single ``$``. The class above deliberately still runs the line
+    directly through a shell rather than a live systemd --user session (not
+    available in every test environment), so it alone cannot catch a bare,
+    unescaped ``$`` left for systemd -- this test parses the raw ExecStart text
+    instead and requires every ``$`` to be part of a ``$$`` escape pair."""
+
+    def test_every_dollar_sign_is_a_systemd_escape_pair(self) -> None:
+        content = _read("brain-mcp-http-watchdog.service.tmpl")
+        line = next(raw for raw in content.splitlines() if raw.startswith("ExecStart="))
+        command = line[len("ExecStart=") :]
+
+        index = command.find("$")
+        while index != -1:
+            assert command[index : index + 2] == "$$", (
+                f"unescaped '$' at offset {index} of ExecStart reaches systemd's "
+                "own substitution before bash ever runs this line: "
+                f"{command[index : index + 24]!r}"
+            )
+            index = command.find("$", index + 2)
 
 
 class TestMcpHttpWatchdogTimerTemplate:
