@@ -163,8 +163,8 @@ def _newer_unreadable_note(state: ClaimState) -> str | None:
 _BUCKET_ORDER = ("holds", "falsified", "stale", "unverified", "unreadable")
 
 
-def _bucket_text(status: str, states: Sequence[ClaimState]) -> str:
-    """One status bucket's text; a bounded detail is added only when it is singular."""
+def _bucket_text(status: str, states: Sequence[ClaimState], *, include_details: bool = True) -> str:
+    """Keep a count visible even when optional details must yield to the suffix cap."""
     count = len(states)
     if status == "holds":
         label = "tient" if count == 1 else "tiennent"
@@ -177,7 +177,7 @@ def _bucket_text(status: str, states: Sequence[ClaimState]) -> str:
     else:  # unverified
         label = "non vérifiée" if count == 1 else "non vérifiées"
     text = f"{count} {label}"
-    if count != 1:
+    if count != 1 or not include_details:
         return text
 
     state = states[0]
@@ -210,8 +210,20 @@ def render_claim_suffix(states: Sequence[ClaimState]) -> str | None:
     buckets: dict[str, list[ClaimState]] = {key: [] for key in _BUCKET_ORDER}
     for state in states:
         buckets[state.status].append(state)
-    parts = [_bucket_text(status, items) for status, items in buckets.items() if items]
-    return _cap(f"[claims : {' · '.join(parts)}]", _SUFFIX_MAX_LENGTH)
+    occupied = [(status, items) for status, items in buckets.items() if items]
+    parts = [_bucket_text(status, items) for status, items in occupied]
+    suffix = f"[claims : {' · '.join(parts)}]"
+    if len(suffix) <= _SUFFIX_MAX_LENGTH:
+        return suffix
+
+    # Remove optional details from the end until the counts and closing bracket fit.
+    for index in reversed(range(len(parts))):
+        status, items = occupied[index]
+        parts[index] = _bucket_text(status, items, include_details=False)
+        suffix = f"[claims : {' · '.join(parts)} …]"
+        if len(suffix) <= _SUFFIX_MAX_LENGTH:
+            return suffix
+    return suffix
 
 
 def _single_state_status_text(state: ClaimState) -> str:

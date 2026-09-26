@@ -269,7 +269,38 @@ def test_render_claim_suffix_caps_its_total_length_with_an_explicit_ellipsis() -
 
     assert suffix is not None
     assert len(suffix) <= 300
-    assert suffix.endswith("…")
+    assert suffix.endswith(" …]")
+
+
+def test_long_falsified_detail_keeps_all_mixed_status_counts_and_closing_bracket() -> None:
+    """Optional detail must never hide a later status or break the suffix boundary."""
+    falsified_verdict = _verdict(
+        "falsified", 1, datetime(2026, 9, 19, tzinfo=UTC), value={"head": "054"}
+    )
+    falsified_claim = _claim(
+        fact_name="f" * 350,
+        expected={"path": "/head", "op": "eq", "value": "053"},
+        expected_resolved={"path": "/head", "op": "eq", "value": "053"},
+        validity_seconds=31_536_000,
+    )
+    falsified = _state(falsified_claim, falsified_verdict, falsified_verdict)
+    stale_verdict = _verdict("holds", 1, datetime(2026, 9, 1, tzinfo=UTC))
+    stale = _state(_claim(validity_seconds=1), stale_verdict, stale_verdict)
+    unreadable_verdict = _verdict("unreadable", 1, NOW, reason="target_mismatch")
+    unreadable = _state(_claim(), unreadable_verdict, None)
+    unverified = _state(_claim(), None, None)
+    states = [falsified, stale, unreadable, unverified]
+
+    suffix = render_claim_suffix(states)
+
+    assert suffix is not None
+    assert len(suffix) <= 300
+    assert suffix.endswith("]")
+    assert "1 FALSIFIÉ" in suffix
+    assert "1 périmé" in suffix
+    assert "1 illisible" in suffix
+    assert "1 non vérifiée" in suffix
+    assert render_claim_suffix(states) == suffix
 
 
 def test_a_singular_stale_hold_carries_the_spec_example() -> None:
