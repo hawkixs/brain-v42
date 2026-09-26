@@ -202,8 +202,11 @@ services:
       # default stack (2026-09-26, docs/ARCHITECTURE.md): with
       # embedding-llama stopped, a /embed probe would report the shim
       # unhealthy even though /rerank — the endpoint brain actually calls —
-      # works.
-      test: ["CMD", "python3", "-c", "import urllib.request,json; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/rerank',data=json.dumps({'query':'healthcheck','candidates':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=20); assert 'scores' in json.loads(r.read())"]
+      # works. Asserts scores is a list of exactly one finite number for the
+      # single-candidate probe body, not merely that a "scores" key exists
+      # (MINOR review finding, PR #231): a wedged rerank returning
+      # {"scores": null} or {"scores": []} used to still report healthy.
+      test: ["CMD", "python3", "-c", "import urllib.request,json,math; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/rerank',data=json.dumps({'query':'healthcheck','candidates':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=20); scores=json.loads(r.read())['scores']; assert isinstance(scores, list) and len(scores) == 1 and math.isfinite(scores[0])"]
       interval: 60s
       timeout: 20s
       retries: 5
