@@ -144,6 +144,29 @@ CPU single batch ~3.4 s; CPU sorted micro-batches of 32 ~1.9 s; CUDA sorted micr
 ~0.3 s (85 candidates) / ~0.4 s (128) — a single CUDA batch of 128x512 OOMs the shared 6 GB GPU.
 CPU vs CUDA scores: max |diff| 0.00012, identical top-10.
 
+### Qodo retired from the default stack (2026-09-26)
+
+brain-v42 embeds through the Mistral codestral endpoint since 2026-09-22; the local
+Qodo-Embed-1-1.5B GGUF served by `embedding-llama` (llama.cpp) is no longer a brain
+dependency. `auto-discord`, the last `/embed` client, is migrating off it in its own
+change. Consequently `embedding-llama` sits behind the `qodo` Compose profile: a plain
+`docker compose up` never starts it, and `embedding-shim` carries no `depends_on` on it
+— the shim starts on its own and serves `/rerank` (used by brain's hybrid search and
+ClusterGuard) regardless of whether qodo is running.
+
+`POST /embed`, `/embed/query` and `/embed/single` on the shim depend on
+`embedding-llama` and answer with an upstream error while it is stopped — this is
+expected, not a regression, for any caller that has not migrated off `/embed` yet.
+
+To bring qodo back deliberately (e.g. to serve a caller that still needs `/embed`):
+
+```bash
+docker compose --profile qodo up -d embedding-llama
+```
+
+This does not change the reranker: `/rerank` is served locally by the ONNX
+cross-encoder (see above) and never depended on `embedding-llama`.
+
 ## Storage layout
 
 | Store | Port | Role | Source files |

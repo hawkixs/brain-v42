@@ -100,6 +100,12 @@ services:
   embedding-llama:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:c1ddeb6d30932ddd9ddff962cb62dbc5450cd99d8e82c8c20de2fd1f99fde85b
     container_name: brain_v42_embedding_llama
+    # Qodo retired from the default stack (2026-09-26, docs/ARCHITECTURE.md):
+    # brain embeds through Mistral codestral since 2026-09-22, and the last
+    # /embed client (auto-discord) is migrating off it. `docker compose up`
+    # (no profile) never starts this service. Bring it back deliberately with
+    # `docker compose --profile qodo up -d embedding-llama`.
+    profiles: ["qodo"]
     restart: unless-stopped
     # --pooling last: the model's own sentence-transformers config (lasttoken).
     # -ub 1024: VRAM lever no.1 (2.9 GiB vs 4.7 at ub=4096, latencies
@@ -184,9 +190,10 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    depends_on:
-      embedding-llama:
-        condition: service_healthy
+    # No depends_on on embedding-llama: qodo is retired from the default
+    # stack (2026-09-26, docs/ARCHITECTURE.md) and sits behind `--profile
+    # qodo`, so the shim must start without it. /embed then fails fast
+    # (embedding-llama unreachable) instead of blocking startup.
     healthcheck:
       # A real healthcheck: POST /rerank crosses the shim AND its ONNX
       # cross-encoder model (the same philosophy as the legacy healthcheck
