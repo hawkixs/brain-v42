@@ -228,6 +228,52 @@ def test_load_disables_onnxruntime_automatic_session_fallback(monkeypatch):
     assert sessions[0].disable_fallback_calls == 1
 
 
+def test_load_cuda_session_creation_failure_falls_back_to_cpu_and_opens_breaker(
+    monkeypatch, caplog
+):
+    """MAJOR review finding (PR #231): CUDA listed as available but session
+    CONSTRUCTION failing (unusable GPU/driver) used to raise straight out of
+    _load(), before the run-level retry/breaker ever got a chance to act."""
+    cpu_sessions: list[RecordingSession] = []
+
+    def factory(providers: list[str]) -> RecordingSession:
+        if providers[0] == "CUDAExecutionProvider":
+            raise RuntimeError("CUDA driver initialization failed")
+        session = RecordingSession(providers)
+        cpu_sessions.append(session)
+        return session
+
+    _install_fake_onnx_modules(
+        monkeypatch, factory, available_providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+    )
+
+    backend = OnnxRerankBackend("m.onnx", "t.json", device="cuda")
+
+    with caplog.at_level(logging.WARNING, logger="shim_backends"):
+        session, _tokenizer = backend._load()
+
+    assert session.get_providers() == ["CPUExecutionProvider"]
+    assert len(cpu_sessions) == 1
+    assert session.disable_fallback_calls == 1
+    assert "rerank_cuda_breaker_open" in caplog.text
+    assert backend._cuda_breaker_is_open() is True
+
+
+def test_load_cpu_only_construction_failure_still_raises(monkeypatch):
+    """A CPU-only construction failure has no CUDA fallback to reach for — it
+    must still surface, not be swallowed."""
+
+    def factory(providers: list[str]) -> RecordingSession:
+        raise RuntimeError("model file is corrupt")
+
+    _install_fake_onnx_modules(monkeypatch, factory, available_providers=["CPUExecutionProvider"])
+
+    backend = OnnxRerankBackend("m.onnx", "t.json", device="cpu")
+
+    with pytest.raises(RuntimeError, match="model file is corrupt"):
+        backend._load()
+
+
 # --- length sorting + order restoration --------------------------------------
 
 

@@ -185,29 +185,51 @@ class OnnxRerankBackend:
         # (re)opened it; cleared back to None only on a successful CUDA run.
         self._cuda_open_since: float | None = None
 
+    def _create_session(self, providers: list[str]) -> Any:
+        import onnxruntime  # container only (lazy)
+
+        # Needed by onnxruntime-gpu before a CUDA session on some platforms
+        # (loads the bundled CUDA/cuDNN wheel DLLs); absent from CPU-only
+        # onnxruntime builds. Harmless to call again for a CPU-only session.
+        if hasattr(onnxruntime, "preload_dlls"):
+            onnxruntime.preload_dlls()
+
+        session = onnxruntime.InferenceSession(self._model_path, providers=providers)
+        # onnxruntime's own EPFail fallback would silently retry a failed run
+        # on CPU inside session.run() and return scores without ever raising —
+        # the explicit retry + breaker in rerank() would then never see the
+        # failure, so the breaker would never open and the session could stay
+        # pinned to CPU even after the GPU recovers (MAJOR review finding, PR
+        # #231). disable_fallback() is the documented onnxruntime 1.30 API for
+        # this (onnxruntime.capi.onnxruntime_inference_collection.Session).
+        session.disable_fallback()
+        return session
+
     def _load(self) -> tuple[Any, Any]:
         with self._lock:
             if self._session is None:
                 import onnxruntime  # container only (lazy)
                 from tokenizers import Tokenizer  # container only (lazy)
 
-                # Needed by onnxruntime-gpu before a CUDA session on some
-                # platforms (loads the bundled CUDA/cuDNN wheel DLLs); absent
-                # from CPU-only onnxruntime builds.
-                if hasattr(onnxruntime, "preload_dlls"):
-                    onnxruntime.preload_dlls()
-
                 providers = _resolve_providers(self._device, onnxruntime.get_available_providers())
-                self._session = onnxruntime.InferenceSession(self._model_path, providers=providers)
-                # onnxruntime's own EPFail fallback would silently retry a failed
-                # run on CPU inside session.run() and return scores without ever
-                # raising — the explicit retry + breaker in rerank() would then
-                # never see the failure, so the breaker would never open and the
-                # session could stay pinned to CPU even after the GPU recovers
-                # (MAJOR review finding, PR #231). disable_fallback() is the
-                # documented onnxruntime 1.30 API for this
-                # (onnxruntime.capi.onnxruntime_inference_collection.Session).
-                self._session.disable_fallback()
+                try:
+                    self._session = self._create_session(providers)
+                except Exception as exc:
+                    # CUDA reported available but the session itself failed to
+                    # construct (unusable GPU/driver): the run-level retry in
+                    # rerank() never gets a chance to act because it never even
+                    # gets a CUDA session to try (MAJOR review finding, PR
+                    # #231). Treat it exactly like a run failure: open the
+                    # breaker and use a CPU session instead.
+                    if "CUDAExecutionProvider" not in providers:
+                        raise
+                    _LOGGER.warning(
+                        "rerank_cuda_session_creation_failed_using_cpu error_type=%s",
+                        type(exc).__name__,
+                    )
+                    self._record_cuda_failure()
+                    self._cpu_session = self._create_session(["CPUExecutionProvider"])
+                    self._session = self._cpu_session
                 # Structured, no text payloads (query/candidates never logged here).
                 _LOGGER.info(
                     "rerank_provider_loaded requested_device=%s provider=%s",
@@ -223,11 +245,7 @@ class OnnxRerankBackend:
 
     def _load_cpu_fallback(self) -> Any:
         if self._cpu_session is None:
-            import onnxruntime  # container only (lazy)
-
-            self._cpu_session = onnxruntime.InferenceSession(
-                self._model_path, providers=["CPUExecutionProvider"]
-            )
+            self._cpu_session = self._create_session(["CPUExecutionProvider"])
             _LOGGER.info("rerank_cpu_fallback_session_loaded")
         return self._cpu_session
 
