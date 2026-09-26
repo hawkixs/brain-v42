@@ -7,8 +7,10 @@ Env:
                           current contract unchanged — ticket 530d796a point (a))
   SHIM_BEARER_MODE        'optional' (default: accepts + logs) | 'required'
                           (401 — a SEPARATE operator gesture, after client ticket 9ef5c69d)
-  RERANK_DEVICE           'auto' (default: CUDA if available, else CPU) | 'cuda' | 'cpu'
-  RERANK_BATCH_SIZE       reranker micro-batch size after length sorting (default 32)
+  RERANK_DEVICE               'auto' (default: CUDA if available, else CPU) | 'cuda' | 'cpu'
+  RERANK_BATCH_SIZE           reranker micro-batch size after length sorting (default 32)
+  RERANK_CUDA_COOLDOWN_SECONDS  seconds to route to CPU after a CUDA failure before
+                                 retrying CUDA (default 300; >= 0; 0 disables the breaker)
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ def build_app() -> Starlette:
     onnx_dir = os.environ.get("ONNX_DIR", "/app/onnx")
     rerank_device = os.environ.get("RERANK_DEVICE", "auto")
     rerank_batch_size = int(os.environ.get("RERANK_BATCH_SIZE", "32"))
+    rerank_cuda_cooldown_seconds = float(os.environ.get("RERANK_CUDA_COOLDOWN_SECONDS", "300"))
     return create_app(
         LlamaEmbedBackend(llama_url),
         OnnxRerankBackend(
@@ -41,6 +44,7 @@ def build_app() -> Starlette:
             f"{onnx_dir}/tokenizer.json",
             device=rerank_device,
             batch_size=rerank_batch_size,
+            cuda_cooldown_seconds=rerank_cuda_cooldown_seconds,
         ),
         bearer=bearer_from_env(os.environ),
     )

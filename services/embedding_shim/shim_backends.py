@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 import math
 import threading
+import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -136,6 +138,16 @@ class OnnxRerankBackend:
     128x512 OOMs the shared 6 GB GPU — a 1.6 GB attention buffer next to the
     llama.cpp embedder's 2.5 GB). CPU vs CUDA scores: max |diff| 0.00012,
     identical top-10.
+
+    CUDA circuit breaker: a shared GPU can be OOM for minutes at a time. Without
+    a breaker, every request would still try CUDA first and pay its failure
+    latency before falling back to CPU. After a CUDA run fails, the breaker
+    opens and routes every request straight to CPU for ``cuda_cooldown_seconds``
+    (env ``RERANK_CUDA_COOLDOWN_SECONDS``, default 300; ``0`` disables it) —
+    CUDA is not touched again until the cooldown elapses. The first request
+    after that retries CUDA; success closes the breaker, failure reopens it
+    (refreshing the cooldown, no duplicate log). Open/close transitions are
+    each logged exactly once, structured, with no query/candidate payload.
     """
 
     def __init__(
@@ -145,11 +157,17 @@ class OnnxRerankBackend:
         max_length: int = 512,
         device: str = "auto",
         batch_size: int = 32,
+        cuda_cooldown_seconds: float = 300.0,
+        clock: Callable[[], float] | None = None,
     ) -> None:
         if device not in _RERANK_DEVICES:
             raise ValueError(f"RERANK_DEVICE must be one of {sorted(_RERANK_DEVICES)}: {device!r}")
         if batch_size < 1:
             raise ValueError(f"RERANK_BATCH_SIZE must be >= 1: {batch_size!r}")
+        if cuda_cooldown_seconds < 0:
+            raise ValueError(
+                f"RERANK_CUDA_COOLDOWN_SECONDS must be >= 0: {cuda_cooldown_seconds!r}"
+            )
         self._model_path = model_path
         self._tokenizer_path = tokenizer_path
         self._max_length = max_length
@@ -161,6 +179,11 @@ class OnnxRerankBackend:
         # rerank() runs in a worker thread: two concurrent first calls can
         # cross the lazy-load without this lock.
         self._lock = threading.Lock()
+        self._cuda_cooldown_seconds = cuda_cooldown_seconds
+        self._clock = clock or time.monotonic
+        # None: breaker closed. Set to the clock reading of the failure that
+        # (re)opened it; cleared back to None only on a successful CUDA run.
+        self._cuda_open_since: float | None = None
 
     def _load(self) -> tuple[Any, Any]:
         with self._lock:
@@ -203,14 +226,58 @@ class OnnxRerankBackend:
         if not candidates:
             return []
         session, tokenizer = self._load()
+
+        if self._cuda_breaker_is_open():
+            # Cooling down after a recent CUDA failure: skip CUDA entirely,
+            # do not pay its latency on a request that would likely fail too.
+            cpu_session = self._load_cpu_fallback()
+            return self._score(cpu_session, tokenizer, query, candidates)
+
         try:
-            return self._score(session, tokenizer, query, candidates)
+            scores = self._score(session, tokenizer, query, candidates)
         except Exception as exc:
             if session.get_providers()[0] != "CUDAExecutionProvider":
                 raise
             _LOGGER.warning("rerank_cuda_run_failed_retrying_cpu error_type=%s", type(exc).__name__)
+            self._record_cuda_failure()
             cpu_session = self._load_cpu_fallback()
             return self._score(cpu_session, tokenizer, query, candidates)
+
+        if (
+            self._cuda_open_since is not None
+            and session.get_providers()[0] == "CUDAExecutionProvider"
+        ):
+            self._close_cuda_breaker()
+        return scores
+
+    def _cuda_breaker_is_open(self) -> bool:
+        """Whether CUDA is in cooldown after a recent failure.
+
+        ``cuda_cooldown_seconds == 0`` disables the breaker outright: the
+        elapsed-time check below is trivially satisfied, so a failure never
+        routes a later request away from CUDA — the pre-breaker behaviour.
+        """
+        if self._cuda_cooldown_seconds <= 0 or self._cuda_open_since is None:
+            return False
+        return (self._clock() - self._cuda_open_since) < self._cuda_cooldown_seconds
+
+    def _record_cuda_failure(self) -> None:
+        if self._cuda_cooldown_seconds <= 0:
+            return
+        if self._cuda_open_since is None:
+            # Structured, no payload: a cooldown value only, never query or
+            # candidate text.
+            _LOGGER.warning(
+                "rerank_cuda_breaker_open cooldown_seconds=%s", self._cuda_cooldown_seconds
+            )
+        # Refresh the window even if already open (a post-cooldown retry that
+        # fails again): the breaker stays open, this is not a new transition,
+        # so no second "open" log.
+        self._cuda_open_since = self._clock()
+
+    def _close_cuda_breaker(self) -> None:
+        _LOGGER.info("rerank_cuda_breaker_closed")
+        self._cuda_open_since = None
 
     def _score(
         self, session: Any, tokenizer: Any, query: str, candidates: list[str]
