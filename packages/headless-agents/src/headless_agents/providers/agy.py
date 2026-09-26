@@ -508,7 +508,6 @@ def _agy_ephemeral_root_candidates(environ: Mapping[str, str]) -> list[Path]:
     xdg = default_ephemeral_root(environ)
     if xdg is not None:
         candidates.append(xdg)
-    candidates.append(Path(tempfile.gettempdir()))
     try:
         operator_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     except KeyError:
@@ -517,9 +516,11 @@ def _agy_ephemeral_root_candidates(environ: Mapping[str, str]) -> list[Path]:
         # can set to its own writable directory.
         pass
     else:
-        # Last resort only: used when the runtime and temp directories both
-        # sit under a git work tree (e.g. a stray /tmp/.git).
         candidates.append(operator_home / ".cache" / "headless-agents" / "agy-homes")
+    # Last resort: any local user can create a .git in a world-writable temp
+    # directory, so it comes after the two roots only the operator (or root)
+    # can write above.
+    candidates.append(Path(tempfile.gettempdir()))
     return candidates
 
 
@@ -695,6 +696,21 @@ def run_agy(
                 encoding="utf-8",
             )
             return TIMEOUT_EXIT_CODE
+
+        # Checked again right before the launch (review of PR #228): a .git
+        # that appeared above the HOME since its root was chosen would let
+        # agy's upward walk reach that repository's instruction files. What
+        # remains is a writer racing this very check -- only the operator or
+        # root under XDG_RUNTIME_DIR or the operator's cache, any local user
+        # only under the temp-directory fallback.
+        late_git = _nearest_git_ancestor(home)
+        if late_git is not None:
+            stderr_log.write_text(
+                f"agy not launched: {late_git} appeared above the ephemeral HOME"
+                " after its root was chosen\n",
+                encoding="utf-8",
+            )
+            return PROVIDER_FALLBACK_EXIT_CODE
 
         with (
             events_log.open("w", encoding="utf-8") as events_stream,

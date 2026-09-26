@@ -250,6 +250,30 @@ def _logs(tmp_path: Path) -> dict[str, Path]:
     }
 
 
+@pytest.fixture(autouse=True)
+def _host_git_ancestry_stops_at_tmp_path(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """On a host where /tmp itself is a git repository, every tmp_path sits under
+    a .git and agy's pre-launch ancestry check would refuse every run. The walk
+    stops at tmp_path's boundary for paths inside it, so a test sees exactly the
+    .git entries it creates; paths outside tmp_path keep the real walk."""
+    real = agy._nearest_git_ancestor
+    boundary = tmp_path.resolve()
+
+    def bounded(path: Path) -> Path | None:
+        current = Path(path).resolve()
+        if current != boundary and boundary not in current.parents:
+            return real(path)
+        while True:
+            candidate = current / ".git"
+            if candidate.exists():
+                return candidate
+            if current == boundary:
+                return None
+            current = current.parent
+
+    monkeypatch.setattr(agy, "_nearest_git_ancestor", bounded)
+
+
 def _run(tmp_path: Path, **overrides: object) -> int:
     real_home = tmp_path / "real-home"
     (real_home / ".x").mkdir(parents=True, exist_ok=True)
@@ -553,6 +577,33 @@ class TestAgyEphemeralRootGitAncestry:
         assert "command" not in captured
         stderr = (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
         assert str((repo / ".git").resolve()) in stderr
+
+    def test_a_git_ancestor_appearing_before_the_launch_refuses_the_run(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, git_free_dir: Path
+    ) -> None:
+        """Review of PR #228: the ancestry is checked again right before agy
+        starts; a .git that appeared since the root was chosen refuses the run."""
+        captured = _install(monkeypatch, _FakeProcess(returncode=0))
+        xdg = git_free_dir / "xdg"
+        xdg.mkdir()
+        calls = {"n": 0}
+
+        def late_git(path: Path) -> Path | None:
+            calls["n"] += 1
+            return None if calls["n"] == 1 else Path("/late/.git")
+
+        monkeypatch.setattr(agy, "_nearest_git_ancestor", late_git)
+
+        code = _run(
+            tmp_path,
+            ephemeral_root=None,
+            environment={"PATH": "/usr/bin", "LANG": "C", "XDG_RUNTIME_DIR": str(xdg)},
+        )
+
+        assert code == PROVIDER_FALLBACK_EXIT_CODE
+        assert "command" not in captured
+        stderr = (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
+        assert "/late/.git" in stderr
 
     def test_no_git_ancestor_keeps_the_existing_xdg_choice(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, git_free_dir: Path
