@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
@@ -95,10 +96,18 @@ class ClaimVerificationService:
         session_factory: async_sessionmaker[AsyncSession],
         *,
         clock: Callable[[], datetime] = _utcnow,
+        max_concurrent_verifications: int = 4,
     ) -> None:
+        if type(max_concurrent_verifications) is not int or max_concurrent_verifications < 1:
+            raise ValueError("max_concurrent_verifications must be a positive integer")
         self._registry = registry
         self._session_factory = session_factory
         self._clock = clock
+        # Owned-session verifications each open a connection from the shared pool
+        # (pool_size=20 + max_overflow=10). Bounding entry here, well below that
+        # capacity, keeps a burst of callers from starving every other MCP tool of
+        # connections instead of queuing safely inside this service (ticket 8acd4698).
+        self._verification_semaphore = asyncio.Semaphore(max_concurrent_verifications)
 
     async def verify(
         self,
@@ -120,10 +129,11 @@ class ClaimVerificationService:
             return await self._verify(
                 session, checked_id, issuer, kind, key, project_key=project_key
             )
-        async with self._session_factory() as owned_session, owned_session.begin():
-            return await self._verify(
-                owned_session, checked_id, issuer, kind, key, project_key=project_key
-            )
+        async with self._verification_semaphore:
+            async with self._session_factory() as owned_session, owned_session.begin():
+                return await self._verify(
+                    owned_session, checked_id, issuer, kind, key, project_key=project_key
+                )
 
     async def _verify(
         self,

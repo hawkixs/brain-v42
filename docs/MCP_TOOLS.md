@@ -165,6 +165,9 @@ brain_claim_verify(claim_id, idempotency_key)
   whose definition left the catalogue, or changed version, is
   `unreadable / definition_changed`, measured by nobody (`where: "catalogue"`).
 - Verification changes no entry, archives nothing and alters no ranking.
+- Concurrent owned-session verifications (no caller-supplied session) are admitted
+  through a service-owned semaphore, sized well below the shared connection pool, so
+  a burst of callers queues instead of starving every other MCP tool of connections.
 
 Refusals keep a closed code and a constant text through the masked MCP boundary:
 `invalid_argument` (a `claim_id` must be a UUID in canonical lowercase form, a key
