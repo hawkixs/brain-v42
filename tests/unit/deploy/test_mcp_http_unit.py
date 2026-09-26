@@ -201,7 +201,9 @@ class TestMcpHttpWatchdogRequiresTwoConsecutiveFailures:
 
         self._run_probe(environment)
 
-        assert not systemctl_log.exists() or "restart brain-mcp-http" not in systemctl_log.read_text()
+        assert (
+            not systemctl_log.exists() or "restart brain-mcp-http" not in systemctl_log.read_text()
+        )
 
     def test_two_consecutive_failed_probes_restart(self, tmp_path: Path) -> None:
         environment, systemctl_log, _ = self._fake_environment(tmp_path, curl_exit=1)
@@ -223,7 +225,9 @@ class TestMcpHttpWatchdogRequiresTwoConsecutiveFailures:
         write_file(fake_bin / "curl", "#!/usr/bin/env bash\nexit 1\n", mode=0o755)
         self._run_probe(environment)
 
-        assert not systemctl_log.exists() or "restart brain-mcp-http" not in systemctl_log.read_text()
+        assert (
+            not systemctl_log.exists() or "restart brain-mcp-http" not in systemctl_log.read_text()
+        )
 
 
 class TestMcpHttpWatchdogTimerTemplate:

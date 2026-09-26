@@ -92,10 +92,7 @@ class GraphOutboxProjector:
                 # the ordinary armed handover. If PostgreSQL was already armed
                 # here, a conflicting live owner cannot be ruled out this way:
                 # refuse and fall through to recovery, unchanged.
-                if (
-                    not leadership.armed
-                    and activation.current_generation == leadership.generation
-                ):
+                if not leadership.armed and activation.current_generation == leadership.generation:
                     advanced = await self._repo.advance_confirmed_generation(
                         leadership,
                         lease_seconds=self._lease_seconds,
