@@ -50,7 +50,7 @@ def _context(tool_name: str = "brain_get") -> MagicMock:
 
 def _headers(
     *,
-    agent: str | None = "/home/hawixs/hawkixs_infra/git_repo/brain_v42",
+    agent: str | None = "/home/user/hawkixs_infra/git_repo/brain_v42",
     connection: str | None = _CONNECTION,
 ) -> dict[str, str]:
     headers: dict[str, str] = {}

@@ -153,7 +153,7 @@ class TestNormalizeAgent:
     @pytest.mark.parametrize(
         "raw,expected",
         [
-            ("/home/hawixs/hawkixs_infra/git_repo/red-lab", "red-lab"),
+            ("/home/user/hawkixs_infra/git_repo/red-lab", "red-lab"),
             ("/home/u/proj/", "proj"),  # trailing slash
             ("/srv/auto_discord", "auto_discord"),
             ("red-shrik", "red-shrik"),  # static label passthrough

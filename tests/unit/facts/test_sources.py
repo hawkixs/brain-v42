@@ -80,7 +80,7 @@ def test_release_sha_from_path_accepts_a_release_nested_under_another_releases_d
     an earlier `releases` directory in the path (a mirror, a backup root) does not
     make the process a checkout."""
     nested = Path(
-        "/srv/releases/home/hawixs/.local/share/brain-v42/releases/"
+        "/srv/releases/home/user/.local/share/brain-v42/releases/"
         + "c" * 40
         + "/venv/lib/python3.12/site-packages/brain_v42/__init__.py"
     )

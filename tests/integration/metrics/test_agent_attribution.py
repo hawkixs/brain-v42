@@ -165,7 +165,7 @@ async def http_server_and_collector(
     - METRICS_ENABLED=true       (so instrument_tool is active)
     - GRAPH_ENABLED=false        (no Neo4j required)
     - DECAY_ENABLED=false        (no decay flusher)
-    - EMBEDDING_SERVICE_URL points to dev-pc but we don't call embedding tools
+    - EMBEDDING_SERVICE_URL points to the GPU host but we don't call embedding tools
     """
     from tests.integration.conftest import INTEGRATION_DB_URL
 
