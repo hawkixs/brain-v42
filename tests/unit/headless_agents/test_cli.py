@@ -244,7 +244,7 @@ def test_json_prints_run_json(world: _World) -> None:
     code, out, _ = world.run("run", "codex", "--json", "go")
     assert code == 0
     payload = json.loads(out)
-    assert payload["schema"] == 1 and payload["text"] == "the answer"
+    assert payload["schema"] == 1 and payload["kind"] == "run" and payload["text"] == "the answer"
     assert payload["status"] == "answered"
     assert payload["steps"][0]["provider"] == "codex"
 
@@ -1260,6 +1260,7 @@ def test_show_json_prints_the_rebuilt_report(world: _World) -> None:
     code, out, _ = world.run("show", run_id, "--json")
     report = json.loads(out)
     assert code == 0 and list(report) == list(RUN_KEYS) and report["run_id"] == run_id
+    assert report["kind"] == "run"
 
 
 def test_show_of_a_cleaned_run_says_so_and_exits_0(world: _World) -> None:
