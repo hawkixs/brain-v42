@@ -4,14 +4,27 @@ After=brain-mcp-http.service
 
 [Service]
 Type=oneshot
+StateDirectory=brain-mcp-http-watchdog
 
-# Probe the /health endpoint; if it fails, restart the HTTP server.
+# Probe the /health endpoint; restart the HTTP server only after TWO
+# CONSECUTIVE failed probes (ticket 416266ec: the 2026-09-07 restart fired on
+# a single failed probe during a ~2 minute host-wide stall the server did not
+# cause, and the new process landed on a graph projection fence stranded
+# mid-handover). The failure count is persisted in $STATE_DIRECTORY across
+# oneshot invocations (this unit has no memory of its own between runs); a
+# successful probe resets it.
 # __MCP_PORT__ is replaced by install.sh (production contract: 8765).
 # -m 10 : sans timeout, un serveur WEDGÉ (event loop bloquée, accept queue
 # pleine) fait pendre le curl indéfiniment → le watchdog reste "activating"
 # et ne restart jamais (incident 2026-07-03 : loop bloquée sur connexion
 # Neo4j defunct après recreate du container, watchdog aveugle).
-ExecStart=/bin/bash -lc 'curl -fsS -m 10 127.0.0.1:__MCP_PORT__/health || systemctl --user restart brain-mcp-http'
+# Every '$' below is doubled ('$$') on purpose: systemd expands bare
+# $VAR/${VAR} in ExecStart= using its own substitution grammar BEFORE bash
+# ever runs this line (systemd.service(5)), and a raw ${STATE_DIRECTORY:-/tmp}
+# is neither valid systemd substitution syntax nor something systemd hands to
+# bash unmangled. '$$' is systemd's own escape for a literal single '$', which
+# is what bash needs to see here (same convention as brain-v42-dream.service.tmpl).
+ExecStart=/bin/bash -lc 'STATE="$${STATE_DIRECTORY:-/tmp}/consecutive-failures"; if curl -fsS -m 10 127.0.0.1:__MCP_PORT__/health; then rm -f "$$STATE"; else COUNT=$$(( $$(cat "$$STATE" 2>/dev/null || echo 0) + 1 )); if [ "$$COUNT" -ge 2 ]; then rm -f "$$STATE"; systemctl --user restart brain-mcp-http; else echo "$$COUNT" > "$$STATE"; fi; fi'
 
 UMask=0077
 NoNewPrivileges=true

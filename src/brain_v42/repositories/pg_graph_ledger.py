@@ -522,6 +522,76 @@ class PgGraphLedgerRepo:
             await session.commit()
         return released
 
+    async def advance_confirmed_generation(
+        self,
+        leadership: ProjectionLeadership,
+        *,
+        lease_seconds: int,
+    ) -> ProjectionLeadership | None:
+        """Bump a generation Neo4j has already durably confirmed, unarmed in PG.
+
+        Closes the 'crash between Neo4j activation and PG arm' hole named in
+        decision 3d3d72e4 (ticket 416266ec) without recovery 035: reachable only
+        when the caller still holds this exact, still-live, unarmed generation
+        (the row-level CAS below is the same ownership/lease guard every other
+        leadership mutation uses), so advancing here carries the same risk
+        profile as the ordinary armed handover in ``acquire_leadership`` -- it is
+        not a new hole in the fence.
+
+        An unarmed row is not, by itself, durable proof of a genuine crash
+        before any arm ever succeeded (independent review of PR #230): a
+        leases-row-only restore or tamper can resurrect that exact shape while
+        ``graph_outbox`` still carries rows this same generation legitimately
+        claimed before. ``claim_pending`` can only ever stamp
+        ``lease_generation`` on a row while armed, so a live row with that
+        stamp already existing is proof this generation was, in this
+        canonical PostgreSQL's own recorded history, used for a real claim --
+        refuse the advance and require recovery 035 instead. The caller's
+        ``GraphOutboxProjector`` independently asks Neo4j for the same proof
+        on its own side (``has_cursor_evidence``) before ever attempting this.
+        """
+        statement = sa.text(
+            """
+            UPDATE graph_projection_leases
+            SET generation = generation + 1,
+                neo4j_armed_generation = NULL,
+                leased_until = clock_timestamp()
+                    + (:lease_seconds * INTERVAL '1 second'),
+                updated_at = clock_timestamp()
+            WHERE slot = 'neo4j'
+              AND recovery_id IS NULL
+              AND protocol_version = 2
+              AND owner = :owner_id
+              AND generation = :generation
+              AND leased_until > clock_timestamp()
+              AND (neo4j_armed_generation IS NULL OR neo4j_armed_generation <> generation)
+              AND NOT EXISTS (
+                  SELECT 1 FROM graph_outbox
+                  WHERE graph_outbox.lease_generation = :generation
+              )
+            RETURNING generation, leased_until AS lease_until
+            """
+        )
+        async with self._session_factory() as session:
+            result = await session.execute(
+                statement,
+                {
+                    "owner_id": leadership.owner_id,
+                    "generation": leadership.generation,
+                    "lease_seconds": max(1, lease_seconds),
+                },
+            )
+            row = result.mappings().one_or_none()
+            await session.commit()
+        if row is None:
+            return None
+        return ProjectionLeadership(
+            owner_id=leadership.owner_id,
+            generation=int(row["generation"]),
+            lease_until=row["lease_until"],
+            armed=False,
+        )
+
     async def prepare_projection_recovery(
         self,
         recovery_id: UUID,

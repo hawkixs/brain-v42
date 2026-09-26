@@ -81,6 +81,53 @@ class GraphOutboxProjector:
         try:
             activation = await self._graph.activate_generation(leadership)
             if not activation.accepted:
+                # 'crash between Neo4j activation and PG arm' hole (decision
+                # 3d3d72e4 / ticket 416266ec): a predecessor activated this exact
+                # generation in Neo4j and then died before confirming the arm in
+                # PostgreSQL. We only ever hold `leadership` because PostgreSQL's
+                # own row-level CAS already proved the predecessor's PG lease had
+                # expired, so once Neo4j's own rejection response independently
+                # confirms it is durably at exactly this generation (neither
+                # ahead nor behind), a single bounded advance is no riskier than
+                # the ordinary armed handover. If PostgreSQL was already armed
+                # here, a conflicting live owner cannot be ruled out this way:
+                # refuse and fall through to recovery, unchanged.
+                #
+                # Equal generations are not, by themselves, proof of that exact
+                # story (independent review of PR #230): a PostgreSQL restore
+                # can resurrect this same unarmed shape at a generation Neo4j
+                # actually armed and used for real deliveries before this
+                # process ever started (the runbook's own admitted residual --
+                # "same generation does not mean same content"). A standalone,
+                # unlocked ``has_cursor_evidence`` read cannot close that hole
+                # by itself (second independent review of PR #230): a
+                # predecessor's in-flight write can commit between that read
+                # and the advance below, landing under a fence this process
+                # believes it just claimed unopposed. Use it here only as a
+                # cheap early exit -- skip the PostgreSQL CAS entirely when
+                # refusal is already certain -- and let the real authority be
+                # ``require_no_prior_cursor=True`` on the retry activation
+                # below, which re-checks the exact same evidence inside the
+                # SAME locked Neo4j transaction that performs the advance, so
+                # an in-flight predecessor write and this advance always
+                # serialize on the fence's own write lock.
+                if (
+                    not leadership.armed
+                    and activation.current_generation == leadership.generation
+                    and not await self._graph.has_cursor_evidence(leadership.generation)
+                ):
+                    advanced = await self._repo.advance_confirmed_generation(
+                        leadership,
+                        lease_seconds=self._lease_seconds,
+                    )
+                    if advanced is not None:
+                        leadership = advanced
+                        self._leadership = leadership
+                        activation = await self._graph.activate_generation(
+                            leadership,
+                            require_no_prior_cursor=True,
+                        )
+            if not activation.accepted:
                 release_after_batch = True
                 reason = (
                     "neo4j_fence_ahead"
