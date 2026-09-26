@@ -71,6 +71,46 @@ def _load_json_object(path: Path) -> dict[str, object]:
     return document
 
 
+def _confined_source_path(
+    source_root: Path,
+    resolved_source_root: Path,
+    raw_path: str,
+    asset_key: str,
+    current_path: Path,
+) -> Path:
+    """Resolve `raw_path` against `source_root`, refusing any escape.
+
+    `current.json` is read from the release's own source tree, but it is data,
+    not code: a compromised build (or a tampered `current.json`) could name an
+    absolute path, a path with `.`/`..` components, or a relative path that
+    looks safe lexically but is a symlink planted inside the source tree
+    pointing outside it. Any of the three would let `publish_recovery_binding`
+    read — and then publish into `recovery/` — a file that never belonged to
+    this release's source tree.
+    """
+    candidate = Path(raw_path)
+    if (
+        not raw_path
+        or candidate.is_absolute()
+        or any(part in {"", ".", ".."} for part in candidate.parts)
+    ):
+        raise RecoveryBindingError(
+            f"{current_path}'s {asset_key!r} path {raw_path!r} is not a safe relative path"
+        )
+    lexical = source_root / candidate
+    if not lexical.is_file():
+        raise RecoveryBindingError(f"{asset_key}: source file is missing: {lexical}")
+    resolved = lexical.resolve()
+    try:
+        resolved.relative_to(resolved_source_root)
+    except ValueError as exc:
+        raise RecoveryBindingError(
+            f"{asset_key}: source path {raw_path!r} resolves outside the release's "
+            f"source tree ({resolved})"
+        ) from exc
+    return lexical
+
+
 def _atomic_write(path: Path, text: str, *, mode: int) -> None:
     """Write `text` to `path` so no reader ever observes a partial file."""
     tmp = path.with_name(f".{path.name}.tmp-{os.getpid()}")
@@ -129,6 +169,7 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
         "schema_head": shipped_head,
         "release_sha": release_sha,
     }
+    resolved_source_root = source_root.resolve()
     for asset_key in ASSET_KEYS:
         asset = current.get(asset_key)
         if (
@@ -137,9 +178,9 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
             or not isinstance(asset.get("sha256"), str)
         ):
             raise RecoveryBindingError(f"{current_path}'s {asset_key!r} entry is malformed")
-        source_path = source_root / str(asset["path"])
-        if not source_path.is_file():
-            raise RecoveryBindingError(f"{asset_key}: source file is missing: {source_path}")
+        source_path = _confined_source_path(
+            source_root, resolved_source_root, str(asset["path"]), asset_key, current_path
+        )
         declared = str(asset["sha256"])
         measured_before = _sha256_of(source_path)
         if measured_before != declared:
@@ -148,6 +189,11 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
                 f"(current.json declares {declared}, measured {measured_before})"
             )
         destination = recovery_dir / source_path.name
+        if destination.is_symlink():
+            raise RecoveryBindingError(
+                f"{asset_key}: destination {destination} already exists as a symlink; "
+                "refusing to write through it and escape recovery/"
+            )
         shutil.copyfile(source_path, destination)
         os.chmod(destination, 0o644)
         measured_after = _sha256_of(destination)

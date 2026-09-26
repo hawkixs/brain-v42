@@ -159,6 +159,71 @@ def test_publish_recovery_binding_refuses_a_release_with_no_current_json(tmp_pat
         rr.publish_recovery_binding(release_dir)
 
 
+def test_publish_recovery_binding_refuses_a_dotdot_asset_path(tmp_path: Path) -> None:
+    release_dir = _build_release(tmp_path)
+    source_root = release_dir / "brain-v42"
+    outside = release_dir / "outside.sql"
+    outside.write_text("-- outside the release's source tree\n")
+    current_path = source_root / "ops" / "recovery" / "current.json"
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    current["attestation_sql"] = {"path": "../outside.sql", "sha256": _sha256(outside)}
+    current_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(rr.RecoveryBindingError, match="not a safe relative path"):
+        rr.publish_recovery_binding(release_dir)
+
+
+def test_publish_recovery_binding_refuses_an_absolute_asset_path(tmp_path: Path) -> None:
+    release_dir = _build_release(tmp_path)
+    source_root = release_dir / "brain-v42"
+    outside = tmp_path / "outside-abs.sql"
+    outside.write_text("-- absolute, outside the release's source tree\n")
+    current_path = source_root / "ops" / "recovery" / "current.json"
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    current["manifest"] = {"path": str(outside), "sha256": _sha256(outside)}
+    current_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(rr.RecoveryBindingError, match="not a safe relative path"):
+        rr.publish_recovery_binding(release_dir)
+
+
+def test_publish_recovery_binding_refuses_a_symlink_escaping_the_source_tree(
+    tmp_path: Path,
+) -> None:
+    release_dir = _build_release(tmp_path)
+    source_root = release_dir / "brain-v42"
+    secret = tmp_path / "secret.sql"
+    secret.write_text("-- secret, outside the release's source tree\n")
+    link = source_root / "ops" / "recovery" / "escape-link.sql"
+    link.symlink_to(secret)
+    current_path = source_root / "ops" / "recovery" / "current.json"
+    current = json.loads(current_path.read_text(encoding="utf-8"))
+    current["restored_attestation_sql"] = {
+        "path": "ops/recovery/escape-link.sql",
+        "sha256": _sha256(secret),
+    }
+    current_path.write_text(json.dumps(current, indent=2, sort_keys=True) + "\n")
+
+    with pytest.raises(rr.RecoveryBindingError, match="outside the release's source tree"):
+        rr.publish_recovery_binding(release_dir)
+
+
+def test_publish_recovery_binding_refuses_to_overwrite_an_existing_symlink_in_recovery(
+    tmp_path: Path,
+) -> None:
+    release_dir = _build_release(tmp_path)
+    recovery_dir = release_dir / "recovery"
+    recovery_dir.mkdir(parents=True)
+    planted_target = tmp_path / "planted-target.sql"
+    planted_target.write_text("-- whatever was there before\n")
+    (recovery_dir / "brain-v42-v1.sql").symlink_to(planted_target)
+
+    with pytest.raises(rr.RecoveryBindingError, match="symlink"):
+        rr.publish_recovery_binding(release_dir)
+
+    assert planted_target.read_text(encoding="utf-8") == "-- whatever was there before\n"
+
+
 def test_record_binding_in_manifest_adds_key_preserving_other_keys_and_format(
     tmp_path: Path,
 ) -> None:
