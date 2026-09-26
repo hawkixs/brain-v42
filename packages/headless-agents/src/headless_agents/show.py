@@ -23,7 +23,7 @@ from typing import Final
 
 from . import lineage as lineages
 from . import provenance, reviews
-from .report import PROMPT_FILE, RUN_JSON, RUN_KEYS, SCHEMA
+from .report import KIND, PROMPT_FILE, RUN_JSON, RUN_KEYS, SCHEMA
 from .run_record import RESULT_FILE_NAME
 from .runs import RUN_ID_PATTERN, Entry, Registry, RegistryError
 from .state import Unknown
@@ -119,7 +119,7 @@ def read_diffstat(run_dir: Path) -> Diffstat | None:
 def _bare(run_id: str) -> dict[str, object]:
     """What the state alone says of a run: its steps, text and measures are unknown."""
     document: dict[str, object] = dict.fromkeys(RUN_KEYS)
-    document.update(schema=SCHEMA, run_id=run_id, steps=[], cost_complete=False)
+    document.update(schema=SCHEMA, kind=KIND, run_id=run_id, steps=[], cost_complete=False)
     return document
 
 
@@ -132,6 +132,12 @@ def read_run_dir(entry: Entry) -> tuple[dict[str, object] | None, bool, str | No
     the directory is gone, so what stands there now -- a later run given the same
     ``--run-dir`` -- is not this run's; a report naming another run disowns its
     directory the same way (final review of lot 2 PR B).
+
+    Ticket 1a76fe55: a report with no ``"kind"`` predates the discriminator and is
+    tolerated as a run; a ``"kind"`` other than ``"run"`` is not a run.json at all,
+    and disowns the directory the same as a report naming another run. An ABSENT key
+    is the only thing tolerated besides ``"run"`` -- an explicit ``"kind": null`` is a
+    ``"kind"`` other than ``"run"``, not a missing one, and is rejected the same way.
     """
     path = entry.run_dir / RUN_JSON
     if entry.cleaned_at is not None:
@@ -142,9 +148,15 @@ def read_run_dir(entry: Entry) -> tuple[dict[str, object] | None, bool, str | No
         document = load_json(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, ValueError):
         return None, True, f"{path} cannot be read: shown from the state"
-    if not isinstance(document, dict) or document.get("run_id") != entry.run_id:
+    if (
+        not isinstance(document, dict)
+        or document.get("run_id") != entry.run_id
+        or ("kind" in document and document["kind"] != KIND)
+    ):
         return None, False, f"{path} names another run: its directory is ignored"
-    return {key: document.get(key) for key in RUN_KEYS}, True, None
+    report = {key: document.get(key) for key in RUN_KEYS}
+    report["kind"] = KIND
+    return report, True, None
 
 
 def _commits(reported: object, recorded: Sequence[Mapping[str, object]]) -> list[dict[str, object]]:
@@ -319,12 +331,16 @@ def from_dir(run_dir: Path) -> Shown:
     except (OSError, UnicodeDecodeError, ValueError):
         raise NotShown(f"{path} cannot be read: not a run directory of ha") from None
     run_id = document.get("run_id") if isinstance(document, dict) else None
-    if not isinstance(document, dict) or not (
-        isinstance(run_id, str) and RUN_ID_PATTERN.fullmatch(run_id)
+    if (
+        not isinstance(document, dict)
+        or not (isinstance(run_id, str) and RUN_ID_PATTERN.fullmatch(run_id))
+        or ("kind" in document and document["kind"] != KIND)
     ):
         raise NotShown(f"{path} is not a run.json of ha")
+    report = {key: document.get(key) for key in RUN_KEYS}
+    report["kind"] = KIND
     return Shown(
-        report={key: document.get(key) for key in RUN_KEYS},
+        report=report,
         task=read_task(run_dir),
         diffstat=read_diffstat(run_dir),
         notes=(f"display only: {path}, not the state directory",),
