@@ -214,3 +214,22 @@ def test_a_migration_that_lands_without_its_contract_fails_the_gate(tmp_path: Pa
     message = problems[0]
     assert "mint the next recovery contract" in message
     assert "ops/recovery/current.json" in message
+
+
+#: red-backup, the consumer of every release's recovery binding, refuses a
+#: contract manifest or a restored-target SQL larger than these: a contract that
+#: grows past them must be caught here, at the pull request that mints it, not by
+#: a backup run that silently marks the binding invalid.
+RED_BACKUP_MAX_BYTES = {"manifest": 64 * 1024, "restored_attestation_sql": 1024 * 1024}
+
+
+def test_the_current_assets_fit_what_red_backup_accepts() -> None:
+    binding = load_binding(CURRENT_JSON)
+    for key, limit in RED_BACKUP_MAX_BYTES.items():
+        entry = binding[key]
+        assert isinstance(entry, Mapping)
+        size = (REPO_ROOT / str(entry["path"])).stat().st_size
+        assert size <= limit, (
+            f"{entry['path']} is {size} bytes, over red-backup's {limit}-byte limit for "
+            f"{key}: red-backup would refuse this recovery binding"
+        )
