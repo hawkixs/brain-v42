@@ -20,7 +20,9 @@ import pytest_asyncio
 # hang. Tests that need a REAL database opt in through `require_test_db_url()`
 # (tests/conftest.py), keyed on BRAIN_V42_TEST_DB_URL, and skip loudly without it --
 # this fixture does not touch that mechanism.
-_UNREACHABLE_TEST_POSTGRES_URL = "postgresql+asyncpg://unit-test:unit-test@127.0.0.1:1/brain_unit_test_unreachable"
+_UNREACHABLE_TEST_POSTGRES_URL = (
+    "postgresql+asyncpg://unit-test:unit-test@127.0.0.1:1/brain_unit_test_unreachable"
+)
 
 
 @pytest.fixture(autouse=True)
