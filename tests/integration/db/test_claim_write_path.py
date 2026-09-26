@@ -28,10 +28,12 @@ from brain_v42.db.tables import (
     learnings,
     project_contexts,
 )
+from brain_v42.db.tables import knowledge_claim_verdicts as _knowledge_claim_verdicts
 from brain_v42.facts.definitions_startup import register_fact_definitions
-from brain_v42.facts.model import FactTarget, SourceIdentity
+from brain_v42.facts.model import FactTarget, SourceIdentity, Unreadable
 from brain_v42.facts.probe import SourceSession
 from brain_v42.facts.registry import FactRegistry
+from brain_v42.facts.verification import ClaimVerificationService
 from brain_v42.mcp.tools import claim_writes
 from brain_v42.mcp.tools.claim_writes import persist_claims, resolve_claim_inputs
 from brain_v42.mcp.tools.crud_tools import register_crud_tools
@@ -156,6 +158,90 @@ def _claim(statement: str) -> dict[str, object]:
     }
 
 
+_MEASURABLE_IDENTITY = SourceIdentity(
+    system_identifier="1", database="brain_test", server_addr="127.0.0.1", server_port=5432
+)
+
+
+class _MeasurableSource:
+    """A real source session whose identity matches `_MEASURABLE_IDENTITY` by default."""
+
+    async def identity(self) -> SourceIdentity:
+        return _MEASURABLE_IDENTITY
+
+
+class _MeasurableProbe:
+    """A fact the server can actually measure -- the `measure=true` write-time path."""
+
+    name = "claim_write_measurable"
+    definition_version = 1
+    target = FactTarget.PRODUCTION
+    ttl = timedelta(seconds=15)
+    timeout = timedelta(seconds=3)
+    briefing = False
+    policies: Mapping[str, int] = {}
+    value_schema = {"lag_seconds": "int"}
+
+    def __init__(self, *, value: int = 3) -> None:
+        self.value = value
+
+    async def measure(self, source: SourceSession) -> Mapping[str, object]:
+        return {"lag_seconds": self.value}
+
+
+def _measurable_registry(
+    *, value: int = 3, expected_identity: SourceIdentity = _MEASURABLE_IDENTITY
+) -> FactRegistry:
+    """One live-measurable fact, real source identity check included."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def source() -> AsyncIterator[_MeasurableSource]:
+        yield _MeasurableSource()
+
+    registry = FactRegistry(
+        sources={FactTarget.PRODUCTION: source},
+        expected={FactTarget.PRODUCTION: expected_identity},
+    )
+    registry.register(_MeasurableProbe(value=value))
+    registry.freeze()
+    return registry
+
+
+def _measurable_claim(statement: str) -> dict[str, object]:
+    """A `measure=true` declaration against `_MeasurableProbe`'s scalar schema."""
+    return {
+        "statement": statement,
+        "fact_name": "claim_write_measurable",
+        "expected": {"path": "/lag_seconds", "op": "lte", "value": 300},
+        "measure": True,
+    }
+
+
+async def _claim_provenance(
+    session_factory: async_sessionmaker[AsyncSession], claim_id: UUID
+) -> str | None:
+    async with session_factory() as session:
+        return await session.scalar(
+            sa.select(knowledge_claims.c.provenance).where(knowledge_claims.c.id == claim_id)
+        )
+
+
+async def _verdict_rows_for_claim(
+    session_factory: async_sessionmaker[AsyncSession], claim_id: UUID
+) -> list[Any]:
+    async with session_factory() as session:
+        return list(
+            (
+                await session.execute(
+                    sa.select(_knowledge_claim_verdicts).where(
+                        _knowledge_claim_verdicts.c.claim_id == claim_id
+                    )
+                )
+            ).mappings()
+        )
+
+
 async def _seed_project(
     session_factory: async_sessionmaker[AsyncSession], project_key: str
 ) -> None:
@@ -225,7 +311,7 @@ async def _learning_with_claims(
     resolved = await resolve_claim_inputs(registry, [_claim(statement) for statement in statements])
     async with session_factory() as session, session.begin():
         learning = await service.create(data, session=session)
-        claim_ids = await persist_claims(
+        outcomes = await persist_claims(
             session,
             entry_id=learning.id,
             entity_type="learning",
@@ -234,7 +320,7 @@ async def _learning_with_claims(
             declared_by="integration-test",
             declared_at=datetime.now(UTC),
         )
-    return service, learning, claim_ids
+    return service, learning, [outcome.claim_id for outcome in outcomes]
 
 
 async def _claim_rows(
@@ -320,7 +406,7 @@ async def test_learning_and_two_claims_commit_together_then_enrich(
     try:
         async with session_factory() as session, session.begin():
             learning = await service.create(data, session=session)
-            claim_ids = await persist_claims(
+            outcomes = await persist_claims(
                 session,
                 entry_id=learning.id,
                 entity_type="learning",
@@ -333,7 +419,8 @@ async def test_learning_and_two_claims_commit_together_then_enrich(
         event.remove(engine.sync_engine, "commit", record_commit)
 
     assert commits == 1
-    assert len(claim_ids) == 2
+    assert len(outcomes) == 2
+    assert all(outcome.provenance == "declared" and outcome.detail is None for outcome in outcomes)
     async with session_factory() as session:
         anchor_id = await session.scalar(
             sa.select(brain_entities.c.id).where(brain_entities.c.source_uuid == learning.id)
@@ -379,7 +466,7 @@ async def test_adr_and_claim_commit_together_then_enrich(
     try:
         async with session_factory() as session, session.begin():
             adr = await service.create(data, session=session)
-            claim_ids = await persist_claims(
+            outcomes = await persist_claims(
                 session,
                 entry_id=adr.id,
                 entity_type="adr",
@@ -392,7 +479,8 @@ async def test_adr_and_claim_commit_together_then_enrich(
         event.remove(engine.sync_engine, "commit", record_commit)
 
     assert commits == 1
-    assert len(claim_ids) == 1
+    assert len(outcomes) == 1
+    assert outcomes[0].provenance == "declared" and outcomes[0].detail is None
     async with session_factory() as session:
         anchor_id = await session.scalar(
             sa.select(brain_entities.c.id).where(brain_entities.c.source_uuid == adr.id)
@@ -700,3 +788,369 @@ async def test_update_claim_failure_rolls_back_the_field_update_too(
         assert await session.scalar(
             sa.select(learnings.c.insight).where(learnings.c.id == learning.id)
         ) == ("The initial field value must survive failed claim replacements.")
+
+
+# ---------------------------------------------------------------------------
+# `measure=true` at write time (spec 2026-09-19 section 6.3, order AMENDED
+# 2026-09-26): the outcome table against a real `ClaimVerificationService` and
+# a real disposable database. Each scenario proves the stored `provenance`,
+# the verdict row count, and that the entry write is never refused.
+# ---------------------------------------------------------------------------
+
+
+async def test_measured_holds_write_stores_measured_provenance_and_one_verdict_row(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A conclusive `holds` must be stored `measured`, with exactly one verdict row."""
+    registry = _measurable_registry(value=3)
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-measure-holds-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    data = LearningCreate(
+        topic="Measured at write time",
+        insight="The claim was measured through the registry in the same transaction.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(registry, [_measurable_claim("The measured lag holds.")])
+    verification = ClaimVerificationService(registry, session_factory)
+
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provenance == "measured"
+    assert outcome.detail == "holds"
+    assert await _claim_provenance(session_factory, outcome.claim_id) == "measured"
+    rows = await _verdict_rows_for_claim(session_factory, outcome.claim_id)
+    assert len(rows) == 1
+    assert rows[0]["verdict"] == "holds"
+    assert rows[0]["idempotency_key"] == f"write:{outcome.claim_id}"
+
+
+async def test_measured_falsified_write_is_not_refused(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A `falsified` first verdict must still commit the entry, not raise or roll back."""
+    registry = _measurable_registry(value=999)
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-measure-falsified-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    data = LearningCreate(
+        topic="Falsified at write time",
+        insight="A falsified first verdict does not refuse the write.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(
+        registry, [_measurable_claim("The measured lag holds (it will not).")]
+    )
+    verification = ClaimVerificationService(registry, session_factory)
+
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provenance == "measured"
+    assert outcome.detail == "falsified"
+    assert await _claim_provenance(session_factory, outcome.claim_id) == "measured"
+    rows = await _verdict_rows_for_claim(session_factory, outcome.claim_id)
+    assert len(rows) == 1
+    assert rows[0]["verdict"] == "falsified"
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                sa.select(sa.func.count())
+                .select_from(learnings)
+                .where(learnings.c.topic == "Falsified at write time")
+            )
+            == 1
+        )
+
+
+async def test_unreadable_measurement_keeps_declared_but_appends_the_row(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An unreadable real measurement is history: declared provenance, one kept row."""
+    wrong_identity = SourceIdentity(
+        system_identifier="1", database="brain_test", server_addr="127.0.0.1", server_port=9999
+    )
+    registry = _measurable_registry(value=3, expected_identity=wrong_identity)
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-measure-unreadable-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    data = LearningCreate(
+        topic="Unreadable at write time",
+        insight="A source identity mismatch is unreadable, never falsified.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(
+        registry, [_measurable_claim("The measured lag holds (unreadable).")]
+    )
+    verification = ClaimVerificationService(registry, session_factory)
+
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provenance == "declared"
+    assert outcome.detail is not None
+    assert outcome.detail.startswith("unreadable:")
+    assert await _claim_provenance(session_factory, outcome.claim_id) == "declared"
+    rows = await _verdict_rows_for_claim(session_factory, outcome.claim_id)
+    assert len(rows) == 1
+    assert rows[0]["verdict"] == "unreadable"
+
+
+async def test_refused_refresh_budget_keeps_declared_with_no_verdict_row(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A refused refresh budget is declared with no server observation to keep."""
+    registry = _measurable_registry(value=3)
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-measure-refused-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    data = LearningCreate(
+        topic="Refresh budget exhausted at write time",
+        insight="An internal capacity refusal must not become a durable verdict.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(
+        registry, [_measurable_claim("The measured lag holds (budget refused).")]
+    )
+    verification = ClaimVerificationService(registry, session_factory)
+
+    async def exhausted(name: str, *, max_age: timedelta) -> Unreadable:
+        return Unreadable(
+            fact="claim_write_measurable",
+            definition_version=1,
+            target=FactTarget.PRODUCTION,
+            error_code="refresh_budget",
+            where=None,
+            observation_id=uuid4(),
+            measured_at=datetime.now(UTC),
+            duration_ms=0,
+            ttl_seconds=15,
+            source_kind="probe",
+        )
+
+    monkeypatch.setattr(registry, "measure", exhausted)
+
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provenance == "declared"
+    assert outcome.detail == "retry later: refresh budget"
+    assert await _claim_provenance(session_factory, outcome.claim_id) == "declared"
+    assert await _verdict_rows_for_claim(session_factory, outcome.claim_id) == []
+
+
+async def test_unexpected_measurement_error_commits_the_entry_declared(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unexpected registry failure never refuses the entry write; the claim is declared."""
+    registry = _measurable_registry(value=3)
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-measure-error-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    topic = f"Unexpected measurement error {uuid4()}"
+    data = LearningCreate(
+        topic=topic,
+        insight="A bug in measurement must not roll back an otherwise valid entry.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(
+        registry, [_measurable_claim("The measured lag holds (it errors).")]
+    )
+    verification = ClaimVerificationService(registry, session_factory)
+
+    async def boom(name: str, *, max_age: timedelta) -> Mapping[str, object]:
+        raise RuntimeError("forced measurement failure")
+
+    monkeypatch.setattr(registry, "measure", boom)
+
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provenance == "declared"
+    assert outcome.detail == "unexpected error"
+    assert await _claim_provenance(session_factory, outcome.claim_id) == "declared"
+    assert await _verdict_rows_for_claim(session_factory, outcome.claim_id) == []
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                sa.select(sa.func.count()).select_from(learnings).where(learnings.c.topic == topic)
+            )
+            == 1
+        )
+
+
+async def test_unexpected_error_from_identity_lookup_commits_the_entry_declared(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raising source-identity lookup during comparison must not roll back the entry.
+
+    MAJOR review finding (PR #233): the pre-insert measure+compare step originally
+    wrapped only `registry.measure`; a raise from `_comparison`'s
+    `registry.expected_identity` lookup escaped uncaught and rolled back the caller's
+    entry transaction instead of committing it `declared` with zero verdict rows.
+    """
+    registry = _measurable_registry(value=3)
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-measure-identity-error-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    topic = f"Identity lookup error {uuid4()}"
+    data = LearningCreate(
+        topic=topic,
+        insight="A raising identity lookup must not roll back an otherwise valid entry.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(
+        registry, [_measurable_claim("The measured lag holds (identity lookup errors).")]
+    )
+    verification = ClaimVerificationService(registry, session_factory)
+
+    def boom(target: FactTarget) -> SourceIdentity | None:
+        raise RuntimeError("forced identity lookup failure")
+
+    monkeypatch.setattr(registry, "expected_identity", boom)
+
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provenance == "declared"
+    assert outcome.detail == "unexpected error"
+    assert await _claim_provenance(session_factory, outcome.claim_id) == "declared"
+    assert await _verdict_rows_for_claim(session_factory, outcome.claim_id) == []
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                sa.select(sa.func.count()).select_from(learnings).where(learnings.c.topic == topic)
+            )
+            == 1
+        )
+
+
+async def test_unexpected_error_from_compare_commits_the_entry_declared(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raising `compare()` during the pre-insert step must not roll back the entry.
+
+    MAJOR review finding (PR #233): companion case to the identity-lookup raise above --
+    any exception past `registry.measure` inside the same step used to escape uncaught.
+    """
+    from brain_v42.facts import verification as verification_module
+
+    registry = _measurable_registry(value=3)
+    await register_fact_definitions(registry, session_factory)
+    project_key = f"claim-measure-compare-error-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    topic = f"Compare error {uuid4()}"
+    data = LearningCreate(
+        topic=topic,
+        insight="A raising compare() must not roll back an otherwise valid entry.",
+        project_key=project_key,
+    )
+    resolved = await resolve_claim_inputs(
+        registry, [_measurable_claim("The measured lag holds (compare errors).")]
+    )
+    verification = ClaimVerificationService(registry, session_factory)
+
+    def boom(expected_resolved: object, measurement: object) -> object:
+        raise RuntimeError("forced comparison failure")
+
+    monkeypatch.setattr(verification_module, "compare", boom)
+
+    async with session_factory() as session, session.begin():
+        learning = await _service(session_factory).create(data, session=session)
+        outcomes = await persist_claims(
+            session,
+            entry_id=learning.id,
+            entity_type="learning",
+            project_key=project_key,
+            resolved=resolved,
+            declared_by="integration-test",
+            declared_at=datetime.now(UTC),
+            verification=verification,
+        )
+
+    assert len(outcomes) == 1
+    outcome = outcomes[0]
+    assert outcome.provenance == "declared"
+    assert outcome.detail == "unexpected error"
+    assert await _claim_provenance(session_factory, outcome.claim_id) == "declared"
+    assert await _verdict_rows_for_claim(session_factory, outcome.claim_id) == []
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                sa.select(sa.func.count()).select_from(learnings).where(learnings.c.topic == topic)
+            )
+            == 1
+        )

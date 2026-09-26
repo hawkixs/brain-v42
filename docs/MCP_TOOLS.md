@@ -209,6 +209,69 @@ brain_claim_verify(
 # the same row, byte for byte: nothing was measured again
 ```
 
+### Measured at write time (`measure=true`, ADR 27 lot B remainder)
+
+Every claim input on `brain_learn`, `brain_log_decision`, `brain_propose_adr`,
+`brain_create_runbook`, `brain_save_snippet` and the creating branch of `brain_update`'s
+claim replacement accepts `measure: bool = false` alongside `statement`/`fact_name`/
+`expected`. Absent or `false` is today's path, byte for byte: `provenance="declared"`,
+no verdict, the same confirmation text. `measure=true` asks the server to take the
+claim's first verdict in the SAME transaction as the entry, instead of waiting for a
+later `brain_claim_verify` call.
+
+The write order is not "insert declared, then upgrade": migration 055's
+`knowledge_claims_update_gate` trigger forbids any change to `provenance` once a claim
+row exists (only `retired_at` NULL → non-NULL is allowed), and
+`knowledge_claim_verdicts.claim_id` references the claim. So the server measures
+FIRST, through the same registry and the same pre-comparison checks as
+`brain_claim_verify` (fact, definition version, target, source identity), decides the
+provenance, inserts the occurrence with that final provenance, and only then appends
+the first verdict — internally, never as a second public tool, and never accepting a
+caller-supplied measurement.
+
+| Server measurement | Stored provenance | Verdict row |
+| --- | --- | --- |
+| Conclusive (`holds` or `falsified`) | `measured` | one, `write:<claim_id>` |
+| `unreadable` (any reason) | `declared` | one — a real observation belongs to history |
+| Refused (`refresh_budget_exhausted`) | `declared` | none — an internal capacity limit, not a fact about the claim |
+| Unexpected error | `declared` | none; one bounded structured log line, no probe payload, no DB text |
+
+A `falsified` first verdict does NOT refuse the write: the entry is stored and the
+confirmation says so. A verification failure of any kind never rolls back or fails the
+entry write; only `asyncio.CancelledError` propagates. The confirmation line names each
+claim's outcome once at least one claim in the request was measured — `measured
+(holds)`, `measured (falsified)`, `declared (unreadable: probe:timeout)`,
+`declared (retry later: refresh budget)`, `declared (unexpected error)` — and stays the
+untouched aggregate text (`N recorded as declared [...]`) when none was.
+
+The idempotency key of that first verdict is derived from the brand-new claim id
+(`write:<claim_id>`): it protects a retry inside the SAME transaction only. A
+client-level retry of the whole write creates a new entry and new claim ids, exactly as
+a declared write does today — there is no cross-request replay here.
+
+Bound: at most 10 claims per entry (unchanged), measured sequentially inside the
+writer's own transaction. Worst case added latency is roughly 10× the slowest claimed
+fact's measurement deadline — plan around that before setting `measure=true` on a
+batch of claims against a slow fact.
+
+Declaration and a write-time measurement, side by side:
+
+```
+brain_learn(
+    topic="The graph projection keeps up",
+    insight="The outbox drains within minutes under nightly load.",
+    project_key="brain-v42",
+    claims=[{
+        "statement": "The graph projection lags less than five minutes.",
+        "fact_name": "graph_projection_lag",
+        "expected": {"path": "/lag_seconds", "op": "lte", "value": 300},
+        "measure": True,
+    }],
+)
+# ok Learning saved (id:…, claims:1 recorded
+#   [7d0b1f53-4c55-4c2e-9e57-a5b1b8d0c001 measured (holds)]; brain_claim_verify measures one)
+```
+
 ## Observable delivery workflows
 
 The eleven `brain_delivery_*` operations are version 1.0 and return structured
