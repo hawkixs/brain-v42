@@ -14,6 +14,7 @@ it only turns already-evaluated ``ClaimState`` rows into text.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -39,6 +40,39 @@ _REASON_LABELS: dict[str, str] = {
 }
 
 _MISSING = object()
+
+# Rendering-only bounds for user-controlled text (a claim statement, a
+# JSON-pointer-derived measured/expected scalar): none of this touches the
+# stored row, only what this module turns it into.
+_CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]+")
+_MARKDOWN_SPECIAL_RE = re.compile(r"([\\`*_\[\]#])")
+_DETAIL_VALUE_MAX_LENGTH = 80
+_STATEMENT_MAX_LENGTH = 200
+_SUFFIX_MAX_LENGTH = 300
+
+
+def _cap(text: str, max_length: int) -> str:
+    """Truncate to at most *max_length* characters with a visible ellipsis.
+
+    A silent truncation would look identical to a value that simply ended
+    there; the ellipsis says a cap was applied.
+    """
+    if len(text) <= max_length:
+        return text
+    return text[: max_length - 1].rstrip() + "…"
+
+
+def _render_safe(text: str, *, max_length: int) -> str:
+    """Flatten control characters and escape Markdown syntax, then cap length.
+
+    A raw newline in stored user text can forge an extra list/history line
+    indistinguishable from a genuine one; a raw Markdown delimiter can
+    reformat or link arbitrary text. Both are neutralised only in what gets
+    RENDERED here -- the caller's stored row is never touched.
+    """
+    flattened = _CONTROL_CHARS_RE.sub(" ", text)
+    escaped = _MARKDOWN_SPECIAL_RE.sub(r"\\\1", flattened)
+    return _cap(escaped, max_length)
 
 
 def _reason_label(reason: str | None) -> str:
@@ -110,7 +144,9 @@ def _falsified_detail(state: ClaimState) -> str | None:
     observed = _pointer_value(measured_value, path)
     if attendu is _MISSING or observed is _MISSING:
         return None
-    return f"{state.claim.fact_name} mesuré {observed}, attendu {attendu}"
+    observed_text = _render_safe(str(observed), max_length=_DETAIL_VALUE_MAX_LENGTH)
+    attendu_text = _render_safe(str(attendu), max_length=_DETAIL_VALUE_MAX_LENGTH)
+    return f"{state.claim.fact_name} mesuré {observed_text}, attendu {attendu_text}"
 
 
 def _newer_unreadable_note(state: ClaimState) -> str | None:
@@ -175,7 +211,7 @@ def render_claim_suffix(states: Sequence[ClaimState]) -> str | None:
     for state in states:
         buckets[state.status].append(state)
     parts = [_bucket_text(status, items) for status, items in buckets.items() if items]
-    return f"[claims : {' · '.join(parts)}]"
+    return _cap(f"[claims : {' · '.join(parts)}]", _SUFFIX_MAX_LENGTH)
 
 
 def _single_state_status_text(state: ClaimState) -> str:
@@ -198,9 +234,10 @@ def format_claim_list(items: Sequence[ClaimState], next_after_seq: int | None) -
     for state in items:
         claim = state.claim
         retired = " [retired]" if claim.retired_at is not None else ""
+        statement = _render_safe(claim.statement, max_length=_STATEMENT_MAX_LENGTH)
         lines.append(
             f"- {claim.id} ({claim.entity_type}/{claim.entry_id}) "
-            f'"{claim.statement}"{retired} — {_single_state_status_text(state)}'
+            f'"{statement}"{retired} — {_single_state_status_text(state)}'
         )
     if next_after_seq is not None:
         lines.append(f"\n… (more results — after_seq={next_after_seq})")
@@ -217,9 +254,10 @@ def format_claim_history(
     """
     claim = state.claim
     retired = f" — retired {claim.retired_at.isoformat()}" if claim.retired_at else ""
+    statement = _render_safe(claim.statement, max_length=_STATEMENT_MAX_LENGTH)
     lines = [
         f"## Claim {claim.id}",
-        f'"{claim.statement}"{retired}',
+        f'"{statement}"{retired}',
         f"State: {_single_state_status_text(state)}",
         f"### History ({len(verdicts)})",
     ]

@@ -52,7 +52,11 @@ class FakeReadService:
 
         from brain_v42.models.claim_read import ClaimState
 
-        return ClaimHistory(cast(ClaimState, MagicMock(claim=MagicMock(id=claim_id))), (), None)
+        # statement is a real str: format_claim_history renders it through the
+        # Markdown-escaping path, which requires an actual string like the
+        # typed ClaimRead.statement field this fake stands in for.
+        claim = MagicMock(id=claim_id, statement="Test statement", retired_at=None)
+        return ClaimHistory(cast(ClaimState, MagicMock(claim=claim)), (), None)
 
 
 class FakeVerifier:
