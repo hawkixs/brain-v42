@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "headless-agents"
 # Provisional name (Brain decision 1800f901): the definitive one is chosen if
 # and when this member is split into its own repository.
-version = "0.5.0"
+version = "0.5.1"
 description = "Run headless agents (claude -p, codex exec, agy --print, opencode run, OpenAI-compatible HTTP) under a caller-supplied capability profile, and the ha CLI"
 readme = "README.md"
 requires-python = ">=3.12"
