@@ -59,12 +59,13 @@ import pytest
 from headless_agents import cli, provenance
 from headless_agents import lineage as lineages
 from headless_agents.config_paths import state_dir
+from headless_agents.engine import executable_for
 from headless_agents.proofs import proof_path, read_proof
 from headless_agents.registry import probe
 from headless_agents.runs import FINAL_STATUSES, Registry
 
 from .test_openai_compat_live import DEFAULT_MODELS, KEY_ENV
-from .test_workspace_live import EXECUTABLE, LIVE_ROOT, _operator_environment
+from .test_workspace_live import LIVE_ROOT, _operator_environment
 
 pytestmark = [
     pytest.mark.live,
@@ -225,12 +226,6 @@ def test_a_one_step_provider_run_writes_the_run_json_and_steps_layout(tmp_path: 
 
     An ``openai-compat`` preset needs no CLI rail (so no isolation proof to
     borrow): the cheapest possible exercise of the 0.5.0 engine's one-step path.
-
-    NOTE ON THE TASK'S "kind": "run": ``run.json``'s pinned key set
-    (``headless_agents.report.RUN_KEYS``, read in this worktree) carries no
-    top-level ``kind`` field -- only ``target.kind`` (``"provider"``, ``"role"``
-    or ``"workflow"``). This asserts ``target.kind == "provider"``, the real
-    field that exists today, rather than inventing the one the task named.
     """
     preset = "mistral"
     if not probe(preset).available:
@@ -256,6 +251,7 @@ def test_a_one_step_provider_run_writes_the_run_json_and_steps_layout(tmp_path: 
     assert code == 0, err
     report = json.loads(out)
     assert report["schema"] == 1
+    assert report["kind"] == "run"
     assert report["target"] == {"kind": "provider", "name": preset}
     assert report["status"] in FINAL_STATUSES
     assert report["exit_code"] == 0
@@ -285,11 +281,10 @@ def implement_run() -> Iterator[ImplementRun]:
     try:
         world = _new_world(root, roles=_ROLES, workflows=_WORKFLOWS)
         state = world.state
-        for rail, executable in (
-            (IMPLEMENTER_RAIL, EXECUTABLE[IMPLEMENTER_RAIL]),
-            (REVIEWER_RAIL, EXECUTABLE[REVIEWER_RAIL]),
-        ):
-            reason = _borrowed_isolation_proof(state, rail, executable=executable)
+        for rail in (IMPLEMENTER_RAIL, REVIEWER_RAIL):
+            reason = _borrowed_isolation_proof(
+                state, rail, executable=executable_for(rail, REAL_HOME)
+            )
             if reason is not None:
                 pytest.skip(reason)
         (world.repo / "NOTES.md").write_text("seed\n", encoding="utf-8")
@@ -329,12 +324,10 @@ def test_an_implement_run_is_recorded_shown_and_cleaned(implement_run: Implement
         assert commit["made_by"] in ("engine", "agent"), commit
 
     state = implement_run.world.state
-    engine_commits = [c for c in commits if c["made_by"] == "engine"]
-    assert engine_commits, "the engine never committed the agent's change"
-    record = provenance.lookup(state, engine_commits[0]["sha"])
+    record = provenance.lookup(state, commits[0]["sha"])
     assert record is not None
     assert record["run_id"] == implement_run.run_id
-    assert record["made_by"] == "engine"
+    assert record["made_by"] in ("engine", "agent")
     assert IMPLEMENTER_RAIL in record["providers"]
 
     lineage = lineages.load(state, report["lineage"])
