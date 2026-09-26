@@ -362,8 +362,10 @@ class ClaimVerificationService:
         the SAME request, from the registry, not from an argument. A no-op (no row) when
         that step kept no measurement: a refused refresh budget or an unexpected error.
         The idempotency key is derived from the fresh `claim_id`
-        (`write:<claim_id>`): it can only ever collide with a retry inside this same
-        transaction, never across requests, because `claim_id` did not exist before it.
+        (`write:<claim_id>`): a same-transaction retry replays the stored row only
+        when its request fingerprint matches. A changed request is refused before
+        another INSERT can abort the transaction. The fresh claim id prevents
+        cross-request replay.
         """
         if write_measurement.measurement is None or write_measurement.comparison is None:
             return None
@@ -378,6 +380,16 @@ class ClaimVerificationService:
             definition_version=resolved.definition_version,
             validity_seconds=resolved.validity_seconds,
         )
+        existing = await lookup_request(
+            session,
+            claim_id=claim_id,
+            issuer_identity=issuer_identity,
+            idempotency_key=idempotency_key,
+        )
+        if existing is not None:
+            if existing.request_fingerprint != request:
+                raise ClaimVerificationError("idempotency_conflict")
+            return existing
         return await append_verdict(
             session,
             claim_id=claim_id,

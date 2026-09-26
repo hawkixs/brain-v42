@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import cast
@@ -912,6 +913,73 @@ async def test_record_write_verdict_appends_a_row_keyed_by_the_new_claim_id(
     assert row.idempotency_key == f"write:{claim_id}"
     assert row.verdict == "holds"
     assert rows == [row]
+
+
+async def test_record_write_verdict_replays_matching_request_in_the_same_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A repeated write append must return its row without a second ledger INSERT."""
+    registry = _registry(_Probe())
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+    rows = await _memory_repository(monkeypatch, None)
+    measurement = await service.measure_for_write(resolved)
+    claim_id = uuid4()
+    session = SimpleNamespace()
+
+    first = await service.record_write_verdict(
+        session,
+        claim_id=claim_id,
+        resolved=resolved,
+        write_measurement=measurement,
+        issuer_identity="mcp:codex",
+        issuer_kind="robot",
+    )
+    replay = await service.record_write_verdict(
+        session,
+        claim_id=claim_id,
+        resolved=resolved,
+        write_measurement=measurement,
+        issuer_identity="mcp:codex",
+        issuer_kind="robot",
+    )
+
+    assert replay is first
+    assert rows == [first]
+
+
+async def test_record_write_verdict_refuses_changed_request_for_the_same_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The claim-derived key must not silently replay a verdict for different inputs."""
+    registry = _registry(_Probe())
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+    rows = await _memory_repository(monkeypatch, None)
+    measurement = await service.measure_for_write(resolved)
+    claim_id = uuid4()
+    session = SimpleNamespace()
+
+    await service.record_write_verdict(
+        session,
+        claim_id=claim_id,
+        resolved=resolved,
+        write_measurement=measurement,
+        issuer_identity="mcp:codex",
+        issuer_kind="robot",
+    )
+    changed = replace(resolved, validity_seconds=resolved.validity_seconds + 1)
+
+    with pytest.raises(ClaimVerificationError, match="idempotency_conflict"):
+        await service.record_write_verdict(
+            session,
+            claim_id=claim_id,
+            resolved=changed,
+            write_measurement=measurement,
+            issuer_identity="mcp:codex",
+            issuer_kind="robot",
+        )
+    assert len(rows) == 1
 
 
 async def test_record_write_verdict_is_a_no_op_when_nothing_was_measured(
