@@ -64,6 +64,10 @@ class Home:
             duration_seconds=65.4,
         )
         document.update(fields)
+        if "kind" not in fields:
+            # A pre-release run.json genuinely lacks the key -- not present with a null
+            # value. Callers that want to test a present "kind" pass it explicitly.
+            del document["kind"]
         return document
 
     def read_only(self, *, entry_status: str = "answered", **report: object) -> Path:
@@ -167,6 +171,38 @@ def test_a_report_naming_another_run_is_ignored(home: Home) -> None:
     home.read_only(run_id=OTHER, text="forged")
     shown = home.rebuild()
     assert shown.report["run_id"] == RUN and shown.report["text"] is None
+    assert any("names another run" in note for note in shown.notes)
+
+
+def test_a_run_json_of_a_different_kind_is_ignored(home: Home) -> None:
+    """Ticket 1a76fe55: a "kind" other than "run" is not a run.json -- handled exactly like
+    a malformed record, the same as a report naming another run."""
+    home.read_only(kind="workflow", text="forged")
+    shown = home.rebuild()
+    assert shown.report["text"] is None
+    assert any("names another run" in note for note in shown.notes)
+
+
+def test_a_legacy_run_json_without_kind_is_shown_as_kind_run(home: Home) -> None:
+    """A run.json written by a pre-release main build has no "kind": tolerated as a run."""
+    home.read_only()
+    assert home.rebuild().report["kind"] == "run"
+
+
+def test_a_run_json_with_a_null_kind_is_ignored(home: Home) -> None:
+    """An explicit "kind": null is a present key, not an absent one -- it is not tolerated
+    the way a legacy run.json's missing key is, and is rejected like any other kind."""
+    home.read_only(kind=None, text="forged")
+    shown = home.rebuild()
+    assert shown.report["text"] is None
+    assert any("names another run" in note for note in shown.notes)
+
+
+@pytest.mark.parametrize("kind", [1, ["run"]])
+def test_a_run_json_with_a_kind_of_another_type_is_ignored(home: Home, kind: object) -> None:
+    home.read_only(kind=kind, text="forged")
+    shown = home.rebuild()
+    assert shown.report["text"] is None
     assert any("names another run" in note for note in shown.notes)
 
 
@@ -334,6 +370,7 @@ def test_an_unreadable_registry_entry_is_unknown(home: Home) -> None:
     (home.state / "runs" / f"{RUN}.json").write_text("{not json")
     shown = home.rebuild()
     assert shown.report["status"] == "unknown" and shown.unknown is True
+    assert shown.report["kind"] == "run"
 
 
 def test_a_malformed_registry_entry_is_unknown(home: Home) -> None:
@@ -836,12 +873,24 @@ def test_a_run_directory_is_shown_for_display_after_the_state_is_lost(home: Home
     shutil.rmtree(home.state)
     shown = show.from_dir(run_dir)
     assert shown.report["run_id"] == REVIEW and shown.report["verdict"] == "approve"
+    assert shown.report["kind"] == "run", "a legacy report has no kind: tolerated as a run"
     assert shown.task == "Review this change."
     assert any("display only" in note for note in shown.notes)
     assert list(shown.report) == list(RUN_KEYS)
 
 
-@pytest.mark.parametrize("content", [None, "{not json", '["a list"]', '{"run_id": "../x"}'])
+@pytest.mark.parametrize(
+    "content",
+    [
+        None,
+        "{not json",
+        '["a list"]',
+        '{"run_id": "../x"}',
+        '{"run_id": "20260925T120000-ab12cd34", "kind": "workflow"}',
+        '{"run_id": "20260925T120000-ab12cd34", "kind": null}',
+        '{"run_id": "20260925T120000-ab12cd34", "kind": 1}',
+    ],
+)
 def test_a_directory_without_a_report_of_ha_is_not_shown(
     tmp_path: Path, content: str | None
 ) -> None:
