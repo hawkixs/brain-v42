@@ -235,6 +235,7 @@ caller-supplied measurement.
 | `unreadable` (any reason) | `declared` | one — a real observation belongs to history |
 | Refused (`refresh_budget_exhausted`) | `declared` | none — an internal capacity limit, not a fact about the claim |
 | Unexpected error | `declared` | none; one bounded structured log line, no probe payload, no DB text |
+| Unattributed caller (`unknown`, `_unexpanded`, or blank actor) | `declared` | none; the server does not measure without an attributable issuer |
 
 A `falsified` first verdict does NOT refuse the write: the entry is stored and the
 confirmation says so. A verification failure of any kind never rolls back or fails the
@@ -242,12 +243,15 @@ entry write; only `asyncio.CancelledError` propagates. The confirmation line nam
 claim's outcome once at least one claim in the request was measured — `measured
 (holds)`, `measured (falsified)`, `declared (unreadable: probe:timeout)`,
 `declared (retry later: refresh budget)`, `declared (unexpected error)` — and stays the
-untouched aggregate text (`N recorded as declared [...]`) when none was.
+untouched aggregate text (`N recorded as declared [...]`) when none was. An
+unattributed caller gets `declared (unattributed caller)` in the confirmation.
 
 The idempotency key of that first verdict is derived from the brand-new claim id
-(`write:<claim_id>`): it protects a retry inside the SAME transaction only. A
-client-level retry of the whole write creates a new entry and new claim ids, exactly as
-a declared write does today — there is no cross-request replay here.
+(`write:<claim_id>`): a retry inside the SAME transaction returns the existing row
+when its request fingerprint matches and raises `idempotency_conflict` when it
+differs, without attempting another INSERT. A client-level retry of the whole
+write creates a new entry and new claim ids, exactly as a declared write does
+today — there is no cross-request replay here.
 
 Bound: at most 10 claims per entry (unchanged), measured sequentially inside the
 writer's own transaction. Worst case added latency is roughly 10× the slowest claimed
