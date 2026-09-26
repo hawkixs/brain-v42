@@ -35,6 +35,7 @@ from brain_v42.delivery_observer.auth import (
 from brain_v42.delivery_observer.config import load_observer_settings
 from brain_v42.delivery_observer.transport import GitHubTransport, ProviderError
 from brain_v42.release import shipped_alembic_head
+from brain_v42.release_recovery import is_safe_asset_filename
 
 _GUARD_SHA = "fcc9328ff6e7f061879af2540c69717fc3061434"
 _SHA256 = set("0123456789abcdef")
@@ -64,6 +65,20 @@ _FAILURES = {
     "writer_launch_unsupported",
     "service_health_unavailable",
 }
+#: The recovery binding's complete schema — no more, no fewer keys — and the
+#: complete schema of each of its three asset entries.
+_RECOVERY_BINDING_KEYS = frozenset(
+    {
+        "contract_id",
+        "contract_version",
+        "schema_head",
+        "release_sha",
+        "manifest",
+        "attestation_sql",
+        "restored_attestation_sql",
+    }
+)
+_RECOVERY_ASSET_KEYS = frozenset({"path", "sha256"})
 
 
 class PreflightFailure(Exception):
@@ -1134,6 +1149,80 @@ def check(
     # pressure. Absent means "built before the entry existed", never "trusted".
     if manifest.get("pyvenv_cfg") is not None:
         _release_file(root, manifest.get("pyvenv_cfg"))
+    # `recovery_binding` names which recovery contract red-backup can trust for
+    # THIS release's schema — published by `brain_v42.release_recovery` at build
+    # time, copied out of the release's own source tree so a later `git checkout`
+    # on the working checkout cannot move it. Unlike `pyvenv_cfg` above, this key
+    # carries NO backward-compatibility grace period: a release with no
+    # verifiable recovery contract must never pass this preflight, so every
+    # check below reuses `_release_file`'s existing failure vocabulary instead
+    # of inventing a new one.
+    binding = _release_file(root, manifest.get("recovery_binding"))
+    try:
+        binding_document = _object(
+            json.loads(binding.path.read_text(encoding="utf-8")), "config_schema_invalid"
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _fail("config_schema_invalid")
+    # Exactly this key set, no more and no fewer: an extra key could carry data
+    # this preflight never validates, and a missing one would silently widen
+    # every check below into a vacuous truth over `None`.
+    if set(binding_document.keys()) != _RECOVERY_BINDING_KEYS:
+        _fail("config_schema_invalid")
+    contract_id = _text(binding_document.get("contract_id"), "config_schema_invalid", limit=256)
+    contract_version = binding_document.get("contract_version")
+    if type(contract_version) is not int:
+        _fail("config_schema_invalid")
+    if binding_document.get("schema_head") != required_revision:
+        _fail("schema_capability_unavailable")
+    if binding_document.get("release_sha") != source_sha:
+        _fail("release_artifact_mismatch")
+    asset_files: dict[str, ReleaseFile] = {}
+    for asset_key in ("manifest", "attestation_sql", "restored_attestation_sql"):
+        asset = _object(binding_document.get(asset_key), "config_schema_invalid")
+        if set(asset.keys()) != _RECOVERY_ASSET_KEYS:
+            _fail("config_schema_invalid")
+        relative_path = _text(asset.get("path"), "config_schema_invalid")
+        # `release_recovery.publish_recovery_binding` only ever copies assets
+        # into `recovery/` under their own plain file name — never a nested
+        # path. A directory component here would still resolve inside
+        # `recovery/` (`_release_file` already refuses `..` and absolute
+        # paths), but it would no longer be the flat name publish writes:
+        # refuse it instead of accepting a shape publish never produces.
+        if relative_path != Path(relative_path).name:
+            _fail("release_path_unsafe")
+        # Same file-name contract `release_recovery.publish_recovery_binding`
+        # enforces before it ever writes this path: no directory component
+        # (checked above), a safe charset, and never the binding's own name.
+        # Reused from there rather than a second copy of the regex, so this
+        # preflight and `publish_recovery_binding` cannot silently drift apart
+        # on what "safe" means.
+        if not is_safe_asset_filename(relative_path):
+            _fail("release_path_unsafe")
+        asset_files[asset_key] = _release_file(
+            root, {"path": f"recovery/{relative_path}", "sha256": asset.get("sha256")}
+        )
+    # The binding's `contract_id`/`contract_version` are self-declared: every
+    # other check above is satisfied by a binding that is internally
+    # consistent (source_sha, schema_head, and each asset's sha256 all agree
+    # with each other and with this release), even if it was re-hashed to name
+    # a different — or older, revoked — recovery contract. Cross-check both
+    # fields against the copied manifest ASSET's own content, the file a real
+    # recovery restores against, so a swap has to falsify a second,
+    # independent fact instead of just a label next to the one already
+    # checked.
+    try:
+        manifest_asset_document = _object(
+            json.loads(asset_files["manifest"].path.read_text(encoding="utf-8")),
+            "config_schema_invalid",
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        _fail("config_schema_invalid")
+    if (
+        manifest_asset_document.get("contract_id") != contract_id
+        or manifest_asset_document.get("schema_version") != contract_version
+    ):
+        _fail("release_artifact_mismatch")
     _validate_payload(root, manifest, source, wheel, retained_lock, interpreter)
     verified_source_paths = {
         _text(_object(item, "config_schema_invalid").get("archive_path"), "config_schema_invalid")

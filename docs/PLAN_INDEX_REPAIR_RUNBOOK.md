@@ -24,16 +24,16 @@ brain-v42-internal repository (ticket 8dc6f0d2), at the same relative path under
 <!-- dr-current:start -->
 | Target | Value | Measured, and against what |
 | --- | --- | --- |
-| Alembic head | `052` | 2026-09-03 11:20 CEST, live production, measured right after the 051 → 052 upgrade |
-| Recovery contract, live target | `ops/recovery/brain-v42-v9.sql` | **30/30 measured on production at head `052`**, 2026-09-03 11:27 CEST, read-only replay. Receipt: `ops/recovery/receipts/2026-09-03-live-v9-052.md`. The mint predicted this from 22/30 on a disposable database and named the eight-check gap in advance (six data checks on an empty database, the server's vector build, 050's disabled trigger); production has data and the trigger armed, so all eight close. |
-| Recovery contract, previous generation | `ops/recovery/brain-v42-v8.sql` | Frozen. Its own 30/30 at head `051` on 2026-09-03 stands and is not rewritten — v8 attested the state v8 described. Superseded as the replay target by v9 at 11:27 the same day. |
-| Recovery contract, restored target | `ops/recovery/brain-v42-v8-pgrestore.sql` (v9 twin minted, unreplayed) | **Replayed against a real restore on 2026-09-03**, receipt `ops/recovery/receipts/2026-09-03-p1-restore-051.md`, ticket `58711012` served. Source: `/data/backups/20260903_010223/brain-v42.dump.gz` (rail `red-backup`, 03:02, sha256 `c7baadce…` equal to its manifest), head `051` read INSIDE the dump with `pg_restore --data-only --table=alembic_version` before restoring. The sentence this row carried until 00:11 that day — "no dump on hand can do it" — was true when written and false two hours fifty-one minutes later, when the nightly rail wrote that dump; nothing marked it perishable. Also DERIVED and replayed against a fresh chain-built 051 database by `tests/integration/db/test_fresh_head_is_the_yardstick.py` |
-| Contract receipt, live asset replayed live | `30/30` — zero failing checks, out of 30 checks total (050 and 051 add no CHECK to the receipt: they extend existing invariants, they do not create new ones). The v7 receipt read **24/30** at head 051 before this mint, its six reds being `table_set`, `table_shape`, `catalog_counts`, `sequence_shape`, `trigger_function_fingerprints` and `brain_runtime_032_036_037` — every one of them a consequence of 050/051 | 2026-09-03, live production |
-| Contract receipt, `-pgrestore` asset against a real restore | `30/30` — zero failing checks out of 30, at head `051`. `sequence_shape`, the one check a LIVE replay cannot exercise, passes here. `extension_versions` passes while REPORTING a drift (`origin_inventory` `vector 0.8.2` against observed `0.8.5`): since v6 the check is `extension_inventory`, `restore_rule: names-only`, so the drift is visible without gating. Replay: `psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f ops/recovery/brain-v42-v8-pgrestore.sql` on the restored database | 2026-09-03, disposable container `brain_drill_20260903` (image `sha256:b295c2aa9272`), destroyed after; receipt `ops/recovery/receipts/2026-09-03-p1-restore-051.md` |
-| ACL contract, live target | `ops/recovery/brain-v42-v9-acl.sql` | `1/1` on production at head `052`, 2026-09-03 11:27 CEST. The first replay returned `contract_id v9-acl` next to `schema_version 8` — a gap the mint left in the `.sql` form and its own unit test could not see, having been written from the mint script; corrected and re-replayed. |
-| ACL contract, restored target | `ops/recovery/brain-v42-v8-acl-pgrestore.sql` | Replayed on 2026-09-03 against the same real restore. Still byte-identical to the v7 twin but for its identity, because 050 and 051 grant nothing and touch no view — a premise re-derived from EVERY migration file, not from named ones, and now also OBSERVED: the replay reports zero owner and zero grant mismatches at head 051 |
-| ACL receipt, live | `1/1` — 0 owner, 0 grant, 0 role-privilege and 0 unexpected-grantee mismatches | 2026-09-03, live production |
-| ACL receipt, restored | `1/1` — 0 owner, 0 grant, 0 role-privilege and 0 unexpected-grantee mismatches, naming its one tolerance `tolerated_superuser_roles: ["postgres"]`, the maintenance superuser that performed the restore. The restore ran WITHOUT `--no-owner --no-acl`, which is what makes this row mean anything. Replay: `psql … -f ops/recovery/brain-v42-v8-acl-pgrestore.sql` | 2026-09-03, same disposable restore as the row above; receipt `ops/recovery/receipts/2026-09-03-p1-restore-051.md` |
+| Alembic head | `057` | 2026-09-24 17:09:21Z, live production, measured right after the 056 → 057 upgrade. Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md`. Machine-readable binding: `ops/recovery/current.json` (`schema_head`), checked against the head the code ships by `tests/unit/test_recovery_current_binding.py` in CI on every pull request. |
+| Recovery contract, live target | `ops/recovery/brain-v42-v14.sql` | **30/30 against production at head `057`**, 2026-09-24 (Acceptance). Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md` (`v14-production-result.json`, sha256 `05abc24753dd3f3523a984bc9e6ea7d19ad29485b90731da3b17499591f5532f`). The v14 base SQL is not pinned by the release script; this 30/30 against production is what attests it. |
+| Recovery contract, previous generation | `ops/recovery/brain-v42-v13.sql` | Frozen. Its own 30/30 at head `056` on 2026-09-23 stands and is not rewritten — v13 attested the state v13 described. Superseded as the replay target by v14 on 2026-09-24. Receipt: `internal/docs/receipts/2026-09-23-release-d9a72644.md`. |
+| Recovery contract, restored target | `ops/recovery/brain-v42-v14-pgrestore.sql` | **30/30 on the disposable clone migrated 056 → 057**, measured in the same `prove` window as the live target (2026-09-24, 17:07:13 → 17:07:32 UTC): a fresh owner-only `pg_dump` of production at 056 restored into a disposable clone, then that same clone migrated to 057 with the installed wheel. Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md` ("clone migrated 056 → 057 with the installed wheel, proved by the v14 twin: 30/30"). |
+| Contract receipt, live asset replayed live | `30/30` — zero failing checks, out of 30 checks total (057 adds no CHECK, no index and no trigger to the receipt: it is a bare `add_column`, extending no existing invariant and creating none) | 2026-09-24, live production; receipt `internal/docs/receipts/2026-09-24-release-457bc7f7.md` |
+| Contract receipt, `-pgrestore` asset against a real restore | `30/30` — zero failing checks out of 30, on the disposable clone AFTER migrating it from a real restore at head `056` to `057`. ACL v11 passed on the same clone (`1/1`, zero failure) both as restored at 056 and after the migration. Replay: `psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f ops/recovery/brain-v42-v14-pgrestore.sql` on the restored, migrated database | 2026-09-24, disposable clone created and destroyed during the `prove` phase of release `457bc7f7`; receipt `internal/docs/receipts/2026-09-24-release-457bc7f7.md` |
+| ACL contract, live target | `ops/recovery/brain-v42-v11-acl.sql` | `1/1` on production at head `057`, 2026-09-24 (Acceptance). 057 grants nothing and touches no view, so the ACL authority is unchanged since the 056 cutover: it stays at v11. Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md`. |
+| ACL contract, restored target | `ops/recovery/brain-v42-v11-acl-pgrestore.sql` | `1/1`, zero failure, on the disposable clone both AS restored at head `056` and after migrating that same clone to `057` — unchanged since the 056 cutover, for the same reason as the row above. Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md` ("clone as restored (056) proved by … ACL v11: zero failure"; "clone migrated 056 → 057 … ACL v11: pass"). |
+| ACL receipt, live | `1/1` — 0 owner, 0 grant, 0 role-privilege and 0 unexpected-grantee mismatches | 2026-09-24, live production; receipt `internal/docs/receipts/2026-09-24-release-457bc7f7.md` |
+| ACL receipt, restored | `1/1` — 0 owner, 0 grant, 0 role-privilege and 0 unexpected-grantee mismatches, on the disposable clone the `prove` phase restored and then migrated | 2026-09-24, same disposable clone as the row above; receipt `internal/docs/receipts/2026-09-24-release-457bc7f7.md` |
 | Search top-10 churn across HNSW rebuilds, `learnings` ONLY, n=40 probes | `0` — overlap `10/10` on ten build pairs (`BUILDS=5`, seed 0.42), strict order included, both probe bands | 2026-08-29, copy of the 3243 real `learnings` embeddings, index path forced |
 
 Replay the head and the two live-target assets against production:
@@ -41,7 +41,7 @@ Replay the head and the two live-target assets against production:
 ```bash
 docker exec brain_v42_postgres psql -U brain -d brain -Atc \
   "select version_num from alembic_version;"
-for asset in brain-v42-v8.sql brain-v42-v8-acl.sql; do
+for asset in brain-v42-v14.sql brain-v42-v11-acl.sql; do
   docker exec -i brain_v42_postgres psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f - \
     < "ops/recovery/$asset"
 done
@@ -64,7 +64,7 @@ prescribes. Run them only against a genuinely restored target, and say which one
 # against the production cluster itself.
 RESTORED_CONTAINER=${RESTORED_CONTAINER:?name the container holding the restored instance}
 [ "$RESTORED_CONTAINER" != "brain_v42_postgres" ] || { echo "refusing: that is the production cluster" >&2; exit 2; }
-for twin in brain-v42-v8-pgrestore.sql brain-v42-v8-acl-pgrestore.sql; do
+for twin in brain-v42-v14-pgrestore.sql brain-v42-v11-acl-pgrestore.sql; do
   docker exec -i "$RESTORED_CONTAINER" psql -U brain -d "${RESTORED_DB:-brain}" -Atq -v ON_ERROR_STOP=1 -f - \
     < "ops/recovery/$twin"
 done
@@ -74,7 +74,8 @@ done
 twin pinned `vector 0.8.2` — the version production *declares* — while every image this
 repository can restore into reports `0.8.4` or `0.8.5`, so a perfectly healthy restore failed
 that one check (the flaw ticket `2ed0d4e0` named). The twin requires the extension NAMES
-only — the rule was introduced by v6 and v8 still inherits it byte for byte — and its receipt states
+only — the rule was introduced by v6 and every generation since, v14 included, still inherits
+it byte for byte — and its receipt states
 both versions instead of judging them: measured 2026-08-29 on the v6 twin, the
 `extension_versions` check **passes** while printing `origin_inventory: plpgsql 1.0, vector
 0.8.2` against `inventory: plpgsql 1.0, vector 0.8.5`. Do not read that version line as a
@@ -183,7 +184,8 @@ EVIDENCE_DIR=/ABSOLUTE/PRIVATE/PATH/plan-index-repair
 cd "$REPO_ROOT"
 install -d -m 0700 "$EVIDENCE_DIR"
 
-MANIFEST="$REPO_ROOT/ops/recovery/plan-index-repair-v1.json"
+# The manifest names the operator's own project roots: it lives in the private internal/ clone.
+MANIFEST="$REPO_ROOT/internal/ops/recovery/plan-index-repair-v1.json"
 SNAPSHOT="$EVIDENCE_DIR/control-snapshot.json"
 BACKUP_RECEIPT="$EVIDENCE_DIR/postgres-backup-receipt.json"
 REINDEX_EVIDENCE="$EVIDENCE_DIR/reindex-evidence-v1.json"

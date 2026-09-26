@@ -1,0 +1,17 @@
+{
+  "attestation_sql": {
+    "path": "ops/recovery/brain-v42-v14.sql",
+    "sha256": "0264e4b5b26106c440ef30cfc6b38a3b2e547a8b929ea6204432ac3e6308fd36"
+  },
+  "contract_id": "brain-v42/postgresql-recovery/v14",
+  "contract_version": 14,
+  "manifest": {
+    "path": "ops/recovery/brain-v42-v14.json",
+    "sha256": "c6f963bf17450c7db340716b8c396b3358dec4e745369d5f245aaa36b4a48e60"
+  },
+  "restored_attestation_sql": {
+    "path": "ops/recovery/brain-v42-v14-pgrestore.sql",
+    "sha256": "1333d01eb31b0e7cfadb4029c67bd80d743cf8a9f758c2ae389492e11a1e665a"
+  },
+  "schema_head": "057"
+}
