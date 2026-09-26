@@ -144,8 +144,8 @@ def _inside(path: Path, root: Path) -> bool:
     return normal == top or normal.startswith(top.rstrip(os.sep) + os.sep)
 
 
-def _sources(state: Path, start: Path) -> list[str]:
-    """Every lineage whose recorded worktree contains ``start`` (§3.8.2)."""
+def source_lineages(state: Path, start: Path) -> list[str]:
+    """Every lineage whose recorded worktree contains ``start`` (§3.8.2); a review uses it too."""
     found = []
     for owner in lineages.owners(state):
         try:
@@ -196,12 +196,16 @@ def check_repository(state: Path, common: Path, *, own: str) -> None:
         except Unknown as exc:
             raise WriteRefused(f"lineage {owner} is unknown ({exc}); nothing ran") from None
         if other.pending is not None and is_free(lineages.lineage_lock(state, owner)):
-            raise _unfinalized(state, other, common)
+            raise unfinalized(state, other, common)
 
 
-def _unfinalized(state: Path, lineage: LineageState, common: Path) -> WriteRefused:
+def unfinalized(state: Path, lineage: LineageState, common: Path) -> WriteRefused:
     """A stale pending write: its lineage compromised (``unfinalized_write``), the
-    repository quarantined -- the operator too when that write was unconfined."""
+    repository quarantined -- the operator too when that write was unconfined.
+
+    Public: a review that finds a pending write under its shared lineage lock
+    found a stale one (a live writer holds that lock exclusively) and applies
+    the same (§3.8.5)."""
     pending = lineage.pending
     assert pending is not None, "only a pending write can be stale"
     lineages.save(state, replace(lineage, compromised="unfinalized_write"))
@@ -270,7 +274,7 @@ def _check_continued(write: _Write) -> None:
             f"{write.identity.work_tree}; nothing ran"
         )
     if current.pending is not None:
-        raise _unfinalized(state, current, current.common_dir)
+        raise unfinalized(state, current, current.common_dir)
     if current.compromised is not None:
         raise WriteRefused(f"lineage {owner} is compromised ({current.compromised}); nothing ran")
     if write.named not in current.members:
@@ -302,7 +306,7 @@ def _admit(write: _Write, registry: ExitStack) -> None:
             what="the lineage registry lock",
         )
     )
-    sources = _sources(state, write.start)
+    sources = source_lineages(state, write.start)
     for owner in sorted({write.owner, *sources}):
         own = owner == write.owner
         write.locks.enter_context(
@@ -960,4 +964,6 @@ __all__ = [
     "check_unconfined_intent",
     "clean_write",
     "run_write_step",
+    "source_lineages",
+    "unfinalized",
 ]

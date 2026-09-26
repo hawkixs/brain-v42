@@ -375,6 +375,7 @@ ha workflows [--json]
 ha providers [--json]
 ha runs [--limit N] [--json]
 ha show RUN_ID [--json]
+ha show --dir PATH [--json]
 ha clean RUN_ID
 ha --version
 ```

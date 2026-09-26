@@ -10,9 +10,10 @@ from pathlib import Path
 import pytest
 
 from headless_agents import lineage as lineages
-from headless_agents import locks, provenance, show
+from headless_agents import locks, provenance, reviews, show
 from headless_agents.report import RUN_KEYS
 from headless_agents.runs import Registry
+from headless_agents.vendor import AttributedCommit, VendorCheck
 
 RUN = "20260925T120000-ab12cd34"
 OTHER = "20260925T130000-cd34ef56"
@@ -622,3 +623,209 @@ def test_format_tools_and_tokens() -> None:
     assert show.format_tokens(None) == "-"
     assert show.format_tokens({"input": 999, "output": None}) == "in 999 out -"
     assert show.format_tokens({"input": 1_500_000, "output": 3000}) == "in 1.5M out 3k"
+
+
+# ── a review (lot 4, spec §3.8.6) ───────────────────────────────────────────
+
+REVIEW = "20260925T150000-9f8e7d6c"
+PINNED = "c" * 40
+REVIEW_TARGET = {"kind": "workflow", "name": "panel", "shape": "review"}
+CHECK = VendorCheck(
+    commits=(
+        AttributedCommit(sha=SHA_1, run_id=RUN, made_by="engine", providers=("opencode", "codex")),
+        AttributedCommit(sha=SHA_2, run_id=None, made_by="hand", providers=()),
+    ),
+    authors=("codex", "opencode"),
+    reviewers={"reviewer-agy": ("agy",), "reviewer-claude": ("claude",)},
+)
+
+
+def _review(
+    home: Home, *, verdict: str | None = "changes", status: str = "changes", **report: object
+) -> Path:
+    registry = home.registry()
+    entry = registry.create(
+        REVIEW, run_dir=None, target=REVIEW_TARGET, repository=home.root / "repo", lineage=None
+    )
+    entry.run_dir.mkdir(parents=True)
+    (entry.run_dir / "prompt.md").write_text("Review this change.\n")
+    document = home.report(
+        run_id=REVIEW,
+        target=REVIEW_TARGET,
+        status=status,
+        text="report text\nVERDICT: APPROVE",
+        verdict="approve",
+        head="d" * 40,
+        cleanup={"status": "done"},
+        **report,
+    )
+    (entry.run_dir / "run.json").write_text(json.dumps(document))
+    reviews.write_check(home.state, REVIEW, CHECK)
+    if verdict is not None:
+        reviews.write_result(
+            home.state,
+            REVIEW,
+            head=PINNED,
+            verdict=verdict,  # type: ignore[arg-type]
+            text="Only one finding stands.\nVERDICT: CHANGES",
+            check=CHECK,
+        )
+    registry.set_status(REVIEW, status)
+    return entry.run_dir
+
+
+def test_a_reviews_head_verdict_text_and_check_come_from_its_result(home: Home) -> None:
+    _review(home)
+    report = home.rebuild(REVIEW).report
+    assert report["verdict"] == "changes" and report["head"] == PINNED
+    assert report["text"] == "Only one finding stands.\nVERDICT: CHANGES"
+    assert report["vendor_check"] == CHECK.to_document()
+    assert report["cleanup"] == {"status": "done"}
+    assert report["branch"] is None and report["commits"] is None
+
+
+def test_a_review_without_a_result_shows_its_check_and_no_verdict(home: Home) -> None:
+    _review(home, verdict=None, status="failed", failure_reason="unreadable_verdict")
+    report = home.rebuild(REVIEW).report
+    assert report["verdict"] is None and report["head"] is None
+    assert report["vendor_check"] == CHECK.to_document()
+
+
+def test_a_cleaned_review_is_shown_from_the_state(home: Home) -> None:
+    run_dir = _review(home)
+    shutil.rmtree(run_dir)
+    home.registry().set_cleaned(REVIEW, "2026-09-25T16:00:00Z")
+    report = home.rebuild(REVIEW).report
+    assert report["verdict"] == "changes" and report["vendor_check"] == CHECK.to_document()
+
+
+def test_an_unreadable_review_result_is_unknown(home: Home) -> None:
+    _review(home)
+    path = reviews.result_path(home.state, REVIEW)
+    path.chmod(0o600)
+    path.write_text("{not json")
+    shown = home.rebuild(REVIEW)
+    assert shown.unknown and shown.report["verdict"] is None
+    assert any("cannot be read" in note for note in shown.notes)
+
+
+@pytest.mark.parametrize("damage", ["unreadable", "missing"])
+def test_a_review_whose_result_cannot_be_read_shows_nothing_from_its_report(
+    home: Home, damage: str
+) -> None:
+    """Codex review of PR B, round 2: the report's head and text stayed on show as if they
+    came from the state. A final verdict without its result is unknown, never the report's."""
+    _review(home)
+    path = reviews.result_path(home.state, REVIEW)
+    path.chmod(0o600)
+    if damage == "unreadable":
+        path.write_text("{not json")
+    else:
+        path.unlink()
+    shown = home.rebuild(REVIEW)
+    assert shown.unknown
+    assert (shown.report["verdict"], shown.report["head"], shown.report["text"]) == (
+        None,
+        None,
+        None,
+    )
+
+
+def test_a_failed_review_has_no_result_and_that_is_not_unknown(home: Home) -> None:
+    _review(home, verdict=None, status="failed", failure_reason="step_failed")
+    shown = home.rebuild(REVIEW)
+    assert not shown.unknown and shown.report["text"] is None
+
+
+@pytest.mark.parametrize(
+    ("stored", "reported", "lost"), [("changes", "failed", True), ("failed", "changes", False)]
+)
+def test_a_lost_review_result_is_judged_from_the_registry_not_the_report(
+    home: Home, stored: str, reported: str, lost: bool
+) -> None:
+    """Codex review of PR B, round 3: a run.json claiming a status decided whether a missing
+    result was lost -- the registry's status is the one authority."""
+    run_dir = _review(home, verdict=None, status=stored)
+    document = json.loads((run_dir / "run.json").read_text())
+    document["status"] = reported
+    (run_dir / "run.json").write_text(json.dumps(document))
+    assert home.rebuild(REVIEW).unknown is lost
+
+
+GOLDEN_REVIEW = """\
+20260925T150000-9f8e7d6c  panel  exit 6  changes requested  cleanup failed: fatal: busy
+task    Review this change.
+head    ccccccc  2 commits  +120 -14  5 files
+vendors authors codex, opencode (1 recorded commit, 1 hand-written) — reviewers agy, claude: independent
+  review  reviewer-agy     agy     (auto)  0  2m40s  -  -  view_file 9  CHANGES
+  judge   reviewer-claude  claude  opus    0  1m10s  -  -  Read 14      CHANGES
+--- judge ---
+Only one finding stands.
+VERDICT: CHANGES
+"""
+
+
+def test_a_review_renders_as_the_golden_text(home: Home) -> None:
+    steps = [
+        dict(_STEP, index=1, slot="review", role="reviewer-agy", provider="agy", model=None,
+             duration_seconds=160.0, tokens=None, cost_usd=None, tools={"view_file": 9},
+             verdict="changes"),
+        dict(_STEP, index=2, slot="judge", role="reviewer-claude", provider="claude",
+             model="opus", duration_seconds=70.0, tokens=None, cost_usd=None,
+             tools={"Read": 14}, verdict="changes"),
+    ]  # fmt: skip
+    report = home.report(
+        run_id=REVIEW,
+        target=REVIEW_TARGET,
+        status="changes",
+        exit_code=6,
+        verdict="changes",
+        head=PINNED,
+        text="Only one finding stands.\nVERDICT: CHANGES\n",
+        vendor_check=CHECK.to_document(),
+        cleanup={"status": "failed", "reason": "fatal: busy"},
+        steps=steps,
+    )
+    stat = show.Diffstat(insertions=120, deletions=14, files=5)
+    rendered = show.render(_shown(report, task="Review this change.", diffstat=stat))
+    assert rendered == GOLDEN_REVIEW
+
+
+def test_the_vendors_line_names_attributed_commits_and_none_authors() -> None:
+    check = VendorCheck(
+        commits=(
+            AttributedCommit(sha=SHA_1, run_id=None, made_by="unknown", providers=("claude",)),
+        ),
+        authors=("claude",),
+        reviewers={"r": ("codex",)},
+    )
+    assert show.vendors_line(check.to_document()) == (
+        "vendors authors claude (1 attributed to unconfined writers) — reviewers codex: independent"
+    )
+    bare = VendorCheck(commits=(), authors=(), reviewers={"r": ("codex",)})
+    assert show.vendors_line(bare.to_document()) == (
+        "vendors authors none — reviewers codex: independent"
+    )
+
+
+# ── ha show --dir (spec §3.8.6: display only) ───────────────────────────────
+
+
+def test_a_run_directory_is_shown_for_display_after_the_state_is_lost(home: Home) -> None:
+    run_dir = _review(home)
+    shutil.rmtree(home.state)
+    shown = show.from_dir(run_dir)
+    assert shown.report["run_id"] == REVIEW and shown.report["verdict"] == "approve"
+    assert shown.task == "Review this change."
+    assert any("display only" in note for note in shown.notes)
+    assert list(shown.report) == list(RUN_KEYS)
+
+
+@pytest.mark.parametrize("content", [None, "{not json", '["a list"]', '{"run_id": "../x"}'])
+def test_a_directory_without_a_report_of_ha_is_not_shown(
+    tmp_path: Path, content: str | None
+) -> None:
+    if content is not None:
+        (tmp_path / "run.json").write_text(content)
+    with pytest.raises(show.NotShown, match="run.json"):
+        show.from_dir(tmp_path)

@@ -19,12 +19,13 @@ import os
 import shutil
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from . import locks, write_flow
+from . import locks, review_flow, write_flow
 from .capability import scoped_environment
 from .chain import run_chain
 from .cli_models import ModelsError, models_for
@@ -49,6 +50,7 @@ from .report import (
     PROMPT_FILE,
     RUN_JSON,
     new_report,
+    refused_step_entry,
     step_dir_name,
     step_entry,
     with_step,
@@ -60,7 +62,14 @@ from .run_record import RESULT_FILE_NAME
 from .runs import MINT_ATTEMPTS, Entry, Registry, RegistryError, make_run_dir
 from .spec import RunSpec
 from .state import Unknown
-from .templates import implement_prompt
+from .templates import (
+    ReviewText,
+    Verdict,
+    implement_prompt,
+    judge_prompt,
+    read_verdict,
+    review_prompt,
+)
 from .workflows import Workflow, WorkflowsError, load_workflows
 from .workspace import prepend
 
@@ -112,6 +121,21 @@ class Request:
     home: Path
     #: ``--continue RUN_ID``: an implement run whose lineage this run joins (§3.6).
     continue_run: str | None = None
+    #: ``--head REF`` of a review (§3.5); ``None`` means ``HEAD``.
+    head: str | None = None
+    #: ``--run RUN_ID`` of a review: an implement run whose lineage's tip is reviewed.
+    review_run: str | None = None
+
+
+@dataclass(frozen=True)
+class SlotPlan:
+    """One slot of a review's panel, planned like a role run (§3.5)."""
+
+    slot: str
+    role: Role
+    models: Mapping[str, str]
+    mcp: McpServer | None
+    environment: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -133,6 +157,11 @@ class Plan:
     #: both read from the registry; ``execute`` checks them again under the lock.
     continues: str | None = None
     joins: str | None = None
+    #: A review's panel -- its reviewers, then its judge -- in launch order.
+    panel: tuple[SlotPlan, ...] = ()
+    #: The run ``--run`` names, and the owner of its lineage, read from the registry.
+    reviews: str | None = None
+    reviewed_lineage: str | None = None
 
 
 def operator_environment(environ: Mapping[str, str]) -> dict[str, str]:
@@ -390,32 +419,102 @@ _OVERRIDE_FLAGS: Final[Mapping[str, str]] = {
 }
 
 
-def _continued_lineage(run_id: str, *, state: Path, home: Path) -> str:
-    """The owner of the lineage ``--continue RUN_ID`` joins, read from the registry.
+def _continued_lineage(run_id: str, *, state: Path, home: Path, option: str = "--continue") -> str:
+    """The owner of the implement lineage ``--continue`` or ``--run`` names, from the registry.
 
     No git and no lineage state here (§3.8.2): only the run's registry entry,
     which must name an ``implement`` run -- a member of an ``implement``
-    lineage (§3.6). ``execute`` checks it again, then the lineage itself,
+    lineage (§3.5, §3.6). ``execute`` checks it again, then the lineage itself,
     under the lineage lock.
     """
     registry = Registry(state, runs_root=runs_root(home))
     try:
         entry = registry.resolve(run_id)
     except RegistryError as exc:
-        raise UsageError(f"--continue: {exc}") from None
+        raise UsageError(f"{option}: {exc}") from None
     except Unknown as exc:
-        raise UsageError(f"--continue {run_id}: {exc}; recover it by hand") from None
+        raise UsageError(f"{option} {run_id}: {exc}; recover it by hand") from None
     target = entry.target
     if (
         entry.lineage is None
         or target.get("kind") != "workflow"
         or target.get("shape") != "implement"
     ):
+        verb = "continued" if option == "--continue" else "reviewed with --run"
         raise UsageError(
-            f"--continue {run_id}: not an implement run; only an implement run's lineage "
-            "can be continued"
+            f"{option} {run_id}: not an implement run; only an implement run's lineage "
+            f"can be {verb}"
         )
     return entry.lineage
+
+
+#: A review's task when none is given (§3.5): its prompt is optional.
+REVIEW_DEFAULT_TASK: Final = "Review this change."
+
+
+def _refuse_options_of_other_shapes(request: Request, shape: str | None) -> None:
+    """Spec §3.9: ``--head`` and ``--run`` belong to a review; ``--continue`` to an implement."""
+    if shape != "review":
+        for flag, value in (("--head", request.head), ("--run", request.review_run)):
+            if value is not None:
+                raise UsageError(f"{flag} needs a review workflow as the target")
+    if shape != "implement" and request.continue_run is not None:
+        raise UsageError("--continue needs an implement workflow as the target")
+
+
+def _slot_plan(slot: str, role: Role, request: Request, config: Config, name: str) -> SlotPlan:
+    rule = capability_rule(role, config.profiles)
+    if rule is not None:
+        # Validated when workflows.toml was read; the engine checks again (§3.4).
+        raise UsageError(f"{name}: {rule}")
+    mcp = _mcp(role, request)
+    return SlotPlan(
+        slot=slot,
+        role=role,
+        models=_models(role, request),
+        mcp=mcp,
+        environment=_environment(request.environ, mcp),
+    )
+
+
+def _plan_review(request: Request, workflow: Workflow, config: Config) -> Plan:
+    """A review target: every slot planned; the head, base and diff wait for ``execute``.
+
+    The prompt is optional (§3.9) -- absent, it reviews the change -- and its
+    size is checked when each step starts, once the diff is known (§3.4).
+    ``--run`` is resolved through the registry only (§3.8.2).
+    """
+    if request.review_run is not None and (request.head is not None or request.base is not None):
+        raise UsageError(
+            "--run excludes --head and --base: it stands for the lineage's tip and its base"
+        )
+    panel = tuple(
+        _slot_plan(slot, resolve_role(name, config.roles), request, config, workflow.name)
+        for slot, name in workflow.slot_roles()
+    )
+    state = state_dir(request.environ, home=request.home)
+    lineage = (
+        _continued_lineage(request.review_run, state=state, home=request.home, option="--run")
+        if request.review_run is not None
+        else None
+    )
+    task = (request.prompt or "").strip() or REVIEW_DEFAULT_TASK
+    first = panel[0]
+    return Plan(
+        request=request,
+        role=first.role,
+        models=first.models,
+        prompt=task,
+        mcp=first.mcp,
+        environment=first.environment,
+        run_dir=_run_dir(request),
+        state=state,
+        workflow=workflow,
+        task=task,
+        panel=panel,
+        reviews=request.review_run,
+        reviewed_lineage=lineage,
+    )
 
 
 def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan:
@@ -426,16 +525,15 @@ def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan
         if getattr(request.overrides, field) is not None
     ]
     if given:
+        own = "--head and --run" if workflow.shape == "review" else "--continue"
         raise UsageError(
             f"workflow {workflow.name}: a workflow runs its roles as declared, so "
             f"{', '.join(given)} is refused; its options are --base, --repo, --json, --run-dir "
-            "and --continue"
+            f"and {own}"
         )
+    _refuse_options_of_other_shapes(request, workflow.shape)
     if workflow.implement is None:
-        raise UsageError(
-            f"workflow {workflow.name}: the review shape is not available in this version of ha; "
-            f"run a reviewer role directly (ha run {workflow.review[0]} ...)"
-        )
+        return _plan_review(request, workflow, config)
     if request.continue_run is not None and request.base is not None:
         raise UsageError(
             "--base and --continue exclude each other: a continuation works from its lineage's base"
@@ -479,8 +577,7 @@ def plan(request: Request) -> Plan:
     workflow = config.workflows.get(request.target)
     if workflow is not None:
         return _plan_workflow(request, workflow, config)
-    if request.continue_run is not None:
-        raise UsageError("--continue needs an implement workflow as the target")
+    _refuse_options_of_other_shapes(request, None)
     declared, profiles = config.roles, config.profiles
     if request.target not in declared and request.target not in PROVIDER_NAMES:
         known = sorted({*config.workflows, *declared, *PROVIDER_NAMES})
@@ -836,6 +933,214 @@ def _execute_write(
     )
 
 
+def _slot_run_plan(plan: Plan, slot: SlotPlan, prompt: str) -> Plan:
+    """The plan of one panel step: its own role, models, MCP and environment (§3.5)."""
+    return replace(
+        plan,
+        role=slot.role,
+        models=slot.models,
+        mcp=slot.mcp,
+        environment=slot.environment,
+        prompt=prompt,
+    )
+
+
+@dataclass(frozen=True)
+class _Phase:
+    """A phase's steps once they ran: entries for the report, and the texts."""
+
+    entries: list[dict[str, object]]
+    results: list[RunResult | None]
+    failure_reason: str | None
+
+
+def _run_phase(
+    plan: Plan,
+    steps: Sequence[tuple[int, SlotPlan, str]],
+    *,
+    run_id: str,
+    run_dir: Path,
+    worktree: Path,
+    say: Callable[[str], None],
+) -> _Phase:
+    """Run ``(index, slot, prompt)`` steps in parallel, each read-only on the worktree.
+
+    Every prompt is size-checked first, now that the diff is known (§3.4): one
+    too large refuses the whole phase before anything starts, its step recorded
+    with code ``2``. Each step must answer -- exit ``0`` with a non-empty text --
+    or the phase fails (§3.5 step 3).
+    """
+    bundles = {index: _bundle(slot.role, plan.request, worktree) for index, slot, _ in steps}
+    for index, slot, prompt in steps:
+        try:
+            _check_prompt_size(slot.role, prompt, bundles[index])
+        except UsageError as exc:
+            say(f"step {index} {slot.slot} {slot.role.name}: refused ({exc})")
+            name = step_dir_name(index, slot.slot, slot.role.name)
+            entry = refused_step_entry(
+                index=index, slot=slot.slot, role=slot.role.name, step_dir=f"steps/{name}"
+            )
+            return _Phase(entries=[entry], results=[None], failure_reason="prompt_too_large")
+
+    def run_one(step: tuple[int, SlotPlan, str]) -> RunResult:
+        index, slot, prompt = step
+        name = step_dir_name(index, slot.slot, slot.role.name)
+        say(f"step {index} {slot.slot} {slot.role.name}: started")
+        final = _run_links(
+            _slot_run_plan(plan, slot, prompt),
+            bundles[index],
+            run_id=run_id,
+            step_dir=run_dir / "steps" / name,
+            workspace=Workspace(path=worktree),
+            say=say,
+        )
+        say(f"step {index} {slot.slot} {slot.role.name}: exit {final.exit_code}")
+        return final
+
+    with ThreadPoolExecutor(max_workers=len(steps)) as pool:
+        results = list(pool.map(run_one, steps))
+    entries = []
+    failed = False
+    for (index, slot, _), result in zip(steps, results, strict=True):
+        name = step_dir_name(index, slot.slot, slot.role.name)
+        entry = step_entry(
+            index=index,
+            slot=slot.slot,
+            role=slot.role.name,
+            step_dir=f"steps/{name}",
+            result=result,
+            tools=tool_counts(result),
+        )
+        entry["verdict"] = read_verdict(result.text)
+        entries.append(entry)
+        failed = failed or result.exit_code != 0 or not (result.text or "").strip()
+    return _Phase(
+        entries=entries, results=list(results), failure_reason="step_failed" if failed else None
+    )
+
+
+def _execute_review(
+    plan: Plan,
+    *,
+    registry: Registry,
+    entry: Entry,
+    identity: RepoIdentity,
+    start: Path,
+    report: dict[str, object],
+    started: float,
+    say: Callable[[str], None],
+) -> Outcome:
+    """A review run: the vendor rule and the pinned change, the reviewers in parallel,
+    then the judge; the verdict, the result and the cleanup (§3.5, §3.8.4)."""
+    request, run_dir = plan.request, entry.run_dir
+    reviewers = [(i, s) for i, s in enumerate(plan.panel, 1) if s.slot == "review"]
+    judge = next(((i, s) for i, s in enumerate(plan.panel, 1) if s.slot == "judge"), None)
+    try:
+        prepared = review_flow.prepare(
+            run_id=entry.run_id,
+            run_dir=run_dir,
+            state=plan.state,
+            identity=identity,
+            start=start,
+            environ=plan.environment,
+            head_ref=request.head,
+            base_ref=request.base,
+            reviewed_lineage=plan.reviewed_lineage,
+            reviewers={slot.role.name: slot.role.providers for _, slot in reviewers},
+        )
+    except review_flow.ReviewRefused as exc:
+        _refused(registry, entry)
+        raise UsageError(str(exc)) from None
+    task = plan.task or REVIEW_DEFAULT_TASK
+    report.update(
+        head=prepared.head, base=prepared.merge_base, vendor_check=prepared.check.to_document()
+    )
+    write_report(run_dir, report)
+
+    try:
+        phase = _run_phase(
+            plan,
+            [(index, slot, review_prompt(task, prepared.patch)) for index, slot in reviewers],
+            run_id=entry.run_id,
+            run_dir=run_dir,
+            worktree=prepared.worktree,
+            say=say,
+        )
+        entries, failure = list(phase.entries), phase.failure_reason
+        deciding: RunResult | None = phase.results[0] if len(phase.results) == 1 else None
+        if failure is None and judge is not None:
+            index, slot = judge
+            answers = [
+                ReviewText(
+                    role=slot_.role.name,
+                    provider=result.provider,
+                    model=result.model_reported or result.model or "",
+                    text=result.text or "",
+                )
+                for (_, slot_), result in zip(reviewers, phase.results, strict=True)
+                if result is not None
+            ]
+            judged = _run_phase(
+                plan,
+                [(index, slot, judge_prompt(task, prepared.patch, answers))],
+                run_id=entry.run_id,
+                run_dir=run_dir,
+                worktree=prepared.worktree,
+                say=say,
+            )
+            entries.extend(judged.entries)
+            failure = judged.failure_reason
+            deciding = judged.results[0]
+        verdict: Verdict | None = None
+        text = deciding.text if deciding is not None else None
+        if failure is None:
+            verdict = read_verdict(text)
+            if verdict is None:
+                failure = "unreadable_verdict"
+    except BaseException:
+        # A crash or an interruption after the worktree exists: remove it, then let the
+        # run read incomplete, as any interrupted run does -- no verdict, no result.
+        kept = review_flow.remove_worktree(
+            prepared.worktree, identity, plan.environment, plan.state
+        )
+        if kept is not None:
+            say(f"the review's worktree was kept ({kept}): ha clean retries")
+        raise
+    cleanup = review_flow.finish(
+        run_id=entry.run_id,
+        state=plan.state,
+        identity=identity,
+        environ=plan.environment,
+        prepared=prepared,
+        verdict=verdict,
+        text=text,
+    )
+    if cleanup["status"] != "done":
+        say(f"the review's worktree was kept ({cleanup.get('reason')}): ha clean retries")
+    if verdict == "approve":
+        status, code = "approved", 0
+    elif verdict == "changes":
+        status, code = "changes", review_flow.CHANGES_EXIT_CODE
+    else:
+        status, code = "failed", 1
+    for step in entries:
+        report = with_step(report, step)
+    report.update(
+        status=status,
+        exit_code=code,
+        verdict=verdict,
+        text=text,
+        failure_reason=failure,
+        cleanup=cleanup,
+        duration_seconds=round(time.monotonic() - started, 3),
+    )
+    write_report(run_dir, report)
+    registry.set_status(entry.run_id, status)
+    return Outcome(
+        exit_code=code, run_id=entry.run_id, run_dir=run_dir, report=report, final=deciding
+    )
+
+
 def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
     """Run a planned one-step run -- a role's, or an ``implement`` workflow's -- under its
     locks, and record it.
@@ -857,11 +1162,19 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
     repository = identity.work_tree if identity is not None else start
     if role.write and identity is None:
         raise UsageError(f"a write run needs a git repository; {start} is not in one")
+    if plan.panel and identity is None:
+        raise UsageError(f"a review needs a git repository; {start} is not in one")
     if plan.continues is not None:
         # §3.8.2: what plan() read from the registry is read again, before anything
         # is created; the lineage itself is checked under its lock (write_flow).
         if _continued_lineage(plan.continues, state=plan.state, home=request.home) != plan.joins:
             raise UsageError(f"--continue {plan.continues}: its lineage changed since the plan")
+    if plan.reviews is not None:
+        lineage = _continued_lineage(
+            plan.reviews, state=plan.state, home=request.home, option="--run"
+        )
+        if lineage != plan.reviewed_lineage:
+            raise UsageError(f"--run {plan.reviews}: its lineage changed since the plan")
 
     runs = runs_root(request.home)
     registry = Registry(plan.state, runs_root=runs)
@@ -892,7 +1205,8 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 write=role.write,
                 joins=plan.joins,
                 continues=plan.continues,
-                providers=role.providers,
+                # A write run's record (§3.10); a review writes nothing.
+                providers=() if plan.panel else role.providers,
             )
         except (LockTimeout, RegistryError) as exc:
             # A run that never started leaves nothing behind (codex review of #207).
@@ -925,6 +1239,9 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
 
         try:
             _check_isolation(plan)
+            for member in plan.panel:
+                # Every role of a review's panel runs a rail (§3.8.0), not only the first.
+                _check_isolation(replace(plan, role=member.role, environment=member.environment))
         except UsageError:
             _refused(registry, entry)
             raise
@@ -949,6 +1266,18 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
             started_at=_utc_now(),
         )
         write_report(run_dir, report)
+        if plan.panel:
+            assert identity is not None
+            return _execute_review(
+                plan,
+                registry=registry,
+                entry=entry,
+                identity=identity,
+                start=start,
+                report=report,
+                started=started,
+                say=say,
+            )
         step_name = step_dir_name(1, slot, role.name)
         step_dir = run_dir / "steps" / step_name
         if role.write:
@@ -1004,6 +1333,19 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
             report=report,
             final=final,
         )
+
+
+def _remove_review_worktree(
+    worktree: Path, repository: Path, state: Path, environ: Mapping[str, str]
+) -> str | None:
+    """``git worktree remove`` of a review's kept worktree; the reason when it cannot."""
+    try:
+        identity = discover(repository)
+    except RepoError as exc:
+        return str(exc)
+    if identity is None:
+        return f"{repository} is no longer a git repository"
+    return review_flow.remove_worktree(worktree, identity, operator_environment(environ), state)
 
 
 def clean(
@@ -1066,6 +1408,14 @@ def clean(
             except LockTimeout as exc:
                 raise UsageError(f"{exc}: the lineage is in use; nothing cleaned") from None
         started = (entry.run_dir / RUN_JSON).is_file()
+        worktree = entry.run_dir / review_flow.WORKTREE
+        if worktree.is_dir() and entry.repository is not None:
+            # A review whose cleanup failed kept its detached worktree: removed through
+            # git, and no git at all under a quarantine (§3.9).
+            reason = _remove_review_worktree(worktree, entry.repository, state, environ)
+            if reason is not None:
+                say(f"{run_id}: its worktree {worktree} is kept ({reason}); nothing cleaned")
+                return 1
         if entry.run_dir.is_dir():
             shutil.rmtree(entry.run_dir)
         if not started:
@@ -1092,6 +1442,8 @@ __all__ = [
     "runs_root",
     "Overrides",
     "Plan",
+    "REVIEW_DEFAULT_TASK",
+    "SlotPlan",
     "Request",
     "UsageError",
     "operator_environment",
