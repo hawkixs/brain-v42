@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any
 
 _HELPER_PATH = Path("/usr/local/sbin/brain-shrik-env-control")
-_STAGE_PATH = Path("/home/hawixs/.config/brain-v42/codex-gateway-rotation/.shrik-env.install")
+# Relative to the operator's home, resolved at runtime via `pwd` (below): this
+# helper runs as root (sudo), so `Path.home()` would resolve to `/root`, not
+# the operator's home, and a hardcoded `/home/<user>` would tie it to one box.
+_STAGE_RELATIVE_PATH = Path(".config/brain-v42/codex-gateway-rotation/.shrik-env.install")
 _TARGET_PATH = Path("/etc/shrik/env")
 _OPERATOR_NAME = "hawixs"
 _TARGET_GROUP_NAME = "hawixs"
@@ -276,6 +279,15 @@ def _identities() -> tuple[int, int]:
     return operator_uid, target_gid
 
 
+def _stage_path(operator_uid: int) -> Path:
+    """The operator's staging file, from the passwd database, never hardcoded."""
+    try:
+        operator_home = pwd.getpwuid(operator_uid).pw_dir
+    except KeyError:
+        raise ControlError("required operating-system identity is unavailable") from None
+    return Path(operator_home) / _STAGE_RELATIVE_PATH
+
+
 def _run(action: str) -> bool | None:
     if os.geteuid() != 0:
         raise ControlError("root execution is required")
@@ -289,7 +301,7 @@ def _run(action: str) -> bool | None:
     if action in {"--check", "--publish"}:
         _check_contract(
             _HELPER_PATH,
-            _STAGE_PATH,
+            _stage_path(operator_uid),
             _TARGET_PATH,
             operator_uid=operator_uid,
             target_uid=0,
@@ -299,7 +311,7 @@ def _run(action: str) -> bool | None:
         _validate_helper(_HELPER_PATH, target_uid=0)
     if action == "--publish":
         _publish(
-            _STAGE_PATH,
+            _stage_path(operator_uid),
             _TARGET_PATH,
             operator_uid=operator_uid,
             target_uid=0,

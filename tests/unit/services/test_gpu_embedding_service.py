@@ -569,7 +569,7 @@ class TestGpuBusy503:
 
     @pytest.mark.asyncio
     async def test_connect_error_raises_unavailable_after_retries(self) -> None:
-        """dev-pc offline → ConnectError after retries → EmbeddingUnavailable."""
+        """gpu-host offline → ConnectError after retries → EmbeddingUnavailable."""
         from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable
 
         svc = GPUEmbeddingService(base_url="http://localhost:8003", max_retries=2)

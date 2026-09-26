@@ -3,7 +3,7 @@
 # Deletes files under logs/ that have not been modified in the last 90 days.
 #
 # Installed via user crontab:
-#   0 5 * * * /home/hawixs/hawkixs_infra/git_repo/brain_v42/scripts/logs-rotate.sh >> /tmp/brain-v42-logs-rotate.log 2>&1
+#   0 5 * * * $HOME/hawkixs_infra/git_repo/brain_v42/scripts/logs-rotate.sh >> /tmp/brain-v42-logs-rotate.log 2>&1
 #
 # Rationale: dream logs and otel splits accumulate one file per phase per
 # date (6 phases × ~365 days ≈ 2200 files/year, ~30 MB/year). 90d retention
@@ -11,7 +11,7 @@
 
 set -u
 
-LOGS_DIR="/home/hawixs/hawkixs_infra/git_repo/brain_v42/logs"
+LOGS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/logs"
 RETENTION_DAYS=90
 
 echo "=== logs-rotate run at $(date --iso-8601=seconds) ==="

@@ -1,6 +1,6 @@
 [Unit]
 Description=brain-v42 Dream Mode — trigger at 06:00 daily
-Documentation=file:///home/hawixs/hawkixs_infra/git_repo/brain_v42/docs/superpowers/specs/2026-04-05-dream-mode-design.md
+Documentation=https://github.com/hawkixs/brain-v42/blob/main/docs/OPERATIONS.md
 
 [Timer]
 # 06:00 local time every day.

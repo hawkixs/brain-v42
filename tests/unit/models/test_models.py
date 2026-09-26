@@ -543,7 +543,7 @@ class TestProjectContextModels:
             current_focus="Pydantic models",
             blockers=["missing PG connection"],
             related_projects=["datalake_v2"],
-            local_path="/home/hawixs/projects/brain_v42",
+            local_path="/home/user/projects/brain_v42",
             repo_url="https://gitlab.example.com/brain_v42",
         )
         assert pc.languages == ["python"]

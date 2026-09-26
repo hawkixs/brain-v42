@@ -64,7 +64,7 @@ class _FakeRerankBackend:
 #: A NETWORK client by default: ASGITransport presents ("127.0.0.1", 123) if
 #: nothing is said, and the loopback exemption would pass every guard test without
 #: ever exercising it — a structural false green.
-NETWORK_CLIENT = ("192.168.80.9", 51000)
+NETWORK_CLIENT = ("192.0.2.9", 51000)
 LOOPBACK_CLIENT = ("127.0.0.1", 40001)
 
 
@@ -387,16 +387,16 @@ class TestCensusIdentification:
     ) -> None:
         guard = _guard(required=False)
         with caplog.at_level(logging.WARNING, logger="shim_app"):
-            async with _client(guard, peer=("192.168.80.4", 40001)) as client:
+            async with _client(guard, peer=("192.0.2.4", 40001)) as client:
                 await client.post("/embed", json={"texts": ["a"]})
-            async with _client(guard, peer=("192.168.80.7", 40002)) as client:
+            async with _client(guard, peer=("192.0.2.7", 40002)) as client:
                 await client.post("/embed", json={"texts": ["a"]})
 
         lines = [r.getMessage() for r in caplog.records if "bearer" in r.getMessage().lower()]
         assert len(lines) == 2
         assert lines[0] != lines[1]
-        assert "192.168.80.4:40001" in lines[0]
-        assert "192.168.80.7:40002" in lines[1]
+        assert "192.0.2.4:40001" in lines[0]
+        assert "192.0.2.7:40002" in lines[1]
 
     @pytest.mark.asyncio
     async def test_the_user_agent_names_the_client_software(
