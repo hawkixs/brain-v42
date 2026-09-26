@@ -1951,7 +1951,10 @@ def test_preflight_refuses_a_recovery_asset_path_with_a_directory_component(
     nested.parent.mkdir(parents=True)
     nested.write_text("-- attestation\n", encoding="utf-8")
     nested.chmod(0o644)
-    binding["attestation_sql"] = {"path": "nested/recovery-attestation.sql", "sha256": _sha256(nested)}
+    binding["attestation_sql"] = {
+        "path": "nested/recovery-attestation.sql",
+        "sha256": _sha256(nested),
+    }
     _rebind(deployment_case, binding)
 
     result = deployment_case.run()
