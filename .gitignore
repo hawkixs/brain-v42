@@ -70,9 +70,9 @@ Thumbs.db
 logs/
 .gitnexus
 
-# Mesures régénérées à chaque rejeu de docs/design/**/baseline/snapshot.py.
-# Le README de baseline/ dit « ne jamais recopier un snapshot : le rejouer ».
-docs/design/**/snapshot-*.json
-
 # Bench pool embeddings: 50 MB of derived vectors, rebuildable and provider-priced
 bench/embedding_v2/*.npy
+
+# Private working material (plans, specs, receipts, design notes, handoffs), cloned from
+# git@github.com:hawkixs/brain-v42-internal.git — see CLAUDE.md and AGENTS.md.
+/internal/
