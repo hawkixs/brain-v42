@@ -467,10 +467,12 @@ def prompt_is_optional(
     reading; the configuration is read here, and an invalid one refuses (exit ``2``),
     as :func:`plan` would.
     """
+    if findings:
+        # Whatever the target: one that cannot take --findings is refused by plan(),
+        # and stdin is never read on the way there.
+        return True
     workflow = load_config(environ, home).workflows.get(target)
-    if workflow is None:
-        return False
-    return workflow.shape == "review" or findings
+    return workflow is not None and workflow.shape == "review"
 
 
 def _refuse_options_of_other_shapes(request: Request, shape: str | None) -> None:

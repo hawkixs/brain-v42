@@ -639,6 +639,17 @@ def test_findings_without_a_prompt_never_read_a_piped_stdin(world: _World) -> No
     assert code == 2 and f"no run {run_id}" in err
 
 
+@pytest.mark.parametrize("target", ["codex", "not-declared"])
+def test_findings_on_any_target_never_read_a_piped_stdin(world: _World, target: str) -> None:
+    """Codex review of PR C: on a provider or role target, --findings read stdin before the
+    engine refused the option -- --findings never reads it unless given ``-`` (§3.9)."""
+    _review_workflows(world)
+    code, _, err = _run_with_stdin(
+        world, _UnreadableStdin("piped"), "run", target, "--findings", "20260926T000000-aaaaaaaa"
+    )
+    assert code == 2 and "stdin was read" not in err
+
+
 def test_a_dash_still_reads_stdin_for_a_review(world: _World) -> None:
     _review_workflows(world)
     code, _, err = _run_with_stdin(world, io.StringIO("Mind the errors."), "run", "check", "-")
