@@ -867,11 +867,14 @@ class TestRunCodexWorkspace:
         pytest's own ``tmp_path`` fixture lives under the REAL ``/tmp`` on
         this machine: without this, every "here is a SAFE root" fixture
         built under ``tmp_path`` would be judged unsafe by the literal
-        ``/tmp`` check alone, with no way to construct a counter-example."""
+        ``/tmp`` check alone, with no way to construct a counter-example.
+        The runner's own ``TMPDIR`` is an unsafe root too: a shell that
+        exports ``TMPDIR=/tmp`` would otherwise flag every such fixture."""
         fake_system_tmp = tmp_path / "system-tmp"
         fake_system_tmp.mkdir()
         monkeypatch.setattr(codex, "_CONVENTIONAL_TMP_ROOT", fake_system_tmp)
         monkeypatch.setattr(codex.tempfile, "gettempdir", lambda: str(fake_system_tmp))
+        monkeypatch.setenv("TMPDIR", str(fake_system_tmp))
         return fake_system_tmp
 
     def test_ephemeral_home_root_never_sits_under_tmp(

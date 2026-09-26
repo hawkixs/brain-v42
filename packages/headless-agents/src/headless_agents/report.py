@@ -21,8 +21,11 @@ RUN_JSON: Final = "run.json"
 #: The task, as given (spec §3.10): written once at the start of a run.
 PROMPT_FILE: Final = "prompt.md"
 SCHEMA: Final = 1
+#: Ticket 1a76fe55: ``run.json`` and ``result.json`` both carry ``"schema": 1``, so
+#: ``"kind"`` is the only thing that tells a consumer which document it is reading.
+KIND: Final = "run"
 RUN_KEYS: Final = (
-    "schema", "run_id", "target", "status", "exit_code", "verdict", "text",
+    "schema", "kind", "run_id", "target", "status", "exit_code", "verdict", "text",
     "repository", "base", "head", "branch", "lineage", "continues", "findings_from",
     "implement_providers", "commits", "failure_reason", "vendor_check", "cleanup", "pid",
     "started_at", "duration_seconds", "cost_usd", "cost_complete", "steps",
@@ -44,6 +47,7 @@ def new_report(
     report: dict[str, object] = dict.fromkeys(RUN_KEYS)
     report.update(
         schema=SCHEMA,
+        kind=KIND,
         run_id=run_id,
         target=dict(target),
         status="running",
@@ -114,6 +118,7 @@ def write_report(run_dir: Path, report: Mapping[str, object]) -> None:
 
 
 __all__ = [
+    "KIND",
     "PROMPT_FILE",
     "RUN_JSON",
     "RUN_KEYS",
