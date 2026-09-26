@@ -70,6 +70,9 @@ class TaggedFakeSession:
 
     def __init__(self, providers: list[str] | None = None) -> None:
         self.batch_sizes: list[int] = []
+        # The padded token width onnxruntime actually saw for each micro-batch
+        # call — i.e. how much padding that batch paid, not just its row count.
+        self.padded_widths: list[int] = []
         self._providers = providers or ["CPUExecutionProvider"]
 
     def get_inputs(self) -> list[_FakeInput]:
@@ -81,6 +84,7 @@ class TaggedFakeSession:
     def run(self, _outputs, feeds):
         n = feeds["input_ids"].shape[0]
         self.batch_sizes.append(n)
+        self.padded_widths.append(feeds["input_ids"].shape[1])
         return [feeds["input_ids"][:, 0].astype(float).reshape(-1, 1)]
 
 
@@ -363,6 +367,47 @@ def test_rerank_microbatch_one_over_batch_size_splits_in_two_calls():
 
     assert backend._session.batch_sizes == [2, 1]
     assert scores == [100.0, 200.0, 300.0]
+
+
+def test_rerank_microbatch_crossing_a_boundary_groups_by_length_not_original_order():
+    """MINOR review finding (PR #231): test_rerank_restores_original_order_after_length_sort
+    passes even with the length sort removed (batch_size=10 there never splits
+    into more than one micro-batch, so nothing crosses a boundary), and the
+    other micro-batch tests use candidates already in length order. Neither
+    proves sorting reduces padding.
+
+    Here, batch_size=2 with the ORIGINAL order alternating short/long: without
+    the length sort, batch_size=2 would split it into ["s1", long1] and
+    ["s2", long2] — BOTH micro-batches padding to a long candidate's width.
+    Sorting groups the two short candidates into one micro-batch and the two
+    long ones into the other, so one micro-batch pads to only the short
+    pair's own max instead.
+    """
+    candidates = ["s1", "long1", "s2", "long2"]
+    spec = {
+        "s1": (2, 10),
+        "long1": (20, 20),
+        "s2": (3, 30),
+        "long2": (22, 40),
+    }
+    backend = _tagged_backend(spec, batch_size=2)
+
+    scores = backend.rerank("q", candidates)
+
+    assert scores == [10.0, 20.0, 30.0, 40.0]
+    session: TaggedFakeSession = backend._session
+    tokenizer: TaggedFakeTokenizer = backend._tokenizer
+
+    # The length-probe call (over all 4 candidates) plus two scoring
+    # micro-batches, grouped by length: {s1, s2} and {long1, long2} — never
+    # the original-order pairing {s1, long1} / {s2, long2}.
+    scoring_batches = [{c for _, c in batch} for batch in tokenizer.batches[1:]]
+    assert {"s1", "s2"} in scoring_batches
+    assert {"long1", "long2"} in scoring_batches
+
+    # The short-pair micro-batch pads to 3 (s2's own real length), not to a
+    # long candidate's width — proof sorting actually reduced padding.
+    assert sorted(session.padded_widths) == [3, 22]
 
 
 # --- CUDA failure falls back to CPU -------------------------------------------
