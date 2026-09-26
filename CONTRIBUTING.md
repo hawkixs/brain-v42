@@ -80,6 +80,15 @@ loudly unless `BRAIN_V42_TEST_DB_URL` points at an isolated test database —
 this is intentional, so a bare `pytest tests/unit` run can never silently
 write into whatever `POSTGRES_URL` happens to be exported in your shell.
 
+The rest of `tests/unit` needs no database at all, including on a fresh
+clone with nothing exported: an autouse fixture in `tests/unit/conftest.py`
+hands `Settings()` a syntactically valid, unreachable DSN whenever neither
+`POSTGRES_URL` nor `BRAIN_POSTGRES_URL` is already set, so a test that merely
+constructs `Settings`/`get_settings()` but never opens a connection passes
+instead of crashing on `pydantic_core.ValidationError: BRAIN_POSTGRES_URL
+Field required`. It never overrides a URL you already exported, and it never
+touches the `BRAIN_V42_TEST_DB_URL` opt-in above.
+
 ## Linting and types
 
 ```bash

@@ -114,13 +114,21 @@ this does not affect you.
 git clone https://github.com/hawkixs/brain-v42 && cd brain-v42
 uv sync --extra dev --python 3.12      # creates .venv; see "Development" for why not pip
 source .venv/bin/activate
+cp .env.example .env                   # fill in real values before step 2
 
-# 1. Local Neo4j secret (skip if you run without the graph)
+# 1. Secrets docker-compose.yml expects on the host, and the network the
+#    embedding services attach to (compose refuses to start without either).
+docker network create brain-net
 install -d -m 0700 .secrets
 read -rsp "Neo4j password (same value as NEO4J_PASSWORD in .env): " PW
 (umask 0022; printf 'neo4j/%s\n' "$PW" > .secrets/neo4j-auth); unset PW
+(umask 0177; openssl rand -hex 32 > .secrets/embedding-shim-bearer)
 
-# 2. Databases (PostgreSQL 16 + pgvector, Neo4j)
+# 2. Databases (PostgreSQL 16 + pgvector, Neo4j). embedding-llama and
+#    embedding-shim additionally need an NVIDIA GPU and the GGUF model file
+#    (see "Embeddings" above) — on a machine without one, start only the two
+#    services `pytest tests/integration` and the migrations below need:
+#    `docker compose up -d postgres neo4j`.
 docker compose up -d
 
 # 3. Migrations
@@ -369,6 +377,12 @@ ruff check src/ tests/ && ruff format --check src/ tests/
 mypy src/
 ```
 
+- **`pytest tests/unit` needs no env var at all** on a fresh clone: a `tests/unit`
+  fixture hands `Settings()` a syntactically valid, unreachable database URL whenever
+  neither `POSTGRES_URL` nor `BRAIN_POSTGRES_URL` is set. A handful of tests opt into a
+  REAL PostgreSQL and skip loudly (`"BRAIN_V42_TEST_DB_URL not set — skipping..."`)
+  unless `BRAIN_V42_TEST_DB_URL` points at an isolated test database — see CONTRIBUTING
+  "Running the tests".
 - **Stack**: Python 3.12+, FastMCP 3.x, SQLAlchemy 2.0 async + asyncpg, Alembic,
   Pydantic 2, structlog.
 - **TDD is mandatory** — red, green, refactor; tests are never edited to make code pass.
