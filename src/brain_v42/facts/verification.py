@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
 from uuid import UUID, uuid4
 
+import structlog
+
+from brain_v42.facts.claims import ResolvedClaim
 from brain_v42.facts.compare import Comparison, compare
 from brain_v42.facts.model import FactTarget, Measured, Measurement, Unreadable, measurement_to_json
 from brain_v42.facts.registry import FactRegistry, UnknownFactError
@@ -24,6 +28,8 @@ from brain_v42.repositories.pg_claim_verdicts import (
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+logger = structlog.get_logger(__name__)
 
 _FUTURE_TOLERANCE = timedelta(seconds=60)
 
@@ -82,13 +88,26 @@ def _reject_if_refresh_budget_exhausted(measurement: Measurement) -> None:
         raise ClaimVerificationError("refresh_budget_exhausted")
 
 
-def _comparison(claim: ScopedClaim, registry: FactRegistry, measurement: Measurement) -> Comparison:
-    """Reject mismatched metadata before comparison can turn it into a false verdict."""
-    if measurement.fact != claim.fact_name:
+def _comparison(
+    *,
+    fact_name: str,
+    definition_version: int,
+    target: str,
+    expected_resolved: Mapping[str, object],
+    registry: FactRegistry,
+    measurement: Measurement,
+) -> Comparison:
+    """Reject mismatched metadata before comparison can turn it into a false verdict.
+
+    Shared by `_verify` (an existing, locked `ScopedClaim`) and the write-time path
+    (a `ResolvedClaim` that has no row yet): both pass the same four immutable fields,
+    so there is exactly one place that decides `holds` / `falsified` / `unreadable`.
+    """
+    if measurement.fact != fact_name:
         return Comparison("unreadable", "fact_mismatch")
-    if measurement.definition_version != claim.definition_version:
+    if measurement.definition_version != definition_version:
         return Comparison("unreadable", "definition_changed")
-    if measurement.target.value != claim.target:
+    if measurement.target.value != target:
         return Comparison("unreadable", "target_mismatch")
     if isinstance(measurement, Unreadable) and measurement.error_code == "definition_drift":
         return Comparison("unreadable", "definition_changed")
@@ -96,7 +115,25 @@ def _comparison(claim: ScopedClaim, registry: FactRegistry, measurement: Measure
         expected = registry.expected_identity(measurement.target)
         if expected is None or measurement.source != expected:
             return Comparison("unreadable", "target_mismatch")
-    return compare(claim.expected_resolved, measurement)
+    return compare(expected_resolved, measurement)
+
+
+@dataclass(frozen=True, slots=True)
+class WriteMeasurement:
+    """The AMENDED write-time result (spec 2026-09-19 section 6.3, order amended 2026-09-26).
+
+    `measurement`/`comparison` are `None` exactly when no verdict row may ever be
+    appended: a refused refresh budget or an unexpected measurement error. Both leave
+    the claim `declared` with no server observation kept. An `unreadable` real
+    measurement is different: it IS a server observation, so both fields carry it and
+    `record_write_verdict` appends it -- provenance stays `declared` because it is not
+    conclusive.
+    """
+
+    provenance: Literal["measured", "declared"]
+    detail: str
+    measurement: Measurement | None
+    comparison: Comparison | None
 
 
 class ClaimVerificationService:
@@ -191,7 +228,14 @@ class ClaimVerificationService:
 
         if measurement.measured_at > self._clock() + _FUTURE_TOLERANCE:
             raise ClaimVerificationError("invalid_emitted_at")
-        comparison = _comparison(claim, self._registry, measurement)
+        comparison = _comparison(
+            fact_name=claim.fact_name,
+            definition_version=claim.definition_version,
+            target=claim.target,
+            expected_resolved=claim.expected_resolved,
+            registry=self._registry,
+            measurement=measurement,
+        )
         return await append_verdict(
             session,
             claim_id=claim.id,
@@ -222,4 +266,98 @@ class ClaimVerificationService:
         return await self._registry.measure(
             claim.fact_name,
             max_age=timedelta(0) if force_fresh else timedelta(seconds=claim.validity_seconds),
+        )
+
+    async def measure_for_write(self, resolved: ResolvedClaim) -> WriteMeasurement:
+        """Measure and compare a claim that has NO row yet (AMENDED order, plan 2026-09-26).
+
+        Migration 055's `knowledge_claims_update_gate` forbids any `provenance` update, so
+        the caller cannot insert `declared` and upgrade it later: this measures FIRST, and
+        the caller inserts the occurrence with the provenance this method already decided.
+        Nothing is looked up or locked -- there is no claim id to look up yet.
+
+        Shares `_comparison` with `_verify`: this is the only place besides `_verify` that
+        may decide `holds` / `falsified` / `unreadable`.
+        """
+        try:
+            measurement = await self._registry.measure(
+                resolved.fact_name, max_age=timedelta(seconds=resolved.validity_seconds)
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Bounded on purpose: no probe payload, no DB text, one structured event.
+            # A measurement failure here must never surface an internal detail through
+            # the claim confirmation text (spec 2026-09-19 section 6.3).
+            logger.warning(
+                "brain_v42.claim_write.measurement_error",
+                fact_name=resolved.fact_name,
+            )
+            return WriteMeasurement("declared", "unexpected error", None, None)
+
+        try:
+            _reject_if_refresh_budget_exhausted(measurement)
+        except ClaimVerificationError:
+            return WriteMeasurement("declared", "retry later: refresh budget", None, None)
+
+        comparison = _comparison(
+            fact_name=resolved.fact_name,
+            definition_version=resolved.definition_version,
+            target=resolved.target.value,
+            expected_resolved=resolved.expected_resolved,
+            registry=self._registry,
+            measurement=measurement,
+        )
+        if comparison.verdict == "unreadable":
+            reason = comparison.reason or "unreadable"
+            return WriteMeasurement("declared", f"unreadable: {reason}", measurement, comparison)
+        return WriteMeasurement("measured", comparison.verdict, measurement, comparison)
+
+    async def record_write_verdict(
+        self,
+        session: AsyncSession,
+        *,
+        claim_id: UUID,
+        resolved: ResolvedClaim,
+        write_measurement: WriteMeasurement,
+        issuer_identity: str,
+        issuer_kind: Literal["robot", "human"],
+    ) -> VerdictRow | None:
+        """Append the first verdict of a claim just inserted in the caller's own transaction.
+
+        INTERNAL: never registered as an MCP tool, and never accepts a caller-supplied
+        measurement -- `write_measurement` was produced by `measure_for_write` earlier in
+        the SAME request, from the registry, not from an argument. A no-op (no row) when
+        that step kept no measurement: a refused refresh budget or an unexpected error.
+        The idempotency key is derived from the fresh `claim_id`
+        (`write:<claim_id>`): it can only ever collide with a retry inside this same
+        transaction, never across requests, because `claim_id` did not exist before it.
+        """
+        if write_measurement.measurement is None or write_measurement.comparison is None:
+            return None
+        measurement = write_measurement.measurement
+        comparison = write_measurement.comparison
+        idempotency_key = f"write:{claim_id}"
+        request = request_fingerprint(
+            claim_id=claim_id,
+            issuer_identity=issuer_identity,
+            idempotency_key=idempotency_key,
+            expected_resolved=resolved.expected_resolved,
+            definition_version=resolved.definition_version,
+            validity_seconds=resolved.validity_seconds,
+        )
+        return await append_verdict(
+            session,
+            claim_id=claim_id,
+            verdict=comparison.verdict,
+            reason=comparison.reason,
+            measurement=measurement_to_json(measurement),
+            measurement_digest=measurement.digest if isinstance(measurement, Measured) else None,
+            observation_id=measurement.observation_id,
+            issuer_identity=issuer_identity,
+            issuer_kind=issuer_kind,
+            request_fingerprint=request,
+            outcome_fingerprint=outcome_fingerprint(comparison, measurement),
+            idempotency_key=idempotency_key,
+            emitted_at=measurement.measured_at,
         )

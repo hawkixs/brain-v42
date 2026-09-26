@@ -10,9 +10,11 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from brain_v42.facts.model import FactTarget, Measured, SourceIdentity, Unreadable
+from brain_v42.facts.claims import ResolvedClaim, resolve_claim
+from brain_v42.facts.model import FactTarget, Measured, Measurement, SourceIdentity, Unreadable
 from brain_v42.facts.registry import FactRegistry
-from brain_v42.facts.verification import ClaimVerificationService
+from brain_v42.facts.verification import ClaimVerificationService, WriteMeasurement
+from brain_v42.models.claim_input import ClaimInput
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.repositories.pg_claim_verdicts import ScopedClaim, VerdictRow
 
@@ -672,3 +674,208 @@ async def test_refresh_budget_exhaustion_is_refused_without_writing_a_verdict(
     assert error.value.code == "refresh_budget_exhausted"
     assert rows == []
     assert probe.runs == 0
+
+
+# ---------------------------------------------------------------------------
+# `measure_for_write` / `record_write_verdict` (spec 2026-09-19 section 6.3
+# last paragraph, order AMENDED 2026-09-26): a claim measured before any row
+# exists, then a first verdict appended in the caller's own transaction.
+# ---------------------------------------------------------------------------
+
+
+def _resolved_claim(registry: FactRegistry, *, fact: str = "verification_lag") -> ResolvedClaim:
+    """One live-resolved claim, exactly as a writer would produce moments before insert."""
+    descriptor = registry.describe(fact)
+    claim_input = ClaimInput(
+        statement="The measured lag stays low.",
+        fact_name=fact,
+        expected={"path": "/lag", "op": "lte", "value": 5},
+        measure=True,
+    )
+    return resolve_claim(claim_input, descriptor)
+
+
+async def test_measure_for_write_holds_is_measured_with_the_comparison_kept() -> None:
+    """A conclusive `holds` verdict must produce provenance `measured`, ready to append."""
+    probe = _Probe(value=3)
+    registry = _registry(probe)
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+
+    result = await service.measure_for_write(resolved)
+
+    assert result.provenance == "measured"
+    assert result.detail == "holds"
+    assert result.measurement is not None
+    assert result.comparison is not None
+    assert result.comparison.verdict == "holds"
+
+
+async def test_measure_for_write_falsified_is_measured_not_refused() -> None:
+    """A `falsified` verdict is still a conclusive measurement -- the write is not refused."""
+    probe = _Probe(value=99)
+    registry = _registry(probe)
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+
+    result = await service.measure_for_write(resolved)
+
+    assert result.provenance == "measured"
+    assert result.detail == "falsified"
+    assert result.comparison is not None
+    assert result.comparison.verdict == "falsified"
+
+
+def _registry_with_wrong_expected_identity(probe: _Probe) -> FactRegistry:
+    """Diverge the expected source identity so a real measurement is `target_mismatch`."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def source():
+        yield _Source()
+
+    registry = FactRegistry(
+        sources={FactTarget.PRODUCTION: source},
+        expected={FactTarget.PRODUCTION: SourceIdentity("1", "brain_test", "127.0.0.1", 9999)},
+    )
+    registry.register(probe)
+    registry.freeze()
+    return registry
+
+
+async def test_measure_for_write_unreadable_stays_declared_but_keeps_the_measurement() -> None:
+    """An unreadable result downgrades to `declared`, but the observation is real and kept."""
+    probe = _Probe(value=3)
+    registry = _registry_with_wrong_expected_identity(probe)
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+
+    result = await service.measure_for_write(resolved)
+
+    assert result.provenance == "declared"
+    assert result.detail == "unreadable: probe:target_mismatch"
+    assert result.measurement is not None
+    assert result.comparison is not None
+    assert result.comparison.verdict == "unreadable"
+
+
+async def test_measure_for_write_refused_refresh_budget_keeps_no_measurement() -> None:
+    """A refused refresh budget must not leak into a stored observation."""
+    probe = _Probe()
+    registry = _registry(probe)
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+
+    async def exhausted_measurement(name: str, *, max_age: timedelta) -> Unreadable:
+        return Unreadable(
+            fact="verification_lag",
+            definition_version=1,
+            target=FactTarget.PRODUCTION,
+            error_code="refresh_budget",
+            where=None,
+            observation_id=uuid4(),
+            measured_at=datetime(2026, 9, 22, tzinfo=UTC),
+            duration_ms=0,
+            ttl_seconds=30,
+            source_kind="probe",
+        )
+
+    monkeypatch_registry_measure = exhausted_measurement
+    registry.measure = monkeypatch_registry_measure  # type: ignore[method-assign]
+
+    result = await service.measure_for_write(resolved)
+
+    assert result.provenance == "declared"
+    assert result.detail == "retry later: refresh budget"
+    assert result.measurement is None
+    assert result.comparison is None
+
+
+async def test_measure_for_write_unexpected_error_keeps_no_measurement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unexpected registry failure never reaches the caller as an exception at write time."""
+    probe = _Probe()
+    registry = _registry(probe)
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+
+    async def boom(name: str, *, max_age: timedelta) -> Measurement:
+        raise RuntimeError("network blip")
+
+    registry.measure = boom  # type: ignore[method-assign]
+
+    result = await service.measure_for_write(resolved)
+
+    assert result.provenance == "declared"
+    assert result.detail == "unexpected error"
+    assert result.measurement is None
+    assert result.comparison is None
+
+
+async def test_measure_for_write_propagates_cancellation() -> None:
+    """A cancelled write must not be swallowed into a false `declared` outcome."""
+    probe = _Probe()
+    registry = _registry(probe)
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+
+    async def cancelled(name: str, *, max_age: timedelta) -> Measurement:
+        raise asyncio.CancelledError
+
+    registry.measure = cancelled  # type: ignore[method-assign]
+
+    with pytest.raises(asyncio.CancelledError):
+        await service.measure_for_write(resolved)
+
+
+async def test_record_write_verdict_appends_a_row_keyed_by_the_new_claim_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The first verdict of a freshly inserted claim is appended with a `write:` key."""
+    probe = _Probe(value=3)
+    registry = _registry(probe)
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+    rows = await _memory_repository(monkeypatch, None)
+    write_measurement = await service.measure_for_write(resolved)
+    claim_id = uuid4()
+
+    row = await service.record_write_verdict(
+        SimpleNamespace(),
+        claim_id=claim_id,
+        resolved=resolved,
+        write_measurement=write_measurement,
+        issuer_identity="integration-test",
+        issuer_kind="robot",
+    )
+
+    assert row is not None
+    assert row.claim_id == claim_id
+    assert row.idempotency_key == f"write:{claim_id}"
+    assert row.verdict == "holds"
+    assert rows == [row]
+
+
+async def test_record_write_verdict_is_a_no_op_when_nothing_was_measured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused or errored write must never append a verdict row."""
+    probe = _Probe()
+    registry = _registry(probe)
+    service = _service(registry)
+    resolved = _resolved_claim(registry)
+    rows = await _memory_repository(monkeypatch, None)
+    refused = WriteMeasurement("declared", "retry later: refresh budget", None, None)
+
+    row = await service.record_write_verdict(
+        SimpleNamespace(),
+        claim_id=uuid4(),
+        resolved=resolved,
+        write_measurement=refused,
+        issuer_identity="integration-test",
+        issuer_kind="robot",
+    )
+
+    assert row is None
+    assert rows == []

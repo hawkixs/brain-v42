@@ -31,6 +31,7 @@ class ResolvedClaim:
     expected_resolved: Mapping[str, object]
     validity_seconds: int
     replaces: UUID | None
+    measure: bool
 
 
 def _immutable_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
@@ -159,4 +160,5 @@ def resolve_claim(claim: ClaimInput, descriptor: FactDescriptor) -> ResolvedClai
         expected_resolved=expected_resolved,
         validity_seconds=validity_seconds,
         replaces=claim.replaces,
+        measure=claim.measure,
     )
