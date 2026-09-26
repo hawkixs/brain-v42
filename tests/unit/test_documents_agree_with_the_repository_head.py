@@ -642,16 +642,26 @@ def test_an_unclassified_region_is_caught() -> None:
 def test_the_dated_runbooks_are_out_of_scope_by_document_not_by_class() -> None:
     """`backfill-recovery-guard` needs no class, and forcing one would be false.
 
-    It lives in `docs/runbooks/2026-08-01-dream-extract-recovery-canary.md` — a
-    DATED runbook, which the census scopes out on purpose: "dated plans, specs and
-    ADRs describe the state of their own day". And its content is a `bash` guard
-    script, executable code that declares no state at all: it is neither a current
-    declaration nor a historical window, so both labels would be a lie.
+    It used to live in `docs/runbooks/2026-08-01-dream-extract-recovery-canary.md`, a
+    DATED runbook the census scopes out on purpose: "dated plans, specs and ADRs
+    describe the state of their own day". That file moved to the private
+    brain-v42-internal repository (ticket 8dc6f0d2); its content does not matter here,
+    only the SHAPE of its region does — a `bash` guard script, executable code that
+    declares no state at all, so neither label (current declaration, historical window)
+    would be true of it. Frozen inline instead of read from disk, so this guard's
+    correctness stops depending on a file the census no longer keeps in this repository.
 
     Pinned because the honest answer to "why is it unclassified" is "it is not in
     a guarded document", and that reason is invisible from the region lists.
     """
-    canary = ROOT / "docs" / "runbooks" / "2026-08-01-dream-extract-recovery-canary.md"
+    other_document = (
+        "<!-- backfill-recovery-guard:start -->\n"
+        "```bash\n"
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "```\n"
+        "<!-- backfill-recovery-guard:end -->\n"
+    )
 
-    assert "backfill-recovery-guard" in _region_names(canary.read_text(encoding="utf-8"))
+    assert "backfill-recovery-guard" in _region_names(other_document)
     assert "backfill-recovery-guard" not in _region_names(RUNBOOK.read_text(encoding="utf-8"))

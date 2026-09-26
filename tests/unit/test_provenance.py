@@ -72,10 +72,10 @@ class TestNormalizeTransport:
 
 class TestNormalizeAgent:
     def test_absolute_path_reduces_to_basename(self) -> None:
-        assert normalize_agent("/home/hawixs/git/red-lab") == "red-lab"
+        assert normalize_agent("/home/user/git/red-lab") == "red-lab"
 
     def test_trailing_slash_is_stripped(self) -> None:
-        assert normalize_agent("/home/hawixs/git/red-lab/") == "red-lab"
+        assert normalize_agent("/home/user/git/red-lab/") == "red-lab"
 
     def test_static_label_passes_through(self) -> None:
         assert normalize_agent("dream-codex-synth") == "dream-codex-synth"
@@ -100,7 +100,7 @@ class TestNormalizeAgent:
         assert normalize_agent("a" * 65) == "a" * 64
 
     def test_much_longer_value_is_truncated_to_column_width(self) -> None:
-        value = "/home/hawixs/git/" + ("very-long-project-name-" * 10)
+        value = "/home/user/git/" + ("very-long-project-name-" * 10)
         result = normalize_agent(value)
         assert len(result) == 64
         assert result == os.path.basename(value.rstrip("/"))[:64]

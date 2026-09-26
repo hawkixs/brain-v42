@@ -41,8 +41,9 @@ _POSTGRES_SSLMODES = frozenset(
 )
 # What the gateway ACTUALLY requires of the schema: ten views, and for each of
 # them the columns its consumer reads. The Alembic revision is only a PROXY for
-# that invariant — `deploy/CODEX_GATEWAY.md` says so itself, "this head keeps
-# the ten views the gateway requires". A proxy says no to a compatible schema as
+# that invariant — `deploy/CODEX_GATEWAY.md` (private brain-v42-internal repository)
+# says so itself, "this head keeps the ten views the gateway requires". A proxy
+# says no to a compatible schema as
 # soon as the number moves (for seven migrations running), and yes to a schema
 # that has lost a column.
 #

@@ -1,7 +1,7 @@
 """Bind address of the metrics sidecar — loopback by default.
 
 Decision of 2026-07-04 (supersedes b68356c2): the historical 0.0.0.0 served the
-GitLab webhook (LAN URL 192.168.1.12:9200), dead since 2026-06-24 (secret lost in
+GitLab webhook (LAN URL 192.0.2.12:9200), dead since 2026-06-24 (secret lost in
 a unit regeneration, fails closed 401). Real consumers: red-monitor on loopback
 only. A secure default; a METRICS_HOST env override stays possible should the
 webhook ever be revived (docker gateway — NO loopback-only validator, unlike

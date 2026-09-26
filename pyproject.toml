@@ -200,7 +200,9 @@ dev = [
 # editable next to brain_v42, `uv build` at the root still builds only
 # brain_v42, and a consumer outside this repository installs the member alone
 # by git URL + subdirectory. The release script builds and installs BOTH
-# wheels (`uv export --no-emit-workspace`), see docs/runbooks.
+# wheels (`uv export --no-emit-workspace`), see the release runbook
+# (docs/runbooks/2026-09-07-observable-delivery-workflows.md in the private
+# brain-v42-internal repository).
 [tool.uv.workspace]
 members = ["packages/headless-agents"]
 

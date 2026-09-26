@@ -1021,9 +1021,9 @@ def test_preflight_refuses_a_schema_that_lost_a_gateway_view(
 ) -> None:
     """The declared head can be RIGHT and the gateway broken all the same.
 
-    `deploy/CODEX_GATEWAY.md` says why the revision is checked: because that head
-    "conserve les dix vues requises par la gateway". That is a PROXY. Here we prove
-    the invariant itself.
+    `deploy/CODEX_GATEWAY.md` (private brain-v42-internal repository) says why the
+    revision is checked: because that head "conserve les dix vues requises par la
+    gateway". That is a PROXY. Here we prove the invariant itself.
     """
     database = FakeDatabase(missing=("codex_ticket_v1",))
 

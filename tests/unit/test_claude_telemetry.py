@@ -2,7 +2,8 @@
 
 The oracle for the attribute names is `tests/fixtures/claude_otlp_logs.json`, a
 real capture from the spike (Claude Code 2.1.220, verdict in
-`docs/upstream/2026-08-06-claude-otlp-session-join.md`). When the fixture and the
+`docs/upstream/2026-08-06-claude-otlp-session-join.md`, in the private
+brain-v42-internal repository). When the fixture and the
 plan diverge, the fixture wins: it was measured, the plan assumed.
 
 Three measured discrepancies these tests freeze:

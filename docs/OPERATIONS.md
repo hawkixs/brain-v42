@@ -120,7 +120,7 @@ prints `Config.Env` verbatim, so a token wired as a value would be readable by
 anyone who can reach the daemon. Compose passes only the path.
 
 ```dotenv
-BRAIN_SHIM_BEARER_FILE=/home/hawixs/.config/brain-v42/embedding-shim-bearer
+BRAIN_SHIM_BEARER_FILE=~/.config/brain-v42/embedding-shim-bearer
 ```
 
 Generate it without letting the value reach a terminal, an argument list or the
@@ -373,8 +373,9 @@ dual-run, lease proof and rollback are described in the
 ## Codex gateway
 
 The `red-codex` administration gateway deploys only on the private Docker network,
-with no host port and no systemd unit; follow the
-[Codex gateway runbook](../deploy/CODEX_GATEWAY.md). Its live activation stays
+with no host port and no systemd unit; follow the Codex gateway runbook
+(`deploy/CODEX_GATEWAY.md` in the private brain-v42-internal repository — it couples
+this service to private sibling infrastructure). Its live activation stays
 blocked while the PostgreSQL `codex_ro` and `brain` credentials use their development
 defaults, or while `/ready` doesn't validate the SQL contract, including the
 `security_barrier` of the seven views scoped to the `red` group.

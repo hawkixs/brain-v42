@@ -53,7 +53,7 @@ class TestDecodeObservations:
 
     def test_actor_is_normalized(self) -> None:
         observation = decode_observations(
-            _payload([{"actor": "/home/hawixs/git/red-lab", "calls": 1}])
+            _payload([{"actor": "/home/user/git/red-lab", "calls": 1}])
         )[0]
         assert observation.actor == "red-lab"
 

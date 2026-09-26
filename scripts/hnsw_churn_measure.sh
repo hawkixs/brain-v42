@@ -7,7 +7,8 @@
 # HNSW rebuild is not deterministic. The reference measurement on the
 # real embeddings lives in
 # `docs/runbooks/2026-08-23-hnsw-restore-churn-declaration.md` (n=1544
-# queries, the 9 tables, noise bands and operator probe); this script is
+# queries, the 9 tables, noise bands and operator probe), in the private
+# brain-v42-internal repository; this script is
 # the REPLAYABLE instrument, one table at a time, for refreshing the
 # runbook's churn line as the corpus grows. It does not replace it.
 #

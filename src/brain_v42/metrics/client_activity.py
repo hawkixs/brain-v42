@@ -13,7 +13,8 @@ never on the UUID itself, which is hashed on arrival and never leaves. That
 join key is agent-neutral, because only one of the two sides can observe an
 agent at all (see ``_session_key``).
 
-Measured on 2026-08-06 (``docs/upstream/2026-08-06-claude-otlp-session-join.md``):
+Measured on 2026-08-06 (``docs/upstream/2026-08-06-claude-otlp-session-join.md``, in
+the private brain-v42-internal repository):
 no client can declare its session in an MCP header today, so the join has no
 producer yet. The nominal outcome is therefore two disjoint rows per Claude
 session — one OTLP-only, one ``unattributed`` — exactly like Codex. The join is

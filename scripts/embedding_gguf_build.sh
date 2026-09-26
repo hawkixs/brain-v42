@@ -5,7 +5,7 @@
 # Usage: scripts/embedding_gguf_build.sh [OUT_DIR]
 set -euo pipefail
 
-OUT_DIR="${1:-/home/hawixs/models/qodo-gguf}"
+OUT_DIR="${1:-$HOME/models/qodo-gguf}"
 HF_REPO="Qodo/Qodo-Embed-1-1.5B"
 SNAP_DIR="$OUT_DIR/hf_snapshot"
 

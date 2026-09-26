@@ -69,7 +69,7 @@ def _enforced_environment(**overrides: str) -> dict[str, str]:
         "BRAIN_DREAM_CAPABILITY_ENFORCEMENT": "true",
         "MCP_HTTP_TOKEN": ADMIN_TOKEN,
         "MCP_HTTP_DREAM_TOKENS": _capability_registry(),
-        "HOME": "/home/hawixs",
+        "HOME": "/home/user",
         "PATH": "/usr/bin:/bin",
         "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
         "OTEL_LOGS_EXPORTER": "console",
@@ -229,7 +229,7 @@ def test_non_loopback_mcp_url_fails_closed() -> None:
         runner.claude_child_environment(
             project_key="brain-v42",
             phase="scan",
-            environ=_enforced_environment(BRAIN_DREAM_MCP_URL="http://192.168.1.12:8765/mcp"),
+            environ=_enforced_environment(BRAIN_DREAM_MCP_URL="http://192.0.2.12:8765/mcp"),
         )
 
 

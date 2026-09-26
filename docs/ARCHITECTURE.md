@@ -121,7 +121,7 @@ Activated by `BRAIN_MCP_TRANSPORT=stdio` (default) or omitting the env var. Used
 
 **Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to loopback; metrics and automation default to loopback. The versioned Compose target binds the embedding host publish to loopback and the live runtime matches it — measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and non-empty in the live server process, and `POST /mcp` answers `401` both without a bearer and with a wrong one. The dedicated Docker client network exists and carries the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. Repository-managed WAN isolation remains unproven — the repository manages no firewall rule at all. What would make this paragraph false again, and is watched by no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. `METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the decision, and under that opt-in the three POST receivers stay unregistered and say so on `/healthz`. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
 
-**Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; `deploy/dev-pc` is a superseded rollback/reference path.
+**Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
 
 **Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
 
@@ -741,7 +741,10 @@ HTTP MCP service, prove the historical global admin contract, then re-enable the
 handle any persistent catch-up. This delivery performed no deployment, service restart, timer
 change or activation, token creation, live-credential access, or enforcement activation.
 
-Designs: [provider migration](../.specs/plans/dream-codex-agent-migration.design.md), [original Dream mode](superpowers/specs/2026-04-05-dream-mode-design.md), and [v3 actionability](superpowers/specs/2026-04-17-dream-v3-actionability-design.md).
+Designs: [provider migration](../.specs/plans/dream-codex-agent-migration.design.md); original Dream mode
+(`docs/superpowers/specs/2026-04-05-dream-mode-design.md`) and v3 actionability
+(`docs/superpowers/specs/2026-04-17-dream-v3-actionability-design.md`), both in the private
+brain-v42-internal repository.
 
 ## GitLab webhook ingestion
 
@@ -764,8 +767,9 @@ Feature creation has two deliberate paths:
 - **Signal-driven resolution.** Eligible artifact, plan, and GitLab paths continue through
   `ClusterGuard`, which may link, merge, or create within the project using semantic similarity.
 
-Decision and concurrency boundary:
-[explicit roadmap feature creation](superpowers/specs/2026-07-23-explicit-roadmap-feature-creation-design.md).
+Decision and concurrency boundary: explicit roadmap feature creation
+(`docs/superpowers/specs/2026-07-23-explicit-roadmap-feature-creation-design.md` in the
+private brain-v42-internal repository).
 
 `StatusEngine` advances feature status monotonically
 (planned → research → design → building → deployed → done) based on artifact types.
@@ -774,7 +778,8 @@ Decision and concurrency boundary:
 
 Side-by-side, not merged. GitNexus is a second MCP stdio server exposing `gitnexus_*` tools (code graph: AST + call chains + impact analysis). Isolation invariants: disjoint MCP surfaces (`brain_*` vs `gitnexus_*`), disjoint data (`.gitnexus/` vs PG+Neo4j), disjoint compute (transformers.js CPU vs GPU embed :8003). Nightly reindex at 04:30 finishes before the Dream timer's 06:00 window (plus up to 120 seconds of jitter).
 
-Design: `docs/superpowers/specs/2026-04-20-gitnexus-integration-design.md`.
+Design: `docs/superpowers/specs/2026-04-20-gitnexus-integration-design.md` in the private
+brain-v42-internal repository.
 
 ## Configuration
 
@@ -864,8 +869,7 @@ brain_v42/
 │   ├── ARCHITECTURE.md           # this file
 │   ├── GRAPH_LEDGER_RUNBOOK.md   # gated import, rebuild, observability, rollback
 │   ├── MCP_TOOLS.md              # tool catalog
-│   ├── SCHEMA.md                 # PG schema reference
-│   └── superpowers/specs/        # design specs per feature
+│   └── SCHEMA.md                 # PG schema reference
 └── scripts/dream.sh              # nightly dream orchestrator
 ```
 
@@ -890,11 +894,7 @@ brain_v42/
 - `docs/SCHEMA.md` — PG schema column-level
 - `docs/MCP_TOOLS.md` — tool catalog
 - `docs/GRAPH_LEDGER_RUNBOOK.md` — import, cutover, rebuild, observability, and rollback gates
-- `docs/superpowers/specs/2026-03-13-memory-decay-design.md`
-- `docs/superpowers/specs/2026-03-14-roadmap-v2-design.md`
-- `docs/superpowers/specs/2026-03-16-neo4j-knowledge-graph-design.md`
-- `docs/superpowers/specs/2026-03-22-project-groups-and-key-normalization-design.md`
-- `docs/superpowers/specs/2026-04-05-dream-mode-design.md`
-- `docs/superpowers/specs/2026-04-07-plans-chunking-indexing-design.md`
-- `docs/superpowers/specs/2026-04-17-dream-v3-actionability-design.md`
-- `docs/superpowers/specs/2026-04-20-gitnexus-integration-design.md`
+- Feature design specs (memory decay, roadmap v2, the Neo4j knowledge graph, project-group
+  and key normalization, Dream mode, plan chunking/indexing, Dream v3 actionability, the
+  GitNexus integration): `docs/superpowers/specs/` in the private brain-v42-internal
+  repository.

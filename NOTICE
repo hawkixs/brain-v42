@@ -60,13 +60,6 @@ Xenova/ms-marco-MiniLM-L-6-v2 — RERANKER (ONNX, baked into the shim image)
   It is not a blocker for running the stack yourself.
 
 --------------------------------------------------------------------------------
-bench/embedding_v1 — BENCHMARK ONLY, NOT PART OF THE RUNTIME
-  jinaai/jina-embeddings-v3 — CC-BY-NC-4.0. NON-COMMERCIAL. The benchmark
-    compose file downloads and runs this model. Do not carry any part of it into
-    a commercial deployment.
-  Qwen/Qwen3-Embedding-4B-GGUF — Apache-2.0.
-
---------------------------------------------------------------------------------
 Python dependencies
   The runtime dependency closure was measured on 2026-08-14 across 138 installed
   distributions: MIT, Apache-2.0, BSD-2/3-Clause, ISC, PSF and MPL-2.0. No strong

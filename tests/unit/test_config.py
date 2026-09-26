@@ -603,7 +603,7 @@ class TestAutomationRuntimeConfig:
         assert settings.automation_dedup_interval_seconds == 17
         assert settings.metrics_legacy_automation_enabled is False
 
-    @pytest.mark.parametrize("host", ["0.0.0.0", "192.168.1.12", "example.com"])
+    @pytest.mark.parametrize("host", ["0.0.0.0", "192.0.2.12", "example.com"])
     def test_automation_host_rejects_non_loopback(self, host: str) -> None:
         with pytest.raises(ValidationError, match="automation_host must be loopback"):
             self._settings(automation_host=host)
@@ -709,8 +709,8 @@ class TestClientActivityUrlIsLoopbackOnly:
     @pytest.mark.parametrize(
         "url",
         [
-            "http://192.168.1.11:9200/v1/client-activity",  # GPU dev PC, measured scenario
-            "http://192.168.1.12:9200/v1/client-activity",  # server PC by its LAN IP
+            "http://192.0.2.11:9200/v1/client-activity",  # GPU dev PC, measured scenario
+            "http://192.0.2.12:9200/v1/client-activity",  # server PC by its LAN IP
             "http://10.0.0.5:9200/v1/client-activity",
             "http://collector.example.com/v1/client-activity",
             "https://collector.example.com/v1/client-activity",
@@ -751,7 +751,7 @@ class TestClientActivityUrlIsLoopbackOnly:
         guard bites where the leak would happen — the shared ``.env``.
         """
         monkeypatch.setenv("CLIENT_ACTIVITY_REPORTING_ENABLED", "true")
-        monkeypatch.setenv("CLIENT_ACTIVITY_URL", "http://192.168.1.11:9200/v1/client-activity")
+        monkeypatch.setenv("CLIENT_ACTIVITY_URL", "http://192.0.2.11:9200/v1/client-activity")
 
         with pytest.raises(ValidationError, match="client_activity_url must be loopback"):
             self._settings()
@@ -787,7 +787,7 @@ class TestOtelTracingConfig:
 
     def test_a_lan_endpoint_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="loopback"):
-            self._settings(otel_endpoint="http://192.168.1.11:4318/v1/traces")
+            self._settings(otel_endpoint="http://192.0.2.11:4318/v1/traces")
 
     def test_a_non_http_scheme_is_refused(self) -> None:
         with pytest.raises(ValidationError, match="http"):

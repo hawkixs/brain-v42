@@ -3,7 +3,8 @@
 Three measurements on the target endpoint (native /embed, /rerank contract):
 
   self   — corpus AND queries embedded by the target (quality of the model
-           served, same harness as bench/embedding_v1/run_bench.py).
+           served, same harness as bench/embedding_v1/run_bench.py — now in the
+           private brain-v42-internal repository, ticket 8dc6f0d2).
   cross  — corpus = vectors STORED in PG (embedded by the historical fp16
            PyTorch), queries embedded by the target. This is the real
            post-cutover scenario: GGUF queries against a corpus of
@@ -12,16 +13,17 @@ Three measurements on the target endpoint (native /embed, /rerank contract):
            PyTorch CrossEncoder).
 
 Usage:
-  # baseline (PyTorch still in production)
+  # baseline (PyTorch still in production) — output path is an example under the
+  # private brain-v42-internal repository's copy of bench/embedding_v1/
   python scripts/embedding_cutover_check.py \\
       --url http://localhost:8003 \\
-      --output bench/embedding_v1/cutover/baseline_pytorch.json
+      --output internal/bench/embedding_v1/cutover/baseline_pytorch.json
 
   # post-cutover (shim in place) + gates
   python scripts/embedding_cutover_check.py \\
       --url http://localhost:8003 \\
-      --output bench/embedding_v1/cutover/candidate_gguf.json \\
-      --baseline bench/embedding_v1/cutover/baseline_pytorch.json
+      --output internal/bench/embedding_v1/cutover/candidate_gguf.json \\
+      --baseline internal/bench/embedding_v1/cutover/baseline_pytorch.json
 
 Gates (candidate vs baseline): dMRR_self >= -0.01,
 drecall@10_self >= -0.005, dMRR_cross >= -0.01, pearson_rerank >= 0.995.

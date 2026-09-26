@@ -256,7 +256,8 @@ class TestTransition:
 
 class TestSelfTicketTransition:
     """from_project == to_project: role check skipped, SELF_TRANSITIONS used
-    (docs/superpowers/specs/2026-08-03-self-ticket-lifecycle-design.md §5)."""
+    (docs/superpowers/specs/2026-08-03-self-ticket-lifecycle-design.md §5, in the
+    private brain-v42-internal repository)."""
 
     async def test_resolve_from_open_closes_directly(self):
         svc, repo, _ = _svc(ticket=_self_ticket())

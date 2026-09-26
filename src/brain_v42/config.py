@@ -161,8 +161,8 @@ class Settings(BaseSettings):
     )
 
     # --- Embedding ---
-    # Default points at the local PC-serveur container (restore 2026-07-06,
-    # reverses the 2026-04-15 dev-pc cutover after the dev-pc crash).
+    # Default points at the local brain-host container (restore 2026-07-06,
+    # reverses the 2026-04-15 gpu-host cutover after the gpu-host crash).
     # Avoids a dead-endpoint fallback when the MCP starts from a foreign cwd
     # without env injection — see learning 2a4930a9 (env drift gotcha).
     embedding_service_url: str = Field(

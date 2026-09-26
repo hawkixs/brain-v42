@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import ast
 import json
-import os
 import re
-import subprocess
-import sys
 import tomllib
 from pathlib import Path
-from urllib.parse import unquote, urlsplit
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
@@ -42,21 +39,12 @@ ARCHITECTURE = (REPO_ROOT / "docs" / "ARCHITECTURE.md").read_text()
 MCP_TOOLS = (REPO_ROOT / "docs" / "MCP_TOOLS.md").read_text()
 SCHEMA = (REPO_ROOT / "docs" / "SCHEMA.md").read_text()
 GRAPH_RUNBOOK = (REPO_ROOT / "docs" / "GRAPH_LEDGER_RUNBOOK.md").read_text()
-CODEX_GATEWAY = (REPO_ROOT / "deploy" / "CODEX_GATEWAY.md").read_text()
-ROADMAP = (REPO_ROOT / "docs" / "plans" / "2026-07-11-sol-ultra-audit-roadmap-plan.md").read_text()
-DR_IMPLEMENTATION_PLAN = (
-    REPO_ROOT / "docs" / "plans" / "2026-07-11-disaster-recovery-verified-implementation-plan.md"
-).read_text()
-DR_B2_HANDOFF = (
-    REPO_ROOT / "docs" / "plans" / "2026-07-11-disaster-recovery-b2-session-handoff.md"
-).read_text()
-DR_B3_EVIDENCE = (
-    REPO_ROOT / "docs" / "plans" / "2026-07-12-disaster-recovery-b3-operational-evidence.md"
-).read_text()
-DEV_PC_RUNBOOK = (REPO_ROOT / "deploy" / "dev-pc" / "README.md").read_text()
-DREAM_EXTRACT_RECOVERY_RUNBOOK = (
-    REPO_ROOT / "docs" / "runbooks" / "2026-08-01-dream-extract-recovery-canary.md"
-).read_text()
+# CODEX_GATEWAY, ROADMAP, DR_IMPLEMENTATION_PLAN, DR_B2_HANDOFF, DR_B3_EVIDENCE,
+# DEV_PC_RUNBOOK and DREAM_EXTRACT_RECOVERY_RUNBOOK used to be read here too. Their
+# documents (deploy/CODEX_GATEWAY.md, deploy/dev-pc/, docs/plans/, docs/runbooks/) moved to
+# the private brain-v42-internal repository (ticket 8dc6f0d2): the consistency checks that
+# depended on them moved with them, to tests/unit/test_documentation_contract_internal.py
+# in that repository.
 SERVER = (REPO_ROOT / "src" / "brain_v42" / "mcp" / "server.py").read_text()
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
@@ -76,82 +64,11 @@ def _docs_including_claude(*others: str) -> tuple[str, ...]:
     return (*others, CLAUDE) if CLAUDE else others
 
 
-def _dream_extract_backfill_guard() -> str:
-    match = re.search(
-        r"<!-- backfill-recovery-guard:start -->\n```bash\n(.*?)```\n"
-        r"<!-- backfill-recovery-guard:end -->",
-        DREAM_EXTRACT_RECOVERY_RUNBOOK,
-        flags=re.DOTALL,
-    )
-    assert match is not None, "missing executable Dream EXTRACT backfill recovery guard"
-    return match.group(1)
-
-
-@pytest.mark.parametrize(
-    ("snapshot_url", "restore_db", "restore_url", "expected_error"),
-    [
-        (
-            "postgresql://brain:sentinel-runbook-secret@db.example:5432/wrong_snapshot",
-            "brain_restore",
-            "postgresql://brain:sentinel-runbook-secret@db.example:5432/brain_restore",
-            "snapshot target identity mismatch",
-        ),
-        (
-            "postgresql://brain:sentinel-runbook-secret@db.example:5432/brain_operated",
-            "brain_operated",
-            "postgresql://brain:sentinel-runbook-secret@db.example:5432/brain_operated",
-            "restore target must differ from operated database",
-        ),
-    ],
-    ids=["snapshot-target-mismatch", "restore-target-mismatch"],
-)
-def test_dream_extract_backfill_guard_stops_before_external_commands(
-    tmp_path: Path,
-    snapshot_url: str,
-    restore_db: str,
-    restore_url: str,
-    expected_error: str,
-) -> None:
-    """A mismatched identity must fail before dump, restore, or backfill."""
-    guard_path = tmp_path / "backfill-recovery-guard.sh"
-    guard_path.write_text(_dream_extract_backfill_guard())
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    marker = tmp_path / "external-command-called"
-    for command in ("pg_dump", "pg_restore", "createdb", "psql"):
-        fake_command = fake_bin / command
-        fake_command.write_text('#!/bin/sh\ntouch "$BACKFILL_GUARD_MARKER"\n')
-        fake_command.chmod(0o755)
-
-    target_url = "postgresql+asyncpg://brain:sentinel-runbook-secret@db.example:5432/brain_operated"
-    env = os.environ | {
-        "POSTGRES_URL": target_url,
-        "BACKFILL_PGURL": snapshot_url,
-        "BACKFILL_PROJECT": "test-project",
-        "BACKFILL_SNAPSHOT_DIR": str(tmp_path / "snapshots"),
-        "BACKFILL_RESTORE_DB": restore_db,
-        "BACKFILL_RESTORE_ADMIN_PGURL": (
-            "postgresql://brain:sentinel-runbook-secret@db.example:5432/postgres"
-        ),
-        "BACKFILL_RESTORE_PGURL": restore_url,
-        "BACKFILL_PYTHON": sys.executable,
-        "BACKFILL_GUARD_MARKER": str(marker),
-        "PATH": f"{fake_bin}:{os.environ['PATH']}",
-    }
-    result = subprocess.run(
-        ["bash", str(guard_path)],
-        cwd=REPO_ROOT,
-        env=env,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode != 0
-    assert expected_error in result.stderr
-    assert not marker.exists()
-    assert "sentinel-runbook-secret" not in result.stdout
-    assert "sentinel-runbook-secret" not in result.stderr
+# The Dream EXTRACT backfill recovery guard test used to live here, extracting an
+# executable bash block from docs/runbooks/2026-08-01-dream-extract-recovery-canary.md
+# and running it. That runbook moved to the private brain-v42-internal repository
+# (ticket 8dc6f0d2); the test moved with it, to
+# tests/unit/test_documentation_contract_internal.py in that repository.
 
 
 def _repository_head() -> str:
@@ -2013,17 +1930,19 @@ def test_documented_embedding_topology_matches_restored_local_default() -> None:
     assert endpoint == "http://localhost:8003"
     contract = (
         f"**Embedding topology**: production/default = local unified endpoint `{endpoint}`; "
-        "`deploy/dev-pc` is a superseded rollback/reference path."
+        "the personal `dev-pc` deployment is a superseded rollback/reference path, now private."
     )
 
     for document in _docs_including_claude(README, ARCHITECTURE):
         assert contract in document
-        assert "192.168.1.11:8003" not in document
+        assert "192.0.2.11:8003" not in document
     assert endpoint in SCHEMA
     assert "192.168.1.11:8003" not in SCHEMA
-    assert "SUPERSEDED FOR ACTIVE BRAIN TRAFFIC" in DEV_PC_RUNBOOK
-    assert "is the backbone of the whole ReD ecosystem" not in DEV_PC_RUNBOOK
-    assert "(and every `brain_*` consumer) keeps" not in DEV_PC_RUNBOOK
+    assert "192.0.2.11:8003" not in SCHEMA
+    # deploy/dev-pc/README.md carried its own consistency checks here ("SUPERSEDED FOR
+    # ACTIVE BRAIN TRAFFIC" and two negative wordings). deploy/dev-pc/ moved to the private
+    # brain-v42-internal repository (ticket 8dc6f0d2); those checks moved with it, to
+    # tests/unit/test_documentation_contract_internal.py in that repository.
 
 
 def test_documented_network_boundary_matches_tracked_bindings() -> None:
@@ -2150,85 +2069,13 @@ def test_post_037_production_truth_is_consistent_and_fail_closed() -> None:
     )
 
     # 2026-08-04 corrected README/ARCHITECTURE/MCP_TOOLS/SCHEMA to stop naming a deployed
-    # head. The gateway and graph runbooks encode operational *gates* (commands an operator
-    # runs and compares against a hard-coded number), not descriptive prose: a hard-coded
-    # gate goes stale at the next migration and, worse, tells an operator today's `040` is an
+    # head. The graph runbook below encodes operational *gates* (commands an operator runs
+    # and compares against a hard-coded number), not descriptive prose: a hard-coded gate
+    # goes stale at the next migration and, worse, tells an operator today's `040` is an
     # anomaly. These gates must now measure the deployed head instead of asserting `037`.
-    gateway_normalized = " ".join(CODEX_GATEWAY.split())
-    assert (
-        "La tête du dépôt est `039`; la production observée reste à `037`."
-        not in gateway_normalized
-    )
-    assert (
-        "The repository head is `039`; the observed production stays at `037`."
-        not in gateway_normalized
-    )
-    assert (
-        "current production must announce the Alembic head actually deployed, measured "
-        "immediately before the procedure" in gateway_normalized
-    )
-    assert (
-        "la production actuelle doit annoncer exactement `037`, son descendant validé"
-        not in gateway_normalized
-    )
-    assert (
-        "current production must announce exactly `037`, its validated descendant"
-        not in gateway_normalized
-    )
-    assert (
-        "`alembic current` must announce the deployed head, measured before the"
-        in gateway_normalized
-    )
-    assert "sans marqueur `(head)`" not in gateway_normalized
-    assert "without the `(head)` marker" not in gateway_normalized
-    assert (
-        "Migration 037 descends from 036 and keeps the ten views the gateway requires."
-        in gateway_normalized
-    )
-    assert (
-        "This runbook applies no Alembic migration beyond what production already carries."
-        in gateway_normalized
-    )
-    assert (
-        "Ce runbook n'applique aucune migration Alembic, ni 038 ni 039." not in gateway_normalized
-    )
-    assert (
-        "This runbook applies no Alembic migration, neither 038 nor 039." not in gateway_normalized
-    )
-    assert "doit annoncer exactement `037 (head)`" not in CODEX_GATEWAY
-    assert "must announce exactly `037 (head)`" not in CODEX_GATEWAY
-    assert "never downgrade to 036" in CODEX_GATEWAY
-    assert (
-        "Keep the deployed head — measured before the rollback, never copied from a "
-        "previous run — during this rollback" in gateway_normalized
-    )
-    assert "Conservez le head déployé `037` pendant ce rollback" not in gateway_normalized
-    assert "Keep the deployed head `037` during this rollback" not in gateway_normalized
-    assert "The gateway rollback authorizes no Alembic migration." in CODEX_GATEWAY
-    assert "sans annoncer `037`" not in CODEX_GATEWAY
-    assert "without announcing `037`" not in CODEX_GATEWAY
-    assert "Conservez la migration `036` pendant ce rollback" not in CODEX_GATEWAY
-
-    assert "Keep migration `036` during this rollback" not in CODEX_GATEWAY
-    # Ticket 8285215c: the head is no longer a constant ANYWHERE, neither in prose
-    # nor in the CLI. Those two sentences were exact as long as the script encoded
-    # `037`; they became false the day it stopped doing so.
-    assert "la production exactement à `037`" not in gateway_normalized
-    assert "production exactly at `037`" not in gateway_normalized
-    assert "`alembic_revision=037`" not in gateway_normalized
-    assert "n'accepte ni `038` ni `039` implicitement" not in gateway_normalized
-    assert "accepts neither `038` nor `039` implicitly" not in gateway_normalized
-    assert (
-        "production exactly at the head YOU declared — measured immediately "
-        "before the procedure, never copied" in gateway_normalized
-    )
-    # The procedure is UNRUNNABLE if the runbook forgets the required argument.
-    # The INVOCATION form, not the mention: the prose also cites the argument, and
-    # counting mentions would pass the test with three blocks out of four fixed.
-    assert gateway_normalized.count('--expected-alembic-revision "$DEPLOYED_HEAD"') == 4, (
-        "les quatre invocations du CLI doivent toutes déclarer le head mesuré"
-    )
-
+    # deploy/CODEX_GATEWAY.md carried the same class of gate and the same checks, until it
+    # moved to the private brain-v42-internal repository (ticket 8dc6f0d2); those checks
+    # moved with it, to tests/unit/test_documentation_contract_internal.py in that repository.
     graph_normalized = " ".join(GRAPH_RUNBOOK.split())
     assert "**Acquired at head 037.**" in GRAPH_RUNBOOK
     assert "DR-v5 run `20260724_150315`" in GRAPH_RUNBOOK
@@ -2296,51 +2143,10 @@ def test_post_037_production_truth_is_consistent_and_fail_closed() -> None:
     assert (
         "a contract and an isolated drill at head 037 are still required" not in schema_normalized
     )
-    assert "`a857705f…` migrations 036/037 and MCP restart | **closed on July 24**" in ROADMAP
-    assert "the three MCP units are live and canaried" in ROADMAP
-    assert "five fragments remain unpublished" in ROADMAP
-    roadmap_normalized = " ".join(ROADMAP.split())
-    assert "The isolated PostgreSQL restore to head 037 is acquired" in roadmap_normalized
-    assert "disposable drill cleanup is complete" in roadmap_normalized
-    assert (
-        "`1c6911a4…` `planned` statuses rejected by plan_indexer | `in_progress`; code shipped "
-        "at `223fc1f`" in ROADMAP
-    )
-    assert "`44ee7643…` relative `plan_scan_paths` paths" in ROADMAP
-    next_work = ROADMAP.split("## Recommended next effort", maxsplit=1)[1]
-    next_work_normalized = " ".join(next_work.split())
-    av1_position = next_work_normalized.index("final AV1 linking integration evidence")
-    ci_security_position = next_work_normalized.index("31d68c06…")
-    coverage_position = next_work_normalized.index("5619c851…")
-    assert av1_position < ci_security_position < coverage_position
-
-    dr_active_normalized = " ".join((DR_IMPLEMENTATION_PLAN + "\n" + DR_B3_EVIDENCE).split())
-    assert "DR-v5 run `20260724_150315`" in dr_active_normalized
-    assert "24/24 checks" in dr_active_normalized
-    assert "B3 operational proof" in dr_active_normalized
-    assert "Never downgrade to close a" in dr_active_normalized
-    assert "restore PostgreSQL au head 035" not in dr_active_normalized
-    assert "PostgreSQL restore at head 035" not in dr_active_normalized
-    assert "Tant que ce drill n'est pas livré" not in dr_active_normalized
-    assert "Until this drill is delivered" not in dr_active_normalized
-    assert "The DR-v3 timer is installed, persistent and active" in dr_active_normalized
-    assert "DR-v5 activation remain open" in dr_active_normalized
-    assert "le cron live restent inchangés" not in dr_active_normalized
-    assert "the live cron stay unchanged" not in dr_active_normalized
-    assert "Historical DR-v1 cycles authenticated" in DR_B3_EVIDENCE
-    for residual_gate in (
-        "roles, owners and ACLs",
-        "dedicated Neo4j rebuild",
-        "encrypted off-host",
-        "Discord alert",
-        "DR-v5 activation",
-    ):
-        assert residual_gate in dr_active_normalized
-
-    dr_b2_normalized = " ".join(DR_B2_HANDOFF.split())
-    assert "status: completed" in DR_B2_HANDOFF
-    assert "This checkpoint is no longer a resume point." in dr_b2_normalized
-    assert "no downgrade is authorized" in dr_b2_normalized
+    # The same class of checks used to run here against docs/plans/2026-07-11-sol-ultra-
+    # audit-roadmap-plan.md and the disaster-recovery plan/handoff/evidence trio. Those dated
+    # plans moved to the private brain-v42-internal repository (ticket 8dc6f0d2); the checks
+    # moved with them, to tests/unit/test_documentation_contract_internal.py in that repository.
 
     stale_live_claims = (
         "It is not yet deployed on the live Brain",
@@ -2439,52 +2245,11 @@ def test_documented_ci_rails_match_the_workflow_files() -> None:
         assert gone not in normalized
 
 
-def _documented_integration_commands(document: str) -> list[str]:
-    """Return the shell lines of a plan that invoke the integration suite.
-
-    Only lines inside ``bash`` fences count: prose that merely names the command
-    is not a gate an operator will paste.
-    """
-    blocks = re.findall(r"^```bash\n(.*?)^```$", document, flags=re.DOTALL | re.MULTILINE)
-    return [
-        line.strip()
-        for block in blocks
-        for line in block.splitlines()
-        if "pytest tests/integration" in line
-    ]
-
-
-def test_sweep_plan_integration_gates_cannot_pass_by_skipping_everything() -> None:
-    """A documented integration gate must be able to fail.
-
-    ``tests/integration/conftest.py`` resolves its database from
-    ``BRAIN_V42_TEST_DB_URL`` alone and skips the whole suite when the variable
-    is unset or points at the prod ``brain`` database. A plan command without it
-    exits green having executed nothing — measured on this very plan:
-    ``288 skipped in 1.38s`` unprefixed against ``256 passed, 32 skipped`` with
-    the variable. Task 1 already ran into it.
-    """
-    plan = (
-        REPO_ROOT / "docs" / "superpowers" / "plans" / "2026-08-07-session-lifecycle-sweep.md"
-    ).read_text()
-    commands = _documented_integration_commands(plan)
-
-    assert commands, "the sweep plan must document at least one integration gate"
-    for command in commands:
-        assert "BRAIN_V42_TEST_DB_URL=" in command, (
-            f"integration gate skips the whole suite without the test DB URL: {command}"
-        )
-    for command in commands:
-        url = re.search(r"BRAIN_V42_TEST_DB_URL=(\S+)", command)
-        assert url is not None, f"integration gate declares an empty test DB URL: {command}"
-        db_name = unquote(urlsplit(url.group(1)).path).lstrip("/")
-        assert db_name != "brain", (
-            f"integration gate targets the prod database and skips: {command}"
-        )
-    assert (
-        "Without `BRAIN_V42_TEST_DB_URL`, `pytest tests/integration` skips the suite entirely "
-        'and exits green: demand a nonzero `passed` count, never "all green".'
-    ) in " ".join(plan.split())
+# _documented_integration_commands and test_sweep_plan_integration_gates_cannot_pass_by_
+# skipping_everything used to live here, checking
+# docs/superpowers/plans/2026-08-07-session-lifecycle-sweep.md. That plan moved to the
+# private brain-v42-internal repository (ticket 8dc6f0d2); the check moved with it, to
+# tests/unit/test_documentation_contract_internal.py in that repository.
 
 
 def _unfenced(document: str) -> str:
@@ -3004,38 +2769,8 @@ def test_readme_versioning_contract_points_at_the_measured_health_fields() -> No
         assert f'"{field}"' in SERVER
 
 
-#: The release runbook every subsequent-release script is built from (the receipts
-#: of 2026-09-20 to 2026-09-22 name it as their procedure).
-RELEASE_RUNBOOK = REPO_ROOT / "docs" / "runbooks" / "2026-09-07-observable-delivery-workflows.md"
-
-#: Every form a head ASSERTION takes in that runbook: the build smoke, the private
-#: preflight configuration, the jq checks on a preflight receipt, and the shell
-#: comparison against a release's shipped head.
-_HEAD_ASSERTION_LITERALS = (
-    re.compile(r'shipped_alembic_head\(\) == "\d{3}"'),
-    re.compile(r'"required_schema_revision": "\d{3}"'),
-    re.compile(r'schema_revision == "\d{3}"'),
-    re.compile(r"print\(shipped_alembic_head\(\)\)'\)\"? = \d{3}\b"),
-)
-
-
-def test_release_runbook_asserts_heads_through_declared_inputs_not_literals() -> None:
-    """A head literal in the release runbook is stale at the next migration.
-
-    Ticket fae4310b: the runbook carried `053` at eight assertion sites while
-    production moved to 054, then 055, and no gate noticed across three releases;
-    each release script had its literals patched by hand. The forward and the
-    rollback sites also need DIFFERENT heads — the rollback release ships the
-    previous one — so a mechanical bump would have been wrong at three sites.
-    The heads are operator inputs, `SCHEMA_HEAD` and `ROLLBACK_SCHEMA_HEAD`.
-    """
-    runbook = RELEASE_RUNBOOK.read_text()
-
-    stale = [
-        match.group(0)
-        for pattern in _HEAD_ASSERTION_LITERALS
-        for match in pattern.finditer(runbook)
-    ]
-    assert stale == []
-    for name in ("SCHEMA_HEAD", "ROLLBACK_SCHEMA_HEAD"):
-        assert f"{name}='<" in runbook, f"{name} is not declared as an operator input"
+# RELEASE_RUNBOOK, _HEAD_ASSERTION_LITERALS and
+# test_release_runbook_asserts_heads_through_declared_inputs_not_literals used to live
+# here, checking docs/runbooks/2026-09-07-observable-delivery-workflows.md. That runbook
+# moved to the private brain-v42-internal repository (ticket 8dc6f0d2); the check moved
+# with it, to tests/unit/test_documentation_contract_internal.py in that repository.

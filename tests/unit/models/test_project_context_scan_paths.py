@@ -24,7 +24,7 @@ from pydantic import ValidationError
 
 from brain_v42.models.project_context import ProjectContextCreate, ProjectContextUpdate
 
-ABSOLUTE = "/home/hawixs/hawkixs_infra/git_repo/brain_v42/docs"
+ABSOLUTE = "/home/user/hawkixs_infra/git_repo/brain_v42/docs"
 
 
 def _create(**kwargs: object) -> ProjectContextCreate:

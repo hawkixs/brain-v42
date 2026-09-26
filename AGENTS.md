@@ -35,6 +35,9 @@ Mandatory reading covers in particular:
   `brain_search(query="dev machines access", project_key="brain-v42")`.
 - Everything is written in **English**: commits, branches, PRs, docs, code comments, test
   names, and these instruction files. Conversation with the operator stays in French.
+- Plans, specs, design notes, receipts and handoffs go under `internal/` (the private
+  `brain-v42-internal` repository cloned there, git-ignored), never directly under `docs/`.
+  See `CLAUDE.md`, "Internal working material".
 
 ## Adaptation for Codex and OpenCode
 

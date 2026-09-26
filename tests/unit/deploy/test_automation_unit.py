@@ -18,7 +18,6 @@ SYSTEMD_DIR = ROOT / "deploy" / "systemd"
 TEMPLATE = SYSTEMD_DIR / "brain-v42-automation.service.tmpl"
 INSTALL = SYSTEMD_DIR / "install.sh"
 RUNBOOK = SYSTEMD_DIR / "README.md"
-PLAN = ROOT / "docs" / "plans" / "2026-07-14-arc1-automation-runtime-plan.md"
 ARCHITECTURE = ROOT / "docs" / "ARCHITECTURE.md"
 INTEGRATION_SCRIPT = ROOT / "tests" / "integration" / "test_dream_systemd_install.sh"
 FLAG = "METRICS_LEGACY_AUTOMATION_ENABLED"
@@ -761,16 +760,16 @@ class TestAutomationRunbookContract:
         # (ticket bdc4db73); README keeps only a short pointer.
         operations = (ROOT / "docs" / "OPERATIONS.md").read_text()
         architecture = ARCHITECTURE.read_text()
-        plan = PLAN.read_text()
         assert "deploy/systemd/README.md" in operations
         assert "AUTOMATION_PORT" in operations
         assert FLAG in operations
         assert "cockpit.recent" in architecture
         assert "non-fencing" in architecture
         assert "127.0.0.1:9201" in architecture
-        assert "The precommit validations only use temporary fixtures" in plan
-        assert "The runbook describes host operator commands" in plan
-        assert "EnvironmentFile=%h/.config/brain-v42/automation-owner.env" in plan
+        # The same assertions used to run here against `plan`
+        # (docs/plans/2026-07-14-arc1-automation-runtime-plan.md). That plan moved to the
+        # private brain-v42-internal repository (ticket 8dc6f0d2); the checks moved with
+        # it, to tests/unit/test_documentation_contract_internal.py in that repository.
 
     def test_architecture_draws_three_sibling_runtime_boxes(self) -> None:
         overview = ARCHITECTURE.read_text().split("## Overview", maxsplit=1)[1]
