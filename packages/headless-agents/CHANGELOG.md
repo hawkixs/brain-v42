@@ -18,7 +18,7 @@ commit that shipped it — deliberately outside the `v*` pattern, which names br
 version and drives its release workflow. Pin it:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.4.0#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.0#subdirectory=packages/headless-agents"
 ```
 
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last

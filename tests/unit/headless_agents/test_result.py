@@ -1,4 +1,4 @@
-"""``RunResult.to_dict``: the schema-1 contract of ``result.json`` and ``ha run --json``."""
+"""``RunResult.to_dict``: the schema-1 contract of ``result.json`` (each step's; ``ha run --json`` prints ``run.json`` since 0.5.0)."""
 
 from __future__ import annotations
 
