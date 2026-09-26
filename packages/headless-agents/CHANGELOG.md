@@ -80,11 +80,14 @@ surface below; this entry is where the release is written down and tagged.
 - `ha run --chain codex:MODEL,claude:MODEL "task"` -> declare
   `chain = ["codex:MODEL", "claude:MODEL"]` on a role in `roles.toml` and run that role:
   `ha run <role> "task"`.
-- `ha run --json` readers: check `"kind"` first -- `"run"` names `run.json` (this file),
-  absent means `result.json` (a bare provider run, schema 1, `"provider"` set, no `"kind"`).
-  Read a step's own provider and model from `steps[].provider` / `steps[].model`, and its
-  full `result.json` from `run_dir / steps[].dir / "result.json"` -- `steps[].dir` is
-  already the relative path, e.g. `steps/01-run-codex/result.json`.
+- `ha run --json` readers: check `"kind"` first -- `"kind": "run"` names `run.json` (this
+  file). `result.json` has no `"kind"` and carries `"provider"` at the top level. A
+  `run.json` written by a pre-release main build also has no `"kind"`, but it carries no
+  top-level `"provider"` and has `"steps"` instead, and still reads as a run. Read a step's
+  own provider and model from `steps[].provider` / `steps[].model`, and its full
+  `result.json` from `run_dir / steps[].dir / "result.json"` -- `steps[].dir` is already
+  the relative directory, e.g. `steps/01-run-codex`, so that step's file is
+  `steps/01-run-codex/result.json`.
 - Library users are unaffected: `get_provider(name).run(spec)`, the `AgentProvider`
   protocol and `result.json`'s schema-1 shape did not move. red-rail and red-arena call
   the library, never the CLI, so this release changes nothing for them.
