@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -134,6 +135,97 @@ def test_resolve_providers_cuda_requested_but_unavailable_falls_back_to_cpu(capl
         result = _resolve_providers("cuda", ["CPUExecutionProvider"])
     assert result == ["CPUExecutionProvider"]
     assert "rerank_cuda_requested_unavailable" in caplog.text
+
+
+# --- session construction (_load): ORT fallback + CUDA construction failure --
+
+
+class RecordingSession:
+    """Stands in for onnxruntime.InferenceSession — records disable_fallback()
+    calls instead of doing anything with a real model."""
+
+    def __init__(self, providers: list[str]) -> None:
+        self._providers = providers
+        self.disable_fallback_calls = 0
+
+    def disable_fallback(self) -> None:
+        self.disable_fallback_calls += 1
+
+    def get_providers(self) -> list[str]:
+        return self._providers
+
+
+class _FakeTokenizerHandle:
+    def enable_truncation(self, max_length: int) -> None:
+        pass
+
+    def enable_padding(self) -> None:
+        pass
+
+
+class _FakeTokenizerClass:
+    @staticmethod
+    def from_file(path: str) -> _FakeTokenizerHandle:
+        return _FakeTokenizerHandle()
+
+
+class _FakeTokenizersModule:
+    Tokenizer = _FakeTokenizerClass
+
+
+class FakeOnnxRuntimeModule:
+    """Stands in for the `onnxruntime` module — no real model/GPU involved."""
+
+    def __init__(
+        self,
+        session_factory,
+        available_providers: list[str],
+    ) -> None:
+        self._session_factory = session_factory
+        self._available_providers = available_providers
+
+    def get_available_providers(self) -> list[str]:
+        return self._available_providers
+
+    def InferenceSession(self, model_path: str, providers: list[str]) -> Any:
+        return self._session_factory(providers)
+
+
+def _install_fake_onnx_modules(monkeypatch, session_factory, available_providers):
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        FakeOnnxRuntimeModule(session_factory, available_providers),
+    )
+    monkeypatch.setitem(sys.modules, "tokenizers", _FakeTokenizersModule())
+
+
+def test_load_disables_onnxruntime_automatic_session_fallback(monkeypatch):
+    """MAJOR review finding (PR #231): onnxruntime's own EPFail fallback would
+    silently retry a failed CUDA run on CPU inside session.run() itself and
+    return scores without ever raising — the explicit retry/breaker in
+    rerank() would never see the failure, so the breaker would never open and
+    the session could stay pinned to CPU even after the GPU recovers.
+    disable_fallback() (onnxruntime 1.30 API, Session.disable_fallback in
+    onnxruntime_inference_collection.py) forces run() failures to surface as
+    exceptions instead.
+    """
+    sessions: list[RecordingSession] = []
+
+    def factory(providers: list[str]) -> RecordingSession:
+        session = RecordingSession(providers)
+        sessions.append(session)
+        return session
+
+    _install_fake_onnx_modules(
+        monkeypatch, factory, available_providers=["CUDAExecutionProvider", "CPUExecutionProvider"]
+    )
+
+    backend = OnnxRerankBackend("m.onnx", "t.json", device="cuda")
+    backend._load()
+
+    assert len(sessions) == 1
+    assert sessions[0].disable_fallback_calls == 1
 
 
 # --- length sorting + order restoration --------------------------------------

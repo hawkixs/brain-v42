@@ -199,6 +199,15 @@ class OnnxRerankBackend:
 
                 providers = _resolve_providers(self._device, onnxruntime.get_available_providers())
                 self._session = onnxruntime.InferenceSession(self._model_path, providers=providers)
+                # onnxruntime's own EPFail fallback would silently retry a failed
+                # run on CPU inside session.run() and return scores without ever
+                # raising — the explicit retry + breaker in rerank() would then
+                # never see the failure, so the breaker would never open and the
+                # session could stay pinned to CPU even after the GPU recovers
+                # (MAJOR review finding, PR #231). disable_fallback() is the
+                # documented onnxruntime 1.30 API for this
+                # (onnxruntime.capi.onnxruntime_inference_collection.Session).
+                self._session.disable_fallback()
                 # Structured, no text payloads (query/candidates never logged here).
                 _LOGGER.info(
                     "rerank_provider_loaded requested_device=%s provider=%s",
