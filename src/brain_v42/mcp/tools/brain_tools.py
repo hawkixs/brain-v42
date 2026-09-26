@@ -92,6 +92,7 @@ from brain_v42.mcp.tools.workflow_guide_tools import register_workflow_guide_too
 
 logger = structlog.get_logger(__name__)
 
+
 def _no_embedding_model_served(response: SearchResponse | WhatDoIKnowResponse) -> bool:
     """True when no embedding model took part in serving this search.
 

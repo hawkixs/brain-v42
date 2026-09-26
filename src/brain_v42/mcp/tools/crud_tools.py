@@ -530,7 +530,9 @@ def register_crud_tools(
         logger.info("brain_update", entity_type=entity_type, entity_id=entity_id)
         if claim_replacement is None:
             return format_confirmation("Updated", "", id=str(entity_id), type=entity_type)
-        created_ids = ", ".join(describe_claim_outcome(outcome) for outcome in claim_replacement.created)
+        created_ids = ", ".join(
+            describe_claim_outcome(outcome) for outcome in claim_replacement.created
+        )
         return format_confirmation(
             "Updated",
             "",

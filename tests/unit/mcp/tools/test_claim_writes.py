@@ -211,9 +211,7 @@ async def test_write_claim_measured_falsified_is_not_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A falsified first verdict must still be written, not raised or downgraded."""
-    verification = _FakeVerification(
-        WriteMeasurement("measured", "falsified", object(), object())
-    )
+    verification = _FakeVerification(WriteMeasurement("measured", "falsified", object(), object()))
 
     outcome, fake_insert = await _write(verification=verification, monkeypatch=monkeypatch)
 
