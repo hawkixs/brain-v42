@@ -37,6 +37,7 @@ from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.claim_writes import (
     claim_write_log_fields,
     claims_confirmation,
+    gated_claim_session,
     persist_claims,
     resolve_claim_inputs,
 )
@@ -221,7 +222,9 @@ def register_tools(
         if project_key is None:
             raise ValueError("declared claims require project_key")
         declared_at = datetime.now(UTC)
-        async with claim_session_factory() as session, session.begin():
+        async with gated_claim_session(
+            claim_session_factory, claim_verification_svc, resolved
+        ) as session:
             decision = await decision_svc.create(data, session=session)
             outcomes = await persist_claims(
                 session,
@@ -497,7 +500,9 @@ def register_tools(
             raise ValueError("declared claims require project_key")
         scope = get_dream_project_scope()
         declared_at = datetime.now(UTC)
-        async with claim_session_factory() as session, session.begin():
+        async with gated_claim_session(
+            claim_session_factory, claim_verification_svc, resolved
+        ) as session:
             learning = await learning_svc.create(data, session=session)
             outcomes = await persist_claims(
                 session,
@@ -631,7 +636,9 @@ def register_tools(
         registry, claim_session_factory = claim_write_dependencies()
         resolved = await resolve_claim_inputs(registry, claims)
         declared_at = datetime.now(UTC)
-        async with claim_session_factory() as session, session.begin():
+        async with gated_claim_session(
+            claim_session_factory, claim_verification_svc, resolved
+        ) as session:
             adr = await adr_svc.create(data, session=session)
             outcomes = await persist_claims(
                 session,

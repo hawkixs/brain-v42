@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
@@ -23,7 +24,7 @@ from brain_v42.repositories.pg_knowledge_claims import (
 )
 
 if TYPE_CHECKING:
-    from sqlalchemy.ext.asyncio import AsyncSession
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from brain_v42.facts.registry import FactRegistry
     from brain_v42.facts.verification import ClaimVerificationService
@@ -137,6 +138,32 @@ async def resolve_claim_inputs(
     return resolved
 
 
+@asynccontextmanager
+async def gated_claim_session(
+    session_factory: async_sessionmaker[AsyncSession],
+    verification: ClaimVerificationService | None,
+    resolved: Sequence[ResolvedClaim],
+) -> AsyncIterator[AsyncSession]:
+    """Open one writer's entry transaction behind the write-time measurement gate.
+
+    MAJOR review finding (PR #233): a `measure=true` writer already keeps its entry
+    transaction open across `measure_for_write`. Without an admission control shared
+    with `verify()`'s owned-session semaphore, N concurrent slow measured writes can
+    exhaust the connection pool on their own. The gate is acquired BEFORE
+    `session_factory()` runs and held for as long as this transaction stays open --
+    every writer (`persist_claims` and `replace_claims` callers alike) opens its
+    session through this one function so the admission rule cannot drift between
+    call sites.
+
+    A batch with no `measure=true` claim, or no `verification` service at all
+    (declared writes stay legal without one), gets a free `nullcontext`: it never
+    contends with `verify()` for this budget -- unaffected, as the contract requires.
+    """
+    gate = verification.write_gate(resolved) if verification is not None else nullcontext()
+    async with gate, session_factory() as session, session.begin():
+        yield session
+
+
 async def _write_claim(
     session: AsyncSession,
     *,
@@ -238,13 +265,18 @@ async def replace_claims(
     entry_id: UUID,
     entity_type: str,
     project_key: str,
-    registry: FactRegistry,
-    claims: Sequence[Mapping[str, object]],
+    resolved: Sequence[ResolvedClaim],
     expected_active_claim_ids: Sequence[str],
     declared_by: str,
     verification: ClaimVerificationService | None = None,
 ) -> ClaimReplacement:
-    """Apply one guarded complete replacement, retiring before re-assertions release the unique key."""
+    """Apply one guarded complete replacement, retiring before re-assertions release the unique key.
+
+    `resolved` is resolved by the caller BEFORE the entry transaction opens
+    (`resolve_claim_inputs`, same as every other writer) -- so the caller can also
+    compute `gated_claim_session`'s admission gate from it up front, instead of this
+    function resolving against the registry from inside an already-open transaction.
+    """
     entity_ref_id = await _claim_anchor_id(session, entry_id, entity_type)
     active = await active_claims(session, entity_ref_id)
     current_ids = {str(claim.id) for claim in active}
@@ -255,7 +287,6 @@ async def replace_claims(
             f"expected active ids {sorted(expected_ids)!r}; current active ids {sorted(current_ids)!r}"
         )
 
-    resolved = await resolve_claim_inputs(registry, claims)
     resolved_by_key = {claim.claim_key: claim for claim in resolved}
     if len(resolved_by_key) != len(resolved):
         raise ClaimMutationError("duplicate claim key in replacement input")

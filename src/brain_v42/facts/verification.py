@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import AsyncIterator, Callable, Mapping, Sequence
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Literal, cast
@@ -157,6 +158,31 @@ class ClaimVerificationService:
         # capacity, keeps a burst of callers from starving every other MCP tool of
         # connections instead of queuing safely inside this service (ticket 8acd4698).
         self._verification_semaphore = asyncio.Semaphore(max_concurrent_verifications)
+
+    def write_gate(self, resolved: Sequence[ResolvedClaim]) -> AbstractAsyncContextManager[None]:
+        """Admission gate a write-time caller holds BEFORE opening its own entry transaction.
+
+        MAJOR review finding (PR #233): a `measure=true` writer already keeps a DB
+        transaction open across `measure_for_write`, entirely outside `verify()`'s
+        owned-session semaphore -- so N concurrent slow measured writes could exhaust
+        the pool on their own, independently of the budget above. The caller acquires
+        this gate first, then opens `session_factory()` and holds the gate through
+        BOTH measurement and persistence, sharing the exact same limit.
+
+        A batch where no claim asks to be measured (`claim.measure` all falsy, or
+        the batch is empty) gets a free `nullcontext`: a purely declared write never
+        contends with `verify()` for this budget, unaffected by this admission
+        control (spec 2026-09-19 section 6.3 contract: absent/false measure changes
+        nothing).
+        """
+        if not any(claim.measure for claim in resolved):
+            return nullcontext()
+        return self._measured_write_gate()
+
+    @asynccontextmanager
+    async def _measured_write_gate(self) -> AsyncIterator[None]:
+        async with self._verification_semaphore:
+            yield
 
     async def verify(
         self,

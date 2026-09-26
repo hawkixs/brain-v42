@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -13,13 +14,14 @@ import pytest
 from brain_v42.facts import FactTarget
 from brain_v42.facts.claims import ResolvedClaim, resolve_claim
 from brain_v42.facts.probe import FactDescriptor
-from brain_v42.facts.verification import WriteMeasurement
+from brain_v42.facts.verification import ClaimVerificationService, WriteMeasurement
 from brain_v42.mcp.tools import claim_writes
 from brain_v42.mcp.tools.claim_writes import (
     ClaimWriteOutcome,
     _write_claim,
     claims_confirmation,
     describe_claim_outcome,
+    gated_claim_session,
     resolve_claim_inputs,
 )
 from brain_v42.models.claim_input import ClaimInput
@@ -307,3 +309,109 @@ def test_describe_claim_outcome_bare_id_when_never_measured() -> None:
     assert describe_claim_outcome(
         ClaimWriteOutcome(claim_id=claim_id, provenance="declared", detail=None)
     ) == str(claim_id)
+
+
+# ---------------------------------------------------------------------------
+# `gated_claim_session`: every writer opens its entry transaction through this
+# helper so a `measure=true` batch is admitted through the SAME semaphore
+# `verify()` uses, acquired before the session opens (MAJOR review finding,
+# PR #233). A fake/counting session factory proves the bound end to end.
+# ---------------------------------------------------------------------------
+
+
+class _CountingSessionCM:
+    def __init__(self, factory: _CountingSessionFactory) -> None:
+        self._factory = factory
+
+    async def __aenter__(self) -> _FakeCountedSession:
+        self._factory.active += 1
+        self._factory.peak = max(self._factory.peak, self._factory.active)
+        await asyncio.sleep(self._factory.delay)
+        return _FakeCountedSession()
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        self._factory.active -= 1
+        return False
+
+
+class _CountingSessionFactory:
+    """Fake `async_sessionmaker` counting how many sessions are open at once."""
+
+    def __init__(self, *, delay: float = 0.02) -> None:
+        self.active = 0
+        self.peak = 0
+        self.delay = delay
+
+    def __call__(self) -> _CountingSessionCM:
+        return _CountingSessionCM(self)
+
+
+class _NullAsyncCM:
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc_info: object) -> bool:
+        return False
+
+
+class _FakeCountedSession:
+    def begin(self) -> _NullAsyncCM:
+        return _NullAsyncCM()
+
+
+def _service(*, max_concurrent: int) -> ClaimVerificationService:
+    return ClaimVerificationService(
+        _Registry(),
+        session_factory=lambda: pytest.fail("gated_claim_session owns its own session factory"),
+        max_concurrent_verifications=max_concurrent,
+    )
+
+
+async def test_gated_claim_session_bounds_concurrent_measured_writes() -> None:
+    """N concurrent `measure=true` batches must never exceed the service's session limit."""
+    verification = _service(max_concurrent=2)
+    factory = _CountingSessionFactory()
+    measured = [_resolved_claim(measure=True)]
+
+    async def one_write() -> None:
+        async with gated_claim_session(factory, verification, measured):
+            pass
+
+    await asyncio.gather(*(one_write() for _ in range(6)))
+
+    assert factory.peak <= 2
+
+
+async def test_gated_claim_session_never_gates_a_declared_only_write() -> None:
+    """A declared-only batch must proceed even while the measured budget is fully held."""
+    verification = _service(max_concurrent=1)
+    declared = [_resolved_claim(measure=False)]
+    factory = _CountingSessionFactory(delay=0.0)
+    released = asyncio.Event()
+
+    async def hold_the_one_permit() -> None:
+        async with verification.write_gate([_resolved_claim(measure=True)]):
+            await released.wait()
+
+    holder = asyncio.create_task(hold_the_one_permit())
+    await asyncio.sleep(0.01)
+
+    try:
+        async with asyncio.timeout(0.05):
+            async with gated_claim_session(factory, verification, declared):
+                pass  # would time out here if a declared-only write were gated
+    finally:
+        released.set()
+        await holder
+
+    assert factory.peak == 1
+
+
+async def test_gated_claim_session_is_ungated_without_a_verification_service() -> None:
+    """No verification service (declared writes are unaffected) must never block a write."""
+    factory = _CountingSessionFactory(delay=0.0)
+
+    async with gated_claim_session(factory, None, [_resolved_claim(measure=True)]):
+        pass
+
+    assert factory.peak == 1

@@ -14,6 +14,7 @@ from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.claim_writes import (
     claim_write_log_fields,
     claims_confirmation,
+    gated_claim_session,
     persist_claims,
     resolve_claim_inputs,
 )
@@ -119,7 +120,9 @@ def register_snippet_tools(
         if project_key is None:
             raise ValueError("declared claims require project_key")
         declared_at = datetime.now(UTC)
-        async with session_factory() as session, session.begin():
+        async with gated_claim_session(
+            session_factory, claim_verification_svc, resolved
+        ) as session:
             snippet = await snippet_svc.create(data, session=session)
             outcomes = await persist_claims(
                 session,

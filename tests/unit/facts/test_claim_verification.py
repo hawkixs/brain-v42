@@ -879,3 +879,72 @@ async def test_record_write_verdict_is_a_no_op_when_nothing_was_measured(
 
     assert row is None
     assert rows == []
+
+
+# ---------------------------------------------------------------------------
+# `write_gate`: the admission control a `measure=true` write must hold BEFORE
+# opening its own entry transaction, sharing `verify()`'s owned-session budget
+# instead of bypassing it (MAJOR review finding, PR #233).
+# ---------------------------------------------------------------------------
+
+
+def _measuring(*, measure: bool) -> SimpleNamespace:
+    """The one field `write_gate` reads off a resolved claim."""
+    return SimpleNamespace(measure=measure)
+
+
+async def test_write_gate_bounds_concurrent_holders_when_any_claim_measures() -> None:
+    """A batch with at least one `measure=true` claim must contend for the shared budget.
+
+    Without this gate, N concurrent measured writers each hold their OWN entry
+    transaction open while `measure_for_write` probes a fact -- entirely outside
+    `verify()`'s admission control, and able to exhaust the pool on its own.
+    """
+    service = ClaimVerificationService(
+        _registry(_Probe()),
+        session_factory=lambda: pytest.fail("write_gate must not open a session itself"),
+        max_concurrent_verifications=2,
+    )
+    active = 0
+    peak = 0
+
+    async def hold() -> None:
+        nonlocal active, peak
+        async with service.write_gate([_measuring(measure=False), _measuring(measure=True)]):
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+
+    await asyncio.gather(*(hold() for _ in range(6)))
+
+    assert peak <= 2
+
+
+async def test_write_gate_is_a_free_no_op_for_a_declared_only_batch() -> None:
+    """A batch where no claim asks to be measured must never contend for the semaphore.
+
+    A fully consumed limit-1 budget would block a real `measure=true` gate; a
+    declared-only batch must sail through it regardless.
+    """
+    service = ClaimVerificationService(
+        _registry(_Probe()),
+        session_factory=lambda: pytest.fail("write_gate must not open a session itself"),
+        max_concurrent_verifications=1,
+    )
+    released = asyncio.Event()
+
+    async def hold_measured() -> None:
+        async with service.write_gate([_measuring(measure=True)]):
+            await released.wait()
+
+    holder = asyncio.create_task(hold_measured())
+    await asyncio.sleep(0.01)  # let `holder` acquire the one permit first
+
+    try:
+        async with asyncio.timeout(0.05):
+            async with service.write_gate([_measuring(measure=False)]):
+                pass  # would time out here if a declared-only batch were gated
+    finally:
+        released.set()
+        await holder

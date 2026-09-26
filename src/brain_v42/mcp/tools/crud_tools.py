@@ -21,7 +21,9 @@ from brain_v42.mcp.dream_project_authorization import (
 from brain_v42.mcp.tools.claim_writes import (
     ClaimMutationError,
     describe_claim_outcome,
+    gated_claim_session,
     replace_claims,
+    resolve_claim_inputs,
 )
 from brain_v42.mcp.tools.formatters import (
     clamp_list_limit,
@@ -468,7 +470,10 @@ def register_crud_tools(
                 return format_error("claims unavailable: fact registry is not configured")
             assert expected_active_claim_ids is not None
             try:
-                async with session_factory() as session, session.begin():
+                resolved = await resolve_claim_inputs(fact_registry, claims)
+                async with gated_claim_session(
+                    session_factory, claim_verification_svc, resolved
+                ) as session:
                     if scope is None:
                         updated = await svc.update(uid, update_data, session=session)
                     else:
@@ -485,8 +490,7 @@ def register_crud_tools(
                         entry_id=updated.id,
                         entity_type=entity_type,
                         project_key=updated.project_key,
-                        registry=fact_registry,
-                        claims=claims,
+                        resolved=resolved,
                         expected_active_claim_ids=expected_active_claim_ids,
                         declared_by=get_current_actor(),
                         verification=claim_verification_svc,

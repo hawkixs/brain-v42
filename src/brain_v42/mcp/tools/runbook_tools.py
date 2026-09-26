@@ -15,6 +15,7 @@ from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.claim_writes import (
     claim_write_log_fields,
     claims_confirmation,
+    gated_claim_session,
     persist_claims,
     resolve_claim_inputs,
 )
@@ -160,7 +161,9 @@ def register_runbook_tools(
             raise RuntimeError("declared claims require the fact registry and a session factory")
         resolved = await resolve_claim_inputs(fact_registry, claims)
         declared_at = datetime.now(UTC)
-        async with session_factory() as session, session.begin():
+        async with gated_claim_session(
+            session_factory, claim_verification_svc, resolved
+        ) as session:
             runbook = await runbook_svc.create(data, session=session)
             outcomes = await persist_claims(
                 session,
