@@ -24,6 +24,66 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.2, lot 4b: `ha providers --update`
+
+One operator command updates the provider CLIs, re-proves what changed and reports each
+rail's resulting mode (spec §3.4, G4), without ever weakening the unproven path.
+
+### Added
+- **`ha providers [RAIL...] --update [--check] [--no-prove] [--wait SECONDS] [--json]`.**
+  Each CLI rail runs its vendor's own updater, as measured on 2026-09-27 from each
+  `--help` (no updater was run to measure them):
+
+  | Rail | Updater | Previous version kept by the vendor |
+  |---|---|---|
+  | claude | `claude update` | yes, `~/.local/share/claude/versions/<v>` |
+  | codex | `codex update` | yes, `~/.codex/packages/standalone/releases/<v>-*` |
+  | agy | `agy update` | no |
+  | opencode | `opencode upgrade` | no |
+
+  The updater runs from the exact path the version probe measured, never a bare name,
+  with stdin closed. Its output goes to `<state>/updates/<stamp>/<rail>.log` (mode
+  `0600`). It is killed with its whole process group after 600 s, or on Ctrl-C.
+- **The global lock, taken exclusively.** No run executes while a binary changes. Running
+  runs are waited for up to `--wait SECONDS`, or the usual 10 s bound without it; after
+  that the update is refused with exit 2 and no updater runs.
+- **Proofs after the lock is released,** only for the rails whose version changed:
+  isolation, then confinement where it can be proven. Runs on the unchanged rails resume
+  meanwhile, and runs on an updated rail stay refused until its new version is proven.
+  The proofs are announced before the first provider run, like `ha prove`'s, and take
+  their models from `models.toml`: a rail without one is refused before any updater runs
+  (use `--no-prove` to update without proving). From a development install, nothing is
+  proven and each changed rail says so, since `ha prove`'s rule applies.
+- **The report,** per rail:
+  - its status: `updated`, `unchanged`, `failed`, `timed out`, `not updated`,
+    `not installed` or `checked`;
+  - the old and new versions, the updater's exit code and log;
+  - each proof's verdict;
+  - the resulting mode;
+  - when the updater failed or a proof did not pass and record, the way back.
+
+  `--json` prints `{"schema": 1, "rails": [...]}`. Exit codes: 0 when every updater that
+  ran exited 0 and every proof passed and was recorded, 1 otherwise, 2 for a refusal
+  before anything ran.
+- **Rollback is reported, never performed.** A path is named only when it exists:
+  - claude: the kept version, and `claude install <v>`;
+  - codex: the one kept release, to repoint `~/.local/bin/codex` at by hand;
+  - opencode: `opencode upgrade <v>`;
+  - agy keeps no previous binary, so `--update` copies it aside first, to
+    `<state>/rollback/agy/<v>/agy`, keeping only the copy of the version being replaced.
+    If agy's version does not parse, or the copy fails, agy is not updated at all rather
+    than updated without a way back.
+- **`--check`** runs nothing and takes no lock. No vendor has a dry run (measured), so
+  every rail reads `update available: unknown`, with the updater that would run and the
+  rollback an update would leave today.
+
+Plain `ha providers` is byte for byte what lot 2 printed, pinned by a fixture. Trust
+chain: the update path only calls `ha prove`'s code and never records a proof itself;
+a test walks `updaters.py`'s syntax tree for any `record_proof`. The updater table lives
+in `updaters.py`, outside the fingerprinted `providers/*.py`, so no installed proof goes
+stale because of this lot. Known wording gap: while an update holds the global lock, a
+run without `--wait` is refused with "an unconfined write is running".
+
 ## Unreleased — 0.5.2, lot 4a: `ha prove`
 
 Proofs used to be recorded only by the live test suite, from a repository checkout. A

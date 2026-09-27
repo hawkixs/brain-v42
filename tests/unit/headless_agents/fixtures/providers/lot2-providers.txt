@@ -1,0 +1,16 @@
+ok claude         /fake/bin/claude
+     2.1.283 (Claude Code): isolation stale (recorded for 2.1.282 (Claude Code), 2026-09-25); confinement missing (unprovable on claude (claude's tool log names no path for a rejected call (Q91=b))); mode refused
+     re-prove: ha prove claude --isolation
+ok codex          /fake/bin/codex
+     codex-cli 0.156.0: isolation passed (passed (2026-09-27), 2026-09-27); confinement passed (passed (2026-09-27), 2026-09-27); mode parallel
+ok agy            /fake/bin/agy
+     1.2.12: isolation passed (passed (2026-09-26), 2026-09-26); confinement missing (no proof recorded); mode writes serialised
+     re-prove: ha prove agy --confinement
+ok opencode       /fake/bin/opencode
+     1.18.30: isolation missing (no proof recorded); confinement missing (no proof recorded); mode refused
+     re-prove: ha prove opencode
+-- openrouter     OPENROUTER_API_KEY not set
+-- mistral        MISTRAL_API_KEY not set
+-- nvidia         NVIDIA_API_KEY not set
+-- openai-compat  OPENAI-COMPAT_API_KEY not set
+mode is for a write role without --shell; a --shell write on claude, opencode or agy is always serialised

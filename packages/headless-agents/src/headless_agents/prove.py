@@ -64,7 +64,7 @@ from .proofs import (
     refused_attempts,
 )
 from .providers.codex import CodexProvider, resolve_real_codex_home
-from .registry import Probe, get_provider, probe
+from .registry import Probe, get_provider, probe, probe_environment
 from .result import RunResult
 from .spec import RunSpec
 
@@ -658,7 +658,7 @@ def prove(
         if refusal is not None:
             return Verdict(rail, kind, None, "skipped", refusal, False, 0)
     executable = executable_for(rail, home)
-    before = probe(rail, executable=executable)
+    before = probe(rail, executable=executable, environ=probe_environment(rail, home, environ))
     if not before.available:
         return Verdict(rail, kind, None, "skipped", before.detail, False, 0)
     directory = root / f"{rail}-{kind}"
@@ -684,7 +684,7 @@ def prove(
             version=before.version,
             run=runner,
         )
-    after = probe(rail, executable=executable)
+    after = probe(rail, executable=executable, environ=probe_environment(rail, home, environ))
     unsettled = _version_unsettled_reason(before, after)
     if unsettled is not None:
         # A CLI that updated itself mid-proof (Claude Code does, spec Q2), went
