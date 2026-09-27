@@ -753,7 +753,11 @@ def test_a_stale_pending_write_keeps_the_first_compromised_reason(tmp_path: Path
         _bare_lineage(tmp_path, _OWNER_A, common),
         compromised="agent_moved_head",
         pending=lineage.PendingWrite(
-            run_id=_OWNER_A, providers=("codex",), unconfined=False, start_tip=None, start_reflog=None
+            run_id=_OWNER_A,
+            providers=("codex",),
+            unconfined=False,
+            start_tip=None,
+            start_reflog=None,
         ),
     )
     lineage.create(state, current)
