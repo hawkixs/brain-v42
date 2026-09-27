@@ -987,6 +987,13 @@ def build_server() -> BuiltServer:
     metrics_collector = services["metrics_collector"]
     usage_access_logger = _select_usage_access_logger(settings, services)
 
+    # Shared claim reads (spec 2026-09-19, lot B4): one SELECT-only service,
+    # injected into the claim tools and every knowledge reader that appends
+    # the compact claim suffix (brain_get, brain_search, the session briefing).
+    from brain_v42.services.claim_read_service import ClaimReadService  # noqa: PLC0415
+
+    claim_read_svc = ClaimReadService(get_session_factory())
+
     register_tools(
         mcp,
         decision_svc=services["decision_svc"],
@@ -1002,6 +1009,7 @@ def build_server() -> BuiltServer:
         access_logger=usage_access_logger,
         fact_registry=services["fact_registry"],
         session_factory=get_session_factory(),
+        claim_read_svc=claim_read_svc,
     )
 
     # Session tools
@@ -1039,6 +1047,7 @@ def build_server() -> BuiltServer:
         schema_state_svc=SchemaStateService(_session_factory),
         delivery_svc=services["delivery_svc"],
         fact_registry=services.get("fact_registry"),
+        claim_read_svc=claim_read_svc,
     )
 
     # Roadmap tools
@@ -1078,6 +1087,7 @@ def build_server() -> BuiltServer:
         session_factory=get_session_factory(),
         access_logger=usage_access_logger,
         fact_registry=services.get("fact_registry"),
+        claim_read_svc=claim_read_svc,
     )
 
     # Dream tools (backfill links, clusters)
@@ -1105,14 +1115,18 @@ def build_server() -> BuiltServer:
 
     register_fact_tools(mcp, registry=services["fact_registry"])
 
-    # Claim verification (spec 2026-09-19, lot B3): a caller names a claim, the
-    # server measures it through the same registry and appends the verdict. No
-    # Dream phase reaches it before lot C binds a verified run id.
+    # Claims (spec 2026-09-19, lots B3/B4): a caller names a claim, the server
+    # measures it through the same registry and appends the verdict (B3). No
+    # Dream phase reaches brain_claim_verify before lot C binds a verified run
+    # id. brain_claim_list/brain_claim_history (B4) share claim_read_svc,
+    # built above, with the knowledge readers.
     from brain_v42.facts.verification import ClaimVerificationService  # noqa: PLC0415
     from brain_v42.mcp.tools.claim_tools import register_claim_tools  # noqa: PLC0415
 
     register_claim_tools(
-        mcp, ClaimVerificationService(services["fact_registry"], get_session_factory())
+        mcp,
+        ClaimVerificationService(services["fact_registry"], get_session_factory()),
+        claim_read_svc,
     )
 
     if settings.brain_code_mode:

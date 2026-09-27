@@ -34,6 +34,7 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
+from brain_v42.mcp.tools.claim_rendering import claim_suffix_map
 from brain_v42.mcp.tools.claim_writes import (
     claims_confirmation,
     persist_claims,
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.adr_service import ADRService
     from brain_v42.services.brain_service import BrainService
+    from brain_v42.services.claim_read_service import ClaimReadService
     from brain_v42.services.decision_service import DecisionService
     from brain_v42.services.graph_helpers import RelationAuthorization
     from brain_v42.services.learning_service import LearningService
@@ -107,6 +109,23 @@ def _no_embedding_model_served(response: SearchResponse | WhatDoIKnowResponse) -
     return response.diagnostics.project_group_unresolved
 
 
+def _claim_entries(results: list[Any]) -> list[tuple[str, UUID]]:
+    """Batch keys for claim_suffix_map -- plan carries no claim (entity_type CHECK)."""
+    entries: list[tuple[str, UUID]] = []
+    seen: set[tuple[str, UUID]] = set()
+    for sr in results:
+        if sr.type == "plan":
+            continue
+        try:
+            key = (sr.type, UUID(sr.item["id"]))
+        except (KeyError, ValueError, TypeError):
+            continue
+        if key not in seen:
+            seen.add(key)
+            entries.append(key)
+    return entries
+
+
 def register_tools(
     mcp: FastMCP,
     *,
@@ -123,6 +142,7 @@ def register_tools(
     access_logger: AccessLogger | None = None,
     fact_registry: FactRegistry | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    claim_read_svc: ClaimReadService | None = None,
 ) -> None:
     """Register all brain_* tools on the FastMCP instance.
 
@@ -900,6 +920,24 @@ def register_tools(
                 min_score_effective=diag.min_score_effective,
                 project_key_effective=diag.project_key_effective,
             )
+            grouped_claim_suffixes = None
+            if claim_read_svc is not None:
+                by_type = wdik_response.by_type
+                grouped_results = [
+                    *by_type.decisions,
+                    *by_type.learnings,
+                    *by_type.snippets,
+                    *by_type.runbooks,
+                    *by_type.adrs,
+                ]
+                claim_scope = get_dream_project_scope()
+                grouped_claim_suffixes = await claim_suffix_map(
+                    claim_read_svc,
+                    _claim_entries(grouped_results),
+                    trusted_project_key=(
+                        claim_scope.project_key if claim_scope is not None else None
+                    ),
+                )
             return (
                 format_knowledge_by_type(
                     wdik_response.by_type,
@@ -909,6 +947,7 @@ def register_tools(
                     diagnostics=wdik_response.diagnostics,
                     tags=tags,
                     include_related=include_related,
+                    claim_suffixes=grouped_claim_suffixes,
                 )
                 + limit_notice
             )
@@ -963,6 +1002,14 @@ def register_tools(
             min_score_effective=diag.min_score_effective,
             project_key_effective=diag.project_key_effective,
         )
+        flat_claim_suffixes = None
+        if claim_read_svc is not None:
+            claim_scope = get_dream_project_scope()
+            flat_claim_suffixes = await claim_suffix_map(
+                claim_read_svc,
+                _claim_entries(search_response.results),
+                trusted_project_key=(claim_scope.project_key if claim_scope is not None else None),
+            )
         output = format_search_results(
             search_response.results,
             query=query,
@@ -970,6 +1017,7 @@ def register_tools(
             full=full,
             diagnostics=search_response.diagnostics,
             tags=tags,
+            claim_suffixes=flat_claim_suffixes,
         )
         if include_related and search_response.related:
             output += "\n" + format_related_section(search_response.related)
