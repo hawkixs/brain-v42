@@ -2365,7 +2365,8 @@ class TestCodexConfinementProbeRollout:
 
         # Symlinked: the one match at the measured path points elsewhere.
         # The tiny cap from above stays monkeypatched -- irrelevant here, a
-        # symlink is refused by os.lstat's mode check before any size check.
+        # symlink is refused by O_NOFOLLOW on the opened descriptor itself,
+        # before any size check.
         elsewhere = tmp_path / "elsewhere.jsonl"
         elsewhere.write_text('{"line":1}\n', encoding="utf-8")
         fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
@@ -2395,6 +2396,127 @@ class TestCodexConfinementProbeRollout:
         assert code == 0
         assert not rollout_log_2.exists()
         assert "rollout not kept" in logs["stderr_log"].read_text(encoding="utf-8")
+
+    def test_a_symlinked_sessions_directory_is_not_traversed(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """Review round (TOCTOU): the walk from ``home`` down to the rollout
+        file must refuse a symlink at EVERY level, not only the final file --
+        ``Path.glob`` happily follows a symlinked intermediate directory,
+        which is exactly what a confinement escape could plant in the run's
+        own home root before ``_keep_rollout`` runs."""
+        real_home = self._real_home(tmp_path)
+        # A valid rollout at exactly the measured depth, but reachable only
+        # by FOLLOWING the symlink planted below -- proving the walk itself
+        # refuses the symlink, not merely that no rollout happens to exist.
+        elsewhere = tmp_path / "elsewhere-sessions"
+        day_dir = elsewhere / "2026" / "09" / "27"
+        day_dir.mkdir(parents=True)
+        (day_dir / "rollout-2026-09-27T04-18-26-uuid.jsonl").write_bytes(b'{"line":1}\n')
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            Path(env["CODEX_HOME"]).joinpath("sessions").symlink_to(elsewhere)
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        rollout_log = tmp_path / "rollout.jsonl"
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+            rollout_log=rollout_log,
+        )
+
+        assert code == 0
+        assert not rollout_log.exists()
+        assert "rollout not kept" in logs["stderr_log"].read_text(encoding="utf-8")
+
+    def test_a_symlinked_day_directory_is_not_traversed(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = self._real_home(tmp_path)
+        elsewhere = tmp_path / "elsewhere-day"
+        elsewhere.mkdir()
+        (elsewhere / "rollout-2026-09-27T04-18-26-uuid.jsonl").write_bytes(b'{"line":1}\n')
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            month_dir = Path(env["CODEX_HOME"]) / "sessions" / "2026" / "09"
+            month_dir.mkdir(parents=True)
+            (month_dir / "27").symlink_to(elsewhere)
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        rollout_log = tmp_path / "rollout.jsonl"
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+            rollout_log=rollout_log,
+        )
+
+        assert code == 0
+        assert not rollout_log.exists()
+        assert "rollout not kept" in logs["stderr_log"].read_text(encoding="utf-8")
+
+    def test_a_short_read_still_copies_the_full_rollout(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """Review round (agy minor): a single ``os.read`` can return fewer
+        bytes than asked even when more remain -- the copy must loop."""
+        real_home = self._real_home(tmp_path)
+        written = b'{"type":"session_meta"}\n' * 50
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            _plant_rollouts(Path(env["CODEX_HOME"]), content=written)
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        original_read = codex.os.read
+
+        def one_byte_at_a_time(fd: int, n: int) -> bytes:
+            return original_read(fd, 1) if n > 1 else original_read(fd, n)
+
+        monkeypatch.setattr(codex.os, "read", one_byte_at_a_time)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        rollout_log = tmp_path / "rollout.jsonl"
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+            rollout_log=rollout_log,
+        )
+
+        assert code == 0
+        assert rollout_log.read_bytes() == written
 
     def test_a_stale_rollout_from_an_earlier_attempt_is_removed(
         self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path

@@ -813,6 +813,117 @@ def _effective_timeout(timeout_seconds: float, deadline: float | None) -> float:
 _ROLLOUT_MAX_BYTES: Final = 32 * 1024 * 1024
 
 
+#: Read chunk size for the capped, looping read below (see ``_read_capped``).
+_ROLLOUT_READ_CHUNK_BYTES: Final = 1024 * 1024
+
+
+def _opendir_nofollow(parent_fd: int, name: str) -> int | None:
+    """Open directory ``name`` under the already-open ``parent_fd``, refusing
+    to follow a symlink AT THIS STEP -- ``None`` when ``name`` is missing,
+    is itself a symlink, or is not a directory. Every level of the walk
+    below opens relative to an fd already known good, never by re-resolving
+    a string path an attacker could retarget between a check and a use
+    (review round, TOCTOU): ``O_NOFOLLOW`` here refuses the symlink at the
+    syscall itself, ``O_DIRECTORY`` refuses anything that is not one."""
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except OSError:
+        return None
+
+
+def _open_regular_nofollow(parent_fd: int, name: str) -> int | None:
+    """Open file ``name`` under ``parent_fd`` for reading, ``None`` when it
+    is missing, a symlink, or not a regular file -- checked on the OPENED
+    descriptor's own ``fstat``, never a separate ``stat`` call a swapped-in
+    file could race between the check and the open."""
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except OSError:
+        return None
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
+def _rollout_candidate_descriptors(home: Path) -> list[int]:
+    """Open file descriptors of every ``rollout-*.jsonl`` regular file three
+    directory levels under ``home/sessions`` (the measured depth, codex
+    0.156.0) -- walked with ``dir_fd``-relative opens the whole way down,
+    refusing a symlink at EVERY level (unlike ``Path.glob``, which happily
+    follows one). The caller closes every descriptor it does not use.
+    """
+    try:
+        root_fd = os.open(str(home), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return []
+    try:
+        sessions_fd = _opendir_nofollow(root_fd, "sessions")
+    finally:
+        os.close(root_fd)
+    if sessions_fd is None:
+        return []
+    matches: list[int] = []
+    try:
+        for year_entry in list(os.scandir(sessions_fd)):
+            year_fd = _opendir_nofollow(sessions_fd, year_entry.name)
+            if year_fd is None:
+                continue
+            try:
+                for month_entry in list(os.scandir(year_fd)):
+                    month_fd = _opendir_nofollow(year_fd, month_entry.name)
+                    if month_fd is None:
+                        continue
+                    try:
+                        for day_entry in list(os.scandir(month_fd)):
+                            day_fd = _opendir_nofollow(month_fd, day_entry.name)
+                            if day_fd is None:
+                                continue
+                            try:
+                                for file_entry in list(os.scandir(day_fd)):
+                                    name = file_entry.name
+                                    if not (
+                                        name.startswith("rollout-") and name.endswith(".jsonl")
+                                    ):
+                                        continue
+                                    descriptor = _open_regular_nofollow(day_fd, name)
+                                    if descriptor is not None:
+                                        matches.append(descriptor)
+                            finally:
+                                os.close(day_fd)
+                    finally:
+                        os.close(month_fd)
+            finally:
+                os.close(year_fd)
+    finally:
+        os.close(sessions_fd)
+    return matches
+
+
+def _read_capped(descriptor: int, max_bytes: int) -> bytes | None:
+    """Read from ``descriptor`` up to ``max_bytes`` + 1, looping until EOF.
+
+    A single ``os.read`` can return FEWER bytes than asked even when more
+    remain (review round, agy minor): one call is never enough to prove the
+    file was read in full. ``None`` when the extra byte is reached -- the
+    file is, or grew to be, larger than the cap -- checked on the bytes
+    actually read through THIS descriptor, never on an earlier ``stat`` a
+    concurrent writer could race past.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    budget = max_bytes + 1
+    while total < budget:
+        chunk = os.read(descriptor, min(budget - total, _ROLLOUT_READ_CHUNK_BYTES))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if total > max_bytes:
+        return None
+    return b"".join(chunks)
+
+
 def _keep_rollout(home: Path, rollout_log: Path) -> str | None:
     """Copy codex's own session rollout out of the run-owned ``home`` into
     ``rollout_log`` (mode ``0600``), before ``home`` is torn down.
@@ -833,22 +944,24 @@ def _keep_rollout(home: Path, rollout_log: Path) -> str | None:
     must hold EXACTLY one ``<year>/<month>/<day>/rollout-*.jsonl`` file
     (measured depth, codex 0.156.0): zero means this run wrote no session (or
     codex's own layout changed), two or more means this reader cannot tell
-    which one is THIS run's -- either way, nothing is kept.
+    which one is THIS run's -- either way, nothing is kept. Every directory
+    level down to the file is opened ``dir_fd``-relative with ``O_NOFOLLOW``
+    (:func:`_rollout_candidate_descriptors`): a symlinked intermediate
+    directory -- exactly what a sandbox escape could plant in the run's own
+    home before this runs -- is never traversed.
     """
-    matches = sorted((home / "sessions").glob("*/*/*/rollout-*.jsonl"))
+    matches = _rollout_candidate_descriptors(home)
     if len(matches) != 1:
+        for descriptor in matches:
+            os.close(descriptor)
         return f"expected one rollout, found {len(matches)}"
-    rollout = matches[0]
-    info = os.lstat(rollout)
-    if not stat.S_ISREG(info.st_mode):
-        return "rollout is not a regular file"
-    if info.st_size > _ROLLOUT_MAX_BYTES:
-        return f"rollout exceeds {_ROLLOUT_MAX_BYTES} bytes"
-    descriptor = os.open(str(rollout), os.O_RDONLY | os.O_NOFOLLOW)
+    descriptor = matches[0]
     try:
-        raw = os.read(descriptor, info.st_size)
+        raw = _read_capped(descriptor, _ROLLOUT_MAX_BYTES)
     finally:
         os.close(descriptor)
+    if raw is None:
+        return f"rollout exceeds {_ROLLOUT_MAX_BYTES} bytes"
     rollout_log.write_bytes(raw)
     rollout_log.chmod(0o600)
     return None
