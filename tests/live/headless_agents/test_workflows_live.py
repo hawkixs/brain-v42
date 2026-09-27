@@ -21,7 +21,7 @@ provider runs per pass:
 
 ISOLATION PROOFS ARE BORROWED, NEVER FABRICATED. A CLI rail needs a passing
 isolation proof for its installed version before the engine lets it execute
-(§3.8.0); a proof file is measured by ``test_proofs_live.py``, never edited or
+(§3.8.0); a proof file is measured by ``ha prove``, never edited or
 invented (learning 940ab2d8). So this file's throwaway state directory gets a
 byte-for-byte copy of the operator's OWN, already-recorded proof for the rail
 version installed here (:func:`_borrowed_isolation_proof`); a rail without one
@@ -140,7 +140,7 @@ def _borrowed_isolation_proof(dest_state: Path, rail: str, *, executable: str | 
     installed version into ``dest_state`` (a throwaway ``<state>/proofs/<rail>.json``).
 
     Never invented: the engine's gate (§3.8.0) must read a genuine measurement
-    made by ``test_proofs_live.py``, or refuse to run the rail -- a proof file
+    made by ``ha prove``, or refuse to run the rail -- a proof file
     is never edited or fabricated (learning 940ab2d8). Returns the reason to
     skip when the rail is unavailable, or no PASSING proof covers the version
     installed right now.
@@ -153,7 +153,7 @@ def _borrowed_isolation_proof(dest_state: Path, rail: str, *, executable: str | 
     if record is None or record.version != probed.version:
         return (
             f"{rail} {probed.version or '(version unknown)'}: no isolation proof recorded for "
-            f"this version in {real_state}; run test_proofs_live.py first"
+            f"this version in {real_state}; run `ha prove {rail} --isolation` first"
         )
     if record.isolation is None or not record.isolation.passed:
         return f"{rail} {probed.version}: no PASSING isolation proof recorded"

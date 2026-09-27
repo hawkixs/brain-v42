@@ -24,6 +24,62 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.2, lot 4a: `ha prove`
+
+Proofs used to be recorded only by the live test suite, from a repository checkout. A
+CLI that updated itself (Claude Code 2.1.282 to 2.1.283, spec Q2) left its rail refused
+until someone ran pytest in a checkout (spec §3.4). The harness now ships in the package
+(`headless_agents.prove`), and the installed `ha` records the proofs itself.
+
+### Added
+- **`ha prove [RAIL...] [--isolation] [--confinement] [--stale] [--keep] [--json]`.**
+  Proves the named CLI rails (default: all four) for the named kinds (default: both) on
+  the version installed now, one proof after another. It records each `passed` or
+  `failed` verdict for the engine; an `inconclusive` or `skipped` one records nothing.
+  - The report gives each verdict, whether it was recorded and why, then each rail's
+    resulting mode.
+  - `--json` prints `{"schema": 1, "verdicts": [...], "modes": {...}, "kept": ...}`.
+  - Exit codes: 0 when every proof that ran passed and was recorded, 1 otherwise, 2 for
+    a refusal before any run.
+  - The work directory, `~/.cache/ha/proofs/<id>`, is removed unless `--keep` is given.
+- **`--stale`** selects exactly the proofs of installed rails that have not passed on
+  the version installed now: what `ha providers` shows as `failed`, `missing`, `stale`
+  or `unreadable`. It never selects claude's confinement, which no proof can settle
+  (Q91=b). After installing a new `ha` or a new provider CLI, run `ha prove --stale`.
+- **The spend is announced before it happens.** Before the first provider run, stderr
+  names each proof's run count, the rail's version and the model, then the total and
+  "this spends provider tokens". No question is asked, since sessions run `ha` headless.
+  Models come from `models.toml`; agy chooses its own.
+- **Refusals before any run** (exit 2):
+  - a name that is not a CLI rail;
+  - claude's confinement asked for by name;
+  - a named rail that is not installed;
+  - a rail without a model;
+  - isolation from a development install.
+- **The development-install guard.** An isolation proof binds to the fingerprint of the
+  *installed* package's isolation source. A proof recorded from a checkout would name
+  the checkout's source, and the installed `ha` would refuse the rail. So `ha prove`
+  refuses isolation from an editable install unless `HA_PROVE_FROM_CHECKOUT=1` says both
+  are the same source. The live proof tests apply the same rule.
+- **Each proof probes the rail's version before and after its runs.** A CLI that updated
+  itself mid-proof records nothing.
+
+### Changed
+- **An isolation run that fails without a leak is now `inconclusive` and records
+  nothing.** It used to record `failed`, which switched a proven rail off on a quota
+  error, a retired model or a network failure. A leak (a marker in the answer, a
+  sentinel created) still records `failed`, even from a run that then failed.
+- **Every re-prove hint names `ha prove`** instead of a `pytest -m live` line:
+  - `ha providers`' `reprove`, in text and JSON, is `ha prove RAIL --isolation`,
+    `ha prove RAIL --confinement` or `ha prove RAIL`;
+  - the engine's isolation refusal now ends with
+    `Record a proof with: ha prove RAIL --isolation; after a CLI update: ha prove --stale`.
+
+The record format is unchanged: proofs the live tests recorded before this lot stay
+valid. The live tests (`tests/live/headless_agents/test_proofs_live.py`, same test ids)
+now record through the same code. No isolation source moved (`providers/*.py` and
+`sandbox.py` are untouched), so no installed proof goes stale because of this lot.
+
 ## Unreleased — 0.5.2, lot 2: proof state visible
 
 `ha providers` used to say only whether a rail's executable was found: an isolation

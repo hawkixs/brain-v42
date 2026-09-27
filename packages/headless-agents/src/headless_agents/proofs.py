@@ -1,9 +1,10 @@
-"""Per-rail proofs: what a live test measured, for which rail version (spec 0.5.0 §3.8.0).
+"""Per-rail proofs: what ``ha prove`` measured, for which rail version (spec 0.5.0 §3.8.0).
 
-Isolation and confinement are proven per rail, never assumed. A ``live`` test
-(``tests/live/headless_agents/test_proofs_live.py``) measures them on the
-installed rail and records the outcome here, in the operator's state
-directory (plan decision P3)::
+Isolation and confinement are proven per rail, never assumed. ``ha prove``
+(:mod:`headless_agents.prove`, since 0.5.2; the live tests of
+``tests/live/headless_agents/test_proofs_live.py`` are thin wrappers over it)
+measures them on the installed rail and records the outcome here, in the
+operator's state directory (plan decision P3)::
 
     <state>/proofs/<rail>.json
     {"rail": "codex", "version": "codex-cli 0.156.0",
@@ -98,7 +99,7 @@ def isolation_fingerprint(rail: str) -> str | None:
 
 
 #: A root codex's sandbox treats as writable: a confinement probe plants a
-#: repository under it, in a fresh ``mkdtemp`` directory the live test removes.
+#: repository under it, in a fresh ``mkdtemp`` directory the proof removes.
 _SYSTEM_TMP: Final = Path("/tmp")  # nosec B108 - a probe target root, never a fixed path written to
 
 
@@ -161,7 +162,8 @@ def record_proof(
     confinement: bool | None = None,
     today: str | None = None,
 ) -> ProofRecord:
-    """Record what a live test measured. A new version replaces the whole record."""
+    """Record what a proof measured; in the package, only :func:`headless_agents.prove.prove`
+    records. A new version replaces the whole record."""
     date = today or time.strftime("%Y-%m-%d", time.gmtime())
     previous = read_proof(state, rail)
     keep = previous if previous is not None and previous.version == version else None

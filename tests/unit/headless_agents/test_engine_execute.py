@@ -358,7 +358,9 @@ def test_a_rail_without_an_isolation_proof_is_refused(world: World) -> None:
 
 def test_the_refusal_names_the_command_that_records_a_proof(world: World) -> None:
     proof_path(world.state, "codex").unlink()
-    with pytest.raises(UsageError, match="test_proofs_live.py"):
+    with pytest.raises(UsageError, match="ha prove codex --isolation"):
+        world.run("codex")
+    with pytest.raises(UsageError, match="after a CLI update: ha prove --stale"):
         world.run("codex")
 
 
