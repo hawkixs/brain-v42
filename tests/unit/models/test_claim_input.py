@@ -124,6 +124,16 @@ def test_replaces_accepts_a_uuid_or_none() -> None:
     assert _input(replaces=replacement).replaces == replacement
 
 
+def test_measure_rule_defaults_to_false_and_accepts_only_a_bool() -> None:
+    """Absent input keeps today's declared-only behaviour; only True/False is a valid ask."""
+    assert _input().measure is False
+    assert _input(measure=True).measure is True
+    assert _input(measure=False).measure is False
+    assert "measure rule" in _error_for(measure="true")
+    assert "measure rule" in _error_for(measure=1)
+    assert "measure rule" in _error_for(measure=None)
+
+
 def test_input_count_rule_refuses_more_than_ten_inputs() -> None:
     """The write transaction stays bounded even before catalogue resolution begins."""
     with pytest.raises(ValueError, match="input count rule"):
