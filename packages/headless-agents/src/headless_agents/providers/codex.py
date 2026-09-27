@@ -136,6 +136,8 @@ def build_codex_command(
     mcp: McpServer | None,
     executable: str = "codex",
     workspace_mode: Workspace | None = None,
+    ephemeral: bool = True,
+    writable_tmp: Path | None = None,
 ) -> list[str]:
     """Build the hardened non-interactive Codex command for one run.
 
@@ -144,6 +146,22 @@ def build_codex_command(
     decides the sandbox and the shell tool (see
     :func:`_sandbox_mode`); with ``workspace_mode=None`` every value is
     exactly what it was before this parameter existed.
+
+    ``ephemeral=False`` omits ``--ephemeral`` and changes NOTHING else: the
+    production argv always keeps it (Q80's own ephemeral CODEX_HOME already
+    isolates every run); only :func:`run_codex`'s confinement-probe entry
+    point (``rollout_log`` set) drops it, so codex's session rollout survives
+    long enough to be copied out before the run-owned CODEX_HOME is removed
+    -- the only place a sandbox refusal is ever recorded (learnings
+    a5460289, 80934778: ``codex exec --json`` never logs one).
+
+    ``writable_tmp`` is the one temp root a ``workspace-write`` sandbox may
+    write besides the workspace (``run_codex`` passes its per-run scratch);
+    other sandboxes ignore it. This applies to the confinement probe too:
+    ``run_with_rollout`` still passes its own scratch through, so a probed
+    codex's recorded ``turn_context.sandbox_policy`` carries the same
+    ``writable_roots`` entry a production write run would (see
+    :func:`headless_agents.proofs._matches_write_policy`, which accepts it).
     """
     if not model.strip():
         raise ValueError("Codex model must not be empty")
@@ -181,6 +199,12 @@ def build_codex_command(
             ("sandbox_workspace_write.exclude_slash_tmp", True),
             ("sandbox_workspace_write.exclude_tmpdir_env_var", True),
         )
+        if writable_tmp is not None:
+            # Ticket 0b3fcdbf: with no writable temp root at all, Python's
+            # ``tempfile`` falls back to the current directory -- the worktree
+            # -- and a sandboxed ``pytest`` put its basetemp tree there, which
+            # the engine's commit then swept. The scratch holds no repository.
+            overrides += (("sandbox_workspace_write.writable_roots", [str(writable_tmp)]),)
     # ``features.shell_tool`` must be emitted exactly once: codex's ``-c``
     # last-wins behaviour is unmeasured, so the disabled-feature loop and the
     # enabling branch below are mutually exclusive, never both.
@@ -196,7 +220,7 @@ def build_codex_command(
     command = [
         executable,
         "exec",
-        "--ephemeral",
+        *(("--ephemeral",) if ephemeral else ()),
         "--json",
         "--ignore-user-config",
         "--strict-config",
@@ -359,6 +383,35 @@ def event_stream_error(
             missing_call_message or f"Codex completed with no completed MCP tool call on {server}"
         )
     return None
+
+
+def resolve_real_codex_home(environment: Mapping[str, str] | None) -> Path:
+    """The 'real' ``CODEX_HOME`` ``run_codex`` reads ``auth.json`` from for a
+    given child environment (never the ephemeral one this provider builds
+    per run): ``environment['CODEX_HOME']`` when given, else
+    ``Path.home()/.codex``. ``Path.home()`` reads THIS PROCESS's own
+    ``$HOME`` -- never ``environment['HOME']`` -- so an ``environment`` dict
+    that sets a different ``HOME`` (as a sandboxed-home caller's does) does
+    not change the fallback.
+
+    Extracted from what was inline in ``run_codex`` (review round) so a
+    caller elsewhere can compute EXACTLY the same path for the exact same
+    environment, rather than re-implement the fallback and risk it
+    drifting: the live confinement probe's own-store guard
+    (``tests/live/headless_agents/test_proofs_live.py``) uses this to know
+    which store ``run_codex`` could actually have written auth.json's
+    session state to, instead of assuming its own process's ``$CODEX_HOME``
+    is the same one.
+
+    Does not validate the result is absolute: ``run_codex`` still refuses a
+    relative ``CODEX_HOME`` before any spawn; this function only resolves.
+    ``None`` reads ``os.environ`` (this process's own environment).
+    """
+    visible = environment if environment is not None else os.environ
+    codex_home_value = visible.get("CODEX_HOME")
+    return (
+        Path(codex_home_value).resolve() if codex_home_value else (Path.home() / ".codex").resolve()
+    )
 
 
 def build_codex_home(*, root: Path, real_codex_home: Path) -> Path:
@@ -798,6 +851,166 @@ def _effective_timeout(timeout_seconds: float, deadline: float | None) -> float:
     return max(0.0, min(timeout_seconds, deadline - time.monotonic()))
 
 
+#: A rollout codex 0.156.0 was measured to write for a two-call confinement
+#: probe session: ~97 KB. Comfortably above that, well below anything that
+#: would make copying it out before CODEX_HOME's teardown expensive.
+_ROLLOUT_MAX_BYTES: Final = 32 * 1024 * 1024
+
+
+#: Read chunk size for the capped, looping read below (see ``_read_capped``).
+_ROLLOUT_READ_CHUNK_BYTES: Final = 1024 * 1024
+
+
+def _opendir_nofollow(parent_fd: int, name: str) -> int | None:
+    """Open directory ``name`` under the already-open ``parent_fd``, refusing
+    to follow a symlink AT THIS STEP -- ``None`` when ``name`` is missing,
+    is itself a symlink, or is not a directory. Every level of the walk
+    below opens relative to an fd already known good, never by re-resolving
+    a string path an attacker could retarget between a check and a use
+    (review round, TOCTOU): ``O_NOFOLLOW`` here refuses the symlink at the
+    syscall itself, ``O_DIRECTORY`` refuses anything that is not one."""
+    try:
+        return os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except OSError:
+        return None
+
+
+def _open_regular_nofollow(parent_fd: int, name: str) -> int | None:
+    """Open file ``name`` under ``parent_fd`` for reading, ``None`` when it
+    is missing, a symlink, or not a regular file -- checked on the OPENED
+    descriptor's own ``fstat``, never a separate ``stat`` call a swapped-in
+    file could race between the check and the open."""
+    try:
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+    except OSError:
+        return None
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        return None
+    return descriptor
+
+
+def _rollout_candidate_descriptors(home: Path) -> list[int]:
+    """Open file descriptors of every ``rollout-*.jsonl`` regular file three
+    directory levels under ``home/sessions`` (the measured depth, codex
+    0.156.0) -- walked with ``dir_fd``-relative opens the whole way down,
+    refusing a symlink at EVERY level (unlike ``Path.glob``, which happily
+    follows one). The caller closes every descriptor it does not use.
+    """
+    try:
+        root_fd = os.open(str(home), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError:
+        return []
+    try:
+        sessions_fd = _opendir_nofollow(root_fd, "sessions")
+    finally:
+        os.close(root_fd)
+    if sessions_fd is None:
+        return []
+    matches: list[int] = []
+    try:
+        for year_entry in list(os.scandir(sessions_fd)):
+            year_fd = _opendir_nofollow(sessions_fd, year_entry.name)
+            if year_fd is None:
+                continue
+            try:
+                for month_entry in list(os.scandir(year_fd)):
+                    month_fd = _opendir_nofollow(year_fd, month_entry.name)
+                    if month_fd is None:
+                        continue
+                    try:
+                        for day_entry in list(os.scandir(month_fd)):
+                            day_fd = _opendir_nofollow(month_fd, day_entry.name)
+                            if day_fd is None:
+                                continue
+                            try:
+                                for file_entry in list(os.scandir(day_fd)):
+                                    name = file_entry.name
+                                    if not (
+                                        name.startswith("rollout-") and name.endswith(".jsonl")
+                                    ):
+                                        continue
+                                    descriptor = _open_regular_nofollow(day_fd, name)
+                                    if descriptor is not None:
+                                        matches.append(descriptor)
+                            finally:
+                                os.close(day_fd)
+                    finally:
+                        os.close(month_fd)
+            finally:
+                os.close(year_fd)
+    finally:
+        os.close(sessions_fd)
+    return matches
+
+
+def _read_capped(descriptor: int, max_bytes: int) -> bytes | None:
+    """Read from ``descriptor`` up to ``max_bytes`` + 1, looping until EOF.
+
+    A single ``os.read`` can return FEWER bytes than asked even when more
+    remain (review round, agy minor): one call is never enough to prove the
+    file was read in full. ``None`` when the extra byte is reached -- the
+    file is, or grew to be, larger than the cap -- checked on the bytes
+    actually read through THIS descriptor, never on an earlier ``stat`` a
+    concurrent writer could race past.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    budget = max_bytes + 1
+    while total < budget:
+        chunk = os.read(descriptor, min(budget - total, _ROLLOUT_READ_CHUNK_BYTES))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    if total > max_bytes:
+        return None
+    return b"".join(chunks)
+
+
+def _keep_rollout(home: Path, rollout_log: Path) -> str | None:
+    """Copy codex's own session rollout out of the run-owned ``home`` into
+    ``rollout_log`` (mode ``0600``), before ``home`` is torn down.
+
+    Learnings a5460289 and 80934778: ``codex exec --json`` never logs a
+    sandbox-refused command -- the refusal exists only in the session's OWN
+    rollout, as a ``custom_tool_call`` named ``exec`` plus its
+    ``custom_tool_call_output``. :func:`run_codex`'s confinement-probe entry
+    point (``rollout_log`` set, hence ``ephemeral=False``) is the only run
+    that writes one at all; this copies the ONE file out so a caller
+    (:func:`headless_agents.proofs.refused_attempts`, given ``rail_version``)
+    can read it once ``home`` is gone.
+
+    Fail-closed and total: credits nothing it cannot positively identify as
+    THIS run's one rollout, and returns why as a short string -- never
+    raises past this boundary (its own caller wraps the call in
+    ``try/except OSError`` besides, belt and suspenders). ``home / "sessions"``
+    must hold EXACTLY one ``<year>/<month>/<day>/rollout-*.jsonl`` file
+    (measured depth, codex 0.156.0): zero means this run wrote no session (or
+    codex's own layout changed), two or more means this reader cannot tell
+    which one is THIS run's -- either way, nothing is kept. Every directory
+    level down to the file is opened ``dir_fd``-relative with ``O_NOFOLLOW``
+    (:func:`_rollout_candidate_descriptors`): a symlinked intermediate
+    directory -- exactly what a sandbox escape could plant in the run's own
+    home before this runs -- is never traversed.
+    """
+    matches = _rollout_candidate_descriptors(home)
+    if len(matches) != 1:
+        for descriptor in matches:
+            os.close(descriptor)
+        return f"expected one rollout, found {len(matches)}"
+    descriptor = matches[0]
+    try:
+        raw = _read_capped(descriptor, _ROLLOUT_MAX_BYTES)
+    finally:
+        os.close(descriptor)
+    if raw is None:
+        return f"rollout exceeds {_ROLLOUT_MAX_BYTES} bytes"
+    rollout_log.write_bytes(raw)
+    rollout_log.chmod(0o600)
+    return None
+
+
 def run_codex(
     *,
     prompt: str,
@@ -815,6 +1028,7 @@ def run_codex(
     deadline: float | None = None,
     temp_prefix: str = "headless-agents-codex-",
     missing_call_message: str | None = None,
+    rollout_log: Path | None = None,
 ) -> int:
     """Run one Codex invocation and return its exit code (``124`` on timeout).
 
@@ -832,6 +1046,18 @@ def run_codex(
     ``~/.codex``) must carry an ``auth.json``, or the run is refused before
     any spawn with exit code 3 -- provider unavailable, replayable elsewhere,
     never a switchover that could double a write.
+
+    ``rollout_log`` is the confinement-probe-only escape hatch (learnings
+    a5460289, 80934778): when set, the run drops ``--ephemeral`` so codex
+    writes its session rollout inside the run-owned ``CODEX_HOME``, any stale
+    file at ``rollout_log`` from an earlier attempt in the same run
+    directory is removed before spawn, and the one rollout written is copied
+    out to it (mode ``0600``) in the existing teardown, after the auth
+    rescue, while the ephemeral home still exists (see :func:`_keep_rollout`).
+    Never changes the run's own exit code, and never raises: an unkept
+    rollout is only ever a ``rollout not kept: <reason>`` line appended to
+    ``stderr_log``. ``None`` (the default, and every production call) is
+    byte-identical to before this parameter existed.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -856,6 +1082,11 @@ def run_codex(
     # Retries reuse stable per-run paths. Clear the previous final message so
     # an interrupted Codex turn can never be mistaken for a successful retry.
     report_log.write_text("", encoding="utf-8")
+    if rollout_log is not None:
+        rollout_log = rollout_log.resolve()
+        # A stale rollout from an earlier attempt in the same run directory
+        # must never be mistaken for this run's own evidence.
+        rollout_log.unlink(missing_ok=True)
 
     # Every run gets an ephemeral CODEX_HOME (operator decision Q80 = a): the
     # live isolation proof measured, on codex 0.156.0, that a run on the real
@@ -867,16 +1098,16 @@ def run_codex(
             encoding="utf-8",
         )
         return PROVIDER_FALLBACK_EXIT_CODE
-    real_codex_home = (
-        Path(codex_home_value).resolve() if codex_home_value else (Path.home() / ".codex").resolve()
-    )
+    real_codex_home = resolve_real_codex_home(visible)
     if not (real_codex_home / "auth.json").is_file():
         stderr_log.write_text(
             f"codex auth.json not found under {real_codex_home}\n", encoding="utf-8"
         )
         return PROVIDER_FALLBACK_EXIT_CODE
 
-    def _run(runtime_dir: Path, run_environment: dict[str, str] | None) -> int:
+    def _run(
+        runtime_dir: Path, run_environment: dict[str, str] | None, writable_tmp: Path | None
+    ) -> int:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         command = build_codex_command(
             model=model,
@@ -886,6 +1117,8 @@ def run_codex(
             mcp=mcp,
             executable=executable,
             workspace_mode=workspace_capability,
+            ephemeral=rollout_log is None,
+            writable_tmp=writable_tmp,
         )
         # A caller's deadline that has already passed is a TIMEOUT, not a dead
         # link: launching would kill the child at once on an empty stream and
@@ -1029,13 +1262,18 @@ def run_codex(
             dict(child_environment) if child_environment is not None else dict(os.environ)
         )
         run_environment["CODEX_HOME"] = str(ephemeral_home)
+        writable_tmp: Path | None = None
         if workspace_write:
             # Spec 0.5.0 §3.8.0: never the operator's TMPDIR, which may
-            # hold repositories; a scratch directory outside the sandbox's
-            # writable roots, holding nothing, removed after the run.
-            run_environment["TMPDIR"] = scratch
+            # hold repositories; a scratch directory outside the workspace,
+            # holding nothing, removed after the run. It is the sandbox's one
+            # writable temp root (ticket 0b3fcdbf), named by all three
+            # variables so no tool reaches for the operator's TEMP or TMP.
+            writable_tmp = Path(scratch)
+            for name in ("TMPDIR", "TEMP", "TMP"):
+                run_environment[name] = scratch
         try:
-            return _run(runtime_dir, run_environment)
+            return _run(runtime_dir, run_environment, writable_tmp)
         finally:
             # Every exit path -- success, failure, timeout -- must still
             # rescue a rotated token before the ephemeral home is removed.
@@ -1047,6 +1285,26 @@ def run_codex(
                 snapshot_failure=snapshot_failure,
                 stderr_log=stderr_log,
             )
+            # Confinement-probe only (rollout_log set): keep the session
+            # rollout before this ephemeral home is gone. Never changes the
+            # exit code above, and never raises: _keep_rollout is total by
+            # design, but this catch-all is the actual promise -- a failed
+            # copy simply leaves no rollout, which the reader treats as
+            # inconclusive (fail-safe), never a crash of the run itself.
+            # Broadened from OSError to Exception (review round 2, agy
+            # blocker): nothing guarantees a future failure mode here stays
+            # an OSError, and this boundary must hold regardless.
+            if rollout_log is not None:
+                try:
+                    reason = _keep_rollout(ephemeral_home, rollout_log)
+                except Exception as exc:  # broad on purpose, see docstring above
+                    reason = f"{type(exc).__name__}: {exc}"
+                if reason is not None:
+                    try:
+                        with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+                            stderr_stream.write(f"rollout not kept: {reason}\n")
+                    except OSError:
+                        pass
 
 
 #: What a run's preamble tells codex about its tools, by mode -- keyed the
@@ -1104,6 +1362,23 @@ class CodexProvider:
         return tool_call_completed(spec.events_log, server=spec.profile.mcp.name)
 
     def run(self, spec: RunSpec) -> RunResult:
+        return self._run_spec(spec, rollout_log=None)
+
+    def run_with_rollout(self, spec: RunSpec) -> RunResult:
+        """Confinement-probe-only entry point (learnings a5460289, 80934778):
+        runs codex WITHOUT ``--ephemeral`` so its session rollout survives
+        long enough to be copied out to ``run_dir/rollout.jsonl`` before the
+        run-owned ``CODEX_HOME`` is torn down -- the only place a sandbox
+        refusal of the exec tool is ever recorded (``codex exec --json``
+        never logs one). Production argv is unaffected: only THIS method
+        drops the flag, and only for its own call; every other caller of
+        :meth:`run` is byte-identical to before this method existed.
+        """
+        spec = spec.with_run_dir_defaults()
+        assert spec.events_log is not None, "RunSpec.events_log is required for the rollout probe"
+        return self._run_spec(spec, rollout_log=spec.events_log.parent / "rollout.jsonl")
+
+    def _run_spec(self, spec: RunSpec, *, rollout_log: Path | None) -> RunResult:
         spec = spec.with_run_dir_defaults()
         assert spec.report_log is not None
         assert spec.events_log is not None
@@ -1126,6 +1401,7 @@ class CodexProvider:
             workspace=spec.workspace,
             workspace_capability=workspace,
             deadline=spec.deadline,
+            rollout_log=rollout_log,
         )
         duration = time.monotonic() - start
         exit_code, git_tampered = settle_run(tripwire, exit_code, spec.stderr_log)

@@ -336,6 +336,19 @@ def test_a_commit_made_by_hand_between_runs_is_kept(world: World) -> None:
     assert "notes.md" in (second.run_dir / write_flow.PATCH_FILE).read_text()
 
 
+def test_tool_artifacts_left_in_the_worktree_do_not_block_the_continuation(
+    world: World,
+) -> None:
+    """Review of #236: what the engine's commit leaves out as a tool artifact stays in
+    the worktree, and the continuation's clean check leaves it out the same way."""
+    first = _first(world)
+    cache = first.run_dir / "wt" / "__pycache__"
+    cache.mkdir()
+    (cache / "app.cpython-312.pyc").write_bytes(b"\x00bytecode")
+    second = _continue(world, first.run_id)
+    assert second.exit_code == 0, world.said
+
+
 def test_a_dirty_worktree_refuses_the_continuation_and_leaves_no_trace(world: World) -> None:
     first = _first(world)
     (first.run_dir / "wt" / "app.py").write_text("edited by hand, not committed\n")
