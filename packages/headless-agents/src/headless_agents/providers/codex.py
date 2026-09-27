@@ -136,6 +136,7 @@ def build_codex_command(
     mcp: McpServer | None,
     executable: str = "codex",
     workspace_mode: Workspace | None = None,
+    ephemeral: bool = True,
 ) -> list[str]:
     """Build the hardened non-interactive Codex command for one run.
 
@@ -144,6 +145,14 @@ def build_codex_command(
     decides the sandbox and the shell tool (see
     :func:`_sandbox_mode`); with ``workspace_mode=None`` every value is
     exactly what it was before this parameter existed.
+
+    ``ephemeral=False`` omits ``--ephemeral`` and changes NOTHING else: the
+    production argv always keeps it (Q80's own ephemeral CODEX_HOME already
+    isolates every run); only :func:`run_codex`'s confinement-probe entry
+    point (``rollout_log`` set) drops it, so codex's session rollout survives
+    long enough to be copied out before the run-owned CODEX_HOME is removed
+    -- the only place a sandbox refusal is ever recorded (learnings
+    a5460289, 80934778: ``codex exec --json`` never logs one).
     """
     if not model.strip():
         raise ValueError("Codex model must not be empty")
@@ -196,7 +205,7 @@ def build_codex_command(
     command = [
         executable,
         "exec",
-        "--ephemeral",
+        *(("--ephemeral",) if ephemeral else ()),
         "--json",
         "--ignore-user-config",
         "--strict-config",
@@ -798,6 +807,53 @@ def _effective_timeout(timeout_seconds: float, deadline: float | None) -> float:
     return max(0.0, min(timeout_seconds, deadline - time.monotonic()))
 
 
+#: A rollout codex 0.156.0 was measured to write for a two-call confinement
+#: probe session: ~97 KB. Comfortably above that, well below anything that
+#: would make copying it out before CODEX_HOME's teardown expensive.
+_ROLLOUT_MAX_BYTES: Final = 32 * 1024 * 1024
+
+
+def _keep_rollout(home: Path, rollout_log: Path) -> str | None:
+    """Copy codex's own session rollout out of the run-owned ``home`` into
+    ``rollout_log`` (mode ``0600``), before ``home`` is torn down.
+
+    Learnings a5460289 and 80934778: ``codex exec --json`` never logs a
+    sandbox-refused command -- the refusal exists only in the session's OWN
+    rollout, as a ``custom_tool_call`` named ``exec`` plus its
+    ``custom_tool_call_output``. :func:`run_codex`'s confinement-probe entry
+    point (``rollout_log`` set, hence ``ephemeral=False``) is the only run
+    that writes one at all; this copies the ONE file out so a caller
+    (:func:`headless_agents.proofs.refused_attempts`, given ``rail_version``)
+    can read it once ``home`` is gone.
+
+    Fail-closed and total: credits nothing it cannot positively identify as
+    THIS run's one rollout, and returns why as a short string -- never
+    raises past this boundary (its own caller wraps the call in
+    ``try/except OSError`` besides, belt and suspenders). ``home / "sessions"``
+    must hold EXACTLY one ``<year>/<month>/<day>/rollout-*.jsonl`` file
+    (measured depth, codex 0.156.0): zero means this run wrote no session (or
+    codex's own layout changed), two or more means this reader cannot tell
+    which one is THIS run's -- either way, nothing is kept.
+    """
+    matches = sorted((home / "sessions").glob("*/*/*/rollout-*.jsonl"))
+    if len(matches) != 1:
+        return f"expected one rollout, found {len(matches)}"
+    rollout = matches[0]
+    info = os.lstat(rollout)
+    if not stat.S_ISREG(info.st_mode):
+        return "rollout is not a regular file"
+    if info.st_size > _ROLLOUT_MAX_BYTES:
+        return f"rollout exceeds {_ROLLOUT_MAX_BYTES} bytes"
+    descriptor = os.open(str(rollout), os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        raw = os.read(descriptor, info.st_size)
+    finally:
+        os.close(descriptor)
+    rollout_log.write_bytes(raw)
+    rollout_log.chmod(0o600)
+    return None
+
+
 def run_codex(
     *,
     prompt: str,
@@ -815,6 +871,7 @@ def run_codex(
     deadline: float | None = None,
     temp_prefix: str = "headless-agents-codex-",
     missing_call_message: str | None = None,
+    rollout_log: Path | None = None,
 ) -> int:
     """Run one Codex invocation and return its exit code (``124`` on timeout).
 
@@ -832,6 +889,18 @@ def run_codex(
     ``~/.codex``) must carry an ``auth.json``, or the run is refused before
     any spawn with exit code 3 -- provider unavailable, replayable elsewhere,
     never a switchover that could double a write.
+
+    ``rollout_log`` is the confinement-probe-only escape hatch (learnings
+    a5460289, 80934778): when set, the run drops ``--ephemeral`` so codex
+    writes its session rollout inside the run-owned ``CODEX_HOME``, any stale
+    file at ``rollout_log`` from an earlier attempt in the same run
+    directory is removed before spawn, and the one rollout written is copied
+    out to it (mode ``0600``) in the existing teardown, after the auth
+    rescue, while the ephemeral home still exists (see :func:`_keep_rollout`).
+    Never changes the run's own exit code, and never raises: an unkept
+    rollout is only ever a ``rollout not kept: <reason>`` line appended to
+    ``stderr_log``. ``None`` (the default, and every production call) is
+    byte-identical to before this parameter existed.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -856,6 +925,11 @@ def run_codex(
     # Retries reuse stable per-run paths. Clear the previous final message so
     # an interrupted Codex turn can never be mistaken for a successful retry.
     report_log.write_text("", encoding="utf-8")
+    if rollout_log is not None:
+        rollout_log = rollout_log.resolve()
+        # A stale rollout from an earlier attempt in the same run directory
+        # must never be mistaken for this run's own evidence.
+        rollout_log.unlink(missing_ok=True)
 
     # Every run gets an ephemeral CODEX_HOME (operator decision Q80 = a): the
     # live isolation proof measured, on codex 0.156.0, that a run on the real
@@ -886,6 +960,7 @@ def run_codex(
             mcp=mcp,
             executable=executable,
             workspace_mode=workspace_capability,
+            ephemeral=rollout_log is None,
         )
         # A caller's deadline that has already passed is a TIMEOUT, not a dead
         # link: launching would kill the child at once on an empty stream and
@@ -1047,6 +1122,21 @@ def run_codex(
                 snapshot_failure=snapshot_failure,
                 stderr_log=stderr_log,
             )
+            # Confinement-probe only (rollout_log set): keep the session
+            # rollout before this ephemeral home is gone. Never changes the
+            # exit code above, and never raises -- an OSError from
+            # _keep_rollout itself is caught here too, belt and suspenders.
+            if rollout_log is not None:
+                try:
+                    reason = _keep_rollout(ephemeral_home, rollout_log)
+                except OSError as exc:
+                    reason = f"{type(exc).__name__}: {exc}"
+                if reason is not None:
+                    try:
+                        with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+                            stderr_stream.write(f"rollout not kept: {reason}\n")
+                    except OSError:
+                        pass
 
 
 #: What a run's preamble tells codex about its tools, by mode -- keyed the
@@ -1104,6 +1194,23 @@ class CodexProvider:
         return tool_call_completed(spec.events_log, server=spec.profile.mcp.name)
 
     def run(self, spec: RunSpec) -> RunResult:
+        return self._run_spec(spec, rollout_log=None)
+
+    def run_with_rollout(self, spec: RunSpec) -> RunResult:
+        """Confinement-probe-only entry point (learnings a5460289, 80934778):
+        runs codex WITHOUT ``--ephemeral`` so its session rollout survives
+        long enough to be copied out to ``run_dir/rollout.jsonl`` before the
+        run-owned ``CODEX_HOME`` is torn down -- the only place a sandbox
+        refusal of the exec tool is ever recorded (``codex exec --json``
+        never logs one). Production argv is unaffected: only THIS method
+        drops the flag, and only for its own call; every other caller of
+        :meth:`run` is byte-identical to before this method existed.
+        """
+        spec = spec.with_run_dir_defaults()
+        assert spec.events_log is not None, "RunSpec.events_log is required for the rollout probe"
+        return self._run_spec(spec, rollout_log=spec.events_log.parent / "rollout.jsonl")
+
+    def _run_spec(self, spec: RunSpec, *, rollout_log: Path | None) -> RunResult:
         spec = spec.with_run_dir_defaults()
         assert spec.report_log is not None
         assert spec.events_log is not None
@@ -1126,6 +1233,7 @@ class CodexProvider:
             workspace=spec.workspace,
             workspace_capability=workspace,
             deadline=spec.deadline,
+            rollout_log=rollout_log,
         )
         duration = time.monotonic() - start
         exit_code, git_tampered = settle_run(tripwire, exit_code, spec.stderr_log)

@@ -1666,6 +1666,7 @@ class TestCodexProvider:
         assert result.tool_call_completed is False
         assert calls[0]["mcp"] == _server()
         assert calls[0]["environment"] == {"EXAMPLE_TOKEN": "t"}
+        assert calls[0]["rollout_log"] is None
 
     def test_run_reads_its_report_as_text_and_records_the_run(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -2170,3 +2171,265 @@ time.sleep(float(sys.argv[3]))
             holder.kill()
             holder.wait()
         assert real.read_bytes() == before
+
+
+def _plant_rollouts(
+    codex_home: Path, *, count: int = 1, content: bytes = b'{"type":"session_meta"}\n'
+) -> None:
+    """Plant ``count`` rollout files at the measured depth codex 0.156.0 writes
+    them at (``sessions/<year>/<month>/<day>/rollout-*.jsonl``), so a fake
+    ``Popen`` can stand in for a codex run that would have written one."""
+    if count == 0:
+        return
+    sessions = codex_home / "sessions" / "2026" / "09" / "27"
+    sessions.mkdir(parents=True, exist_ok=True)
+    for index in range(count):
+        (sessions / f"rollout-2026-09-27T04-18-26-uuid-{index}.jsonl").write_bytes(content)
+
+
+class TestCodexConfinementProbeRollout:
+    """Task 1 of the lot 1b plan: the probe entry point keeps codex's own
+    session rollout, the only place a sandbox refusal is ever recorded
+    (learnings a5460289, 80934778 -- ``codex exec --json`` never logs it)."""
+
+    def test_build_command_without_ephemeral_differs_by_that_flag_only(
+        self, tmp_path: Path
+    ) -> None:
+        default = codex.build_codex_command(
+            model="m",
+            reasoning_effort="medium",
+            report_log=tmp_path / "r",
+            workspace=tmp_path,
+            mcp=None,
+        )
+        no_ephemeral = codex.build_codex_command(
+            model="m",
+            reasoning_effort="medium",
+            report_log=tmp_path / "r",
+            workspace=tmp_path,
+            mcp=None,
+            ephemeral=False,
+        )
+        assert default[:2] + default[3:] == no_ephemeral
+        assert "--ephemeral" not in no_ephemeral
+
+    def _real_home(self, tmp_path: Path) -> Path:
+        real_home = tmp_path / "real-codex-home"
+        real_home.mkdir()
+        (real_home / "auth.json").write_text(_auth_json(), encoding="utf-8")
+        return real_home
+
+    def test_a_default_run_stays_ephemeral_and_keeps_no_rollout(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = self._real_home(tmp_path)
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        captured: dict[str, object] = {}
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            captured["command"] = command
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            _plant_rollouts(Path(env["CODEX_HOME"]))
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        rollout_log = tmp_path / "would-be-rollout.jsonl"
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+        )
+
+        assert code == 0
+        command = captured["command"]
+        assert isinstance(command, list)
+        assert "--ephemeral" in command
+        assert not rollout_log.exists()
+
+    def test_a_probe_run_keeps_the_one_rollout_and_still_removes_the_home(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = self._real_home(tmp_path)
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        captured: dict[str, object] = {}
+        written = b'{"type":"session_meta","payload":{"id":"t-1"}}\n'
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            captured["command"] = command
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            captured["codex_home"] = env["CODEX_HOME"]
+            _plant_rollouts(Path(env["CODEX_HOME"]), content=written)
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        rollout_log = tmp_path / "rollout.jsonl"
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+            rollout_log=rollout_log,
+        )
+
+        assert code == 0
+        command = captured["command"]
+        assert isinstance(command, list)
+        assert "--ephemeral" not in command
+        assert rollout_log.read_bytes() == written
+        assert rollout_log.stat().st_mode & 0o777 == 0o600
+        assert not Path(str(captured["codex_home"])).exists()
+
+    @pytest.mark.parametrize("count", [0, 2])
+    def test_no_rollout_or_two_rollouts_keep_nothing_and_say_so(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path, count: int
+    ) -> None:
+        real_home = self._real_home(tmp_path)
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            _plant_rollouts(Path(env["CODEX_HOME"]), count=count)
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        rollout_log = tmp_path / "rollout.jsonl"
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+            rollout_log=rollout_log,
+        )
+
+        assert code == 0
+        assert not rollout_log.exists()
+        stderr = logs["stderr_log"].read_text(encoding="utf-8")
+        assert "rollout not kept" in stderr
+        assert f"found {count}" in stderr
+
+    def test_a_symlinked_or_oversized_rollout_is_not_kept(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        # Oversized: content past a monkeypatched, tiny cap.
+        monkeypatch.setattr(codex, "_ROLLOUT_MAX_BYTES", 4)
+        real_home = self._real_home(tmp_path)
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+
+        def oversized_popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            _plant_rollouts(Path(env["CODEX_HOME"]), content=b"way more than four bytes")
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", oversized_popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        rollout_log = tmp_path / "rollout.jsonl"
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+            rollout_log=rollout_log,
+        )
+
+        assert code == 0
+        assert not rollout_log.exists()
+        assert "rollout not kept" in logs["stderr_log"].read_text(encoding="utf-8")
+
+        # Symlinked: the one match at the measured path points elsewhere.
+        # The tiny cap from above stays monkeypatched -- irrelevant here, a
+        # symlink is refused by os.lstat's mode check before any size check.
+        elsewhere = tmp_path / "elsewhere.jsonl"
+        elsewhere.write_text('{"line":1}\n', encoding="utf-8")
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+
+        def symlink_popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            sessions = Path(env["CODEX_HOME"]) / "sessions" / "2026" / "09" / "27"
+            sessions.mkdir(parents=True, exist_ok=True)
+            (sessions / "rollout-2026-09-27T04-18-26-uuid.jsonl").symlink_to(elsewhere)
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", symlink_popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        rollout_log_2 = tmp_path / "rollout-2.jsonl"
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+            rollout_log=rollout_log_2,
+        )
+
+        assert code == 0
+        assert not rollout_log_2.exists()
+        assert "rollout not kept" in logs["stderr_log"].read_text(encoding="utf-8")
+
+    def test_a_stale_rollout_from_an_earlier_attempt_is_removed(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        real_home = self._real_home(tmp_path)
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        _install(monkeypatch, fake, logs["report_log"])
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        rollout_log = tmp_path / "rollout.jsonl"
+        rollout_log.write_text("stale from an earlier attempt\n", encoding="utf-8")
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+            rollout_log=rollout_log,
+        )
+
+        assert code == 0
+        assert not rollout_log.exists()
+
+    def test_run_with_rollout_writes_beside_events_log(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        calls: list[dict[str, object]] = []
+
+        def fake_run_codex(**kwargs: object) -> int:
+            calls.append(kwargs)
+            return 0
+
+        monkeypatch.setattr(codex, "run_codex", fake_run_codex)
+        run_dir = tmp_path / "runs" / "probe"
+        spec = RunSpec(prompt="P", model="m", run_dir=run_dir)
+        codex.CodexProvider().run_with_rollout(spec)
+        assert calls[0]["rollout_log"] == run_dir / "rollout.jsonl"
