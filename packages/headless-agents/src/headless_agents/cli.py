@@ -308,9 +308,7 @@ def _models(args: argparse.Namespace, io: Io) -> int:
             used_by = model["used_by"]
             assert isinstance(used_by, list)
             usage = ",".join(used_by) if used_by else "-"
-            io.stdout.write(
-                f"  {model['id']}  {origin}  live={model['live']}  used_by={usage}\n"
-            )
+            io.stdout.write(f"  {model['id']}  {origin}  live={model['live']}  used_by={usage}\n")
         if args.refresh:
             row_drift = row["drift"]
             assert isinstance(row_drift, list)
