@@ -17,9 +17,9 @@ logic; the fix below checks BOTH the store that resolution would give for
 the probe's own spec environment, and the one it gives for the parent
 process's environment (``None``) -- a write to EITHER counts.
 
-This is a plain unit test of a helper defined in a `tests/live/` module: the
-helper itself spends no quota and touches nothing live, so it is tested here
-rather than only ever exercised behind ``HA_LIVE=1``.
+The helper moved from the live test module into :mod:`headless_agents.prove` (0.5.2
+lot 4a); it spends no quota and touches nothing live, so it is tested here rather than
+only ever exercised behind ``HA_LIVE=1``.
 """
 
 from __future__ import annotations
@@ -29,9 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.live.headless_agents.test_proofs_live import (
-    _codex_touched_the_operator_session_store,
-)
+from headless_agents.prove import _codex_touched_the_operator_session_store
 
 
 def _plant_rollout(codex_home: Path) -> Path:
