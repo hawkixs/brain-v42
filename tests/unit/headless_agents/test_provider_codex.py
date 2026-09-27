@@ -1818,6 +1818,23 @@ class TestWriteRunsCloseTheTmpRoots:
         assert "sandbox_workspace_write.exclude_slash_tmp=true" in _overrides(command)
         assert "sandbox_workspace_write.exclude_tmpdir_env_var=true" in _overrides(command)
 
+    def test_a_write_run_opens_only_the_temp_root_it_is_given(self, tmp_path: Path) -> None:
+        (tmp_path / "ws").mkdir()
+        command = codex.build_codex_command(
+            model="m",
+            reasoning_effort="low",
+            report_log=tmp_path / "r",
+            workspace=tmp_path / "ws",
+            mcp=None,
+            workspace_mode=Workspace(path=tmp_path / "ws", write=True),
+            writable_tmp=tmp_path / "scratch",
+        )
+        roots = [item for item in _overrides(command) if "writable_roots" in item]
+        assert roots == [
+            "sandbox_workspace_write.writable_roots="
+            + json.dumps([str(tmp_path / "scratch")], separators=(",", ":"))
+        ]
+
     @pytest.mark.parametrize("workspace", ["read", "none"])
     def test_other_runs_are_unchanged(self, tmp_path: Path, workspace: str) -> None:
         mode = Workspace(path=tmp_path) if workspace == "read" else None
@@ -1870,6 +1887,58 @@ class TestWriteRunsCloseTheTmpRoots:
         assert scratch != Path("/tmp")
         assert not scratch.is_relative_to(ws)
         assert not scratch.exists(), "the scratch TMPDIR is removed after the run"
+
+    def test_the_scratch_is_the_write_sandboxs_one_writable_temp_root(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """Ticket 0b3fcdbf: with ``/tmp`` and ``$TMPDIR`` closed and no writable temp
+        root left, Python's ``tempfile`` falls back to the current directory -- the
+        worktree -- so a sandboxed ``pytest`` created ``pytest-of-<user>/`` there and
+        the engine's commit swept it. The scratch is writable inside the sandbox, and
+        ``TEMP`` and ``TMP`` name it too; the operator's temp roots stay closed."""
+        real_home = tmp_path / "real-codex-home"
+        real_home.mkdir()
+        (real_home / "auth.json").write_text(_auth_json(), encoding="utf-8")
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        seen: dict[str, object] = {}
+
+        def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+            env = kwargs["env"]
+            assert isinstance(env, dict)
+            seen["env"] = dict(env)
+            seen["overrides"] = _overrides(command)
+            fake.bind(events_stream=kwargs["stdout"], report_log=logs["report_log"])
+            return fake
+
+        monkeypatch.setattr(codex.subprocess, "Popen", popen)
+        monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+        ws = tmp_path / "ws"
+        ws.mkdir()
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws, write=True),
+            environment={
+                "PATH": "/usr/bin",
+                "CODEX_HOME": str(real_home),
+                "TMPDIR": "/tmp",
+                "TEMP": "/operator-temp",
+                "TMP": "/operator-tmp",
+            },
+        )
+
+        assert code == 0
+        env, overrides = seen["env"], seen["overrides"]
+        assert isinstance(env, dict) and isinstance(overrides, list)
+        scratch = env["TMPDIR"]
+        assert not Path(scratch).is_relative_to(ws)
+        roots = json.dumps([scratch], separators=(",", ":"))
+        assert f"sandbox_workspace_write.writable_roots={roots}" in overrides
+        assert "sandbox_workspace_write.exclude_slash_tmp=true" in overrides
+        assert "sandbox_workspace_write.exclude_tmpdir_env_var=true" in overrides
+        assert env["TEMP"] == env["TMP"] == scratch
 
     def test_a_read_only_run_keeps_its_tmpdir(
         self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path

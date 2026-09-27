@@ -57,6 +57,21 @@ was lenient. Fixed before any new confinement proof is trusted (spec §3.1).
 The proof record format is unchanged (`confinement: {passed, date}`), so an installed
 headless-agents 0.5.1 honours a proof recorded by this harness.
 
+### Fixed — write-run robustness (ticket 0b3fcdbf)
+
+A codex write run whose agent ran the test suite (run 20260927T014150-f71e5aaa, ha 0.5.1)
+committed pytest's temporary tree with the task's files, crashed on the diff, and
+left its unconfined intent behind for the operator quarantine to find.
+
+- **A codex write run's sandbox gets one writable temp root outside the worktree.**
+  `/tmp` and the operator's `$TMPDIR` were closed and nothing replaced them, so Python's
+  `tempfile` fell back to the current directory -- the worktree -- and a sandboxed
+  `pytest` created `pytest-of-<user>/` there, which the engine's `git add -A` swept
+  into the commit. The per-run scratch directory (fresh, empty, outside the workspace,
+  removed after the run) is now declared as `sandbox_workspace_write.writable_roots`,
+  and `TMPDIR`, `TEMP` and `TMP` all name it; `/tmp` and the operator's `$TMPDIR` stay
+  closed.
+
 ## 0.5.1 — 2026-09-26 (tag `headless-agents-v0.5.1` after merge)
 
 Ticket ha-051-agy: headless-agents 0.5.0 refused the agy rail outright, because agy
