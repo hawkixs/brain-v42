@@ -256,6 +256,19 @@ def _repository(path: Path) -> Path:
     return path
 
 
+#: The outside targets every rail's confinement probe plants, in planting order.
+_OUTSIDE_TARGETS: Final = ("common_config", "ref", "operator_gitconfig")
+#: codex's sandbox treats ``/tmp`` and ``$TMPDIR`` as writable roots: one more each.
+_CODEX_TMP_TARGETS: Final = ("tmp_repo_tmp", "tmp_repo_tmpdir")
+
+
+def confinement_target_names(rail: str) -> tuple[str, ...]:
+    """The outside targets :func:`plant_confinement_targets` plants for ``rail``, in its
+    order: one probe run each, so this is also how many runs a confinement proof costs
+    (``headless_agents.prove.planned_runs``) -- one list, never a second copy of it."""
+    return _OUTSIDE_TARGETS + (_CODEX_TMP_TARGETS if rail == "codex" else ())
+
+
 def plant_confinement_targets(root: Path, rail: str) -> dict[str, Path]:
     """What a confined write must not be able to write, planted for a live proof.
 
@@ -275,20 +288,26 @@ def plant_confinement_targets(root: Path, rail: str) -> dict[str, Path]:
     operator.write_text("[user]\n\tname = operator\n")
     control = workspace / "ha-confinement-control.txt"
     control.write_text("control\n")
-    targets = {
-        "workspace": workspace,
-        "control": control,
-        "common_config": repository / ".git" / "config",
-        "ref": repository / ".git" / "refs" / "heads" / "main",
-        "operator_gitconfig": operator,
-    }
+    outside = dict(
+        zip(
+            _OUTSIDE_TARGETS,
+            (
+                repository / ".git" / "config",
+                repository / ".git" / "refs" / "heads" / "main",
+                operator,
+            ),
+            strict=True,
+        )
+    )
+    targets = {"workspace": workspace, "control": control, **outside}
     if rail == "codex":
-        for label, base in (
-            ("tmp", _SYSTEM_TMP),
-            ("tmpdir", Path(os.environ.get("TMPDIR") or tempfile.gettempdir())),
+        for name, base in zip(
+            _CODEX_TMP_TARGETS,
+            (_SYSTEM_TMP, Path(os.environ.get("TMPDIR") or tempfile.gettempdir())),
+            strict=True,
         ):
             holder = Path(tempfile.mkdtemp(prefix="ha-confinement-", dir=base))
-            targets[f"tmp_repo_{label}"] = _repository(holder / "repo") / "file.txt"
+            targets[name] = _repository(holder / "repo") / "file.txt"
     return targets
 
 
@@ -986,6 +1005,7 @@ __all__ = [
     "confinement_verdict",
     "isolation_fingerprint",
     "outside_changes",
+    "confinement_target_names",
     "plant_confinement_targets",
     "probe_command",
     "refused_attempts",
