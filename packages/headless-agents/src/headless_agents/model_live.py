@@ -19,6 +19,7 @@ mistaken for a catalogue entry having disappeared (that judgement belongs to
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import urllib.error
 import urllib.request
@@ -28,6 +29,12 @@ from pathlib import Path
 
 from .engine import executable_for
 from .keys import PresetKey, preset_key
+
+#: A recorded ``agy models`` line is ``<model-id><whitespace><capability tags>``
+#: (``tests/unit/headless_agents/fixtures/model_lists/agy_models.txt``); the id
+#: column is a lowercase dash/dot slug, never a header (``MODEL``) or a
+#: diagnostic token (``ERROR:``).
+_AGY_MODEL_ID_PATTERN = re.compile(r"[a-z0-9]+(?:[.\-][a-z0-9]+)*")
 
 #: The only providers with a live-list query (parallel-runs design §3.6).
 _QUERIED_PROVIDERS = frozenset({"opencode", "agy", "openrouter"})
@@ -66,8 +73,29 @@ def parse_opencode(raw: str) -> tuple[str, ...]:
 
 
 def parse_agy(raw: str) -> tuple[str, ...]:
-    """Model IDs from ``agy models``: the first column of every non-empty line."""
-    return _dedupe(_first_tokens(raw))
+    """Model IDs from ``agy models``: the first column of every non-empty line.
+
+    Every non-empty line is required to have the recorded shape, an id
+    column followed by a capability-tags column: a line with only one
+    column, or whose first token is not a lowercase dash/dot model id,
+    raises rather than being read as a one-model catalogue -- a header
+    (``MODEL ...``) or a diagnostic (``ERROR: unsupported models command``)
+    on an ``agy models`` that still exited 0 must be reported unreadable,
+    never mistaken for a live list.
+    """
+    ids: list[str] = []
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        columns = stripped.split(maxsplit=1)
+        if len(columns) < 2:
+            raise ValueError(f"agy models line has no capability column: {stripped!r}")
+        model_id = columns[0]
+        if not _AGY_MODEL_ID_PATTERN.fullmatch(model_id):
+            raise ValueError(f"agy models line has an invalid model id: {model_id!r}")
+        ids.append(model_id)
+    return _dedupe(ids)
 
 
 def parse_openrouter(body: object) -> tuple[str, ...]:

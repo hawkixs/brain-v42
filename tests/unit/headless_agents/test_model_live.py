@@ -22,6 +22,35 @@ def test_recorded_agy_list_has_models() -> None:
     assert parse_agy(raw)
 
 
+def test_agy_diagnostic_line_on_a_zero_exit_is_rejected() -> None:
+    """A zero-exit ``agy models`` that answers a diagnostic, not a model list
+    (review finding #1), must not be read as a one-model catalogue: the first
+    token of ``ERROR: unsupported models command`` is not a model id."""
+    with pytest.raises(ValueError, match="model id"):
+        parse_agy("ERROR: unsupported models command\n")
+
+
+def test_agy_header_line_is_rejected() -> None:
+    with pytest.raises(ValueError):
+        parse_agy("MODEL CAPABILITIES\ngemini-3.1-pro-high      reasoning, tools\n")
+
+
+def test_live_models_reports_unreadable_for_agy_diagnostic_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        model_live.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args, 0, b"ERROR: unsupported models command\n", b""
+        ),
+    )
+    result = live_models("agy", environ={}, home=tmp_path)
+    assert result.status == "unreadable"
+    assert result.models == ()
+
+
 def test_recorded_openrouter_response_uses_exact_ids() -> None:
     body = json.loads((FIXTURES / "openrouter_models.json").read_text())
     assert parse_openrouter(body) == tuple(item["id"] for item in body["data"])
