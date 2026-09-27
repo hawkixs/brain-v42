@@ -31,6 +31,7 @@ import fnmatch
 import os
 import re
 import shutil
+import stat
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
@@ -605,28 +606,68 @@ def _reflog_gained(write: _Write, tip: str) -> tuple[bool, bool, list[str]]:
 # ── steps 6 to 8 ───────────────────────────────────────────────────────────
 
 
-def _pytest_temp_roots(write: _Write, untracked: Sequence[bytes]) -> list[str]:
-    """Every untracked directory pytest laid out as a numbered temp root, whatever named it.
+def _is_real_dir(path: Path) -> bool:
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
 
-    A project's own ``--basetemp`` may be any relative path, so no declared name can
-    match it; pytest's layout can: a ``<prefix>current`` symlink naming a sibling
-    ``<prefix><N>`` directory (its ``make_numbered_dir``). The outermost roots only.
+
+def _pytest_temp_entries(write: _Write, paths: Sequence[str]) -> tuple[set[str], set[str]]:
+    """``(links, numbered)``: the entries of every pytest temp root among the untracked
+    ``paths``, verified one by one, whatever ``--basetemp`` named the root.
+
+    pytest's ``make_numbered_dir`` writes ``<prefix><N>`` directories and a
+    ``<prefix>current`` symlink naming one of them. A series is recognised by that
+    symlink -- untracked, naming a new ``<prefix><N>`` directory beside it -- and only
+    its own entries are left out: the symlink and the new ``<prefix><N>`` directories
+    next to it, never the directory holding them, so nothing else there can hide
+    behind a forged layout (review of #236). A directory is new when it is a real one
+    and git tracks nothing under it: pytest makes each of them afresh.
     """
-    found: set[str] = set()
-    for raw in untracked:
-        relative = os.fsdecode(raw)
-        parent, name = os.path.split(relative)
+    known: dict[str, bool] = {}
+
+    def new(directory: str) -> bool:
+        if directory not in known:
+            code, out, _ = write.git_bytes(
+                write.worktree, ["--literal-pathspecs", "ls-files", "-z", "--", directory]
+            )
+            known[directory] = _is_real_dir(write.worktree / directory) and code == 0 and not out
+        return known[directory]
+
+    links: set[str] = set()
+    series: set[tuple[str, str]] = set()
+    for path in paths:
+        parent, name = os.path.split(path)
         prefix = name.removesuffix("current")
-        if not parent or not prefix or prefix == name:
+        if not prefix or prefix == name:
             continue
-        link = write.worktree / relative
+        link = write.worktree / path
         try:
-            target = os.path.basename(os.readlink(link))
+            target = os.readlink(link)
         except OSError:  # not a symlink
             continue
-        if re.fullmatch(re.escape(prefix) + "[0-9]+", target) and (link.parent / target).is_dir():
-            found.add(parent)
-    return [root for root in sorted(found) if not any(root.startswith(f"{o}/") for o in found)]
+        beside = os.path.realpath(os.path.join(link.parent, os.path.dirname(target)))
+        numbered = os.path.basename(target)
+        if (
+            beside == os.path.realpath(link.parent)
+            and re.fullmatch(re.escape(prefix) + "[0-9]+", numbered)
+            and new(os.path.join(parent, numbered))
+        ):
+            links.add(path)
+            series.add((f"{parent}/" if parent else "", prefix))
+    numbered_dirs: set[str] = set()
+    for path in paths:
+        for head, prefix in series:
+            first, slash, _ = path.removeprefix(head).partition("/")
+            if (
+                path.startswith(head)
+                and slash
+                and re.fullmatch(re.escape(prefix) + "[0-9]+", first)
+                and new(f"{head}{first}")
+            ):
+                numbered_dirs.add(f"{head}{first}")
+    return links, numbered_dirs
 
 
 def _declared_artifact(path: str) -> str | None:
@@ -663,7 +704,9 @@ def _changes(write: _Write) -> _Changes:
     """What changed in the worktree, read once (review of #236); :class:`_StatusFailed`.
 
     Only UNTRACKED tool output is ever left out; a tracked modification or deletion
-    under an artifact's name is the task's, and goes into the commit.
+    under an artifact's name is the task's, and goes into the commit; so is every
+    untracked path that is neither declared output nor a verified entry of a pytest
+    temp root (:func:`_pytest_temp_entries`).
     """
     code, out, err = write.git_bytes(
         write.worktree, ["status", "--porcelain", "-z", "--untracked-files=all"]
@@ -681,14 +724,14 @@ def _changes(write: _Write) -> _Changes:
         tracked = True
         if entry[:1] in (b"R", b"C"):
             next(fields, None)  # a rename's or a copy's source follows
-    roots = _pytest_temp_roots(write, untracked)
+    paths = [os.fsdecode(raw) for raw in untracked]
+    links, numbered = _pytest_temp_entries(write, paths)
     kept: list[bytes] = []
     left_out: set[str] = set()
-    for raw in untracked:
-        path = os.fsdecode(raw)
-        where = _declared_artifact(path) or next(
-            (f"{root}/" for root in roots if path.startswith(f"{root}/")), None
-        )
+    for raw, path in zip(untracked, paths, strict=True):
+        where = _declared_artifact(path) or (path if path in links else None)
+        if where is None:
+            where = next((f"{entry}/" for entry in numbered if path.startswith(f"{entry}/")), None)
         if where is None:
             kept.append(raw)
         else:

@@ -78,15 +78,18 @@ left its unconfined intent behind for the operator quarantine to find.
   commit, its "anything changed?" check and a continuation's "clean?" check now leave
   out UNTRACKED tool output only -- under `write_flow.TOOL_ARTIFACT_DIRS`
   (`__pycache__/`, `.pytest_cache/`, `pytest-of-*/`), with
-  `write_flow.TOOL_ARTIFACT_SUFFIXES` (`.pyc`, `.pyo`), and in every pytest temp root
-  recognised by the layout pytest writes (a `<prefix>current` symlink naming a sibling
-  `<prefix><N>` directory), whatever `--basetemp` named it. A tracked modification or
-  deletion is always the task's and always committed, whatever its name (review of
-  #236: a deleted tracked `.pyc` fixture read as no change). The engine reads the
-  worktree once (`git status -z`), stages every tracked change (`git add -u`) and
-  exactly the untracked paths it kept, literally, NUL-separated on stdin. What is left
-  out stays in the worktree and is named on stderr; a run whose agent only ran the
-  tests changes nothing (exit `5`).
+  `write_flow.TOOL_ARTIFACT_SUFFIXES` (`.pyc`, `.pyo`), and the entries of every
+  pytest temp root recognised by the layout pytest writes, whatever `--basetemp` named
+  it: a `<prefix>current` symlink naming a sibling `<prefix><N>` directory. Only the
+  symlink and those numbered directories are left out, and only when each is new (a
+  real directory git tracks nothing under) -- never the directory holding them, so a
+  forged layout hides neither a tracked edit nor a file beside it (review of #236). A
+  tracked modification or deletion is always the task's and always committed, whatever
+  its name (review of #236: a deleted tracked `.pyc` fixture read as no change). The
+  engine reads the worktree once (`git status -z`), stages every tracked change
+  (`git add -u`) and exactly the untracked paths it kept, literally, NUL-separated on
+  stdin. What is left out stays in the worktree and is named on stderr; a run whose
+  agent only ran the tests changes nothing (exit `5`).
 - **Git output that is not UTF-8 no longer crashes the engine, and what is recorded
   keeps its bytes.** The diff of a file that is not UTF-8 (`'utf-8' codec can't decode
   byte 0xff`) and a hook printing such bytes both crashed the run after its commit.

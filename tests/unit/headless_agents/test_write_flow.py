@@ -371,6 +371,50 @@ def _committed(world: World, run_id: str) -> list[str]:
     return sorted(_git(world.repo, "show", "--name-only", "--format=", f"ha/{run_id}").split())
 
 
+def test_a_forged_pytest_layout_hides_neither_tracked_edits_nor_their_neighbours(
+    world: World,
+) -> None:
+    """Review of #236: a ``<prefix>current`` symlink beside a ``<prefix><N>`` directory
+    made the whole parent directory an artifact, so an agent could hide the task's
+    tracked edits -- the run said no change. Only the layout's own entries are left out."""
+    (world.repo / "src").mkdir()
+    (world.repo / "src" / "lib.py").write_text("x = 1\n")
+    _git(world.repo, "add", "src/lib.py")
+    _git(world.repo, "commit", "-q", "-m", "src")
+
+    def edit(root: Path) -> None:
+        (root / "src" / "lib.py").write_text("x = 2\n")
+        (root / "src" / "extra.py").write_text("y = 1\n")
+        (root / "src" / "test0").mkdir()
+        (root / "src" / "test0" / "out.txt").write_text("x")
+        (root / "src" / "testcurrent").symlink_to("test0")
+
+    world.agent.edit = edit
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    assert _committed(world, outcome.run_id) == ["src/extra.py", "src/lib.py"]
+    (named,) = [line for line in world.said if "left out of the commit" in line]
+    assert "src/test0/" in named and "src/testcurrent" in named
+
+
+def test_a_forged_pytest_layout_over_a_tracked_directory_hides_nothing(world: World) -> None:
+    """pytest makes each numbered directory new: one that holds a tracked file is not
+    pytest's, and a new file the task puts there is committed."""
+    (world.repo / "src" / "test0").mkdir(parents=True)
+    (world.repo / "src" / "test0" / "keep.txt").write_text("tracked\n")
+    _git(world.repo, "add", "src/test0/keep.txt")
+    _git(world.repo, "commit", "-q", "-m", "a tracked test0")
+
+    def edit(root: Path) -> None:
+        (root / "src" / "test0" / "new.py").write_text("z = 1\n")
+        (root / "src" / "testcurrent").symlink_to("test0")
+
+    world.agent.edit = edit
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    assert "src/test0/new.py" in _committed(world, outcome.run_id)
+
+
 def test_a_deleted_tracked_bytecode_fixture_is_committed(world: World) -> None:
     """Review of #236: tool-artifact rules applied to tracked paths too, so deleting a
     tracked ``.pyc`` read as no change. Only untracked output is ever left out."""
