@@ -84,6 +84,36 @@ def test_outside_changes_treats_an_inaccessible_absent_path_as_changed(tmp_path:
         subdir.chmod(0o755)
 
 
+def test_outside_changes_does_not_rest_on_path_exists_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review round 3 of PR #234: from Python 3.14, `Path.exists()` and
+    `Path.is_symlink()` return False for a path under an inaccessible parent
+    instead of raising, so an agent that locks the probe HOME would make an
+    absent startup file look unchanged. Simulate those semantics: the check
+    must rest on `os.lstat`, where only a missing path counts as still absent."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads everything regardless of permission bits")
+    monkeypatch.setattr(Path, "exists", lambda self, **_: False)
+    monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+    subdir = tmp_path / "sub"
+    subdir.mkdir()
+    path = subdir / "f"
+    subdir.chmod(0)
+    try:
+        assert outside_changes({"f": None}, {"f": path}) == ["f"]
+    finally:
+        subdir.chmod(0o755)
+
+
+def test_outside_changes_treats_a_parent_replaced_by_a_file_as_changed(tmp_path: Path) -> None:
+    """A watched path whose parent directory became a file (ENOTDIR) did not
+    simply stay absent: its parent, outside the worktree, was rewritten."""
+    home = tmp_path / "home"
+    home.write_text("not a directory any more\n")
+    assert outside_changes({"f": None}, {"f": home / ".zshenv"}) == ["f"]
+
+
 def test_outside_changes_reports_creation_where_it_was_absent(tmp_path: Path) -> None:
     path = tmp_path / "f"
     path.write_bytes(b"anything")

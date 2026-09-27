@@ -479,10 +479,10 @@ def outside_changes(before: Mapping[str, bytes | None], paths: Mapping[str, Path
     A name is changed when it held bytes ``before`` and its path is now
     missing, not a regular file, unreadable (any ``OSError``, which covers a
     replacement by a directory too) or holds different bytes; or it was
-    absent before (``None``) and now exists as anything -- including when the
-    check for that itself raises ``OSError`` (a parent directory the agent
-    made inaccessible cannot be shown to still hold no file there, so it
-    counts as changed). Pure and total: it never raises on the checks it
+    absent before (``None``) and is not provably absent now: only
+    ``os.lstat`` failing with ``FileNotFoundError`` keeps it unchanged, while
+    any other outcome -- it exists, its parent became inaccessible or was
+    replaced by a file -- counts as changed. Pure and total: it never raises on the checks it
     performs, so a caller can run the byte check inside a ``finally``, before
     a run that could not even be read back is torn down (review round 1 of
     PR #234, item 4, tightened by review round 2, item 1 -- a sandboxed
@@ -494,14 +494,16 @@ def outside_changes(before: Mapping[str, bytes | None], paths: Mapping[str, Path
         path = paths[name]
         if content is None:
             try:
-                exists = path.exists() or path.is_symlink()
+                os.lstat(path)
+            except FileNotFoundError:
+                continue  # still absent: the one outcome that proves nothing changed
             except OSError:
-                # A parent directory the agent made inaccessible (review round 2 of
-                # PR #234, item 1): unreadable is treated the same as "now exists",
-                # since it can no longer be shown to have stayed absent.
-                exists = True
-            if exists:
-                changed.append(name)
+                # An inaccessible parent (review round 2 of PR #234) or a parent
+                # replaced by a file (ENOTDIR): the path can no longer be shown to
+                # have stayed absent. os.lstat, not Path.exists(), whose Python 3.14
+                # semantics turn those errors into False (review round 3).
+                pass
+            changed.append(name)
             continue
         try:
             now = path.read_bytes()
