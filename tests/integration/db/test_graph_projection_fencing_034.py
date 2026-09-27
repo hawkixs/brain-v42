@@ -149,6 +149,271 @@ async def test_unarmed_generation_never_catches_up_silently(
             )
 
 
+async def test_advance_confirmed_generation_escapes_the_dead_end_without_recovery_035(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Ticket 416266ec: replay the exact incident row (generation 70, unarmed,
+    owner NULL, exactly as ``acquire_leadership`` leaves it after a watchdog
+    restart per the previous test) and prove the escape hatch advances past it
+    without running recovery 035, once the caller stands in for Neo4j having
+    confirmed it is durably at that same generation."""
+    async with session_factory.begin() as session:
+        original = dict(
+            (
+                await session.execute(
+                    sa.text(
+                        """
+                        SELECT generation, owner, leased_until, neo4j_armed_generation
+                        FROM graph_projection_leases
+                        WHERE slot = 'neo4j'
+                        """
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        await session.execute(
+            sa.text(
+                """
+                UPDATE graph_projection_leases
+                SET generation = 70,
+                    owner = NULL,
+                    leased_until = NULL,
+                    neo4j_armed_generation = NULL
+                WHERE slot = 'neo4j'
+                """
+            )
+        )
+
+    try:
+        repo = PgGraphLedgerRepo(session_factory)
+        stuck = await repo.acquire_leadership("new-owner", lease_seconds=30)
+        assert stuck is not None
+        assert stuck.generation == 70
+        assert stuck.armed is False
+
+        advanced = await repo.advance_confirmed_generation(stuck, lease_seconds=30)
+
+        assert advanced is not None
+        assert advanced.generation == 71
+        assert advanced.armed is False
+
+        assert await repo.arm_leadership(advanced) is True
+    finally:
+        async with session_factory.begin() as session:
+            await session.execute(
+                sa.text(
+                    """
+                    UPDATE graph_projection_leases
+                    SET generation = :generation,
+                        owner = :owner,
+                        leased_until = :leased_until,
+                        neo4j_armed_generation = :armed_generation
+                    WHERE slot = 'neo4j'
+                    """
+                ),
+                {
+                    "generation": original["generation"],
+                    "owner": original["owner"],
+                    "leased_until": original["leased_until"],
+                    "armed_generation": original["neo4j_armed_generation"],
+                },
+            )
+
+
+async def test_advance_confirmed_generation_refuses_when_outbox_already_claimed_this_generation(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """BLOCKER fix (independent review of PR #230): an unarmed row at
+    generation 70 is not, by itself, durable proof of a genuine crash before
+    any arm ever succeeded -- a leases-row-only restore or tamper can
+    resurrect that exact shape while ``graph_outbox`` still carries a row
+    this same generation legitimately claimed before (real prior armed
+    activity a restored leases row no longer remembers). ``claim_pending``
+    can only ever stamp ``lease_generation`` while armed, so this row is
+    durable, PostgreSQL-native proof the generation was really used; the
+    advance must refuse rather than skip past facts a full recovery 035
+    would have caught."""
+    _project_key, event_id = await _create_claimable_feature_event(
+        session_factory,
+        prefix="restore-evidence",
+    )
+    async with session_factory.begin() as session:
+        original = dict(
+            (
+                await session.execute(
+                    sa.text(
+                        """
+                        SELECT generation, owner, leased_until, neo4j_armed_generation
+                        FROM graph_projection_leases
+                        WHERE slot = 'neo4j'
+                        """
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        await session.execute(
+            sa.text(
+                """
+                UPDATE graph_projection_leases
+                SET generation = 70,
+                    owner = NULL,
+                    leased_until = NULL,
+                    neo4j_armed_generation = NULL
+                WHERE slot = 'neo4j'
+                """
+            )
+        )
+        await session.execute(
+            sa.text(
+                """
+                UPDATE graph_outbox
+                SET lease_generation = 70
+                WHERE event_id = :event_id
+                """
+            ),
+            {"event_id": event_id},
+        )
+
+    try:
+        repo = PgGraphLedgerRepo(session_factory)
+        stuck = await repo.acquire_leadership("restore-worker", lease_seconds=30)
+        assert stuck is not None
+        assert stuck.generation == 70
+        assert stuck.armed is False
+
+        advanced = await repo.advance_confirmed_generation(stuck, lease_seconds=30)
+
+        assert advanced is None
+
+        async with session_factory() as session:
+            row = dict(
+                (
+                    await session.execute(
+                        sa.text(
+                            """
+                            SELECT generation, neo4j_armed_generation
+                            FROM graph_projection_leases
+                            WHERE slot = 'neo4j'
+                            """
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert row["generation"] == 70
+        assert row["neo4j_armed_generation"] is None
+    finally:
+        async with session_factory.begin() as session:
+            await session.execute(
+                sa.text(
+                    """
+                    UPDATE graph_projection_leases
+                    SET generation = :generation,
+                        owner = :owner,
+                        leased_until = :leased_until,
+                        neo4j_armed_generation = :armed_generation
+                    WHERE slot = 'neo4j'
+                    """
+                ),
+                {
+                    "generation": original["generation"],
+                    "owner": original["owner"],
+                    "leased_until": original["leased_until"],
+                    "armed_generation": original["neo4j_armed_generation"],
+                },
+            )
+            # This event was deliberately never claimed or delivered (the
+            # advance under test must refuse before any claim happens); left
+            # pending it would leak into every later test in this
+            # session-scoped database via claim_pending's own scan.
+            await session.execute(
+                sa.text("DELETE FROM graph_outbox WHERE event_id = :event_id"),
+                {"event_id": event_id},
+            )
+
+
+async def test_advance_confirmed_generation_refuses_once_a_successor_takes_over(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Safety guard: if another acquirer already took the row (its lease expired
+    or a successor renewed it), the stale ``leadership`` handle can no longer
+    advance the generation -- no double bump, no advance behind a live owner's
+    back."""
+    async with session_factory.begin() as session:
+        original = dict(
+            (
+                await session.execute(
+                    sa.text(
+                        """
+                        SELECT generation, owner, leased_until, neo4j_armed_generation
+                        FROM graph_projection_leases
+                        WHERE slot = 'neo4j'
+                        """
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        await session.execute(
+            sa.text(
+                """
+                UPDATE graph_projection_leases
+                SET generation = 70,
+                    owner = NULL,
+                    leased_until = NULL,
+                    neo4j_armed_generation = NULL
+                WHERE slot = 'neo4j'
+                """
+            )
+        )
+
+    try:
+        repo = PgGraphLedgerRepo(session_factory)
+        stuck = await repo.acquire_leadership("stale-owner", lease_seconds=30)
+        assert stuck is not None
+
+        async with session_factory.begin() as session:
+            await session.execute(
+                sa.text(
+                    """
+                    UPDATE graph_projection_leases
+                    SET owner = 'successor-owner'
+                    WHERE slot = 'neo4j'
+                    """
+                )
+            )
+
+        advanced = await repo.advance_confirmed_generation(stuck, lease_seconds=30)
+
+        assert advanced is None
+    finally:
+        async with session_factory.begin() as session:
+            await session.execute(
+                sa.text(
+                    """
+                    UPDATE graph_projection_leases
+                    SET generation = :generation,
+                        owner = :owner,
+                        leased_until = :leased_until,
+                        neo4j_armed_generation = :armed_generation
+                    WHERE slot = 'neo4j'
+                    """
+                ),
+                {
+                    "generation": original["generation"],
+                    "owner": original["owner"],
+                    "leased_until": original["leased_until"],
+                    "armed_generation": original["neo4j_armed_generation"],
+                },
+            )
+
+
 async def test_handover_reclaims_event_and_rejects_predecessor_cas(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:

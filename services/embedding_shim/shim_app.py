@@ -73,10 +73,12 @@ _AUTH_EXEMPT_PATHS = frozenset({"/healthz", "/health"})
 #: 127.0.0.1 — the kernel drops loopback-sourced packets arriving on a non-lo
 #: interface (martian filtering, route_localnet=0), and connections published
 #: by Docker arrive with the bridge gateway's address, never 127.0.0.1. The
-#: ONLY production prober lives there: the compose healthcheck (POST /embed
+#: ONLY production prober lives there: the compose healthcheck (POST /rerank
 #: with no Authorization, run inside the container) — without this exemption,
 #: arming would leave it unhealthy forever while /healthz stayed green
-#: (PR 43 review, reproduced).
+#: (PR 43 review, reproduced). The probed endpoint moved from /embed to
+#: /rerank on 2026-09-26 when qodo was retired from the default stack (see
+#: docs/ARCHITECTURE.md) — /embed no longer reflects the shim's own health.
 _LOOPBACK_CLIENT_HOSTS = frozenset({"127.0.0.1", "::1"})
 
 #: The census knows only the shim's real routes: an unknown path is controlled

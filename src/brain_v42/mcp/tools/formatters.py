@@ -7,6 +7,7 @@ Generalizes the session_start markdown pattern to all tools.
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Never, cast
 from uuid import UUID
@@ -749,6 +750,24 @@ def _format_grouped_ignored_params_notice(
     return f"note: grouped mode ignores {' and '.join(ignored_bits)} — use group_by_type=False for either."
 
 
+def _item_claim_suffix(
+    claim_suffixes: Mapping[tuple[str, UUID], str] | None, type_key: str, item: dict[str, Any]
+) -> str:
+    """Render `" [claims : ...]"`, or nothing when there is nothing to show.
+
+    A missing/malformed ``id`` renders no suffix rather than raising -- the
+    knowledge item itself is never at risk over a claim-suffix lookup.
+    """
+    if not claim_suffixes:
+        return ""
+    try:
+        item_id = UUID(item["id"])
+    except (KeyError, ValueError, TypeError):
+        return ""
+    suffix = claim_suffixes.get((type_key, item_id))
+    return f" {suffix}" if suffix else ""
+
+
 def format_search_results(
     results: list[SearchResult],
     query: str,
@@ -756,6 +775,7 @@ def format_search_results(
     full: bool = False,
     diagnostics: SearchDiagnostics | None = None,
     tags: list[str] | None = None,
+    claim_suffixes: Mapping[tuple[str, UUID], str] | None = None,
 ) -> str:
     """Format cross-type search results grouped by type.
 
@@ -782,6 +802,11 @@ def format_search_results(
             rendering — the nominal path is byte-identical either way.
         tags: The tags filter the caller requested, used only to name them
             in the empty-result "removed by the tags filter" explanation.
+        claim_suffixes: Optional mapping from ``(type, item id)`` to an
+            already-rendered ``"[claims : ...]"`` suffix (spec 2026-09-19,
+            section 6.6), built by the caller in ONE batch fetch. Absent
+            entries append nothing -- the nominal, no-claim rendering stays
+            byte-identical. Never affects score, ordering or filtering.
     """
     # Build degraded banner (Fix 1 + Fix 2 + MINOR 2: rrf_only)
     banner_lines: list[str] = []
@@ -838,7 +863,8 @@ def format_search_results(
                 prefix = f"[rank {i}/{n_items}]"
             else:
                 prefix = f"[s:{sr.score:.2f}]"
-            section_lines.append(f"{prefix} {item}")
+            suffix = _item_claim_suffix(claim_suffixes, type_key, sr.item)
+            section_lines.append(f"{prefix} {item}{suffix}")
         sections.append("\n".join(section_lines))
 
     body = header + "\n\n" + "\n\n".join(sections)
@@ -855,6 +881,7 @@ def format_knowledge_by_type(
     diagnostics: SearchDiagnostics | None = None,
     tags: list[str] | None = None,
     include_related: bool = False,
+    claim_suffixes: Mapping[tuple[str, UUID], str] | None = None,
 ) -> str:
     """Format grouped knowledge results (brain_what_do_i_know_about / group_by_type=True).
 
@@ -879,6 +906,10 @@ def format_knowledge_by_type(
         include_related: Whether the caller requested "### Related". Grouped
             mode never renders that section — used only to name it in the
             empty-result block (never affects non-empty output).
+        claim_suffixes: Optional mapping from ``(type, item id)`` to an
+            already-rendered ``"[claims : ...]"`` suffix, built by the caller
+            in ONE batch fetch covering every section. Absent entries append
+            nothing -- the nominal, no-claim rendering stays byte-identical.
     """
     # Build degraded banner — mirrors format_search_results
     banner_lines: list[str] = []
@@ -933,7 +964,9 @@ def format_knowledge_by_type(
         section_lines = [f"### {label} ({len(items)})"]
         for i, sr in enumerate(items, 1):
             model = model_cls.model_validate(sr.item)
-            section_lines.append(_format_search_item(type_key, model, i, full=full))
+            item = _format_search_item(type_key, model, i, full=full)
+            suffix = _item_claim_suffix(claim_suffixes, type_key, sr.item)
+            section_lines.append(f"{item}{suffix}")
         sections.append("\n".join(section_lines))
 
     body = header + "\n\n" + "\n\n".join(sections)

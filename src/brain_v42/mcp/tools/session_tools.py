@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import structlog
 
 from brain_v42.config import get_settings
+from brain_v42.mcp.tools.claim_rendering import claim_suffix_map
 from brain_v42.mcp.tools.delivery_formatters import format_delivery_briefing
 from brain_v42.mcp.tools.formatters import format_id
 from brain_v42.mcp.tools.session_lifecycle_tools import (
@@ -29,6 +30,9 @@ from brain_v42.services.dream_run_service import (
     KillswitchState,
     LastFailureRow,
 )
+
+if TYPE_CHECKING:
+    from brain_v42.services.claim_read_service import ClaimReadService
 
 logger = structlog.get_logger(__name__)
 
@@ -332,15 +336,36 @@ def _section_blockers(blockers: list[str] | None) -> str:
     return "\n".join(lines)
 
 
-def _section_recap(decisions: list[Any], learnings: list[Any]) -> str:
+def _section_recap(
+    decisions: list[Any],
+    learnings: list[Any],
+    claim_suffixes: Mapping[tuple[str, UUID], str] | None = None,
+) -> str:
+    """### Recap -- decisions/learnings, each carrying its compact claim suffix (spec §6.6).
+
+    `claim_suffixes` is `None` on every existing caller that never fetched one
+    (the pre-claims briefing and every non-briefing caller of this helper), which
+    keeps the rendering byte-identical: a suffix is appended only when the caller
+    supplied a mapping AND that mapping has something to show for this entry.
+    """
     if not decisions and not learnings:
         return ""
     lines = ["### Recap"]
     for d in decisions[:3]:
-        lines.append(f"- d: {d.title}")
+        line = f"- d: {d.title}"
+        if claim_suffixes is not None:
+            suffix = claim_suffixes.get(("decision", d.id))
+            if suffix:
+                line += f" {suffix}"
+        lines.append(line)
     for lr in learnings[:3]:
         snip = (lr.insight[:60] + "…") if len(lr.insight) > 60 else lr.insight
-        lines.append(f"- l: {lr.topic}: {snip}")
+        line = f"- l: {lr.topic}: {snip}"
+        if claim_suffixes is not None:
+            suffix = claim_suffixes.get(("learning", lr.id))
+            if suffix:
+                line += f" {suffix}"
+        lines.append(line)
     return "\n".join(lines)
 
 
@@ -495,6 +520,7 @@ def _format_session_briefing(
     checkpoints: list[Any] | None = None,
     delivery_briefing: str = "",
     fact_lines: Sequence[str] = (),
+    claim_suffixes: Mapping[tuple[str, UUID], str] | None = None,
 ) -> str:
     blockers = list(getattr(ctx, "blockers", []) or []) if ctx else []
     sections = [
@@ -522,7 +548,7 @@ def _format_session_briefing(
         ),
         _section_focus(ctx),
         _section_blockers(blockers),
-        _section_recap(decisions, learnings),
+        _section_recap(decisions, learnings, claim_suffixes),
         _section_cross_project(cross_block),
         delivery_briefing,
         format_workflow_guidance_briefing(),
@@ -611,6 +637,7 @@ def make_session_briefing_loader(
     schema_state_svc: Any | None = None,
     delivery_svc: Any | None = None,
     fact_registry: Any | None = None,
+    claim_read_svc: ClaimReadService | None = None,
 ) -> BriefingLoader:
     """Build the shared, read-only session briefing loader without lifecycle effects."""
 
@@ -730,6 +757,20 @@ def make_session_briefing_loader(
                 logger.warning("brain_session_start_schema_state_failed", error=str(exc))
                 schema_unavailable = True
 
+        # Claim suffixes for the recap's displayed decisions/learnings (spec §6.6):
+        # ONE batch fetch for the whole recap, reusing the same renderer and
+        # wiring pattern brain_get/brain_search use -- claim_suffix_map already
+        # turns a ClaimReadError into a visible marker for every entry instead
+        # of raising, so a lookup failure never drops the briefing.
+        claim_suffixes: dict[tuple[str, UUID], str] | None = None
+        if claim_read_svc is not None:
+            claim_entries = [("decision", d.id) for d in decisions] + [
+                ("learning", lr.id) for lr in learnings
+            ]
+            claim_suffixes = await claim_suffix_map(
+                claim_read_svc, claim_entries, trusted_project_key=project_key
+            )
+
         delivery_briefing = ""
         if delivery_svc is not None:
             try:
@@ -760,6 +801,7 @@ def make_session_briefing_loader(
             checkpoints=checkpoints,
             delivery_briefing=delivery_briefing,
             fact_lines=fact_lines,
+            claim_suffixes=claim_suffixes,
         )
 
     return load_briefing
@@ -779,6 +821,7 @@ def register_session_tools(
     schema_state_svc: Any | None = None,
     delivery_svc: Any | None = None,
     fact_registry: Any | None = None,
+    claim_read_svc: ClaimReadService | None = None,
 ) -> None:
     """Register explicit lifecycle tools with the shared action-forward loader."""
     load_briefing = make_session_briefing_loader(
@@ -793,5 +836,6 @@ def register_session_tools(
         schema_state_svc=schema_state_svc,
         delivery_svc=delivery_svc,
         fact_registry=fact_registry,
+        claim_read_svc=claim_read_svc,
     )
     register_session_lifecycle_tools(mcp, brain_session_svc, load_briefing)

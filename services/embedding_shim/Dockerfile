@@ -16,12 +16,19 @@ FROM python:3.12-slim@sha256:57cd7c3a7a273101a6485ba99423ee568157882804b1124b4dd
 
 WORKDIR /app
 
+# onnxruntime-gpu[cuda,cudnn] bundles the CUDA/cuDNN runtime wheels and exposes
+# BOTH CUDAExecutionProvider and CPUExecutionProvider from the same package —
+# do not also install plain `onnxruntime`, the two share the top-level
+# `onnxruntime` module and would conflict. On a host without a GPU/driver,
+# CUDAExecutionProvider is simply absent from get_available_providers() and
+# OnnxRerankBackend (shim_backends.py) falls back to CPU: the image still
+# starts and serves.
 RUN pip install --no-cache-dir \
     starlette \
     "uvicorn[standard]" \
     httpx \
     anyio \
-    onnxruntime \
+    "onnxruntime-gpu[cuda,cudnn]" \
     tokenizers \
     numpy \
     huggingface_hub

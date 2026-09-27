@@ -18,6 +18,7 @@ from brain_v42.mcp.dream_project_authorization import (
     DreamProjectAuthorizationError,
     get_dream_project_scope,
 )
+from brain_v42.mcp.tools.claim_rendering import claim_suffix_map
 from brain_v42.mcp.tools.claim_writes import (
     ClaimMutationError,
     describe_claim_outcome,
@@ -64,6 +65,7 @@ if TYPE_CHECKING:
     from brain_v42.facts.verification import ClaimVerificationService
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.adr_service import ADRService
+    from brain_v42.services.claim_read_service import ClaimReadService
     from brain_v42.services.decision_service import DecisionService
     from brain_v42.services.graph_helpers import RelationAuthorization
     from brain_v42.services.learning_service import LearningService
@@ -203,8 +205,14 @@ def register_crud_tools(
     access_logger: AccessLogger | None = None,
     fact_registry: FactRegistry | None = None,
     claim_verification_svc: ClaimVerificationService | None = None,
+    claim_read_svc: ClaimReadService | None = None,
 ) -> None:
-    """Register generic CRUD MCP tools (brain_get, brain_delete, brain_update, brain_list)."""
+    """Register generic CRUD MCP tools (brain_get, brain_delete, brain_update, brain_list).
+
+    `claim_read_svc` is optional so existing standalone registration/formatter
+    tests keep exercising brain_get without a claim suffix; real composition
+    (`mcp/server.py`) always supplies it.
+    """
 
     list_adrs = _build_adr_list_adapter(adr_svc)
 
@@ -305,7 +313,16 @@ def register_crud_tools(
         formatted = formatter(entity)  # type: ignore[operator]
         if access_logger is not None:
             access_logger.log_access(entity_type, entity.id, "get_by_id")
-        return formatted  # type: ignore[no-any-return]
+        if claim_read_svc is not None:
+            trusted_project_key = scope.project_key if scope is not None else None
+            key = (entity_type, entity.id)
+            suffixes = await claim_suffix_map(
+                claim_read_svc, [key], trusted_project_key=trusted_project_key
+            )
+            suffix = suffixes.get(key)
+            if suffix:
+                formatted = f"{formatted}\n\n{suffix}"
+        return formatted
 
     # ── brain_delete ──────────────────────────────────────────────────────
 
