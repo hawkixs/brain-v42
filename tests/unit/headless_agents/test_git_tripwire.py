@@ -165,6 +165,18 @@ def test_a_tracked_hooks_path_directory_trips(repo: Path, home: Path) -> None:
     assert str(repo / ".husky" / "pre-commit") in tripwire.tampered()
 
 
+def test_a_hooks_path_that_is_not_utf8_is_watched_exactly(repo: Path, home: Path) -> None:
+    """Review of #236, git callers audited: ``core.hooksPath`` was read through strict
+    text decoding, so a value that is not UTF-8 crashed the arming. Read as bytes and
+    decoded as a path, the exact directory is watched."""
+    name = os.fsdecode(b".hus\xffky")
+    (repo / name).mkdir()
+    _git(repo, "config", "core.hooksPath", name)
+    tripwire = _arm(repo, home)
+    (repo / name / "pre-commit").write_text("#!/bin/sh\ntouch /tmp/pwned\n", encoding="utf-8")
+    assert str(repo / name / "pre-commit") in tripwire.tampered()
+
+
 # ── Linked worktrees ───────────────────────────────────────────────────────
 
 
