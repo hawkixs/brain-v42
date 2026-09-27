@@ -5,10 +5,15 @@ git subprocess inherits one, and a lock dies with the ``ha`` process that
 took it. The order is fixed, which excludes a deadlock:
 
 1. the run's own lifecycle lock;
-2. the admission gate, held only for the instant of taking the lock below;
-3. the global unconfined lock;
-4. the lineage registry lock;
-5. lineage locks, in ascending owner-id order.
+2. the writer-intent lock: a waiting unconfined writer holds it exclusively
+   from before it ever polls the gate below, so a reader that arrives while
+   it is still polling -- not only once it already holds the gate -- queues
+   behind it too (codex review of PR #239); a reader takes it shared only
+   for the instant of checking that no writer is queued;
+3. the admission gate, held only for the instant of taking the lock below;
+4. the global unconfined lock;
+5. the lineage registry lock;
+6. lineage locks, in ascending owner-id order.
 
 :func:`held` enforces that order per thread and raises ``RuntimeError`` on a
 violation -- a programming error, never a user's. A lock not obtained within
@@ -46,10 +51,11 @@ class LockTimeout(Exception):
 
 class Rank(IntEnum):
     LIFECYCLE = 1
-    ADMISSION_GATE = 2
-    UNCONFINED = 3
-    LINEAGE_REGISTRY = 4
-    LINEAGE = 5
+    WRITER_INTENT = 2
+    ADMISSION_GATE = 3
+    UNCONFINED = 4
+    LINEAGE_REGISTRY = 5
+    LINEAGE = 6
 
 
 _held = threading.local()
@@ -177,25 +183,71 @@ def admit_global(state: Path, *, exclusive: bool, wait: AdmissionWait) -> Iterat
     run -- shared or not -- queues behind it instead of slipping in first. The
     gate is released as soon as the global lock is taken, or on a timeout; the
     global lock itself is held for the caller's block.
+
+    A gate held nonblocking excludes a reader only once the writer already
+    owns it: a reader that keeps arriving while the writer is still polling
+    for the (currently unavailable) gate could otherwise take it shared
+    every time, starving the writer out (codex review of PR #239). The
+    writer-intent lock closes that window: an unconfined writer takes it
+    exclusively *before* it ever polls the gate, and holds it for as long as
+    that polling lasts; a reader takes it shared only for the instant of
+    checking that no writer is queued, then releases it before it ever
+    touches the gate itself.
     """
     budget = wait if wait.seconds is not None else AdmissionWait(LOCK_WAIT_SECONDS, explicit=False)
+    intent = state / "writer-intent.lock"
+    gate = state / "admission-gate.lock"
+    unconfined = state / "unconfined.lock"
     with ExitStack() as global_lock:
-        with held(
-            state / "admission-gate.lock",
-            rank=Rank.ADMISSION_GATE,
-            exclusive=exclusive,
-            wait=budget.remaining("the admission gate"),
-            what="the admission gate",
-        ):
-            global_lock.enter_context(
-                held(
-                    state / "unconfined.lock",
-                    rank=Rank.UNCONFINED,
-                    exclusive=exclusive,
-                    wait=budget.remaining("the unconfined lock"),
-                    what="the unconfined lock",
+        if exclusive:
+            with held(
+                intent,
+                rank=Rank.WRITER_INTENT,
+                exclusive=True,
+                wait=budget.remaining("a pending write"),
+                what="a pending write",
+            ):
+                with held(
+                    gate,
+                    rank=Rank.ADMISSION_GATE,
+                    exclusive=True,
+                    wait=budget.remaining("the admission gate"),
+                    what="the admission gate",
+                ):
+                    global_lock.enter_context(
+                        held(
+                            unconfined,
+                            rank=Rank.UNCONFINED,
+                            exclusive=True,
+                            wait=budget.remaining("the unconfined lock"),
+                            what="the unconfined lock",
+                        )
+                    )
+        else:
+            with held(
+                intent,
+                rank=Rank.WRITER_INTENT,
+                exclusive=False,
+                wait=budget.remaining("a pending write"),
+                what="a pending write",
+            ):
+                pass
+            with held(
+                gate,
+                rank=Rank.ADMISSION_GATE,
+                exclusive=False,
+                wait=budget.remaining("the admission gate"),
+                what="the admission gate",
+            ):
+                global_lock.enter_context(
+                    held(
+                        unconfined,
+                        rank=Rank.UNCONFINED,
+                        exclusive=False,
+                        wait=budget.remaining("the unconfined lock"),
+                        what="the unconfined lock",
+                    )
                 )
-            )
         yield
 
 

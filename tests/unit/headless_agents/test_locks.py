@@ -291,6 +291,69 @@ def test_one_deadline_covers_two_contested_locks(tmp_path: Path) -> None:
             assert time.monotonic() - started < 0.16
 
 
+def test_new_readers_queue_behind_a_writer_still_polling_for_the_gate(tmp_path: Path) -> None:
+    """The writer-preference gate must exclude a reader from the moment the
+    writer starts polling for it, not only once the writer already holds it:
+    ``test_waiting_writer_precedes_a_later_shared_admission`` only starts its
+    reader after the writer already owns the gate, so it never exercises the
+    window where the writer is still contending for it -- readers that keep
+    arriving there could starve the writer out indefinitely.
+
+    An exclusive holder on the global lock (not the ``_ADMISSION_CHILD``
+    "holder" mode, which only takes it shared and would let ordinary shared
+    readers straight through) forces two seed readers to stay stuck holding
+    the gate shared, so the gate is already unavailable the moment the
+    writer starts polling for it; a further stream of readers keeps arriving
+    while the writer is still polling, not once it already holds the gate.
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    events = tmp_path / "events"
+    writer: subprocess.Popen[bytes] | None = None
+    seed_readers: list[subprocess.Popen[bytes]] = []
+    late_readers: list[subprocess.Popen[bytes]] = []
+    try:
+        with _held_elsewhere(state / "unconfined.lock", "ex", tmp_path):
+            for _ in range(2):
+                process, _ = _admission_child(state, "seed", events)
+                seed_readers.append(process)
+            time.sleep(0.1)
+
+            writer, _ = _admission_child(state, "writer", events, seconds=3.0)
+            # Deliberately not waiting for the writer to hold the gate (unlike
+            # test_waiting_writer_precedes_a_later_shared_admission): the
+            # readers below arrive while it is still polling for the gate,
+            # not after.
+            deadline = time.monotonic() + 0.4
+            while time.monotonic() < deadline:
+                process, _ = _admission_child(state, "late", events)
+                late_readers.append(process)
+                time.sleep(0.05)
+
+            assert not events.exists(), "an admission completed before the holder was released"
+        # The ``with`` block above killed the exclusive holder on exit.
+
+        assert writer.wait(timeout=5) == 0
+        for process in seed_readers + late_readers:
+            assert process.wait(timeout=5) == 0
+
+        lines = events.read_text().splitlines()
+        writer_index = lines.index("writer")
+        for index, line in enumerate(lines):
+            if line == "late":
+                assert index > writer_index, (
+                    "a reader arriving while the writer was still polling for the gate overtook it"
+                )
+        assert lines.count("late") == len(late_readers)
+        assert lines.count("seed") == len(seed_readers)
+    finally:
+        for process in (writer, *seed_readers, *late_readers):
+            if process is not None and process.poll() is None:
+                process.kill()
+            if process is not None:
+                process.wait()
+
+
 # ── review round 1 (PR #239): a lock granted just after the deadline was
 # still accepted, instead of refused ───────────────────────────────────────
 

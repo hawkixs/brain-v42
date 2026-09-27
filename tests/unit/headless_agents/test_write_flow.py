@@ -526,6 +526,7 @@ def test_admission_takes_every_lock_before_reading_state_and_runs_no_git(
     locks_taken = [e for e in events if e.startswith("lock")]
     assert [e.split()[1] for e in locks_taken] == [
         "LIFECYCLE",
+        "WRITER_INTENT",
         "ADMISSION_GATE",
         "UNCONFINED",
         "LINEAGE_REGISTRY",
