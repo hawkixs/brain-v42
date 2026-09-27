@@ -770,6 +770,65 @@ async def test_release_leadership_preserves_arm_state_and_allows_unarmed_handove
 
 
 @pytest.mark.asyncio
+async def test_advance_confirmed_generation_bumps_only_the_live_unarmed_owner() -> None:
+    """Ticket 416266ec: the projector-side unlock for the 'crash between Neo4j
+    activation and PG arm' hole (decision 3d3d72e4). Only reachable after Neo4j's
+    own rejection response proves it is already, durably, at this generation."""
+    from brain_v42.repositories.pg_graph_ledger import (
+        PgGraphLedgerRepo,
+        ProjectionLeadership,
+    )
+
+    lease_until = datetime.now(UTC) + timedelta(seconds=30)
+    result = _fencing_result(row={"generation": 71, "lease_until": lease_until})
+    factory, session = _session_factory_with_results(result)
+    repo = PgGraphLedgerRepo(factory)
+    leadership = ProjectionLeadership("projector-a", 70, lease_until, False)
+
+    advanced = await repo.advance_confirmed_generation(leadership, lease_seconds=30)
+
+    assert advanced == ProjectionLeadership(
+        owner_id="projector-a",
+        generation=71,
+        lease_until=lease_until,
+        armed=False,
+    )
+    statement, params = session.execute.await_args.args
+    sql = " ".join(str(statement).lower().split())
+    assert "generation = generation + 1" in sql
+    assert "neo4j_armed_generation = null" in sql
+    assert "owner = :owner_id" in sql
+    assert "generation = :generation" in sql
+    assert "leased_until > clock_timestamp()" in sql
+    assert "not exists" in sql
+    assert "graph_outbox" in sql
+    assert "lease_generation = :generation" in sql
+    assert params["owner_id"] == "projector-a"
+    assert params["generation"] == 70
+    assert params["lease_seconds"] == 30
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_advance_confirmed_generation_refuses_a_lost_or_already_armed_lease() -> None:
+    from brain_v42.repositories.pg_graph_ledger import (
+        PgGraphLedgerRepo,
+        ProjectionLeadership,
+    )
+
+    lease_until = datetime.now(UTC) + timedelta(seconds=30)
+    result = _fencing_result(row=None)
+    factory, session = _session_factory_with_results(result)
+    repo = PgGraphLedgerRepo(factory)
+    leadership = ProjectionLeadership("projector-a", 70, lease_until, False)
+
+    advanced = await repo.advance_confirmed_generation(leadership, lease_seconds=30)
+
+    assert advanced is None
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_claim_pending_requires_armed_live_leadership_and_reclaims_old_generation() -> None:
     from brain_v42.repositories.pg_graph_ledger import (
         PgGraphLedgerRepo,
