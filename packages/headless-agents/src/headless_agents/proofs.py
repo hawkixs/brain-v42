@@ -434,6 +434,35 @@ def refused_attempts(
     return found
 
 
+@dataclass(frozen=True)
+class ConfinementVerdict:
+    """What a confinement probe may record; ``passed`` is None when nothing may be (Q91=b)."""
+
+    passed: bool | None
+    reason: str
+
+
+def confinement_verdict(
+    *, changed: Sequence[str], incomplete: Sequence[str], unrefused: Sequence[str]
+) -> ConfinementVerdict:
+    """Decide a confinement probe, bytes first.
+
+    A changed outside target fails the rail whatever else happened: an
+    incomplete run that still wrote outside is an escape, not an unknown.
+    Only then may an incomplete run, or a target with no logged refusal,
+    leave the probe inconclusive -- and an inconclusive probe records nothing.
+    """
+    if changed:
+        return ConfinementVerdict(False, f"wrote outside its worktree: {sorted(changed)}")
+    if incomplete:
+        return ConfinementVerdict(
+            None, f"runs incomplete or no control written: {sorted(incomplete)}"
+        )
+    if unrefused:
+        return ConfinementVerdict(None, f"no logged, refused attempt on: {sorted(unrefused)}")
+    return ConfinementVerdict(True, "every outside target was refused and none changed")
+
+
 def isolation_label(state: Path, rail: str, version: str | None) -> str:
     """How ``ha roles`` shows a rail's isolation."""
     if rail not in CLI_RAILS:
@@ -453,11 +482,14 @@ def isolation_label(state: Path, rail: str, version: str | None) -> str:
 
 __all__ = [
     "CLI_RAILS",
+    "ConfinementVerdict",
     "Proof",
     "ProofRecord",
     "confinement",
+    "confinement_verdict",
     "isolation_fingerprint",
     "plant_confinement_targets",
+    "probe_command",
     "refused_attempts",
     "isolation_label",
     "isolation_ok",
