@@ -184,11 +184,15 @@ def test_a_refusal_naming_a_child_path_is_not_credited(tmp_path: Path) -> None:
 
 
 def test_a_refusal_marker_and_the_path_on_different_lines_is_not_credited(tmp_path: Path) -> None:
+    """review round 2 of PR #234, item 2: the second line carries a diagnostic
+    prefix (`zsh:1: `) so the path is NOT a bare line -- the old, whole-output
+    substring reader (45512bc8) would have credited it via `f": {target}"`;
+    only checking both on the SAME line catches this."""
     run = tmp_path / "run"
     run.mkdir()
     config, _ = _targets(tmp_path)
     wrapped = f"/usr/bin/zsh -lc {shlex.quote(probe_command(LINE, config))}"
-    output = f"read-only file system\n{config}"
+    output = f"read-only file system\nzsh:1: {config}"
     (run / "events.jsonl").write_text(_codex(wrapped, 1, output))
     assert refused_attempts("codex", run, [config], line=LINE) == set()
 

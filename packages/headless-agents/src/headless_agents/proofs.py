@@ -479,17 +479,28 @@ def outside_changes(before: Mapping[str, bytes | None], paths: Mapping[str, Path
     A name is changed when it held bytes ``before`` and its path is now
     missing, not a regular file, unreadable (any ``OSError``, which covers a
     replacement by a directory too) or holds different bytes; or it was
-    absent before (``None``) and now exists as anything. Pure and total: it
-    never raises on the read it performs, so a caller can run the byte check
-    inside a ``finally``, before a run that could not even be read back is
-    torn down (review round 1 of PR #234, item 4 -- a sandboxed command able
-    to corrupt or delete a target must still fail the rail).
+    absent before (``None``) and now exists as anything -- including when the
+    check for that itself raises ``OSError`` (a parent directory the agent
+    made inaccessible cannot be shown to still hold no file there, so it
+    counts as changed). Pure and total: it never raises on the checks it
+    performs, so a caller can run the byte check inside a ``finally``, before
+    a run that could not even be read back is torn down (review round 1 of
+    PR #234, item 4, tightened by review round 2, item 1 -- a sandboxed
+    command able to corrupt, delete or hide a target must still fail the
+    rail).
     """
     changed = []
     for name, content in before.items():
         path = paths[name]
         if content is None:
-            if path.exists() or path.is_symlink():
+            try:
+                exists = path.exists() or path.is_symlink()
+            except OSError:
+                # A parent directory the agent made inaccessible (review round 2 of
+                # PR #234, item 1): unreadable is treated the same as "now exists",
+                # since it can no longer be shown to have stayed absent.
+                exists = True
+            if exists:
                 changed.append(name)
             continue
         try:

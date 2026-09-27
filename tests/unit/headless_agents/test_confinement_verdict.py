@@ -67,6 +67,23 @@ def test_outside_changes_reports_a_target_replaced_by_a_directory(tmp_path: Path
     assert outside_changes({"f": b"content"}, {"f": path}) == ["f"]
 
 
+def test_outside_changes_treats_an_inaccessible_absent_path_as_changed(tmp_path: Path) -> None:
+    """Review round 2 of PR #234, item 1: `Path.exists()` can itself raise
+    `PermissionError` when a parent directory becomes inaccessible -- an agent
+    making the probe HOME unreadable must not raise inside the caller's
+    `finally` and skip the byte check that would otherwise fail the rail."""
+    if os.geteuid() == 0:
+        pytest.skip("root reads everything regardless of permission bits")
+    subdir = tmp_path / "sub"
+    subdir.mkdir()
+    path = subdir / "f"
+    subdir.chmod(0)
+    try:
+        assert outside_changes({"f": None}, {"f": path}) == ["f"]
+    finally:
+        subdir.chmod(0o755)
+
+
 def test_outside_changes_reports_creation_where_it_was_absent(tmp_path: Path) -> None:
     path = tmp_path / "f"
     path.write_bytes(b"anything")
