@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -552,6 +554,38 @@ def test_a_review_waits_for_a_write_holding_its_lineage_then_is_refused(
         assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
         with pytest.raises(UsageError, match=f"the lineage lock of {built.run_id}"):
             world.review()
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_review_lineage_wait_expires_before_reviewers(world: World, tmp_path: Path) -> None:
+    built = world.implement()
+    world.commit_by_hand()
+    lock = lineage.lineage_lock(world.state, built.run_id)
+    ready = tmp_path / "lineage-held"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import fcntl, os, pathlib, sys, time\n"
+            "fd = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "pathlib.Path(sys.argv[2]).write_text('held')\n"
+            "time.sleep(30)\n",
+            str(lock),
+            str(ready),
+        ]
+    )
+    before = len(world.agents["claude"].specs)
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        with pytest.raises(UsageError, match=r"--wait 0\.15 s.*lineage lock"):
+            world.review(wait_seconds=0.15)
+        assert len(world.agents["claude"].specs) == before
     finally:
         holder.kill()
         holder.wait()

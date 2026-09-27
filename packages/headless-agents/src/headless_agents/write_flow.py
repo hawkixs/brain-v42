@@ -40,7 +40,7 @@ from . import locks, provenance, quarantine
 from .git_tripwire import Tripwire, resolve_git_dir
 from .gitops import git
 from .lineage import LineageState, PendingWrite
-from .locks import LockTimeout, Rank, held, is_free
+from .locks import AdmissionWait, LockTimeout, Rank, held, is_free
 from .profile import Workspace
 from .provenance import MadeBy
 from .repo import RepoIdentity
@@ -108,6 +108,9 @@ class _Write:
     before: LineageState | None = None
     #: The head a review pinned, for a run taking its findings (``--findings``, §3.6).
     findings_head: str | None = None
+    #: The deadline ``execute`` shares with the global lock (spec §3.3, lot 3);
+    #: ``run_write_step`` resolves an omitted one to the per-lock default.
+    admission_wait: AdmissionWait = field(default_factory=lambda: AdmissionWait(None))
 
     def __post_init__(self) -> None:
         self.owner = self.owner or self.run_id
@@ -304,7 +307,7 @@ def _admit(write: _Write, registry: ExitStack) -> None:
             lineages.registry_lock(state),
             rank=Rank.LINEAGE_REGISTRY,
             exclusive=not write.continuing,
-            wait=locks.LOCK_WAIT_SECONDS,
+            wait=write.admission_wait.remaining("the lineage registry lock"),
             what="the lineage registry lock",
         )
     )
@@ -316,7 +319,7 @@ def _admit(write: _Write, registry: ExitStack) -> None:
                 lineages.lineage_lock(state, owner),
                 rank=Rank.LINEAGE,
                 exclusive=own,
-                wait=locks.LOCK_WAIT_SECONDS,
+                wait=write.admission_wait.remaining(f"the lineage lock of {owner}"),
                 what=f"the lineage lock of {owner}",
                 key=owner,
             )
@@ -722,6 +725,7 @@ def run_write_step(
     joins: str | None = None,
     named: str | None = None,
     findings_head: str | None = None,
+    admission_wait: AdmissionWait | None = None,
 ) -> WriteOutcome:
     """§3.8.3 for one write run; :class:`WriteRefused` when admission refuses.
 
@@ -729,6 +733,9 @@ def run_write_step(
     the member ``--continue`` named (§3.6); without them the write starts a
     lineage of its own. ``findings_head`` is the head a review pinned, for a
     run taking its findings: preparation refuses unless the run starts there.
+    ``admission_wait`` is the deadline ``execute`` shares with the global lock
+    (spec §3.3, lot 3); a direct caller that omits it keeps the per-lock
+    :data:`locks.LOCK_WAIT_SECONDS` default.
     """
     with ExitStack() as locks:
         write = _Write(
@@ -744,11 +751,16 @@ def run_write_step(
             owner=joins or run_id,
             named=named,
             findings_head=findings_head,
+            admission_wait=admission_wait if admission_wait is not None else AdmissionWait(None),
         )
         with ExitStack() as registry:
             try:
                 _admit(write, registry)
             except LockTimeout as exc:
+                if write.admission_wait.seconds is not None:
+                    raise WriteRefused(
+                        f"--wait {write.admission_wait.seconds:g} s expired: {exc}; nothing ran"
+                    ) from None
                 raise WriteRefused(f"{exc}; nothing ran") from None
             _intent(write)
             _crash_after("intent")

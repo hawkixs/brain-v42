@@ -24,6 +24,16 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.2, lot 3: bounded admission waits
+
+- `ha run … --wait SECONDS` uses one explicit, monotonic admission deadline
+  for the global, lineage registry, and lineage locks; expiry returns exit 2
+  before a provider step runs.
+- An admission gate gives a waiting unconfined writer priority over later
+  shared runs. The gate is released after global admission or timeout.
+- Runs without `--wait` retain the existing 10-second lock bounds. Provider
+  `--timeout`, proof requirements, and exit-code meanings are unchanged.
+
 ## 0.5.1 — 2026-09-26 (tag `headless-agents-v0.5.1` after merge)
 
 Ticket ha-051-agy: headless-agents 0.5.0 refused the agy rail outright, because agy

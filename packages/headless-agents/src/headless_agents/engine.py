@@ -952,6 +952,7 @@ def _execute_write(
     unconfined: bool,
     say: Callable[[str], None],
     findings_head: str | None = None,
+    admission_wait: locks.AdmissionWait | None = None,
 ) -> Outcome:
     """A write run -- a role's, or an ``implement`` workflow's: §3.8.3, then its report."""
     role, run_dir = plan.role, entry.run_dir
@@ -980,6 +981,7 @@ def _execute_write(
             joins=plan.joins,
             named=plan.continues,
             findings_head=findings_head,
+            admission_wait=admission_wait,
         )
     except write_flow.WriteRefused as exc:
         _refused(registry, entry)
@@ -1137,6 +1139,7 @@ def _execute_review(
     report: dict[str, object],
     started: float,
     say: Callable[[str], None],
+    admission_wait: locks.AdmissionWait | None = None,
 ) -> Outcome:
     """A review run: the vendor rule and the pinned change, the reviewers in parallel,
     then the judge; the verdict, the result and the cleanup (§3.5, §3.8.4)."""
@@ -1155,6 +1158,7 @@ def _execute_review(
             base_ref=request.base,
             reviewed_lineage=plan.reviewed_lineage,
             reviewers={slot.role.name: slot.role.providers for _, slot in reviewers},
+            admission_wait=admission_wait,
         )
     except review_flow.ReviewRefused as exc:
         _refused(registry, entry)
@@ -1404,6 +1408,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 report=report,
                 started=started,
                 say=say,
+                admission_wait=admission_wait,
             )
         step_name = step_dir_name(1, slot, role.name)
         step_dir = run_dir / "steps" / step_name
@@ -1423,6 +1428,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 started=started,
                 say=say,
                 findings_head=findings.head if findings is not None else None,
+                admission_wait=admission_wait,
             )
         say(f"step 1 run {role.name}: started")
         final = _run_links(
