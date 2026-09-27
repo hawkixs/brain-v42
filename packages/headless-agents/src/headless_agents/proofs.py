@@ -45,7 +45,7 @@ import shlex
 import subprocess
 import tempfile
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -473,6 +473,35 @@ def refused_attempts(
     return found
 
 
+def outside_changes(before: Mapping[str, bytes | None], paths: Mapping[str, Path]) -> list[str]:
+    """The names of ``paths`` whose target changed since ``before`` was snapshotted.
+
+    A name is changed when it held bytes ``before`` and its path is now
+    missing, not a regular file, unreadable (any ``OSError``, which covers a
+    replacement by a directory too) or holds different bytes; or it was
+    absent before (``None``) and now exists as anything. Pure and total: it
+    never raises on the read it performs, so a caller can run the byte check
+    inside a ``finally``, before a run that could not even be read back is
+    torn down (review round 1 of PR #234, item 4 -- a sandboxed command able
+    to corrupt or delete a target must still fail the rail).
+    """
+    changed = []
+    for name, content in before.items():
+        path = paths[name]
+        if content is None:
+            if path.exists() or path.is_symlink():
+                changed.append(name)
+            continue
+        try:
+            now = path.read_bytes()
+        except OSError:
+            changed.append(name)
+            continue
+        if now != content:
+            changed.append(name)
+    return changed
+
+
 @dataclass(frozen=True)
 class ConfinementVerdict:
     """What a confinement probe may record; ``passed`` is None when nothing may be (Q91=b)."""
@@ -527,6 +556,7 @@ __all__ = [
     "confinement",
     "confinement_verdict",
     "isolation_fingerprint",
+    "outside_changes",
     "plant_confinement_targets",
     "probe_command",
     "refused_attempts",
