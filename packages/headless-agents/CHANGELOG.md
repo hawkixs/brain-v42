@@ -96,6 +96,15 @@ left its unconfined intent behind for the operator quarantine to find.
   separators, so a subject holding `\r` no longer crashes the attribution, and the
   tripwire reads `core.hooksPath` as bytes decoded like a path, so a value that is not
   UTF-8 is watched exactly instead of crashing the arming.
+- **A forged reflog subject names no commit.** The branch reflog and the `HEAD` log an
+  unconfined write reads were decoded with replacement and split with
+  `str.splitlines`, so a subject holding `\r` -- which git never writes, but an agent or
+  a hook can -- became an entry of its own, and the commit id inside it was attributed:
+  an unrelated commit could be recorded as a hook's or the agent's. Both logs are now
+  read as bytes and split on git's own separators (`-z` for `git reflog`, `\n` for the
+  file); an entry whose id is not a commit id (40 or 64 lowercase hex) is never
+  attributed -- the branch reflog then fails the attribution, the `HEAD` log reads as
+  rewritten.
 - **A failure after the engine's commit finalises the run instead of leaving it for the
   operator quarantine.** An exception raised by the live engine from its commit through
   publication left `run.json` at `running`, the pending write and the unconfined intent

@@ -1086,6 +1086,90 @@ def test_a_write_final_in_its_lineage_already_has_its_patch(
     assert "print('v2')" in (state.worktree.parent / write_flow.PATCH_FILE).read_text()
 
 
+def _side_commit(world: World) -> str:
+    """An existing commit no write run made: a forged reflog entry names it."""
+    _git(world.repo, "checkout", "-q", "-b", "side")
+    (world.repo / "side.txt").write_text("side\n")
+    _git(world.repo, "add", "side.txt")
+    _git(world.repo, "commit", "-q", "-m", "side")
+    sha = _git(world.repo, "rev-parse", "HEAD").strip()
+    _git(world.repo, "checkout", "-q", "main")
+    return sha
+
+
+def _forged_reflog_line(old: str, new: str, after_cr: str) -> bytes:
+    """One reflog entry whose subject holds ``\r``, then ``after_cr``, then a byte that
+    is not UTF-8. git normalises its own messages; an agent or a hook can write this."""
+    return (
+        f"{old} {new} Op <op@example.test> 1700000000 +0000\tcommit: forged\r".encode()
+        + f"{after_cr} ".encode()
+        + b"x\xff\n"
+    )
+
+
+def test_a_forged_branch_reflog_subject_names_no_commit(world: World) -> None:
+    """Review of #236: the branch reflog was decoded with replacement and split with
+    ``str.splitlines``, so a subject holding ``\r`` became an entry of its own and the
+    commit id inside it was attributed -- here, to a hook of this run."""
+    side = _side_commit(world)
+    forged = world.home / "forged-reflog-line"
+    # ``git reflog show --format='%H %gs'`` prints ``<sha> <subject>``: after the ``\r``,
+    # the side commit's id reads as an entry's sha.
+    forged.write_bytes(_forged_reflog_line("TIP", "TIP", side))
+    _hook(
+        world,
+        "post-commit",
+        "tip=$(git rev-parse HEAD); branch=$(git symbolic-ref --short HEAD)\n"
+        'log="$(git rev-parse --git-common-dir)/logs/refs/heads/$branch"\n'
+        f'LC_ALL=C sed "s/TIP/$tip/g" "{forged}" >> "$log"\n',
+    )
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    tip = _git(world.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
+    assert provenance.lookup(world.state, side) is None
+
+
+def test_a_forged_head_reflog_subject_names_no_agent_commit(unconfined: World) -> None:
+    """The same in the ``HEAD`` log an unconfined write reads as a file: the commit id in
+    a forged subject is no commit of the agent's."""
+    side = _side_commit(unconfined)
+
+    def forge(root: Path) -> None:
+        _edit_app(root)
+        tip = _git(root, "rev-parse", "HEAD").strip()
+        head_log = Path(_git(root, "rev-parse", "--git-dir").strip()) / "logs" / "HEAD"
+        with head_log.open("ab") as log:
+            # The file holds ``<old> <new> ...``: after the ``\r``, the side commit's id
+            # sits where a split line's new id would.
+            log.write(_forged_reflog_line(tip, tip, f"pad {side}"))
+
+    unconfined.agent.edit = forge
+    outcome = unconfined.write()
+    assert outcome.exit_code == 0, unconfined.said
+    assert provenance.lookup(unconfined.state, side) is None
+
+
+def test_a_head_reflog_line_holding_no_commit_id_is_a_rewrite(unconfined: World) -> None:
+    """A field that is not a commit id is never attributed: the log is read as rewritten,
+    the lineage left uncertain, the intent kept for the quarantine."""
+
+    def forge(root: Path) -> None:
+        _edit_app(root)
+        tip = _git(root, "rev-parse", "HEAD").strip()
+        head_log = Path(_git(root, "rev-parse", "--git-dir").strip()) / "logs" / "HEAD"
+        with head_log.open("ab") as log:
+            log.write(f"{tip} not-a-commit Op <op@example.test> 1700000000 +0000\tx\n".encode())
+
+    unconfined.agent.edit = forge
+    outcome = unconfined.write()
+    assert outcome.exit_code == 1
+    assert lineage.load(unconfined.state, outcome.run_id).compromised == "reflog_rewritten"
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+
+
 def test_a_new_unconfined_write_finding_a_leftover_intent_is_refused(unconfined: World) -> None:
     unconfined.state.mkdir(parents=True, exist_ok=True)
     (unconfined.state / write_flow.UNCONFINED_INTENT).write_text(json.dumps({"run_id": "old"}))

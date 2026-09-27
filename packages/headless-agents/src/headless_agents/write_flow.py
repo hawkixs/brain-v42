@@ -57,6 +57,8 @@ COMMIT_LOG: Final = "commit.log"
 PATCH_FILE: Final = "change.patch"
 UNCONFINED_INTENT: Final = "unconfined-intent.json"
 UNCONFINED_WRITERS: Final = "unconfined-writers.json"
+#: A commit id as git writes it: SHA-1 or SHA-256, lowercase hex.
+_OBJECT_ID: Final = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
 #: What tools write into a worktree while an agent works, never the task's files, as
 #: git glob pathspecs (review of #236). The engine's commit, its "anything changed?"
 #: and a continuation's "clean?" all leave them out; the engine names what it left.
@@ -578,16 +580,26 @@ def _reflog_gained(write: _Write, tip: str) -> tuple[bool, bool, list[str]]:
     bytes it held at the start point: commits may have appeared that no
     witness can name. ``commits`` are the new object ids of the appended
     entries, oldest first.
+
+    An entry is one line, split on ``\n`` only: git normalises the messages it
+    writes, but an agent can write the file, and a subject holding ``\r`` or
+    bytes that are not UTF-8 must not make up entries (review of #236). A line
+    whose old or new id is not a commit id is read as a rewrite too.
     """
     commits: list[str] = []
     for path, before in zip(_reflog_files(write), write.reflog_start, strict=True):
         now = _read_log(path)
         if before is None or now is None or not now.startswith(before):
             return True, True, []
-        for line in now[len(before) :].decode("utf-8", "replace").splitlines():
-            fields = line.split(" ", 2)
-            if len(fields) >= 2 and fields[1] != tip and fields[1] not in commits:
-                commits.append(fields[1])
+        for line in now[len(before) :].split(b"\n"):
+            if not line:
+                continue
+            fields = line.split(b" ", 2)
+            if len(fields) < 3 or not all(_OBJECT_ID.fullmatch(f) for f in fields[:2]):
+                return True, True, []
+            new = fields[1].decode("ascii")
+            if new != tip and new not in commits:
+                commits.append(new)
     return bool(commits), False, commits
 
 
@@ -655,17 +667,27 @@ def _new_commits(write: _Write, start: str, tips: Sequence[str | None]) -> list[
     return found
 
 
-def _branch_reflog(write: _Write) -> list[tuple[str, str]]:
-    """``(sha, message)`` of the branch's reflog, oldest first."""
-    code, out, _ = write.git(
-        write.worktree, ["reflog", "show", "--format=%H %gs", f"refs/heads/{write.branch}"]
+def _branch_reflog(write: _Write) -> list[tuple[str, bytes]]:
+    """``(sha, subject)`` of the branch's reflog, oldest first.
+
+    ``-z`` and bytes: git normalises the messages it writes, but an agent or a hook
+    can write the file, and a subject holding ``\r`` or bytes that are not UTF-8
+    must stay one entry (review of #236). An id that is not a commit id raises:
+    nothing is attributed from output the engine cannot read.
+    """
+    code, out, _ = write.git_bytes(
+        write.worktree, ["reflog", "show", "-z", "--format=%H %gs", f"refs/heads/{write.branch}"]
     )
     if code != 0:
         return []
     entries = []
-    for line in reversed(out.splitlines()):
-        sha, _, message = line.partition(" ")
-        entries.append((sha, message))
+    for record in reversed(out.split(b"\0")):
+        if not record:
+            continue
+        sha, _, subject = record.partition(b" ")
+        if not _OBJECT_ID.fullmatch(sha):
+            raise ValueError(f"the reflog of {write.branch} holds no commit id: {sha[:80]!r}")
+        entries.append((sha.decode("ascii"), subject))
     return entries
 
 
@@ -681,10 +703,8 @@ def _attribute(
     """
     tip, head = _tip(write), _head(write)
     new_entries = _branch_reflog(write)[before:]
-    engine_sha = next(
-        (sha for sha, entry in new_entries if entry == f"commit: {message.splitlines()[0]}"),
-        None,
-    )
+    subject = f"commit: {message.splitlines()[0]}".encode()
+    engine_sha = next((sha for sha, entry in new_entries if entry == subject), None)
     shas = _new_commits(write, start, [tip, head])
     for sha, _ in new_entries:
         if sha not in shas and sha != start:
