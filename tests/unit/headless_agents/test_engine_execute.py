@@ -256,7 +256,10 @@ def test_expired_wait_exits_2_and_runs_no_provider(world: World, tmp_path: Path)
             assert time.monotonic() < limit
             time.sleep(0.01)
         request = world.request("codex", wait_seconds=0.15)
-        with pytest.raises(UsageError, match=r"--wait 0\.15 s.*unconfined lock"):
+        with pytest.raises(
+            UsageError,
+            match=r"^--wait 0\.15 s expired: an unconfined write holds the global lock; nothing ran$",
+        ):
             execute(plan(request), say=world.said.append)
         assert "codex" not in world.fakes
     finally:
@@ -278,7 +281,10 @@ def test_expired_wait_forgets_the_unstarted_read(world: World, tmp_path: Path) -
             assert time.monotonic() < limit
             time.sleep(0.01)
         request = world.request("codex", wait_seconds=0.15)
-        with pytest.raises(UsageError, match=r"--wait 0\.15 s.*unconfined lock"):
+        with pytest.raises(
+            UsageError,
+            match=r"^--wait 0\.15 s expired: an unconfined write holds the global lock; nothing ran$",
+        ):
             execute(plan(request), say=world.said.append)
         assert "codex" not in world.fakes
         assert list((world.state / "runs").glob("*.json")) == []
@@ -535,4 +541,95 @@ def test_no_exception_text_is_parsed() -> None:
                 and ("admission gate" in operand.value or "queue" in operand.value)
             ):
                 offending.append(f"line {node.lineno}: {operand.value!r}")
+    # Nor cut up: str(exc).split(...), .partition(...), .startswith(...) and the like.
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"split", "rsplit", "partition", "startswith", "endswith", "find"}
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+            and node.func.value.func.id == "str"
+            and len(node.func.value.args) == 1
+            and isinstance(node.func.value.args[0], ast.Name)
+            and node.func.value.args[0].id == "exc"
+        ):
+            offending.append(f"line {node.lineno}: str(exc).{node.func.attr}(...)")
     assert offending == []
+
+
+_WAITING_WRITER = """
+import sys, time
+from pathlib import Path
+from headless_agents.locks import AdmissionWait, admit_global
+with admit_global(Path(sys.argv[1]), exclusive=True, wait=AdmissionWait(30), label="W1"):
+    time.sleep(30)
+"""
+
+
+def test_an_expired_wait_behind_a_queued_writer_names_it(world: World, tmp_path: Path) -> None:
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    writer = None
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        writer = subprocess.Popen([sys.executable, "-c", _WAITING_WRITER, str(world.state)])
+        limit = time.monotonic() + 10
+        while not any(w.alive and w.label == "W1" for w in locks.waiters(world.state)):
+            assert time.monotonic() < limit and writer.poll() is None
+            time.sleep(0.01)
+        request = world.request("codex", wait_seconds=0.3)
+        with pytest.raises(
+            UsageError,
+            match=r"^--wait 0\.3 s expired: waiting behind 1 earlier admission\(s\) \(W1\); "
+            r"nothing ran$",
+        ):
+            execute(plan(request), say=world.said.append)
+        assert "codex" not in world.fakes
+    finally:
+        for process in (holder, writer):
+            if process is not None:
+                process.kill()
+                process.wait()
+
+
+def test_the_default_refusal_of_a_read_is_unchanged(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.3)
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    try:
+        while not ready.exists():
+            time.sleep(0.02)
+        with pytest.raises(UsageError) as refused:
+            world.run("codex")
+        assert str(refused.value) == (
+            "an unconfined write is running: nothing ran; retry once it has ended"
+        )
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_each_admission_is_labelled_with_its_run_id(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    labels: list[str] = []
+    real = locks.admit_global
+
+    def recording(state: Path, *, exclusive: bool, wait: locks.AdmissionWait, label: str = ""):  # type: ignore[no-untyped-def]
+        labels.append(label)
+        return real(state, exclusive=exclusive, wait=wait, label=label)
+
+    monkeypatch.setattr(locks, "admit_global", recording)
+    world.run("codex")
+    assert labels == world.registry().run_ids()
+    assert labels and labels[0]

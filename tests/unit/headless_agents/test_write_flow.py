@@ -1587,3 +1587,81 @@ def test_a_committed_write_records_its_tool_counts(world: World) -> None:
     outcome = world.write()
     report = json.loads((outcome.run_dir / "run.json").read_text())
     assert report["steps"][0]["tools"] == {"command_execution": 4}
+
+
+# ── admission refusals of an unconfined write (0.5.3 lot 4b, Task 4) ─────────
+
+
+def _unconfined_codex(world: World) -> None:
+    record_proof(
+        world.state,
+        "codex",
+        version="codex 1.0",
+        isolation=True,
+        confinement=False,
+        today="2026-09-25",
+    )
+
+
+def _hold_shared(world: World, tmp_path: Path) -> subprocess.Popen[bytes]:
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held-shared"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), "sh", str(ready)])
+    limit = time.monotonic() + 5
+    while not ready.exists():
+        assert time.monotonic() < limit
+        time.sleep(0.01)
+    return holder
+
+
+def test_the_default_refusal_of_an_unconfined_write_is_unchanged(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _unconfined_codex(world)
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.2)
+    holder = _hold_shared(world, tmp_path)
+    try:
+        with pytest.raises(UsageError) as refused:
+            world.write()
+        assert str(refused.value) == (
+            "runs and writes still running after the bound: an unconfined write waits for "
+            "none of them; nothing ran"
+        )
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_an_expired_wait_of_an_unconfined_write_names_the_runs_holding_the_lock(
+    world: World, tmp_path: Path
+) -> None:
+    _unconfined_codex(world)
+    holder = _hold_shared(world, tmp_path)
+    try:
+        planned = world.write_plan()
+        planned = replace(planned, request=replace(planned.request, wait_seconds=0.2))
+        with pytest.raises(UsageError) as refused:
+            execute(planned, say=world.said.append)
+        assert str(refused.value) == (
+            "--wait 0.2 s expired: runs still hold the global lock; nothing ran"
+        )
+        assert world.agent.specs == []
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_clean_is_labelled_in_the_queue(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    labels: list[str] = []
+    real = locks.admit_global
+
+    def recording(state: Path, *, exclusive: bool, wait: locks.AdmissionWait, label: str = ""):  # type: ignore[no-untyped-def]
+        labels.append(label)
+        return real(state, exclusive=exclusive, wait=wait, label=label)
+
+    monkeypatch.setattr(locks, "admit_global", recording)
+    assert _clean(world, outcome.run_id) == 0
+    assert labels == ["clean"]

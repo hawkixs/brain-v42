@@ -816,6 +816,24 @@ def _installed_version(provider: str, home: Path, environ: Mapping[str, str]) ->
     return probe(provider, executable=executable_for(provider, home), environ=environ).version
 
 
+def _expired_admission(seconds: float, exc: LockTimeout, *, exclusive: bool) -> str:
+    """The refusal of an explicit ``--wait`` that expired at the global admission,
+    built from the timeout's fields (0.5.3 lot 4b): the admissions queued ahead that
+    it waited behind, or who holds the global lock."""
+    expired = f"--wait {seconds:g} s expired"
+    if isinstance(exc, locks.AdmissionTimeout) and exc.phase == "queue":
+        if not exc.ahead:
+            return f"{expired}: the admission queue stayed busy; nothing ran"
+        names = ", ".join(waiter.label or f"pid {waiter.pid}" for waiter in exc.ahead[:3])
+        return (
+            f"{expired}: waiting behind {len(exc.ahead)} earlier admission(s) ({names}); "
+            "nothing ran"
+        )
+    if exclusive:
+        return f"{expired}: runs still hold the global lock; nothing ran"
+    return f"{expired}: an unconfined write holds the global lock; nothing ran"
+
+
 def _check_isolation(plan: Plan) -> None:
     """Refuse a CLI rail without a passing isolation proof for its version (§3.8.0).
 
@@ -1355,7 +1373,9 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         unconfined = role.write and write_is_unconfined(plan)
         try:
             held_locks.enter_context(
-                locks.admit_global(plan.state, exclusive=unconfined, wait=admission_wait)
+                locks.admit_global(
+                    plan.state, exclusive=unconfined, wait=admission_wait, label=entry.run_id
+                )
             )
         except LockTimeout as exc:
             if request.wait_seconds is not None:
@@ -1378,16 +1398,8 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 raise UsageError(
                     "an unconfined write is running: nothing ran; retry once it has ended"
                 ) from None
-            if unconfined:
-                holder = "active runs"
-            elif isinstance(exc, locks.AdmissionTimeout) and exc.phase == "queue":
-                holder = "a waiting unconfined writer"
-            else:
-                holder = "an unconfined write"
-            lock_name = str(exc).split(":", 1)[0]
             raise UsageError(
-                f"--wait {request.wait_seconds:g} s expired: {lock_name}, held by "
-                f"{holder}; nothing ran"
+                _expired_admission(request.wait_seconds, exc, exclusive=unconfined)
             ) from None
 
         try:
@@ -1543,7 +1555,9 @@ def clean(
             # slip past a queued unconfined writer whenever the global lock
             # itself happened to be free.
             held_locks.enter_context(
-                locks.admit_global(state, exclusive=False, wait=locks.AdmissionWait(None))
+                locks.admit_global(
+                    state, exclusive=False, wait=locks.AdmissionWait(None), label="clean"
+                )
             )
         except LockTimeout as exc:
             if isinstance(exc, locks.AdmissionTimeout) and exc.phase == "queue":
