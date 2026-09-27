@@ -340,6 +340,7 @@ def test_check_runs_no_updater_takes_no_lock_and_reports_unknown(
         assert row.old_version == VERSIONS[row.rail]
         assert (row.new_version, row.exit_code, row.log) == (None, None, None)
         assert row.note == "update available: unknown (no vendor dry run)"
+        assert row.status == "checked"
         assert row.updater == (
             str(fake_bin.directory / row.rail),
             *updaters.UPDATERS[row.rail].args,
@@ -402,6 +403,12 @@ def test_proofs_run_after_the_lock_is_released_and_only_for_changed_versions(
     assert _row(rows, "claude").new_version == "2.0.0 (Claude Code)"
     assert _row(rows, "codex").new_version == "codex-cli 1.0.0"
     assert _row(rows, "codex").verdicts == ()
+    assert [(row.rail, row.status) for row in rows] == [
+        ("claude", "updated"),
+        ("codex", "unchanged"),
+        ("agy", "unchanged"),
+        ("opencode", "updated"),
+    ]
 
 
 def test_the_mode_is_read_on_the_version_installed_after_the_proofs(
@@ -433,6 +440,7 @@ def test_a_failed_updater_is_reported_and_the_version_reprobed(
     rows = _update(tmp_path, proved, ("codex",))
     row = _row(rows, "codex")
     assert (row.exit_code, row.new_version) == (1, "codex-cli 2.0.0")
+    assert row.status == "failed"
     assert proved.calls == [("codex", "isolation"), ("codex", "confinement")]
     assert row.rollback_path == kept
     assert row.log is not None and row.log.is_file()
@@ -460,6 +468,7 @@ def test_an_updater_past_its_timeout_is_killed_with_its_group(
     assert time.monotonic() - started < 10
     row = _row(rows, "opencode")
     assert row.exit_code is None and row.note is not None and "timed out" in row.note
+    assert row.status == "timed out"
     for name in ("opencode.pid", "opencode.grandchild"):
         pid = int((fake_bin.directory / name).read_text())
         limit = time.monotonic() + 5
@@ -530,6 +539,7 @@ def test_agy_is_not_updated_without_its_rollback_copy(
     row = _row(rows, "agy")
     assert fake_bin.updated("agy") is None
     assert row.exit_code is None and row.note is not None and "no rollback copy" in row.note
+    assert row.status == "not updated"
     assert proved.calls == []
 
 
@@ -567,4 +577,5 @@ def test_a_rail_that_is_not_installed_is_skipped_without_an_updater(
     row = _row(rows, "agy")
     assert (row.old_version, row.exit_code, row.log) == (None, None, None)
     assert row.note is not None and row.note.startswith("not installed")
+    assert row.status == "not installed"
     assert fake_bin.updated("claude") is not None

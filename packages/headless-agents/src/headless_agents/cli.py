@@ -6,6 +6,7 @@
     ha roles [--json]
     ha workflows [--json]
     ha providers [--json]
+    ha providers [RAIL...] --update [--check] [--no-prove] [--wait SECONDS] [--json]
     ha models [--provider NAME] [--json] [--refresh]
     ha runs [--limit N] [--json]
     ha show RUN_ID [--json]
@@ -23,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import sys
@@ -34,7 +36,7 @@ from pathlib import Path
 from typing import IO, Final
 
 from . import lineage as lineages
-from . import prove, quarantine, show
+from . import prove, quarantine, show, updaters
 from .capability import INVALID_USAGE_EXIT_CODE
 from .cli_models import MODEL_OPTIONAL, MODELS_FILE_NAME, default_models_path, load_models
 from .config_paths import config_dir, config_file, state_dir
@@ -53,6 +55,7 @@ from .engine import (
     prompt_is_optional,
     runs_root,
 )
+from .locks import AdmissionWait
 from .model_catalog import load_catalogue
 from .model_live import live_models
 from .model_report import build_model_report
@@ -139,8 +142,37 @@ def _parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command")
 
-    providers = commands.add_parser("providers", help="list the providers and their availability")
+    providers = commands.add_parser(
+        "providers",
+        help="list the providers and their proofs; --update updates the CLI rails",
+    )
+    providers.add_argument(
+        "rails",
+        nargs="*",
+        metavar="RAIL",
+        help=f"with --update: a CLI rail, {', '.join(CLI_RAILS)} (default: every one of them)",
+    )
     providers.add_argument("--json", action="store_true", help="print the list as JSON")
+    providers.add_argument(
+        "--update",
+        action="store_true",
+        help="update the CLI rails with their vendors' updaters, then prove the rails whose "
+        "version changed (spends provider tokens)",
+    )
+    providers.add_argument(
+        "--check",
+        action="store_true",
+        help="with --update: run nothing, take no lock; show what an update would run",
+    )
+    providers.add_argument(
+        "--no-prove", action="store_true", help="with --update: prove nothing afterwards"
+    )
+    providers.add_argument(
+        "--wait",
+        type=float,
+        metavar="SECONDS",
+        help="with --update: wait up to SECONDS for running runs to end",
+    )
 
     models = commands.add_parser(
         "models", help="compare the operator's model catalogue with live provider lists"
@@ -309,6 +341,20 @@ def _proof_detail_line(row: dict[str, object]) -> str:
 
 
 def _providers(args: argparse.Namespace, io: Io) -> int:
+    if args.update:
+        return _providers_update(args, io)
+    stray = [
+        flag
+        for flag, given in (
+            ("RAIL", bool(args.rails)),
+            ("--check", args.check),
+            ("--no-prove", args.no_prove),
+            ("--wait", args.wait is not None),
+        )
+        if given
+    ]
+    if stray:
+        raise UsageError(f"{', '.join(stray)}: only with --update; nothing ran")
     state = state_dir(io.environ, home=io.home)
     rows = []
     for name in PROVIDER_NAMES:
@@ -352,12 +398,12 @@ def _providers(args: argparse.Namespace, io: Io) -> int:
 # ── ha prove ────────────────────────────────────────────────────────────────
 
 
-def _prove_rails(names: Sequence[str]) -> list[str]:
+def _cli_rails(names: Sequence[str], command: str) -> list[str]:
     """The rails asked for, in the order given; every CLI rail when none is named."""
     for name in names:
         if name not in CLI_RAILS:
             raise UsageError(
-                f"{name}: not a CLI rail; ha prove proves {', '.join(CLI_RAILS)}; nothing ran"
+                f"{name}: not a CLI rail; {command} takes {', '.join(CLI_RAILS)}; nothing ran"
             )
     return list(dict.fromkeys(names)) if names else list(CLI_RAILS)
 
@@ -405,7 +451,7 @@ def _prove(args: argparse.Namespace, io: Io) -> int:
     sessions run ``ha`` headless. :func:`headless_agents.prove.prove` makes the runs and
     alone records; this command selects, announces and reports.
     """
-    rails = _prove_rails(args.rails)
+    rails = _cli_rails(args.rails, "ha prove")
     kinds = [kind for kind in prove.KINDS if getattr(args, kind)] or list(prove.KINDS)
     if args.confinement:
         for rail in args.rails:
@@ -514,6 +560,77 @@ def _prove(args: argparse.Namespace, io: Io) -> int:
         if verdict.outcome != "skipped"
     )
     return 0 if settled else 1
+
+
+# ── ha providers --update ───────────────────────────────────────────────────
+
+
+def _update_line(row: updaters.UpdateRow) -> str:
+    """One rail: versions, updater, verdicts, mode and, when reported, the rollback."""
+    if row.status == "not installed":
+        return f"{row.rail}: {row.note}"
+    if row.status in ("checked", "not updated"):
+        parts = [row.old_version or "(version unknown)"]
+    else:
+        parts = [
+            f"{row.old_version or '(version unknown)'} -> "
+            f"{row.new_version or '(unavailable)'} ({row.status})"
+        ]
+    if row.status == "checked":
+        parts.append(f"updater: {' '.join(row.updater)}")
+    elif row.log is not None:
+        exit_code = "-" if row.exit_code is None else row.exit_code
+        parts.append(f"updater exit {exit_code} (log {row.log})")
+    for verdict in row.verdicts:
+        recorded = "recorded" if verdict.recorded else "not recorded"
+        text = f"{verdict.kind} {verdict.outcome}, {recorded}"
+        if not (verdict.outcome == "passed" and verdict.recorded):
+            text += f" ({verdict.reason})"
+        parts.append(text)
+    if row.note is not None:
+        parts.append(row.note)
+    parts.append(f"mode {row.mode}")
+    way_back = [str(item) for item in (row.rollback_path, row.rollback_command) if item]
+    if way_back:
+        parts.append(f"rollback: {' or '.join(way_back)}")
+    return f"{row.rail}: " + "; ".join(parts)
+
+
+def _providers_update(args: argparse.Namespace, io: Io) -> int:
+    """``ha providers --update``: :func:`headless_agents.updaters.run_updates` does the
+    work; this refuses what it can before anything runs, and reports."""
+    if args.check and args.wait is not None:
+        raise UsageError("--wait with --check: --check takes no lock, nothing to wait for")
+    if args.wait is not None and (not math.isfinite(args.wait) or args.wait <= 0):
+        raise UsageError("--wait needs a finite number of seconds greater than zero")
+    rails = _cli_rails(args.rails, "ha providers --update")
+    prove_after = not args.check and not args.no_prove
+    # A rail updated without a model to prove it with would stay refused: known now,
+    # before any updater runs.
+    models = _prove_models(rails, io) if prove_after else {}
+    rows = updaters.run_updates(
+        rails,
+        state=state_dir(io.environ, home=io.home),
+        home=io.home,
+        environ=io.environ,
+        wait=AdmissionWait(args.wait),
+        check=args.check,
+        prove_after=prove_after,
+        models=models,
+        say=io.say,
+    )
+    if args.json:
+        report = {"schema": 1, "rails": [row.to_dict() for row in rows]}
+        io.stdout.write(json.dumps(report, indent=2) + "\n")
+    else:
+        for row in rows:
+            io.stdout.write(_update_line(row) + "\n")
+    failed = any(
+        row.status in ("failed", "timed out", "not updated")
+        or any(not (v.outcome == "passed" and v.recorded) for v in row.verdicts)
+        for row in rows
+    )
+    return 1 if failed else 0
 
 
 # ── ha models ───────────────────────────────────────────────────────────────

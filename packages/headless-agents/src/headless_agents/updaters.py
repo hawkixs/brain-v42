@@ -46,7 +46,7 @@ from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 from . import locks, proof_state, prove
 from .engine import UsageError, executable_for
@@ -122,11 +122,20 @@ def rollback(
 # ── run_updates ─────────────────────────────────────────────────────────────
 
 
+#: What happened to a rail: ``checked`` (``--check``), ``not installed``, ``not updated``
+#: (refused before its updater ran), ``updated``, ``unchanged``, ``failed`` (the updater
+#: exited non-zero or did not start, or the rail was gone after it) or ``timed out``.
+Status = Literal[
+    "checked", "not installed", "not updated", "updated", "unchanged", "failed", "timed out"
+]
+
+
 @dataclass(frozen=True)
 class UpdateRow:
     """One rail's update, as ``ha providers --update`` reports it."""
 
     rail: str
+    status: Status
     old_version: str | None
     #: Probed after the updater, even a failed one; ``None`` under ``--check``.
     new_version: str | None
@@ -145,6 +154,7 @@ class UpdateRow:
     def to_dict(self) -> dict[str, object]:
         return {
             "rail": self.rail,
+            "status": self.status,
             "old_version": self.old_version,
             "new_version": self.new_version,
             "updater": list(self.updater),
@@ -161,6 +171,7 @@ class UpdateRow:
 @dataclass(frozen=True)
 class _Attempt:
     rail: str
+    status: Status
     old_version: str | None
     new_version: str | None
     updater: tuple[str, ...]
@@ -188,8 +199,9 @@ def _kill_group(process: subprocess.Popen[bytes]) -> None:
 
 def _run_updater(
     argv: tuple[str, ...], log: Path, environ: Mapping[str, str]
-) -> tuple[int | None, str | None]:
-    """The updater's exit code, or ``None`` and why; its output goes to ``log`` (0600)."""
+) -> tuple[int | None, str | None, bool]:
+    """The updater's exit code, or ``None`` and why, and whether it timed out; its
+    output goes to ``log`` (0600)."""
     ensure_dir(log.parent)
     descriptor = os.open(
         log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
@@ -204,14 +216,18 @@ def _run_updater(
             start_new_session=True,
         )
     except OSError as exc:
-        return None, f"the updater did not start: {exc}"
+        return None, f"the updater did not start: {exc}", False
     finally:
         os.close(descriptor)
     try:
-        return process.wait(timeout=UPDATE_TIMEOUT_SECONDS), None
+        return process.wait(timeout=UPDATE_TIMEOUT_SECONDS), None, False
     except subprocess.TimeoutExpired:
         _kill_group(process)
-        return None, f"timed out after {UPDATE_TIMEOUT_SECONDS:g} s: its process group was killed"
+        return (
+            None,
+            f"timed out after {UPDATE_TIMEOUT_SECONDS:g} s: its process group was killed",
+            True,
+        )
     except BaseException:
         # Ctrl-C: the updater dies with us, never left running under a released lock.
         _kill_group(process)
@@ -254,6 +270,7 @@ def _update_one(
     if not before.available:
         return _Attempt(
             rail=rail,
+            status="not installed",
             old_version=None,
             new_version=None,
             updater=(),
@@ -268,6 +285,7 @@ def _update_one(
         if refusal is not None:
             return _Attempt(
                 rail=rail,
+                status="not updated",
                 old_version=before.version,
                 new_version=before.version,
                 updater=argv,
@@ -278,13 +296,21 @@ def _update_one(
             )
     say(f"updating {rail} ({before.version or 'version unknown'}): {' '.join(argv)}")
     log = logs / f"{rail}.log"
-    exit_code, note = _run_updater(argv, log, environ)
+    exit_code, note, timed_out = _run_updater(argv, log, environ)
     after = _probe(rail, home, environ)
     if not after.available:
         gone = f"unavailable after the update: {after.detail}"
         note = gone if note is None else f"{note}; {gone}"
+    status: Status
+    if timed_out:
+        status = "timed out"
+    elif exit_code != 0 or not after.available:
+        status = "failed"
+    else:
+        status = "updated" if after.version != before.version else "unchanged"
     return _Attempt(
         rail=rail,
+        status=status,
         old_version=before.version,
         new_version=after.version if after.available else None,
         updater=argv,
@@ -405,6 +431,7 @@ def run_updates(
             rows.append(
                 UpdateRow(
                     rail=rail,
+                    status="checked" if found.available else "not installed",
                     old_version=version,
                     new_version=None,
                     updater=(found.detail, *UPDATERS[rail].args) if found.available else (),
@@ -456,6 +483,7 @@ def run_updates(
         rows.append(
             UpdateRow(
                 rail=attempt.rail,
+                status=attempt.status,
                 old_version=attempt.old_version,
                 new_version=attempt.new_version,
                 updater=attempt.updater,
@@ -474,6 +502,7 @@ def run_updates(
 __all__ = [
     "UPDATERS",
     "UPDATE_TIMEOUT_SECONDS",
+    "Status",
     "UpdateRow",
     "Updater",
     "agy_copy",
