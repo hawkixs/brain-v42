@@ -28,6 +28,7 @@ and the unconfined lock (§3.8.2) around the whole call and writes the report.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
@@ -56,6 +57,18 @@ COMMIT_LOG: Final = "commit.log"
 PATCH_FILE: Final = "change.patch"
 UNCONFINED_INTENT: Final = "unconfined-intent.json"
 UNCONFINED_WRITERS: Final = "unconfined-writers.json"
+#: What tools write into a worktree while an agent works, never the task's files, as
+#: git glob pathspecs (review of #236). The engine's commit, its "anything changed?"
+#: and a continuation's "clean?" all leave them out; the engine names what it left.
+TOOL_ARTIFACTS: Final = (
+    # Python bytecode: any Python run writes it, pytest's assertion rewriting included.
+    "**/__pycache__/**",
+    "**/*.py[co]",
+    # pytest's cache ignores itself only when pytest creates its directory.
+    "**/.pytest_cache/**",
+    # pytest's default temp root, had the temp dir fallen back to the worktree.
+    "**/pytest-of-*/**",
+)
 
 
 class WriteRefused(Exception):  # noqa: N818 - a refusal, not a crash
@@ -416,7 +429,8 @@ def _prepare_continued(write: _Write) -> str:
     continuation's commit elsewhere than on the branch a review reads.
     """
     worktree, branch = write.worktree, write.branch
-    code, out, err = write.git(worktree, ["status", "--porcelain"])
+    excludes, _ = _tool_artifacts(write)
+    code, out, err = write.git(worktree, ["status", "--porcelain", "--", ".", *excludes])
     if code != 0:
         raise _PreparationRefused(f"git status failed in {worktree}: {err.strip()}")
     if out.strip():
@@ -580,6 +594,56 @@ def _reflog_gained(write: _Write, tip: str) -> tuple[bool, bool, list[str]]:
 # ── steps 6 to 8 ───────────────────────────────────────────────────────────
 
 
+def _pytest_temp_roots(write: _Write) -> list[str]:
+    """Every untracked directory pytest laid out as a numbered temp root, whatever named it.
+
+    A project's own ``--basetemp`` may be any relative path, so no declared name can
+    match it; pytest's layout can: a ``<prefix>current`` symlink naming a sibling
+    ``<prefix><N>`` directory (its ``make_numbered_dir``). The outermost roots only.
+    """
+    code, out, _ = write.git_bytes(
+        write.worktree, ["ls-files", "--others", "--exclude-standard", "-z"]
+    )
+    found: set[str] = set()
+    for raw in out.split(b"\0") if code == 0 else ():
+        relative = os.fsdecode(raw)
+        parent, name = os.path.split(relative)
+        prefix = name.removesuffix("current")
+        if not parent or not prefix or prefix == name:
+            continue
+        link = write.worktree / relative
+        try:
+            target = os.path.basename(os.readlink(link))
+        except OSError:  # not a symlink
+            continue
+        if re.fullmatch(re.escape(prefix) + "[0-9]+", target) and (link.parent / target).is_dir():
+            found.add(parent)
+    return [root for root in sorted(found) if not any(root.startswith(f"{o}/") for o in found)]
+
+
+def _tool_artifacts(write: _Write) -> tuple[list[str], list[str]]:
+    """``(excludes, left_out)``: the pathspecs that leave :data:`TOOL_ARTIFACTS` and
+    pytest's temp roots out, and what they leave out of the worktree's changes now."""
+    roots = _pytest_temp_roots(write)
+    excludes = [f":(exclude,glob){glob}" for glob in TOOL_ARTIFACTS]
+    excludes += [f":(exclude,literal){root}" for root in roots]
+    wanted = [f":(glob){glob}" for glob in TOOL_ARTIFACTS] + [f":(literal){r}" for r in roots]
+    code, out, _ = write.git_bytes(
+        write.worktree, ["status", "--porcelain", "-z", "--untracked-files=normal", "--", *wanted]
+    )
+    left_out: set[str] = set()
+    fields = iter(out.split(b"\0") if code == 0 else ())
+    for entry in fields:
+        if len(entry) < 4:
+            continue
+        if entry[:1] in (b"R", b"C"):
+            next(fields, None)  # a rename's or a copy's source follows
+        path = os.fsdecode(entry[3:])
+        root = next((r for r in roots if path == r or path.startswith(f"{r}/")), None)
+        left_out.add(f"{root}/" if root is not None else path)
+    return excludes, sorted(left_out)
+
+
 def _new_commits(write: _Write, start: str, tips: Sequence[str | None]) -> list[str]:
     """Every commit reachable from ``tips`` and not from ``start``, oldest first."""
     found: list[str] = []
@@ -634,11 +698,16 @@ def _attribute(
 
 
 def _commit(
-    write: _Write, message: str, start: str, step_dir: Path, before: int
+    write: _Write,
+    message: str,
+    start: str,
+    step_dir: Path,
+    before: int,
+    excludes: Sequence[str],
 ) -> tuple[str | None, list[tuple[str, MadeBy]], str | None]:
     """Step 8: ``(failure_reason, commits, head)`` of the engine's commit."""
     # Bytes: the repository's hooks print whatever they like, recorded as printed.
-    code, out, err = write.git_bytes(write.worktree, ["add", "-A"])
+    code, out, err = write.git_bytes(write.worktree, ["add", "-A", "--", ".", *excludes])
     if code == 0:
         code, out, err = write.git_bytes(
             write.worktree, ["commit", "-q", "-m", message], hooks=True
@@ -902,7 +971,13 @@ def run_write_step(
                 1, "failed", "agent_moved_head", write, commits=commits, head=head, final=final
             )
 
-        code, out, err = write.git(write.worktree, ["status", "--porcelain"])
+        excludes, left_out = _tool_artifacts(write)
+        if left_out:
+            say(
+                f"left out of the commit, as tool artifacts (kept in {write.worktree}): "
+                + ", ".join(left_out)
+            )
+        code, out, err = write.git(write.worktree, ["status", "--porcelain", "--", ".", *excludes])
         if code != 0:
             _compromise(write, "status_failed")
             say(f"git status failed in {write.worktree}: {err.strip()}")
@@ -923,7 +998,7 @@ def run_write_step(
         before = len(_branch_reflog(write))
         attributed: Sequence[tuple[str, MadeBy]] | None = None
         try:
-            reason, commits, head = _commit(write, message, tip, step_dir, before)
+            reason, commits, head = _commit(write, message, tip, step_dir, before, excludes)
             attributed = commits
             _crash_after("commit")
             if reason is not None:

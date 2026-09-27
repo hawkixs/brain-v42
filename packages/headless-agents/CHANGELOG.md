@@ -71,6 +71,16 @@ left its unconfined intent behind for the operator quarantine to find.
   removed after the run) is now declared as `sandbox_workspace_write.writable_roots`,
   and `TMPDIR`, `TEMP` and `TMP` all name it; `/tmp` and the operator's `$TMPDIR` stay
   closed.
+- **The engine's commit leaves tool artifacts out, on every write rail, and names
+  them.** A writable temp dir does not stop a project's own relative `--basetemp`, a
+  cache directory pytest did not create (so it wrote no `.gitignore` into it) or
+  bytecode from landing in the worktree, and `git add -A` committed them. The engine's
+  commit, its "anything changed?" check and a continuation's "clean?" check now leave
+  out `write_flow.TOOL_ARTIFACTS` (`__pycache__/`, `*.pyc`, `*.pyo`, `.pytest_cache/`,
+  `pytest-of-*/`) and every pytest temp root recognised by the layout pytest writes
+  (a `<prefix>current` symlink naming a sibling `<prefix><N>` directory), whatever
+  `--basetemp` named it. What is left out stays in the worktree and is named on
+  stderr; a run whose agent only ran the tests changes nothing (exit `5`).
 - **Git output that is not UTF-8 no longer crashes the engine, and what is recorded
   keeps its bytes.** The diff of a file that is not UTF-8 (`'utf-8' codec can't decode
   byte 0xff`) and a hook printing such bytes both crashed the run after its commit.

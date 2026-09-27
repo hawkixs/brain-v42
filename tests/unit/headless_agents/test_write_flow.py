@@ -310,6 +310,63 @@ def test_a_hook_printing_bytes_that_are_not_utf8_does_not_crash_the_commit(
     assert (step_dir / write_flow.COMMIT_LOG).read_bytes() == b"caf\xe9 \xff\n"
 
 
+# ── what the agent's tools leave behind (review of #236) ───────────────────
+
+
+def _pytest_project(world: World) -> None:
+    """A project whose own pytest configuration puts the temp tree inside the checkout."""
+    (world.repo / "pytest.ini").write_text("[pytest]\naddopts = --basetemp=.tmp-pytest\n")
+    (world.repo / "test_app.py").write_text(
+        "def test_it(tmp_path):\n    (tmp_path / 'out.txt').write_text('x')\n"
+    )
+    _git(world.repo, "add", "pytest.ini", "test_app.py")
+    _git(world.repo, "commit", "-q", "-m", "tests")
+
+
+def _run_pytest(root: Path) -> None:
+    """The suite as an agent runs it, with a cache directory pytest did not create -- so
+    pytest writes no ``.gitignore`` into it and its cache files are not ignored."""
+    (root / ".pytest_cache").mkdir()
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("PYTEST_") and name != "PYTHONDONTWRITEBYTECODE"
+    }
+    subprocess.run(
+        [sys.executable, "-m", "pytest", "-q"], cwd=root, env=env, check=True, capture_output=True
+    )
+
+
+def test_a_write_whose_agent_runs_pytest_commits_only_the_tasks_files(world: World) -> None:
+    """The engine's ``git add -A`` swept every untracked file: a pytest temp tree at the
+    project's relative ``--basetemp``, an unignored cache and the bytecode went into the
+    commit with the task (ticket 0b3fcdbf). They are left out -- and named, never dropped
+    in silence: they stay in the worktree."""
+    _pytest_project(world)
+
+    def edit(root: Path) -> None:
+        _edit_app(root)
+        _run_pytest(root)
+
+    world.agent.edit = edit
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    committed = _git(world.repo, "show", "--name-only", "--format=", f"ha/{outcome.run_id}")
+    assert sorted(committed.split()) == ["app.py", "new.py"]
+    (named,) = [line for line in world.said if "left out of the commit" in line]
+    for artifact in (".tmp-pytest/", "__pycache__/", ".pytest_cache/"):
+        assert artifact in named
+    assert (outcome.run_dir / "wt" / ".tmp-pytest").is_dir()
+
+
+def test_a_write_whose_agent_only_ran_pytest_changed_nothing(world: World) -> None:
+    _pytest_project(world)
+    world.agent.edit = _run_pytest
+    outcome = world.write()
+    assert outcome.exit_code == write_flow.NO_CHANGE_EXIT_CODE, world.said
+    assert _subjects(world, f"ha/{outcome.run_id}") == []
+
+
 def test_the_worktree_creation_is_not_attributed_to_the_agent(world: World) -> None:
     """The start point is taken after preparation (§3.8.3 step 4)."""
     world.agent.edit = _edit_app
