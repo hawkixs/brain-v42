@@ -155,13 +155,23 @@ docker compose build embedding-shim
 docker compose up -d --no-deps embedding-shim   # --no-deps: never recreate embedding-llama
 ```
 
-Never widen that to a bare `docker compose up -d`. Two independent traps make
-the global form unsafe on a running host, and both are silent until they are
-not: without `QODO_GGUF_DIR` set, Compose mounts an empty model directory and
-puts `embedding-llama` into a crash-loop (incident 2026-08-21); and every secret
-source whose override variable is unset falls back to a versioned default under
-`./.secrets/`, a directory this host does not have, so the `up` fails on the
-first service that needs one. Always name the service and pass `--no-deps`.
+Never widen that to a bare `docker compose up -d`. One trap still makes the
+global form unsafe on a running host, and it is silent until it is not: every
+secret source whose override variable is unset falls back to a versioned
+default under `./.secrets/`, a directory this host does not have, so the `up`
+fails on the first service that needs one. Always name the service and pass
+`--no-deps`.
+
+A second trap depends on the configuration: since 2026-09-26
+`embedding-llama` sits behind the `qodo` Compose profile
+(docs/ARCHITECTURE.md), so a plain `docker compose up -d` never starts it.
+The production deployment embeds through the OpenAI-compatible backend
+(Mistral codestral) and does not need it; the shipped configuration
+(`BRAIN_EMBEDDING_BACKEND=shim`, `BRAIN_EMBEDDING_MODEL=qodo`, `config.py` and
+`.env.example`) does, and must run with `--profile qodo`. Without
+`QODO_GGUF_DIR` set, Compose then mounts an empty model directory and puts
+`embedding-llama` into a crash-loop (incident 2026-08-21) whenever the profile
+is included: `docker compose --profile qodo up -d`.
 
 The override variables are documented in `deploy/compose-secrets.env.example`
 and belong in the repository's `.env`, which Compose reads on its own — no

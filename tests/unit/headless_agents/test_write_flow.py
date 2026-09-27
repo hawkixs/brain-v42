@@ -23,6 +23,7 @@ import pytest
 
 from headless_agents import engine, lineage, locks, provenance, quarantine, write_flow
 from headless_agents.engine import Overrides, Request, UsageError, execute, plan
+from headless_agents.git_tripwire import GitTampered
 from headless_agents.proofs import CLI_RAILS, record_proof
 from headless_agents.registry import Probe
 from headless_agents.result import RunResult
@@ -263,6 +264,180 @@ def test_a_failed_step_without_changes_commits_nothing(world: World) -> None:
     outcome = world.write()
     assert outcome.exit_code == 1
     assert _subjects(world, f"ha/{outcome.run_id}") == []
+
+
+#: Text to git (no NUL byte), so ``git diff --binary`` prints it raw; not UTF-8.
+_NOT_UTF8 = b"caf\xe9 \xff\xfe\n"
+
+
+def test_a_change_that_is_not_utf8_is_committed_and_its_patch_kept_byte_for_byte(
+    world: World,
+) -> None:
+    """Ticket 0b3fcdbf: the diff of a file that is not UTF-8 crashed the engine after its
+    commit (``'utf-8' codec can't decode byte 0xff``); the patch is bytes, kept as bytes."""
+
+    def edit(root: Path) -> None:
+        (root / "latin1.txt").write_bytes(_NOT_UTF8)
+        (root / "blob.bin").write_bytes(b"\x00\xff" * 64)
+
+    world.agent.edit = edit
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    branch = f"ha/{outcome.run_id}"
+    shown = subprocess.run(
+        ["git", "-C", str(world.repo), "show", f"{branch}:latin1.txt"],
+        check=True,
+        capture_output=True,
+        env=GIT_ENV,
+    ).stdout
+    assert shown == _NOT_UTF8
+    # Applied to the base, the recorded patch rebuilds exactly what was committed.
+    replay = world.home / "replay"
+    _git(world.repo, "worktree", "add", "-q", "--detach", str(replay), "main")
+    _git(replay, "apply", "--binary", str(outcome.run_dir / write_flow.PATCH_FILE))
+    assert (replay / "latin1.txt").read_bytes() == _NOT_UTF8
+    assert (replay / "blob.bin").read_bytes() == b"\x00\xff" * 64
+
+
+def test_a_hook_printing_bytes_that_are_not_utf8_does_not_crash_the_commit(
+    world: World,
+) -> None:
+    _hook(world, "post-commit", "printf 'caf\\351 \\377\\n' >&2\n")
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    step_dir = outcome.run_dir / "steps" / "01-run-codex"
+    assert (step_dir / write_flow.COMMIT_LOG).read_bytes() == b"caf\xe9 \xff\n"
+
+
+# ── what the agent's tools leave behind (review of #236) ───────────────────
+
+
+def _pytest_project(world: World) -> None:
+    """A project whose own pytest configuration puts the temp tree inside the checkout."""
+    (world.repo / "pytest.ini").write_text("[pytest]\naddopts = --basetemp=.tmp-pytest\n")
+    (world.repo / "test_app.py").write_text(
+        "def test_it(tmp_path):\n    (tmp_path / 'out.txt').write_text('x')\n"
+    )
+    _git(world.repo, "add", "pytest.ini", "test_app.py")
+    _git(world.repo, "commit", "-q", "-m", "tests")
+
+
+def _run_pytest(root: Path) -> None:
+    """The suite as an agent runs it, with a cache directory pytest did not create -- so
+    pytest writes no ``.gitignore`` into it and its cache files are not ignored."""
+    (root / ".pytest_cache").mkdir()
+    env = {
+        name: value
+        for name, value in os.environ.items()
+        if not name.startswith("PYTEST_") and name != "PYTHONDONTWRITEBYTECODE"
+    }
+    subprocess.run(
+        [sys.executable, "-m", "pytest", "-q"], cwd=root, env=env, check=True, capture_output=True
+    )
+
+
+def test_a_write_whose_agent_runs_pytest_commits_only_the_tasks_files(world: World) -> None:
+    """The engine's ``git add -A`` swept every untracked file: a pytest temp tree at the
+    project's relative ``--basetemp``, an unignored cache and the bytecode went into the
+    commit with the task (ticket 0b3fcdbf). They are left out -- and named, never dropped
+    in silence: they stay in the worktree."""
+    _pytest_project(world)
+
+    def edit(root: Path) -> None:
+        _edit_app(root)
+        _run_pytest(root)
+
+    world.agent.edit = edit
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    committed = _git(world.repo, "show", "--name-only", "--format=", f"ha/{outcome.run_id}")
+    assert sorted(committed.split()) == ["app.py", "new.py"]
+    (named,) = [line for line in world.said if "left out of the commit" in line]
+    for artifact in (".tmp-pytest/", "__pycache__/", ".pytest_cache/"):
+        assert artifact in named
+    assert (outcome.run_dir / "wt" / ".tmp-pytest").is_dir()
+
+
+def test_a_write_whose_agent_only_ran_pytest_changed_nothing(world: World) -> None:
+    _pytest_project(world)
+    world.agent.edit = _run_pytest
+    outcome = world.write()
+    assert outcome.exit_code == write_flow.NO_CHANGE_EXIT_CODE, world.said
+    assert _subjects(world, f"ha/{outcome.run_id}") == []
+
+
+def _committed(world: World, run_id: str) -> list[str]:
+    return sorted(_git(world.repo, "show", "--name-only", "--format=", f"ha/{run_id}").split())
+
+
+def test_a_forged_pytest_layout_hides_neither_tracked_edits_nor_their_neighbours(
+    world: World,
+) -> None:
+    """Review of #236: a ``<prefix>current`` symlink beside a ``<prefix><N>`` directory
+    made the whole parent directory an artifact, so an agent could hide the task's
+    tracked edits -- the run said no change. Only the layout's own entries are left out."""
+    (world.repo / "src").mkdir()
+    (world.repo / "src" / "lib.py").write_text("x = 1\n")
+    _git(world.repo, "add", "src/lib.py")
+    _git(world.repo, "commit", "-q", "-m", "src")
+
+    def edit(root: Path) -> None:
+        (root / "src" / "lib.py").write_text("x = 2\n")
+        (root / "src" / "extra.py").write_text("y = 1\n")
+        (root / "src" / "test0").mkdir()
+        (root / "src" / "test0" / "out.txt").write_text("x")
+        (root / "src" / "testcurrent").symlink_to("test0")
+
+    world.agent.edit = edit
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    assert _committed(world, outcome.run_id) == ["src/extra.py", "src/lib.py"]
+    (named,) = [line for line in world.said if "left out of the commit" in line]
+    assert "src/test0/" in named and "src/testcurrent" in named
+
+
+def test_a_forged_pytest_layout_over_a_tracked_directory_hides_nothing(world: World) -> None:
+    """pytest makes each numbered directory new: one that holds a tracked file is not
+    pytest's, and a new file the task puts there is committed."""
+    (world.repo / "src" / "test0").mkdir(parents=True)
+    (world.repo / "src" / "test0" / "keep.txt").write_text("tracked\n")
+    _git(world.repo, "add", "src/test0/keep.txt")
+    _git(world.repo, "commit", "-q", "-m", "a tracked test0")
+
+    def edit(root: Path) -> None:
+        (root / "src" / "test0" / "new.py").write_text("z = 1\n")
+        (root / "src" / "testcurrent").symlink_to("test0")
+
+    world.agent.edit = edit
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    assert "src/test0/new.py" in _committed(world, outcome.run_id)
+
+
+def test_a_deleted_tracked_bytecode_fixture_is_committed(world: World) -> None:
+    """Review of #236: tool-artifact rules applied to tracked paths too, so deleting a
+    tracked ``.pyc`` read as no change. Only untracked output is ever left out."""
+    (world.repo / "fixtures").mkdir()
+    (world.repo / "fixtures" / "old.pyc").write_bytes(b"\x00fixture")
+    _git(world.repo, "add", "fixtures/old.pyc")
+    _git(world.repo, "commit", "-q", "-m", "fixture")
+    world.agent.edit = lambda root: (root / "fixtures" / "old.pyc").unlink()
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    shown = _git(world.repo, "show", "--name-status", "--format=", f"ha/{outcome.run_id}")
+    assert shown.split() == ["D", "fixtures/old.pyc"]
+
+
+def test_an_edited_tracked_file_under_a_cache_directory_is_committed(world: World) -> None:
+    (world.repo / ".pytest_cache").mkdir()
+    (world.repo / ".pytest_cache" / "README.md").write_text("tracked on purpose\n")
+    _git(world.repo, "add", "-f", ".pytest_cache/README.md")
+    _git(world.repo, "commit", "-q", "-m", "tracked cache readme")
+    world.agent.edit = lambda root: (root / ".pytest_cache" / "README.md").write_text("edited\n")
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    assert _committed(world, outcome.run_id) == [".pytest_cache/README.md"]
 
 
 def test_the_worktree_creation_is_not_attributed_to_the_agent(world: World) -> None:
@@ -818,6 +993,152 @@ def test_a_crash_between_the_lineage_rename_and_the_intent_removal_quarantines_t
     assert quarantine.check(unconfined.state, None) is not None
 
 
+def test_a_failure_after_the_commit_finalises_the_run_and_clears_the_intent(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket 0b3fcdbf: an exception after the engine's commit left run.json ``running``
+    and the unconfined intent behind, and the next run found the operator quarantined.
+    A live process finalises its own write: failed, its lineage compromised."""
+
+    def fail(step: str) -> None:
+        if step == "commit":
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(write_flow, "_crash_after", fail)
+    unconfined.agent.edit = _edit_app
+    outcome = unconfined.write()
+    assert outcome.exit_code == 1
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["status"] == "failed" and report["failure_reason"] == "engine_error"
+    assert not (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    state = lineage.load(unconfined.state, outcome.run_id)
+    assert state.pending is None and state.compromised == "engine_error"
+    assert state.members[outcome.run_id] == "failed"
+    tip = _git(unconfined.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
+    assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
+    record_ = provenance.lookup(unconfined.state, tip)
+    assert record_ is not None and record_["made_by"] == "engine"
+    assert any("No space left on device" in line for line in unconfined.said)
+
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    assert quarantine.check(unconfined.state, None) is None
+    assert unconfined.write(repo=_second_repository(unconfined)).exit_code == 0
+
+
+def _edit_then_block_the_commit_log(root: Path) -> None:
+    """The task's edit, and ``commit.log`` made unwritable: the engine's commit step then
+    fails once ``git commit`` has run, before it names the commits it made."""
+    _edit_app(root)
+    (root.parent / "steps" / "01-run-codex" / write_flow.COMMIT_LOG).mkdir(parents=True)
+
+
+def test_a_failure_inside_the_commit_step_attributes_its_commit_before_finalising(
+    unconfined: World,
+) -> None:
+    """Review of #236: a commit the step made but had not named yet is recovered from
+    the branch and its reflog, and attributed, before the write is finalised -- no
+    commit of the lineage is left without provenance."""
+    unconfined.agent.edit = _edit_then_block_the_commit_log
+    outcome = unconfined.write()
+    assert outcome.exit_code == 1
+    tip = _git(unconfined.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["failure_reason"] == "engine_error"
+    assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
+    record_ = provenance.lookup(unconfined.state, tip)
+    assert record_ is not None and record_["made_by"] == "engine"
+    state = lineage.load(unconfined.state, outcome.run_id)
+    assert state.pending is None and state.compromised == "engine_error"
+    assert not (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+
+
+def test_a_commit_whose_identity_cannot_be_recovered_keeps_the_pending_write(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the commits cannot be named even after the failure, the write is not
+    finalised: the pending write and the intent stay for the quarantine."""
+
+    def lost(write: object, start: str, tips: object) -> list[str]:
+        raise RuntimeError("the engine lost track")
+
+    real_new_commits = write_flow._new_commits
+    monkeypatch.setattr(write_flow, "_new_commits", lost)
+    unconfined.agent.edit = _edit_then_block_the_commit_log
+    with pytest.raises(RuntimeError, match="lost track"):
+        unconfined.write()
+    (owner,) = lineage.owners(unconfined.state)
+    assert lineage.load(unconfined.state, owner).pending is not None
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    monkeypatch.setattr(write_flow, "_new_commits", real_new_commits)
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()
+
+
+def test_a_death_after_the_commit_still_leaves_the_intent_for_the_quarantine(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a live process finalises: one that dies there, modelled by ``SystemExit``,
+    leaves the pending write and the intent, and the operator quarantine follows."""
+
+    def die(step: str) -> None:
+        if step == "commit":
+            raise SystemExit("killed")
+
+    monkeypatch.setattr(write_flow, "_crash_after", die)
+    unconfined.agent.edit = _edit_app
+    with pytest.raises(SystemExit):
+        unconfined.write()
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()
+    assert quarantine.check(unconfined.state, None) is not None
+
+
+def test_git_found_tampered_after_the_commit_is_not_finalised(unconfined: World) -> None:
+    """A tamper signal is no engine error: a hook of the engine's commit that plants a
+    hook for ``ha``'s own git commands leaves the intent, and the quarantine follows."""
+    planted = unconfined.state / "empty-hooks" / "pre-commit"
+    _hook(unconfined, "post-commit", f"touch '{planted}'\n")
+    unconfined.agent.edit = _edit_app
+    with pytest.raises(GitTampered):
+        unconfined.write()
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    planted.unlink()
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()
+
+
+def test_a_finalisation_that_fails_in_turn_leaves_the_intent_for_the_quarantine(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The intent goes only once the lineage no longer holds the pending write."""
+
+    def fail(step: str) -> None:
+        if step == "commit":
+            raise OSError(28, "No space left on device")
+
+    real_save = lineage.save
+
+    def save(state: Path, current: lineage.LineageState) -> None:
+        if current.pending is None:
+            raise OSError(28, "No space left on device")
+        real_save(state, current)
+
+    monkeypatch.setattr(write_flow, "_crash_after", fail)
+    monkeypatch.setattr(write_flow.lineages, "save", save)
+    unconfined.agent.edit = _edit_app
+    with pytest.raises(OSError, match="No space left"):
+        unconfined.write()
+    (owner,) = lineage.owners(unconfined.state)
+    assert lineage.load(unconfined.state, owner).pending is not None
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    monkeypatch.setattr(write_flow.lineages, "save", real_save)
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()
+
+
 def test_a_write_final_in_its_lineage_already_has_its_patch(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -836,6 +1157,90 @@ def test_a_write_final_in_its_lineage_already_has_its_patch(
     state = lineage.load(world.state, owner)
     assert state.members[owner] == "committed"
     assert "print('v2')" in (state.worktree.parent / write_flow.PATCH_FILE).read_text()
+
+
+def _side_commit(world: World) -> str:
+    """An existing commit no write run made: a forged reflog entry names it."""
+    _git(world.repo, "checkout", "-q", "-b", "side")
+    (world.repo / "side.txt").write_text("side\n")
+    _git(world.repo, "add", "side.txt")
+    _git(world.repo, "commit", "-q", "-m", "side")
+    sha = _git(world.repo, "rev-parse", "HEAD").strip()
+    _git(world.repo, "checkout", "-q", "main")
+    return sha
+
+
+def _forged_reflog_line(old: str, new: str, after_cr: str) -> bytes:
+    """One reflog entry whose subject holds ``\r``, then ``after_cr``, then a byte that
+    is not UTF-8. git normalises its own messages; an agent or a hook can write this."""
+    return (
+        f"{old} {new} Op <op@example.test> 1700000000 +0000\tcommit: forged\r".encode()
+        + f"{after_cr} ".encode()
+        + b"x\xff\n"
+    )
+
+
+def test_a_forged_branch_reflog_subject_names_no_commit(world: World) -> None:
+    """Review of #236: the branch reflog was decoded with replacement and split with
+    ``str.splitlines``, so a subject holding ``\r`` became an entry of its own and the
+    commit id inside it was attributed -- here, to a hook of this run."""
+    side = _side_commit(world)
+    forged = world.home / "forged-reflog-line"
+    # ``git reflog show --format='%H %gs'`` prints ``<sha> <subject>``: after the ``\r``,
+    # the side commit's id reads as an entry's sha.
+    forged.write_bytes(_forged_reflog_line("TIP", "TIP", side))
+    _hook(
+        world,
+        "post-commit",
+        "tip=$(git rev-parse HEAD); branch=$(git symbolic-ref --short HEAD)\n"
+        'log="$(git rev-parse --git-common-dir)/logs/refs/heads/$branch"\n'
+        f'LC_ALL=C sed "s/TIP/$tip/g" "{forged}" >> "$log"\n',
+    )
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    tip = _git(world.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
+    assert provenance.lookup(world.state, side) is None
+
+
+def test_a_forged_head_reflog_subject_names_no_agent_commit(unconfined: World) -> None:
+    """The same in the ``HEAD`` log an unconfined write reads as a file: the commit id in
+    a forged subject is no commit of the agent's."""
+    side = _side_commit(unconfined)
+
+    def forge(root: Path) -> None:
+        _edit_app(root)
+        tip = _git(root, "rev-parse", "HEAD").strip()
+        head_log = Path(_git(root, "rev-parse", "--git-dir").strip()) / "logs" / "HEAD"
+        with head_log.open("ab") as log:
+            # The file holds ``<old> <new> ...``: after the ``\r``, the side commit's id
+            # sits where a split line's new id would.
+            log.write(_forged_reflog_line(tip, tip, f"pad {side}"))
+
+    unconfined.agent.edit = forge
+    outcome = unconfined.write()
+    assert outcome.exit_code == 0, unconfined.said
+    assert provenance.lookup(unconfined.state, side) is None
+
+
+def test_a_head_reflog_line_holding_no_commit_id_is_a_rewrite(unconfined: World) -> None:
+    """A field that is not a commit id is never attributed: the log is read as rewritten,
+    the lineage left uncertain, the intent kept for the quarantine."""
+
+    def forge(root: Path) -> None:
+        _edit_app(root)
+        tip = _git(root, "rev-parse", "HEAD").strip()
+        head_log = Path(_git(root, "rev-parse", "--git-dir").strip()) / "logs" / "HEAD"
+        with head_log.open("ab") as log:
+            log.write(f"{tip} not-a-commit Op <op@example.test> 1700000000 +0000\tx\n".encode())
+
+    unconfined.agent.edit = forge
+    outcome = unconfined.write()
+    assert outcome.exit_code == 1
+    assert lineage.load(unconfined.state, outcome.run_id).compromised == "reflog_rewritten"
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
 
 
 def test_a_new_unconfined_write_finding_a_leftover_intent_is_refused(unconfined: World) -> None:

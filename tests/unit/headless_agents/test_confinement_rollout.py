@@ -20,6 +20,8 @@ from typing import Final
 import pytest
 
 from headless_agents import proofs
+from headless_agents.profile import Workspace
+from headless_agents.providers import codex
 
 RAIL: Final = "codex-cli 0.156.0"
 LINE: Final = "ha-confinement-probe-deadbeef"
@@ -1223,3 +1225,53 @@ class TestWritableRootsPolicyShape:
         assert proofs.refused_attempts(
             "codex", run_dir, [target], line=LINE, rail_version=RAIL
         ) == {target}
+
+    def test_the_merged_build_codex_command_produces_a_policy_this_reader_accepts(
+        self, tmp_path: Path
+    ) -> None:
+        """Integration pin, PR #236 (ticket 0b3fcdbf) merged into this
+        branch: a workspace-write run's argv now always carries
+        ``sandbox_workspace_write.writable_roots=[<scratch>]``
+        (``build_codex_command``'s own ``writable_tmp`` parameter, threaded
+        from ``run_codex``'s per-run scratch -- ``run_with_rollout`` passes
+        it too, so a probed codex gets the exact same argv a production
+        write run does). The ``turn_context.sandbox_policy`` codex was
+        measured to record for that argv (2026-09-27) is what
+        ``_matches_write_policy`` must accept -- built here from the REAL
+        command ``build_codex_command`` produces, not a hand-written dict,
+        so a drift in either one is caught."""
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        target = tmp_path / "outside" / "target.txt"
+
+        command = codex.build_codex_command(
+            model="m",
+            reasoning_effort="low",
+            report_log=tmp_path / "report.log",
+            workspace=workspace,
+            mcp=None,
+            workspace_mode=Workspace(path=workspace, write=True),
+            writable_tmp=scratch,
+        )
+        overrides: dict[str, str] = {}
+        for index, item in enumerate(command):
+            if item == "-c":
+                key, _, raw_value = command[index + 1].partition("=")
+                overrides[key] = raw_value
+
+        # network_access is never an explicit -c override: codex's own
+        # workspace-write default (network off) is what was measured, the
+        # same constant _WRITE_SANDBOX_POLICY already pins.
+        policy = {
+            "type": command[command.index("--sandbox") + 1],
+            "network_access": False,
+            "exclude_tmpdir_env_var": json.loads(
+                overrides["sandbox_workspace_write.exclude_tmpdir_env_var"]
+            ),
+            "exclude_slash_tmp": json.loads(overrides["sandbox_workspace_write.exclude_slash_tmp"]),
+            "writable_roots": json.loads(overrides["sandbox_workspace_write.writable_roots"]),
+        }
+
+        assert proofs._matches_write_policy(policy, workspace=workspace, wanted={"target": target})

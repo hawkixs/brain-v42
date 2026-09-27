@@ -137,6 +137,7 @@ def build_codex_command(
     executable: str = "codex",
     workspace_mode: Workspace | None = None,
     ephemeral: bool = True,
+    writable_tmp: Path | None = None,
 ) -> list[str]:
     """Build the hardened non-interactive Codex command for one run.
 
@@ -153,6 +154,14 @@ def build_codex_command(
     long enough to be copied out before the run-owned CODEX_HOME is removed
     -- the only place a sandbox refusal is ever recorded (learnings
     a5460289, 80934778: ``codex exec --json`` never logs one).
+
+    ``writable_tmp`` is the one temp root a ``workspace-write`` sandbox may
+    write besides the workspace (``run_codex`` passes its per-run scratch);
+    other sandboxes ignore it. This applies to the confinement probe too:
+    ``run_with_rollout`` still passes its own scratch through, so a probed
+    codex's recorded ``turn_context.sandbox_policy`` carries the same
+    ``writable_roots`` entry a production write run would (see
+    :func:`headless_agents.proofs._matches_write_policy`, which accepts it).
     """
     if not model.strip():
         raise ValueError("Codex model must not be empty")
@@ -190,6 +199,12 @@ def build_codex_command(
             ("sandbox_workspace_write.exclude_slash_tmp", True),
             ("sandbox_workspace_write.exclude_tmpdir_env_var", True),
         )
+        if writable_tmp is not None:
+            # Ticket 0b3fcdbf: with no writable temp root at all, Python's
+            # ``tempfile`` falls back to the current directory -- the worktree
+            # -- and a sandboxed ``pytest`` put its basetemp tree there, which
+            # the engine's commit then swept. The scratch holds no repository.
+            overrides += (("sandbox_workspace_write.writable_roots", [str(writable_tmp)]),)
     # ``features.shell_tool`` must be emitted exactly once: codex's ``-c``
     # last-wins behaviour is unmeasured, so the disabled-feature loop and the
     # enabling branch below are mutually exclusive, never both.
@@ -1090,7 +1105,9 @@ def run_codex(
         )
         return PROVIDER_FALLBACK_EXIT_CODE
 
-    def _run(runtime_dir: Path, run_environment: dict[str, str] | None) -> int:
+    def _run(
+        runtime_dir: Path, run_environment: dict[str, str] | None, writable_tmp: Path | None
+    ) -> int:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         command = build_codex_command(
             model=model,
@@ -1101,6 +1118,7 @@ def run_codex(
             executable=executable,
             workspace_mode=workspace_capability,
             ephemeral=rollout_log is None,
+            writable_tmp=writable_tmp,
         )
         # A caller's deadline that has already passed is a TIMEOUT, not a dead
         # link: launching would kill the child at once on an empty stream and
@@ -1244,13 +1262,18 @@ def run_codex(
             dict(child_environment) if child_environment is not None else dict(os.environ)
         )
         run_environment["CODEX_HOME"] = str(ephemeral_home)
+        writable_tmp: Path | None = None
         if workspace_write:
             # Spec 0.5.0 §3.8.0: never the operator's TMPDIR, which may
-            # hold repositories; a scratch directory outside the sandbox's
-            # writable roots, holding nothing, removed after the run.
-            run_environment["TMPDIR"] = scratch
+            # hold repositories; a scratch directory outside the workspace,
+            # holding nothing, removed after the run. It is the sandbox's one
+            # writable temp root (ticket 0b3fcdbf), named by all three
+            # variables so no tool reaches for the operator's TEMP or TMP.
+            writable_tmp = Path(scratch)
+            for name in ("TMPDIR", "TEMP", "TMP"):
+                run_environment[name] = scratch
         try:
-            return _run(runtime_dir, run_environment)
+            return _run(runtime_dir, run_environment, writable_tmp)
         finally:
             # Every exit path -- success, failure, timeout -- must still
             # rescue a rotated token before the ephemeral home is removed.

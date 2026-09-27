@@ -27,8 +27,11 @@ and the unconfined lock (§3.8.2) around the whole call and writes the report.
 
 from __future__ import annotations
 
+import fnmatch
 import os
+import re
 import shutil
+import stat
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
@@ -37,7 +40,7 @@ from typing import TYPE_CHECKING, Final
 
 from . import lineage as lineages
 from . import locks, provenance, quarantine
-from .git_tripwire import Tripwire, resolve_git_dir
+from .git_tripwire import GitTampered, Tripwire, resolve_git_dir
 from .gitops import git
 from .lineage import LineageState, PendingWrite
 from .locks import LockTimeout, Rank, held, is_free
@@ -56,6 +59,16 @@ COMMIT_LOG: Final = "commit.log"
 PATCH_FILE: Final = "change.patch"
 UNCONFINED_INTENT: Final = "unconfined-intent.json"
 UNCONFINED_WRITERS: Final = "unconfined-writers.json"
+#: A commit id as git writes it: SHA-1 or SHA-256, lowercase hex.
+_OBJECT_ID: Final = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
+#: Untracked tool output the engine's commit leaves out (review of #236): what lies
+#: under a directory whose name matches one of these, at any depth -- Python's
+#: bytecode, pytest's cache (it ignores itself only when pytest creates the
+#: directory), pytest's default temp root -- and files with these suffixes. The
+#: engine's commit, its "anything changed?" and a continuation's "clean?" leave it
+#: out alike, and the engine names what it left. A tracked path never is.
+TOOL_ARTIFACT_DIRS: Final = ("__pycache__", ".pytest_cache", "pytest-of-*")
+TOOL_ARTIFACT_SUFFIXES: Final = (".pyc", ".pyo")
 
 
 class WriteRefused(Exception):  # noqa: N818 - a refusal, not a crash
@@ -125,6 +138,15 @@ class _Write:
 
     def git(self, root: Path, args: Sequence[str], *, hooks: bool = False) -> tuple[int, str, str]:
         result = git(root, args, self.environ, state=self.state, hooks=hooks)
+        return result.returncode, result.stdout, result.stderr
+
+    def git_bytes(
+        self, root: Path, args: Sequence[str], *, hooks: bool = False, stdin: bytes | None = None
+    ) -> tuple[int, bytes, bytes]:
+        """``git`` for what is recorded as git printed it (ticket 0b3fcdbf)."""
+        result = git(
+            root, args, self.environ, state=self.state, hooks=hooks, binary=True, stdin=stdin
+        )
         return result.returncode, result.stdout, result.stderr
 
     def save(self, lineage: LineageState) -> None:
@@ -409,10 +431,11 @@ def _prepare_continued(write: _Write) -> str:
     continuation's commit elsewhere than on the branch a review reads.
     """
     worktree, branch = write.worktree, write.branch
-    code, out, err = write.git(worktree, ["status", "--porcelain"])
-    if code != 0:
-        raise _PreparationRefused(f"git status failed in {worktree}: {err.strip()}")
-    if out.strip():
+    try:
+        changes = _changes(write)
+    except _StatusFailed as exc:
+        raise _PreparationRefused(f"git status failed in {worktree}: {exc}") from None
+    if changes.any:
         raise _PreparationRefused(
             f"the worktree {worktree} has uncommitted changes: commit or discard them first"
         )
@@ -557,20 +580,163 @@ def _reflog_gained(write: _Write, tip: str) -> tuple[bool, bool, list[str]]:
     bytes it held at the start point: commits may have appeared that no
     witness can name. ``commits`` are the new object ids of the appended
     entries, oldest first.
+
+    An entry is one line, split on ``\n`` only: git normalises the messages it
+    writes, but an agent can write the file, and a subject holding ``\r`` or
+    bytes that are not UTF-8 must not make up entries (review of #236). A line
+    whose old or new id is not a commit id is read as a rewrite too.
     """
     commits: list[str] = []
     for path, before in zip(_reflog_files(write), write.reflog_start, strict=True):
         now = _read_log(path)
         if before is None or now is None or not now.startswith(before):
             return True, True, []
-        for line in now[len(before) :].decode("utf-8", "replace").splitlines():
-            fields = line.split(" ", 2)
-            if len(fields) >= 2 and fields[1] != tip and fields[1] not in commits:
-                commits.append(fields[1])
+        for line in now[len(before) :].split(b"\n"):
+            if not line:
+                continue
+            fields = line.split(b" ", 2)
+            if len(fields) < 3 or not all(_OBJECT_ID.fullmatch(f) for f in fields[:2]):
+                return True, True, []
+            new = fields[1].decode("ascii")
+            if new != tip and new not in commits:
+                commits.append(new)
     return bool(commits), False, commits
 
 
 # ── steps 6 to 8 ───────────────────────────────────────────────────────────
+
+
+def _is_real_dir(path: Path) -> bool:
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _pytest_temp_entries(write: _Write, paths: Sequence[str]) -> tuple[set[str], set[str]]:
+    """``(links, numbered)``: the entries of every pytest temp root among the untracked
+    ``paths``, verified one by one, whatever ``--basetemp`` named the root.
+
+    pytest's ``make_numbered_dir`` writes ``<prefix><N>`` directories and a
+    ``<prefix>current`` symlink naming one of them. A series is recognised by that
+    symlink -- untracked, naming a new ``<prefix><N>`` directory beside it -- and only
+    its own entries are left out: the symlink and the new ``<prefix><N>`` directories
+    next to it, never the directory holding them, so nothing else there can hide
+    behind a forged layout (review of #236). A directory is new when it is a real one
+    and git tracks nothing under it: pytest makes each of them afresh.
+    """
+    known: dict[str, bool] = {}
+
+    def new(directory: str) -> bool:
+        if directory not in known:
+            code, out, _ = write.git_bytes(
+                write.worktree, ["--literal-pathspecs", "ls-files", "-z", "--", directory]
+            )
+            known[directory] = _is_real_dir(write.worktree / directory) and code == 0 and not out
+        return known[directory]
+
+    links: set[str] = set()
+    series: set[tuple[str, str]] = set()
+    for path in paths:
+        parent, name = os.path.split(path)
+        prefix = name.removesuffix("current")
+        if not prefix or prefix == name:
+            continue
+        link = write.worktree / path
+        try:
+            target = os.readlink(link)
+        except OSError:  # not a symlink
+            continue
+        beside = os.path.realpath(os.path.join(link.parent, os.path.dirname(target)))
+        numbered = os.path.basename(target)
+        if (
+            beside == os.path.realpath(link.parent)
+            and re.fullmatch(re.escape(prefix) + "[0-9]+", numbered)
+            and new(os.path.join(parent, numbered))
+        ):
+            links.add(path)
+            series.add((f"{parent}/" if parent else "", prefix))
+    numbered_dirs: set[str] = set()
+    for path in paths:
+        for head, prefix in series:
+            first, slash, _ = path.removeprefix(head).partition("/")
+            if (
+                path.startswith(head)
+                and slash
+                and re.fullmatch(re.escape(prefix) + "[0-9]+", first)
+                and new(f"{head}{first}")
+            ):
+                numbered_dirs.add(f"{head}{first}")
+    return links, numbered_dirs
+
+
+def _declared_artifact(path: str) -> str | None:
+    """Where ``path`` lies as :data:`TOOL_ARTIFACT_DIRS` or :data:`TOOL_ARTIFACT_SUFFIXES`
+    output -- its artifact directory, or itself -- or ``None``."""
+    parts = path.split("/")
+    for index, part in enumerate(parts[:-1]):
+        if any(fnmatch.fnmatchcase(part, pattern) for pattern in TOOL_ARTIFACT_DIRS):
+            return "/".join(parts[: index + 1]) + "/"
+    return path if parts[-1].endswith(TOOL_ARTIFACT_SUFFIXES) else None
+
+
+class _StatusFailed(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class _Changes:
+    """The worktree against its ``HEAD``, as the engine's commit takes it."""
+
+    #: A tracked path modified, deleted, or anything staged: always the task's.
+    tracked: bool
+    #: The untracked paths the commit takes, as git printed them.
+    untracked: tuple[bytes, ...]
+    #: The untracked tool output it leaves out, named for the operator.
+    left_out: tuple[str, ...]
+
+    @property
+    def any(self) -> bool:
+        return self.tracked or bool(self.untracked)
+
+
+def _changes(write: _Write) -> _Changes:
+    """What changed in the worktree, read once (review of #236); :class:`_StatusFailed`.
+
+    Only UNTRACKED tool output is ever left out; a tracked modification or deletion
+    under an artifact's name is the task's, and goes into the commit; so is every
+    untracked path that is neither declared output nor a verified entry of a pytest
+    temp root (:func:`_pytest_temp_entries`).
+    """
+    code, out, err = write.git_bytes(
+        write.worktree, ["status", "--porcelain", "-z", "--untracked-files=all"]
+    )
+    if code != 0:
+        raise _StatusFailed(err.decode("utf-8", "replace").strip())
+    tracked, untracked = False, []
+    fields = iter(out.split(b"\0"))
+    for entry in fields:
+        if len(entry) < 4:
+            continue
+        if entry[:2] == b"??":
+            untracked.append(entry[3:])
+            continue
+        tracked = True
+        if entry[:1] in (b"R", b"C"):
+            next(fields, None)  # a rename's or a copy's source follows
+    paths = [os.fsdecode(raw) for raw in untracked]
+    links, numbered = _pytest_temp_entries(write, paths)
+    kept: list[bytes] = []
+    left_out: set[str] = set()
+    for raw, path in zip(untracked, paths, strict=True):
+        where = _declared_artifact(path) or (path if path in links else None)
+        if where is None:
+            where = next((f"{entry}/" for entry in numbered if path.startswith(f"{entry}/")), None)
+        if where is None:
+            kept.append(raw)
+        else:
+            left_out.add(where)
+    return _Changes(tracked=tracked, untracked=tuple(kept), left_out=tuple(sorted(left_out)))
 
 
 def _new_commits(write: _Write, start: str, tips: Sequence[str | None]) -> list[str]:
@@ -584,36 +750,44 @@ def _new_commits(write: _Write, start: str, tips: Sequence[str | None]) -> list[
     return found
 
 
-def _branch_reflog(write: _Write) -> list[tuple[str, str]]:
-    """``(sha, message)`` of the branch's reflog, oldest first."""
-    code, out, _ = write.git(
-        write.worktree, ["reflog", "show", "--format=%H %gs", f"refs/heads/{write.branch}"]
+def _branch_reflog(write: _Write) -> list[tuple[str, bytes]]:
+    """``(sha, subject)`` of the branch's reflog, oldest first.
+
+    ``-z`` and bytes: git normalises the messages it writes, but an agent or a hook
+    can write the file, and a subject holding ``\r`` or bytes that are not UTF-8
+    must stay one entry (review of #236). An id that is not a commit id raises:
+    nothing is attributed from output the engine cannot read.
+    """
+    code, out, _ = write.git_bytes(
+        write.worktree, ["reflog", "show", "-z", "--format=%H %gs", f"refs/heads/{write.branch}"]
     )
     if code != 0:
         return []
     entries = []
-    for line in reversed(out.splitlines()):
-        sha, _, message = line.partition(" ")
-        entries.append((sha, message))
+    for record in reversed(out.split(b"\0")):
+        if not record:
+            continue
+        sha, _, subject = record.partition(b" ")
+        if not _OBJECT_ID.fullmatch(sha):
+            raise ValueError(f"the reflog of {write.branch} holds no commit id: {sha[:80]!r}")
+        entries.append((sha.decode("ascii"), subject))
     return entries
 
 
-def _commit(
-    write: _Write, message: str, start: str, step_dir: Path
-) -> tuple[str | None, list[tuple[str, MadeBy]], str | None]:
-    """Step 8: ``(failure_reason, commits, head)`` of the engine's commit."""
-    before = len(_branch_reflog(write))
-    code, out, err = write.git(write.worktree, ["add", "-A"])
-    if code == 0:
-        code, out, err = write.git(write.worktree, ["commit", "-q", "-m", message], hooks=True)
-    step_dir.mkdir(parents=True, exist_ok=True)
-    (step_dir / COMMIT_LOG).write_text(out + err, encoding="utf-8", errors="replace")
+def _attribute(
+    write: _Write, message: str, start: str, before: int
+) -> tuple[list[tuple[str, MadeBy]], str | None, str | None]:
+    """``(commits, engine_sha, head)``: every commit since ``start``, and who made it.
+
+    Only the engine and the repository's hooks can have committed here: an agent's
+    commit was refused before step 8. ``before`` is the branch reflog's length before
+    the engine's commit. Read-only, so it runs again when the commit step failed
+    before naming what it made (review of #236).
+    """
     tip, head = _tip(write), _head(write)
     new_entries = _branch_reflog(write)[before:]
-    engine_sha = next(
-        (sha for sha, entry in new_entries if entry == f"commit: {message.splitlines()[0]}"),
-        None,
-    )
+    subject = f"commit: {message.splitlines()[0]}".encode()
+    engine_sha = next((sha for sha, entry in new_entries if entry == subject), None)
     shas = _new_commits(write, start, [tip, head])
     for sha, _ in new_entries:
         if sha not in shas and sha != start:
@@ -623,6 +797,37 @@ def _commit(
     ]
     if engine_sha is not None and engine_sha not in shas:
         commits.insert(0, (engine_sha, "engine"))
+    return commits, engine_sha, head
+
+
+def _commit(
+    write: _Write,
+    message: str,
+    start: str,
+    step_dir: Path,
+    before: int,
+    untracked: Sequence[bytes],
+) -> tuple[str | None, list[tuple[str, MadeBy]], str | None]:
+    """Step 8: ``(failure_reason, commits, head)`` of the engine's commit.
+
+    Every tracked change, then exactly the ``untracked`` paths :func:`_changes` kept --
+    literal, NUL-separated on stdin, so no name is read as a pattern or cut short.
+    """
+    # Bytes: the repository's hooks print whatever they like, recorded as printed.
+    code, out, err = write.git_bytes(write.worktree, ["add", "-u"])
+    if code == 0 and untracked:
+        code, out, err = write.git_bytes(
+            write.worktree,
+            ["--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"],
+            stdin=b"".join(path + b"\0" for path in untracked),
+        )
+    if code == 0:
+        code, out, err = write.git_bytes(
+            write.worktree, ["commit", "-q", "-m", message], hooks=True
+        )
+    step_dir.mkdir(parents=True, exist_ok=True)
+    (step_dir / COMMIT_LOG).write_bytes(out + err)
+    commits, engine_sha, head = _attribute(write, message, start, before)
     if any(made_by == "hook" for _, made_by in commits):
         return "hook_committed", commits, head
     if code != 0 or engine_sha is None:
@@ -705,6 +910,32 @@ def _outcome(
         head=head,
         final=final,
     )
+
+
+def _abandon(
+    write: _Write, error: Exception, commits: Sequence[tuple[str, MadeBy]], *, final: RunResult
+) -> WriteOutcome:
+    """A failure of this LIVE process once the engine's commit began (ticket 0b3fcdbf).
+
+    Left alone, the pending write and the unconfined intent would make the next
+    admission quarantine the operator for a writer that did not die. The write is
+    published instead -- failed, its lineage compromised (``engine_error``): the
+    repository is not in a state the engine expected -- and :func:`_publish` removes
+    the intent only once the lineage no longer holds the pending write. Every commit
+    gets its provenance: ``commits`` are the ones the commit step named, or, when it
+    failed first, the ones :func:`_attribute` recovered -- a commit no one can name
+    is never finalised. A process that dies here, an interruption, a git found
+    tampered, or a publication that fails in turn still leaves both for the
+    quarantine: the one git command here runs before the publication.
+    """
+    head = _head(write)
+    _publish(write, status="failed", commits=commits, compromised="engine_error")
+    write.say(
+        f"the engine failed after its commit began ({type(error).__name__}: {error}): the "
+        f"run failed and lineage {write.owner} is compromised; inspect {write.worktree} "
+        "and recover it by hand"
+    )
+    return _outcome(1, "failed", "engine_error", write, commits=commits, head=head, final=final)
 
 
 def run_write_step(
@@ -853,13 +1084,19 @@ def run_write_step(
                 1, "failed", "agent_moved_head", write, commits=commits, head=head, final=final
             )
 
-        code, out, err = write.git(write.worktree, ["status", "--porcelain"])
-        if code != 0:
+        try:
+            changes = _changes(write)
+        except _StatusFailed as exc:
             _compromise(write, "status_failed")
-            say(f"git status failed in {write.worktree}: {err.strip()}")
+            say(f"git status failed in {write.worktree}: {exc}")
             return _outcome(1, "failed", "status_failed", write, head=head, final=final)
+        if changes.left_out:
+            say(
+                f"left out of the commit, as tool artifacts (kept in {write.worktree}): "
+                + ", ".join(changes.left_out)
+            )
         failed_step = final.exit_code != 0
-        if not out.strip():
+        if not changes.any:
             status = "failed" if failed_step else "no_change"
             _publish(write, status=status, commits=(), compromised=None)
             if failed_step:
@@ -871,21 +1108,41 @@ def run_write_step(
         # §3.6: "fix" instead of "implement" for a run taking a review's findings.
         verb = "residue" if failed_step else ("fix" if findings_head is not None else "implement")
         message = f"chore(ha): {run_id} {verb} via {final.provider}/{model}"
-        reason, commits, head = _commit(write, message, tip, step_dir)
-        _crash_after("commit")
-        if reason is not None:
-            _publish(write, status="failed", commits=commits, compromised=reason)
-            say(
-                f"the commit was refused or a hook committed ({reason}): see "
-                f"{step_dir / COMMIT_LOG}; the lineage is compromised"
+        before = len(_branch_reflog(write))
+        attributed: Sequence[tuple[str, MadeBy]] | None = None
+        try:
+            reason, commits, head = _commit(
+                write, message, tip, step_dir, before, changes.untracked
             )
-            return _outcome(1, "failed", reason, write, commits=commits, head=head, final=final)
-        # The patch before the publication: after the lineage rename only the report is
-        # left to rebuild (§3.8.3 step 9), and change.patch cannot be rebuilt from it.
-        code, patch, _ = write.git(write.worktree, ["diff", "--binary", base, "HEAD"])
-        (run_dir / PATCH_FILE).write_text(patch, encoding="utf-8", errors="replace")
-        status = "failed" if failed_step else "committed"
-        _publish(write, status=status, commits=commits, compromised=None)
+            attributed = commits
+            _crash_after("commit")
+            if reason is not None:
+                _publish(write, status="failed", commits=commits, compromised=reason)
+                say(
+                    f"the commit was refused or a hook committed ({reason}): see "
+                    f"{step_dir / COMMIT_LOG}; the lineage is compromised"
+                )
+                return _outcome(1, "failed", reason, write, commits=commits, head=head, final=final)
+            # The patch before the publication: after the lineage rename only the report
+            # is left to rebuild (§3.8.3 step 9), and change.patch cannot be rebuilt from
+            # it. Bytes: a file that is not UTF-8 is diffed raw, and replacing its bytes
+            # would record a patch that no longer rebuilds the commit (ticket 0b3fcdbf).
+            code, patch, _ = write.git_bytes(write.worktree, ["diff", "--binary", base, "HEAD"])
+            (run_dir / PATCH_FILE).write_bytes(patch)
+            status = "failed" if failed_step else "committed"
+            _publish(write, status=status, commits=commits, compromised=None)
+        except GitTampered:
+            # A tamper signal, not an engine error: the intent stays for the quarantine.
+            raise
+        except Exception as exc:  # a live process finalises its write: see _abandon
+            if write.current.pending is None:
+                # Already final in its lineage: only the intent's removal was left.
+                raise
+            if attributed is None:
+                # The commit step failed before naming what it made: named now. If even
+                # that fails, this raises and the pending write stays for the quarantine.
+                attributed = _attribute(write, message, tip, before)[0]
+            return _abandon(write, exc, attributed, final=final)
         if failed_step:
             return _outcome(
                 1, "failed", "step_failed", write, commits=commits, head=head, final=final
