@@ -128,10 +128,11 @@ Review round, before merge:
 - **`turn_context.sandbox_policy` also accepts ha's own write argv plus a `writable_roots`
   entry** (ticket 0b3fcdbf / PR #236 adds `sandbox_workspace_write.writable_roots=["<scratch>"]`
   to every workspace-write run; codex 0.156.0 measured 2026-09-27 to record it verbatim,
-  never replacing the four required keys) — but only when every entry is structurally safe:
-  never the workspace, and never equal to or an ancestor of any probed target. A forged or
-  misrecorded entry naming one of them credits nothing, rather than trust a policy that would
-  make the refusal meaningless.
+  never replacing the four required keys) — but only when every entry is an ABSOLUTE path
+  and is structurally safe: never equal to, an ANCESTOR of, or a DESCENDANT of the
+  workspace, and — symmetrically — never equal to, an ancestor of, or a descendant of any
+  probed target. A forged or misrecorded entry naming one of them credits nothing, rather
+  than trust a policy that would make the refusal meaningless.
 - **Documented residual**: `refused_attempts` alone cannot see whether an outside target's
   own bytes changed — that ordering lives in `confinement_verdict`, which checks bytes
   UNCONDITIONALLY before any rollout evidence matters (pinned by a dedicated test). A
@@ -141,6 +142,24 @@ Review round, before merge:
   the rollout, so there is no independent, ha-observed stream to cross-check a credited
   `call_id` against. An agent that escapes the sandbox, leaves every target untouched and
   forges its own rollout is not defended against by this module.
+
+Review round 2, before merge:
+- **The live probe's operator-store guard now derives its own-store check from
+  `resolve_real_codex_home`** — extracted from what was inline in `run_codex` — unioned
+  with the parent (pytest) process's own resolution: the probe's `RunSpec` environment
+  never carries `CODEX_HOME`, so `run_codex` falls back to `Path.home()/.codex` (this
+  process's own `$HOME`, never the spec's); a guard that read `$CODEX_HOME` from the
+  parent process alone could watch a store `run_codex` never resolves to for that spec,
+  and miss a real write elsewhere. Checked for every combination of parent `$CODEX_HOME`
+  set/unset crossed with the spec environment carrying `CODEX_HOME` or not.
+- **`_keep_rollout`'s caller is now `except Exception`, not `except OSError`**: the one
+  promise is that a failed rollout copy never changes `run_codex`'s own exit code or
+  raises, and nothing guarantees every future failure mode stays an `OSError`.
+- **`os.scandir` on a directory file descriptor, pinned against a real on-disk tree.** An
+  agy finding claiming it raises `TypeError` on this platform did not reproduce (measured
+  on the package's own Python 3.12.12); a new no-mocks test exercises
+  `_rollout_candidate_descriptors`/`_keep_rollout` against a real `sessions/YYYY/MM/DD`
+  tree and checks the kept file's bytes.
 
 No contract surface change; production argv unchanged; the proof record format is
 unchanged (`confinement: {passed, date}`).
