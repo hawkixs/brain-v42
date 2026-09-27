@@ -5,14 +5,21 @@ git subprocess inherits one, and a lock dies with the ``ha`` process that
 took it. The order is fixed, which excludes a deadlock:
 
 1. the run's own lifecycle lock;
-2. the global unconfined lock;
-3. the lineage registry lock;
-4. lineage locks, in ascending owner-id order.
+2. the admission gate, held only for the instant of taking the lock below;
+3. the global unconfined lock;
+4. the lineage registry lock;
+5. lineage locks, in ascending owner-id order.
 
 :func:`held` enforces that order per thread and raises ``RuntimeError`` on a
 violation -- a programming error, never a user's. A lock not obtained within
 its bound raises :class:`LockTimeout`, which the engine turns into a usage
 refusal (exit ``2``).
+
+:class:`AdmissionWait` carries one optional, explicit ``--wait`` deadline
+(lot 3, spec §3.3) shared by every admission lock a run takes -- the global
+lock through :func:`admit_global`, and the lineage registry and lineage locks
+a write or a review admits under it. Without ``--wait``, each lock keeps its
+own :data:`LOCK_WAIT_SECONDS` bound, as before.
 """
 
 from __future__ import annotations
@@ -22,7 +29,8 @@ import os
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
 from typing import Final
@@ -38,9 +46,10 @@ class LockTimeout(Exception):
 
 class Rank(IntEnum):
     LIFECYCLE = 1
-    UNCONFINED = 2
-    LINEAGE_REGISTRY = 3
-    LINEAGE = 4
+    ADMISSION_GATE = 2
+    UNCONFINED = 3
+    LINEAGE_REGISTRY = 4
+    LINEAGE = 5
 
 
 _held = threading.local()
@@ -116,6 +125,67 @@ def held(
         os.close(descriptor)
 
 
+@dataclass(frozen=True)
+class AdmissionWait:
+    """One optional monotonic admission deadline, shared by every lock a run admits under.
+
+    ``seconds=None`` keeps the per-lock :data:`LOCK_WAIT_SECONDS` default (no
+    ``--wait`` given). An explicit bound is spent across every lock
+    :meth:`remaining` is asked for: time spent on one lock is not returned to
+    the next.
+    """
+
+    seconds: float | None
+    started: float = field(default_factory=time.monotonic)
+
+    #: False for the budget :func:`admit_global` builds when no ``--wait`` was
+    #: given: its expiry must not name a flag the caller never passed.
+    explicit: bool = True
+
+    def remaining(self, what: str) -> float:
+        if self.seconds is None:
+            return LOCK_WAIT_SECONDS
+        left = self.started + self.seconds - time.monotonic()
+        if left <= 0:
+            if self.explicit:
+                raise LockTimeout(f"{what}: --wait {self.seconds:g} s expired")
+            raise LockTimeout(f"{what}: not obtained within {self.seconds:g} s")
+        return left
+
+
+@contextmanager
+def admit_global(state: Path, *, exclusive: bool, wait: AdmissionWait) -> Iterator[None]:
+    """Take the global unconfined lock at ``state``, gated for writer preference.
+
+    The admission gate (``admission-gate.lock``) is held only for the instant
+    of acquiring the global lock: shared for an ordinary run, exclusive for an
+    unconfined write. A waiting unconfined writer therefore holds the gate
+    exclusively for as long as it waits for the global lock, and every later
+    run -- shared or not -- queues behind it instead of slipping in first. The
+    gate is released as soon as the global lock is taken, or on a timeout; the
+    global lock itself is held for the caller's block.
+    """
+    budget = wait if wait.seconds is not None else AdmissionWait(LOCK_WAIT_SECONDS, explicit=False)
+    with ExitStack() as global_lock:
+        with held(
+            state / "admission-gate.lock",
+            rank=Rank.ADMISSION_GATE,
+            exclusive=exclusive,
+            wait=budget.remaining("the admission gate"),
+            what="the admission gate",
+        ):
+            global_lock.enter_context(
+                held(
+                    state / "unconfined.lock",
+                    rank=Rank.UNCONFINED,
+                    exclusive=exclusive,
+                    wait=budget.remaining("the unconfined lock"),
+                    what="the unconfined lock",
+                )
+            )
+        yield
+
+
 def is_free(path: Path) -> bool:
     """No process holds ``path`` exclusively: a non-blocking shared lock succeeds.
 
@@ -138,4 +208,12 @@ def is_free(path: Path) -> bool:
         os.close(descriptor)
 
 
-__all__ = ["LOCK_WAIT_SECONDS", "LockTimeout", "Rank", "held", "is_free"]
+__all__ = [
+    "LOCK_WAIT_SECONDS",
+    "AdmissionWait",
+    "LockTimeout",
+    "Rank",
+    "admit_global",
+    "held",
+    "is_free",
+]
