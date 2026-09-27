@@ -9,7 +9,8 @@ the `registry` facade (`get_provider`, `PROVIDER_NAMES`, `probe`, `max_prompt_by
 `envelope.unwrap`, and the exit codes `PROVIDER_FALLBACK_EXIT_CODE = 3`,
 `TIMEOUT_EXIT_CODE = 124` and `TIMEOUT_REPLAYABLE_EXIT_CODE = 4`. A change to any of
 these is a **breaking** entry below and a major-or-minor bump while the package is 0.x;
-a new provider is additive.
+a new provider is additive. A new optional field whose default reproduces the previous
+behaviour is additive too (0.5.3 decision D1): `RunSpec.output_schema` is the first.
 
 ## Tags
 
@@ -23,6 +24,65 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
+
+## Unreleased — 0.5.3, lot 1: schema-constrained output
+
+A caller that needed a machine-readable answer could only ask for JSON in the prompt and
+hope (red-arena G1, ticket a48dc8eb). A run can now ask for an answer constrained by a
+JSON Schema, and only a rail that enforces one natively takes it; no rail imitates one
+with a prompt instruction.
+
+### Added
+- **`RunSpec.output_schema`** (default `None`) and **`ha run TARGET --output-schema
+  FILE`**. The schema is an object-rooted JSON object of at most 65536 bytes serialised
+  (`structured.MAX_SCHEMA_BYTES`), checked when the `RunSpec` is built. `ha run` reads
+  `FILE`, relative to the current directory, before anything runs, and refuses it
+  (exit `2`, naming `FILE`) when it cannot be read, is larger than the bound, is not
+  JSON, or holds a JSON value that is not an object. The answer is `RunResult.text`.
+- **Two measured native mechanisms:**
+  - **claude** (2.1.283): `--output-format json --json-schema <schema>`, inline, right
+    after `--max-turns`. The text is the result envelope's `structured_output`,
+    serialised by `ha`; the envelope is kept as `claude-result.json` next to the report,
+    so a schema run needs a `report_log` (a `run_dir` gives one). A run that exits `0`
+    without a successful envelope is exit `1`, and so is a readable envelope behind a
+    failure (`error_max_turns`, measured with exit 1; `error_max_structured_output_retries`)
+    -- never the replayable `3`; the refusal is appended to `raw_log` as `structured
+    output refused: <why>`. Measured: `--max-turns 1` is enough, and a read workspace keeps
+    the schema. A write workspace is unmeasured; the envelope check fails closed there.
+  - **codex** (codex-cli 0.156.0): `exec --output-schema <file>`, right before
+    `--output-last-message`. The file, `output-schema.json` (`0600`), lives in the run's
+    own throwaway `CODEX_HOME`, outside the workspace, the run directory and the writable
+    scratch, and goes with it on every exit path. codex reports a failed turn only in its
+    `--json` stream, so under a schema a failed run gets that reason appended to stderr as
+    `codex turn failed: <message>`.
+- **Refusals before any file or process exists:**
+  - agy, opencode and the HTTP rail (`openrouter`, `mistral`, `nvidia`, `openai-compat`)
+    have no measured mechanism: their `run()` and `build_command()` raise
+    `structured.SchemaError`, a `ValueError`.
+  - codex refuses a schema its strict mode would reject, naming the first breach
+    (`$: 'required' misses 'ok'`): every object must list all its properties in
+    `required` and set `additionalProperties` to `false`, at any depth. Measured: codex
+    itself only failed mid-run, with an API 400 (`invalid_json_schema`) that reached
+    neither its stderr nor its last message.
+  - `ha run` refuses, before any registration (exit `2`), a workflow target -- a
+    workflow's steps shape their own answers -- and a role whose chain holds any link
+    that cannot honour the schema, naming every such link.
+- **The JSON check.** Under a schema, an answer that is not JSON is exit `1`, never `0`.
+  `ha` checks that the answer is JSON; it does not validate it against the schema, which
+  the rail enforces -- a caller that needs a validated shape validates the object it
+  parses. codex keeps the non-JSON text and appends `output is not JSON: an output schema
+  was set` to stderr. A plain `ha run` reports such an answer as `failure_reason:
+  "output_not_json"`, even when a rail returned `0` for it.
+- **`structured.check_chain(rails, schema)`** for library chains. `chain.run_chain` does
+  not look at the schema: a library caller refuses the chain as a whole before its first
+  link, so a fallback never carries a constrained request onto a rail that would ignore
+  it. `ha run` calls it when it plans the run.
+
+Without a schema nothing changes: every rail's command line is byte-identical (pinned
+per rail and per mode), and `RunResult`, `result.json` (schema 1), the run directory's
+file names and the meaning of every exit code stay as they were. The isolation
+fingerprints of claude, codex, agy and opencode move: `ha prove --stale` after
+installing.
 
 ## Unreleased — 0.5.2, lot 4a: `ha prove`
 

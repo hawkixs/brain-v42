@@ -145,6 +145,69 @@ real HOME has none. `spec.reasoning_effort` becomes `--variant`; `spec.name`
 becomes the session title. The subscription credential to declare is
 `.local/share/opencode/auth.json`.
 
+### Structured output
+
+`RunSpec.output_schema` asks for an answer constrained by a JSON Schema: an object-rooted
+JSON object of at most 65536 bytes serialised, checked when the `RunSpec` is built. Only a
+rail that enforces a schema natively takes one, never through a prompt instruction:
+
+- **claude** (measured on 2.1.283) runs with `--output-format json --json-schema <schema>`.
+  The text is the result envelope's `structured_output`, serialised by ha; the envelope is
+  kept as `claude-result.json` next to the report, so a schema run needs a `report_log` (a
+  `run_dir` gives one). An envelope without a successful `structured_output` --
+  `error_max_turns`, `error_max_structured_output_retries` -- is exit `1`.
+- **codex** (measured on codex-cli 0.156.0) runs with `exec --output-schema <file>`, the
+  file written `0600` into the run's own throwaway `CODEX_HOME` and removed with it. Its
+  API takes a *strict* schema only: every object lists all its properties in `required`
+  and sets `additionalProperties` to `false`, at any depth. When a run fails under a
+  schema, codex's own reason -- which it prints only in its `--json` stream -- is appended
+  to stderr as `codex turn failed: <message>`.
+
+```python
+import json
+
+from headless_agents.providers.codex import CodexProvider
+from headless_agents.structured import check_chain
+
+schema = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+    "additionalProperties": False,
+}
+check_chain(["codex", "claude"], schema)  # before a chain's first link: see below
+result = CodexProvider().run(
+    RunSpec(
+        prompt="Answer with ok = true.",
+        model="<model>",
+        run_dir=Path("runs/r-002"),
+        output_schema=schema,
+    )
+)
+if result.exit_code == 0:
+    answer = json.loads(result.text)  # JSON, checked by ha; the rail enforced the schema
+```
+
+Refused before any file or process exists, with `headless_agents.structured.SchemaError`
+(a `ValueError`):
+
+- a schema that is not object-rooted, not JSON, or larger than 65536 bytes, when the
+  `RunSpec` is built;
+- any schema, by agy, opencode and the HTTP rail (`openrouter`, `mistral`, `nvidia`,
+  `openai-compat`): their `run()` and `build_command()` raise it first;
+- a schema codex's strict mode would reject, by codex, naming the first breach (`$:
+  'required' misses 'ok'`) -- codex itself would fail only mid-run, with an API 400;
+- a chain holding any link that cannot honour the schema, by `check_chain(rails, schema)`,
+  naming every such link. `chain.run_chain` does not look at the schema, so call it
+  first: a fallback must never carry a constrained request onto a rail that would ignore
+  it.
+
+ha checks that the answer is JSON; it does not validate it against the schema, which the
+rail enforces -- validate the parsed object when you need its shape guaranteed. Under a
+schema, an answer that is not JSON is exit `1`, never `0`: codex keeps its text for you to
+see what came back, and appends `output is not JSON: an output schema was set` to stderr.
+Without a schema nothing changes: every rail's command line is byte-identical.
+
 ## Workspace and context
 
 A `Workspace` gives an agent a directory to read, or read and edit, and nothing outside
@@ -369,6 +432,7 @@ uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@
 ha run TARGET [PROMPT | -] [-m MODEL] [--effort E] [--timeout SECONDS] [--wait SECONDS]
        [--context full|global|none] [--context-parents] [--mcp PROFILE]
        [--base-url URL --key-env VAR] [--repo PATH] [--json] [--run-dir DIR]
+       [--output-schema FILE]
        [--write [--shell] [--base REF]]
        [--continue RUN_ID] [--findings RUN_ID] [--head REF] [--run RUN_ID]
 ha roles [--json]
@@ -404,6 +468,14 @@ ha --version
   admission (not yet holding it) can in principle be overtaken by a continuous, overlapping
   stream of readers, and a continuous stream of writers can likewise make a waiting reader
   time out. A fair FIFO admission queue is planned for 0.5.3.
+- **`--output-schema FILE`** (0.5.3): constrain the answer to the JSON Schema in `FILE`, a
+  JSON object read before anything runs, relative to the current directory, at most 65536
+  bytes. Only claude and codex honour one (see [Structured output](#structured-output)):
+  a workflow target, a role whose chain holds any other provider -- every such link is
+  named -- and a schema codex's strict mode would reject are refused before anything runs
+  (exit `2`). The answer is the run's text; one that is not JSON exits `1` with
+  `failure_reason: "output_not_json"`, never `0`. Example: `ha run codex --output-schema
+  ok.json "Answer with ok = true."`.
 
 `TARGET` is a provider (`ha run codex "..."`), a role declared in
 `~/.config/ha/roles.toml` -- an executor: one provider, or a `chain` of them, with optional
