@@ -221,6 +221,58 @@ def _gate_is_exclusive(state: Path) -> None:
     pytest.fail("the waiting writer never took the admission gate")
 
 
+def _intent_is_exclusive(state: Path) -> None:
+    limit = time.monotonic() + 5
+    while time.monotonic() < limit:
+        try:
+            with held(
+                state / "writer-intent.lock",
+                rank=Rank.WRITER_INTENT,
+                exclusive=False,
+                wait=None,
+                what="a pending write",
+            ):
+                pass
+        except LockTimeout:
+            return
+        time.sleep(0.01)
+    pytest.fail("the waiting writer never took writer-intent")
+
+
+def test_a_reader_arriving_after_the_writer_holds_intent_queues_behind_it(
+    tmp_path: Path,
+) -> None:
+    """The one guarantee the writer-intent lock actually gives, pinned on
+    its own, apart from anything about the gate: once a writer holds
+    writer-intent exclusively, a reader that arrives afterward blocks on its
+    own (shared) attempt to check intent until the writer releases it --
+    ordinary ``flock`` mutual exclusion against a single exclusive holder,
+    true regardless of the fairness caveats in the module docstring (those
+    are about who *wins* intent under contention, not about what a lock
+    already held exclusively does to a later arrival)."""
+    state = tmp_path / "state"
+    state.mkdir()
+    events = tmp_path / "events"
+    holder, _ = _admission_child(state, "holder", events)
+    writer = reader = None
+    try:
+        writer, _ = _admission_child(state, "writer", events)
+        _intent_is_exclusive(state)
+        reader, _ = _admission_child(state, "reader", events)
+        time.sleep(0.12)
+        assert not events.exists(), "a later reader bypassed the writer holding intent"
+        holder.kill()
+        assert writer.wait(timeout=5) == 0
+        assert reader.wait(timeout=5) == 0
+        assert events.read_text().splitlines() == ["writer", "reader"]
+    finally:
+        for process in (holder, writer, reader):
+            if process is not None and process.poll() is None:
+                process.kill()
+            if process is not None:
+                process.wait()
+
+
 def test_waiting_writer_precedes_a_later_shared_admission(tmp_path: Path) -> None:
     state = tmp_path / "state"
     state.mkdir()
@@ -291,13 +343,27 @@ def test_one_deadline_covers_two_contested_locks(tmp_path: Path) -> None:
             assert time.monotonic() - started < 0.16
 
 
-def test_new_readers_queue_behind_a_writer_still_polling_for_the_gate(tmp_path: Path) -> None:
-    """The writer-preference gate must exclude a reader from the moment the
-    writer starts polling for it, not only once the writer already holds it:
-    ``test_waiting_writer_precedes_a_later_shared_admission`` only starts its
-    reader after the writer already owns the gate, so it never exercises the
-    window where the writer is still contending for it -- readers that keep
-    arriving there could starve the writer out indefinitely.
+def test_a_writer_that_has_won_intent_blocks_late_readers_through_gate_contention(
+    tmp_path: Path,
+) -> None:
+    """What the writer-intent lock actually guarantees, pinned precisely:
+    once a writer *holds* writer-intent (which it wins uncontested here --
+    nothing else holds it when the writer arrives, the ordinary case), it
+    keeps blocking every reader that arrives afterward for as long as it
+    holds intent, including the whole time it is separately stuck contending
+    for a busy gate. ``test_waiting_writer_precedes_a_later_shared_admission``
+    only checks this once the writer already holds the *gate*; this test
+    checks it while the writer is still only polling for the gate, holding
+    intent the whole time.
+
+    This is NOT a demonstration that a writer always wins the race for
+    writer-intent itself under contention -- codex review of PR #239 found
+    that a continuous, overlapping stream of readers taking intent shared
+    could in principle starve a writer still *polling* for intent, and
+    ``flock`` gives no fairness to make that deterministic either way, so it
+    is not something a process test can pin. See the module docstring:
+    best-effort mitigation, not a fairness guarantee; a real fix (a fair
+    FIFO admission queue) is planned for 0.5.3.
 
     An exclusive holder on the global lock (not the ``_ADMISSION_CHILD``
     "holder" mode, which only takes it shared and would let ordinary shared

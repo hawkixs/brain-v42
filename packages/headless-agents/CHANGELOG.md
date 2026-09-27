@@ -28,9 +28,20 @@ time the member rode a brain-v42 tag.
 
 - `ha run … --wait SECONDS` uses one explicit, monotonic admission deadline
   for the global, lineage registry, and lineage locks; expiry returns exit 2
-  before a provider step runs.
-- An admission gate gives a waiting unconfined writer priority over later
-  shared runs. The gate is released after global admission or timeout.
+  before any provider step runs, and leaves nothing behind -- an unstarted
+  run's entry is forgotten, read or write alike.
+- A lock granted past the deadline is refused, never accepted late.
+- `ha clean` is admitted through the same gate as every other run, instead
+  of taking the global lock directly.
+- An admission gate gives an unconfined writer that already holds it
+  exclusion over every later run, shared or not, until it releases the gate
+  or times out; a reader arriving after a writer has won the gate queues
+  behind it. This is a **best-effort** mitigation, not a fairness
+  guarantee: `flock` does not order waiters, so a writer still polling for
+  admission can in principle be overtaken by a continuous, overlapping
+  stream of readers, and a continuous stream of writers can likewise make
+  a waiting reader time out. A fair FIFO admission queue is planned for
+  0.5.3.
 - Runs without `--wait` retain the existing 10-second lock bounds. Provider
   `--timeout`, proof requirements, and exit-code meanings are unchanged.
 

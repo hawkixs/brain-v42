@@ -5,11 +5,10 @@ git subprocess inherits one, and a lock dies with the ``ha`` process that
 took it. The order is fixed, which excludes a deadlock:
 
 1. the run's own lifecycle lock;
-2. the writer-intent lock: a waiting unconfined writer holds it exclusively
-   from before it ever polls the gate below, so a reader that arrives while
-   it is still polling -- not only once it already holds the gate -- queues
-   behind it too (codex review of PR #239); a reader takes it shared only
-   for the instant of checking that no writer is queued;
+2. the writer-intent lock: an unconfined writer holds it exclusively from
+   before it ever polls the gate below, until it wins the gate or times out;
+   a reader takes it shared only for the instant of checking that no writer
+   currently holds it;
 3. the admission gate, held only for the instant of taking the lock below;
 4. the global unconfined lock;
 5. the lineage registry lock;
@@ -25,6 +24,49 @@ refusal (exit ``2``).
 lock through :func:`admit_global`, and the lineage registry and lineage locks
 a write or a review admits under it. Without ``--wait``, each lock keeps its
 own :data:`LOCK_WAIT_SECONDS` bound, as before.
+
+**What ``--wait`` guarantees** (real-process tests in ``test_locks.py``,
+``test_engine_execute.py``, ``test_write_flow.py``, ``test_review.py``):
+
+- ``--wait SECONDS`` bounds the *whole* admission -- the gate, the global
+  lock, and, for a write or a review, the lineage registry and lineage locks
+  -- with one absolute monotonic deadline, spent across every lock in turn.
+- A lock granted past that deadline is refused, never accepted late (fixed
+  by codex review of PR #239: :func:`held` used to check the deadline only
+  on a failed attempt, so a lock released just after it expired could still
+  be granted).
+- An expired or invalid ``--wait`` starts no provider step and leaves
+  nothing behind: an unstarted write's entry and run dir are forgotten, and
+  so, since PR #239, is an unstarted read's -- previously a read was left
+  marked ``"failed"`` with an empty run dir, as if something had run.
+- ``ha clean`` is admitted through the very same gate as every other run,
+  not a lock it takes directly: it queues behind an unconfined write that
+  already holds the gate, exactly like a read would (also PR #239).
+- The writer-intent lock (point 2 above) makes one case exact, not
+  heuristic: once an unconfined writer *holds* it, any reader that arrives
+  afterward blocks on its own attempt to take it shared until the writer
+  releases it -- ordinary ``flock`` mutual exclusion against a single
+  exclusive holder, true regardless of timing.
+
+**What is deliberately NOT guaranteed** (operator decision, 2026-09-27: keep
+this mechanism as best-effort writer preference rather than block PR #239 on
+a real fix):
+
+- ``flock`` gives no fairness between waiters. The writer-intent lock only
+  narrows the starvation window described below; it does not close it.
+- A writer that has not yet won the writer-intent lock -- still polling for
+  it, not holding it -- can be overtaken indefinitely by a continuous,
+  overlapping stream of readers: each reader holds the intent lock shared
+  only briefly, but if new ones keep arriving before the last one releases
+  it, the writer's own exclusive attempt may never see a free instant.
+- Symmetrically, a continuous stream of writers can make a waiting reader
+  time out: a reader releases the intent lock before it ever touches the
+  gate, and a new writer racing in during that gap can win the gate ahead
+  of it, repeatedly.
+- Neither case is exercised by the process tests here on purpose: they
+  would be flaky proof of a property this mechanism does not hold. A real
+  fix -- a fair FIFO admission queue -- is planned for headless-agents
+  0.5.3, not this lot.
 """
 
 from __future__ import annotations
@@ -174,25 +216,36 @@ class AdmissionWait:
 
 @contextmanager
 def admit_global(state: Path, *, exclusive: bool, wait: AdmissionWait) -> Iterator[None]:
-    """Take the global unconfined lock at ``state``, gated for writer preference.
+    """Take the global unconfined lock at ``state``, gated for BEST-EFFORT writer preference.
 
     The admission gate (``admission-gate.lock``) is held only for the instant
     of acquiring the global lock: shared for an ordinary run, exclusive for an
-    unconfined write. A waiting unconfined writer therefore holds the gate
+    unconfined write. A writer that already holds the gate holds it
     exclusively for as long as it waits for the global lock, and every later
-    run -- shared or not -- queues behind it instead of slipping in first. The
-    gate is released as soon as the global lock is taken, or on a timeout; the
-    global lock itself is held for the caller's block.
+    run -- shared or not -- queues behind it instead of slipping in first.
+    The gate is released as soon as the global lock is taken, or on a
+    timeout; the global lock itself is held for the caller's block.
 
     A gate held nonblocking excludes a reader only once the writer already
-    owns it: a reader that keeps arriving while the writer is still polling
-    for the (currently unavailable) gate could otherwise take it shared
-    every time, starving the writer out (codex review of PR #239). The
-    writer-intent lock closes that window: an unconfined writer takes it
-    exclusively *before* it ever polls the gate, and holds it for as long as
-    that polling lasts; a reader takes it shared only for the instant of
-    checking that no writer is queued, then releases it before it ever
-    touches the gate itself.
+    owns it, not while the writer is still polling for it: a reader that
+    keeps arriving during that polling window could otherwise take the gate
+    shared every time, starving the writer out. The writer-intent lock
+    narrows that window (codex review of PR #239): an unconfined writer
+    takes it exclusively *before* it ever polls the gate, and holds it for
+    as long as that polling lasts; a reader takes it shared only for the
+    instant of checking that no writer currently holds it, then releases it
+    before it ever touches the gate itself.
+
+    This is a heuristic mitigation, not a fairness guarantee: ``flock`` does
+    not order waiters. A writer still *polling* for writer-intent (not yet
+    holding it) can in principle be overtaken indefinitely by a continuous,
+    overlapping stream of readers, each holding intent only briefly; and a
+    continuous stream of writers can likewise make a waiting reader time out
+    by winning the gate first, repeatedly, in the gap after a reader
+    releases intent and before it takes the gate. What *is* guaranteed:
+    once a writer holds writer-intent, a reader that arrives afterward
+    blocks on that lock -- ordinary mutual exclusion, not scheduling order.
+    A real fix (a fair FIFO admission queue) is planned for 0.5.3.
     """
     budget = wait if wait.seconds is not None else AdmissionWait(LOCK_WAIT_SECONDS, explicit=False)
     intent = state / "writer-intent.lock"
