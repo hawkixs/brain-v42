@@ -25,7 +25,7 @@ import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date
 from importlib.metadata import version as package_version
 from pathlib import Path
@@ -54,6 +54,8 @@ from .engine import (
 from .model_catalog import load_catalogue
 from .model_live import live_models
 from .model_report import build_model_report
+from .proof_state import rail_state
+from .proofs import CLI_RAILS
 from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, probe
 from .report import RUN_JSON
 from .run_record import RESULT_FILE_NAME
@@ -257,25 +259,62 @@ def _parse(argv: Sequence[str]) -> argparse.Namespace:
 # ── ha providers ────────────────────────────────────────────────────────────
 
 
+def _proof_detail_line(row: dict[str, object]) -> str:
+    isolation = row["isolation"]
+    confinement = row["confinement"]
+    assert isinstance(isolation, dict) and isinstance(confinement, dict)
+
+    def clause(kind: str, status: dict[str, object]) -> str:
+        inside = str(status["reason"])
+        if status["date"]:
+            inside = f"{inside}, {status['date']}"
+        return f"{kind} {status['status']} ({inside})"
+
+    version = row["version"] or "(version unknown)"
+    return (
+        f"     {version}: {clause('isolation', isolation)}; "
+        f"{clause('confinement', confinement)}; mode {row['mode']}\n"
+    )
+
+
 def _providers(args: argparse.Namespace, io: Io) -> int:
+    state = state_dir(io.environ, home=io.home)
     rows = []
     for name in PROVIDER_NAMES:
         found = probe(name, executable=executable_for(name, io.home), environ=io.environ)
-        rows.append(
-            {
-                "name": name,
-                "available": found.available,
-                "detail": found.detail,
-                "version": found.version,
-                "max_prompt_bytes": max_prompt_bytes(name),
-            }
-        )
+        row: dict[str, object] = {
+            "name": name,
+            "available": found.available,
+            "detail": found.detail,
+            "version": found.version,
+            "max_prompt_bytes": max_prompt_bytes(name),
+        }
+        if name in CLI_RAILS:
+            rs = rail_state(state, name, found.version)
+            row["isolation"] = asdict(rs.isolation)
+            row["confinement"] = asdict(rs.confinement)
+            row["mode"] = rs.mode
+            row["reprove"] = rs.reprove
+        else:
+            row["isolation"] = None
+            row["confinement"] = None
+            row["mode"] = None
+            row["reprove"] = None
+        rows.append(row)
     if args.json:
         io.stdout.write(json.dumps(rows, indent=2) + "\n")
         return 0
     for row in rows:
         mark = "ok " if row["available"] else "-- "
         io.stdout.write(f"{mark}{row['name']:<14} {row['detail']}\n")
+        if row["isolation"] is not None:
+            io.stdout.write(_proof_detail_line(row))
+            if row["reprove"] is not None:
+                io.stdout.write(f"     re-prove: {row['reprove']}\n")
+    io.stdout.write(
+        "mode is for a write role without --shell; a --shell write on claude, "
+        "opencode or agy is always serialised\n"
+    )
     return 0
 
 

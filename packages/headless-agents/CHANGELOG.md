@@ -24,6 +24,35 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.2, lot 2: proof state visible
+
+`ha providers` used to say only whether a rail's executable was found: an isolation
+proof going stale silently -- a CLI updating itself overnight, with the proof still
+naming the old version -- refused every run on that rail with nothing having said so
+beforehand (spec §3.2, §4, Q2).
+
+### Added
+- **Five proof statuses, read ahead of a run**: `passed`, `failed`, `missing`, `stale`
+  (always naming what the proof was recorded for -- another version, or, at the same
+  version, the isolation source having moved under it) and `unreadable` (a record
+  present but unparsable, naming another rail, or shaped wrong -- distinct from
+  `missing`, since an operator fixes the two differently), per rail and per proof kind
+  (`headless_agents.proof_state`).
+- **Three modes**, computed only from `proofs.isolation_ok()` and `proofs.confinement()`
+  -- the exact functions the engine itself calls before a run, never re-derived from the
+  status above: `refused`, `writes serialised`, `parallel`.
+- **`ha providers` and `ha providers --json` show them.** A CLI rail's row gains
+  `isolation`, `confinement`, `mode` and `reprove` (the one command that would re-prove
+  whatever is not passed, or `null`/absent once everything already is); an HTTP
+  provider's row gets the same four keys as `null`. Additive only: every existing key
+  keeps its value and its meaning.
+- **One source for the re-prove command.** The engine's own isolation refusal now names
+  `proof_state.reprove_command()`'s output instead of building its own string, so the
+  refusal and `ha providers` can never name a different command for the same rail.
+
+No gate, lock, record format or exit code changed: `ha providers` still exits 0, and
+`proofs.py` and `providers/*.py` are untouched (lot 1b's territory, PR #237 in flight).
+
 ## Unreleased — 0.5.2, lot 3: bounded admission waits
 
 - `ha run … --wait SECONDS` uses one explicit, monotonic admission deadline
