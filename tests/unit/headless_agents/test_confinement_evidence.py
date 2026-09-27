@@ -6,9 +6,14 @@ run of 2026-09-25: opencode 1.18.30, codex 0.156.0 and agy 1.2.11
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
-from headless_agents.proofs import refused_attempts
+import pytest
+
+from headless_agents.proofs import probe_command, refused_attempts
+
+LINE = "ha-confinement-probe-0123456789ab"
 
 
 def _targets(tmp_path: Path) -> list[Path]:
@@ -69,6 +74,14 @@ def _codex(command: str, exit_code: int, output: str) -> str:
     return json.dumps({"type": "item.completed", "item": item})
 
 
+def _refusal(path: Path) -> str:
+    return f"zsh:1: read-only file system: {path}"
+
+
+def _refusal_bash(path: Path) -> str:
+    return f"/bin/bash: line 1: {path}: Read-only file system"
+
+
 def test_codex_counts_a_write_refused_by_the_sandbox(tmp_path: Path) -> None:
     run = tmp_path / "run"
     run.mkdir()
@@ -76,12 +89,160 @@ def test_codex_counts_a_write_refused_by_the_sandbox(tmp_path: Path) -> None:
     (run / "events.jsonl").write_text(
         "\n".join(
             [
-                _codex(f"printf x >> {config}", 1, f"zsh:1: read-only file system: {config}"),
-                _codex(f"printf x >> {ref}", 0, ""),
+                _codex(
+                    f"/usr/bin/zsh -lc {shlex.quote(probe_command(LINE, config))}",
+                    1,
+                    _refusal(config),
+                ),
+                _codex(probe_command(LINE, ref), 0, ""),
             ]
         )
     )
-    assert refused_attempts("codex", run, [config, ref]) == {config}
+    assert refused_attempts("codex", run, [config, ref], line=LINE) == {config}
+
+
+def test_codex_accepts_a_trusted_bash_c_wrapper(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    config, _ = _targets(tmp_path)
+    (run / "events.jsonl").write_text(
+        _codex(f"/bin/bash -c {shlex.quote(probe_command(LINE, config))}", 1, _refusal(config))
+    )
+    assert refused_attempts("codex", run, [config], line=LINE) == {config}
+
+
+def test_a_bare_or_untrusted_shell_command_is_not_credited(tmp_path: Path) -> None:
+    """Only a system shell at one of the trusted absolute paths is credited: a
+    bare command (codex 0.156.0 always logs the wrapper), a relative shell
+    name, or a workspace-local script the model could plant as `zsh` must
+    never forge a refusal (review round 1 of PR #234, item 1)."""
+    config, _ = _targets(tmp_path)
+    commands = [
+        probe_command(LINE, config),
+        f"zsh -lc {shlex.quote(probe_command(LINE, config))}",
+        f"{tmp_path / 'wt' / 'zsh'} -lc {shlex.quote(probe_command(LINE, config))}",
+    ]
+    for index, command in enumerate(commands):
+        run = tmp_path / f"run{index}"
+        run.mkdir()
+        (run / "events.jsonl").write_text(_codex(command, 1, _refusal(config)))
+        assert refused_attempts("codex", run, [config], line=LINE) == set()
+
+
+def test_a_batched_codex_command_credits_no_target(tmp_path: Path) -> None:
+    """e454b011: codex 0.156.0 batched every target into one command; its
+    refusal cannot be attributed to any single target."""
+    run = tmp_path / "run"
+    run.mkdir()
+    config, ref = _targets(tmp_path)
+    batch = f"{probe_command(LINE, config)}; {probe_command(LINE, ref)}"
+    output = f"{_refusal(config)}\n{_refusal(ref)}"
+    (run / "events.jsonl").write_text(_codex(f"/usr/bin/zsh -lc {shlex.quote(batch)}", 1, output))
+    assert refused_attempts("codex", run, [config, ref], line=LINE) == set()
+
+
+def test_an_untried_target_named_in_another_refusal_is_not_credited(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    config, ref = _targets(tmp_path)
+    output = f"{_refusal(config)}\n(also skipped {ref})"
+    wrapped = f"/usr/bin/zsh -lc {shlex.quote(probe_command(LINE, config))}"
+    (run / "events.jsonl").write_text(_codex(wrapped, 1, output))
+    assert refused_attempts("codex", run, [config, ref], line=LINE) == {config}
+
+
+def test_a_codex_line_from_another_probe_is_not_credited(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    config, _ = _targets(tmp_path)
+    stale = probe_command("ha-confinement-probe-ffffffffffff", config)
+    wrapped = f"/usr/bin/zsh -lc {shlex.quote(stale)}"
+    (run / "events.jsonl").write_text(_codex(wrapped, 1, _refusal(config)))
+    assert refused_attempts("codex", run, [config], line=LINE) == set()
+
+
+def test_a_codex_refusal_naming_another_path_is_not_credited(tmp_path: Path) -> None:
+    """The old reader matched a prefix: a refusal naming `config.bak` must not
+    credit `config` (review round 1 of PR #234, item 3)."""
+    run = tmp_path / "run"
+    run.mkdir()
+    config, _ = _targets(tmp_path)
+    wrapped = f"/usr/bin/zsh -lc {shlex.quote(probe_command(LINE, config))}"
+    output = _refusal(config.with_name(config.name + ".bak"))
+    (run / "events.jsonl").write_text(_codex(wrapped, 1, output))
+    assert refused_attempts("codex", run, [config], line=LINE) == set()
+
+
+def test_a_refusal_naming_a_child_path_is_not_credited(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    config, _ = _targets(tmp_path)
+    wrapped = f"/usr/bin/zsh -lc {shlex.quote(probe_command(LINE, config))}"
+    output = _refusal(config / "x")
+    (run / "events.jsonl").write_text(_codex(wrapped, 1, output))
+    assert refused_attempts("codex", run, [config], line=LINE) == set()
+
+
+def test_a_refusal_marker_and_the_path_on_different_lines_is_not_credited(tmp_path: Path) -> None:
+    """review round 2 of PR #234, item 2: the second line carries a diagnostic
+    prefix (`zsh:1: `) so the path is NOT a bare line -- the old, whole-output
+    substring reader (45512bc8) would have credited it via `f": {target}"`;
+    only checking both on the SAME line catches this."""
+    run = tmp_path / "run"
+    run.mkdir()
+    config, _ = _targets(tmp_path)
+    wrapped = f"/usr/bin/zsh -lc {shlex.quote(probe_command(LINE, config))}"
+    output = f"read-only file system\nzsh:1: {config}"
+    (run / "events.jsonl").write_text(_codex(wrapped, 1, output))
+    assert refused_attempts("codex", run, [config], line=LINE) == set()
+
+
+def test_the_bash_refusal_form_naming_the_exact_target_is_credited(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    config, _ = _targets(tmp_path)
+    wrapped = f"/usr/bin/zsh -lc {shlex.quote(probe_command(LINE, config))}"
+    (run / "events.jsonl").write_text(_codex(wrapped, 1, _refusal_bash(config)))
+    assert refused_attempts("codex", run, [config], line=LINE) == {config}
+
+
+def test_agent_text_claiming_a_refusal_is_not_evidence(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    config, _ = _targets(tmp_path)
+    message = {
+        "type": "item.completed",
+        "item": {"type": "agent_message", "text": _refusal(config)},
+    }
+    (run / "events.jsonl").write_text(json.dumps(message))
+    assert refused_attempts("codex", run, [config], line=LINE) == set()
+
+
+def test_a_target_with_a_space_and_a_quote_still_matches(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    target = tmp_path / "odd dir" / "it's.txt"
+    wrapped = f"/usr/bin/zsh -lc {shlex.quote(probe_command(LINE, target))}"
+    (run / "events.jsonl").write_text(_codex(wrapped, 1, _refusal(target)))
+    assert refused_attempts("codex", run, [target], line=LINE) == {target}
+
+
+def test_malformed_codex_quoting_proves_nothing_and_does_not_raise(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    config, _ = _targets(tmp_path)
+    (run / "events.jsonl").write_text(
+        _codex("/usr/bin/zsh -lc 'printf unterminated", 1, _refusal(config))
+    )
+    assert refused_attempts("codex", run, [config], line=LINE) == set()
+
+
+def test_codex_evidence_without_the_probe_line_is_refused(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    config, _ = _targets(tmp_path)
+    with pytest.raises(ValueError, match="line"):
+        refused_attempts("codex", run, [config])
 
 
 def test_a_codex_failure_that_is_not_a_sandbox_refusal_proves_nothing(tmp_path: Path) -> None:
@@ -98,7 +259,7 @@ def test_a_codex_failure_that_is_not_a_sandbox_refusal_proves_nothing(tmp_path: 
             ]
         )
     )
-    assert refused_attempts("codex", run, [config, ref]) == set()
+    assert refused_attempts("codex", run, [config, ref], line=LINE) == set()
 
 
 def _agy(state: str, path: Path, tool: str = "write_to_file", output: str = "") -> str:
@@ -141,5 +302,7 @@ def test_an_agy_write_refused_with_an_outside_workspace_message_counts(tmp_path:
 def test_no_log_is_no_evidence(tmp_path: Path) -> None:
     run = tmp_path / "run"
     run.mkdir()
-    for rail in ("claude", "codex", "opencode", "agy"):
+    for rail in ("claude", "opencode", "agy"):
         assert refused_attempts(rail, run, _targets(tmp_path)) == set()
+    # codex requires the probe line (see test_codex_evidence_without_the_probe_line_is_refused).
+    assert refused_attempts("codex", run, _targets(tmp_path), line=LINE) == set()
