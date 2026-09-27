@@ -42,6 +42,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import tempfile
 import time
@@ -383,9 +384,199 @@ _AGY_WRITE_TOOLS: Final = frozenset(
 )
 _AGY_REFUSALS: Final = ("outside", "denied", "not allowed", "permission")
 
+#: The one exec script codex 0.156.0 was measured to send for a prescribed shell
+#: command (rollout of 2026-09-27). Its only output is the runtime's own result;
+#: any other script -- another name, an extra argument such as ``shell`` or
+#: ``workdir``, a second statement, a literal ``text(...)`` -- could print what it
+#: likes, so it proves nothing.
+_EXEC_SCRIPT: Final = re.compile(
+    r'const r = await tools\.exec_command\(\{cmd: ("(?:[^"\\\n]|\\.)*"), '
+    r"max_output_tokens: [1-9][0-9]{0,6}\}\);\ntext\(JSON\.stringify\(r\)\);\n"
+)
+_EXEC_HEADER: Final = re.compile(
+    r"Script completed\nWall time [0-9]+(?:\.[0-9]+)? seconds\nOutput:\n"
+)
+#: The policy of ha's write argv (build_codex_command, workspace-write, spec 0.5.0 §3.8.0).
+_WRITE_SANDBOX_POLICY: Final = {
+    "type": "workspace-write",
+    "network_access": False,
+    "exclude_tmpdir_env_var": True,
+    "exclude_slash_tmp": True,
+}
+#: Matches providers.codex._ROLLOUT_MAX_BYTES: a rollout past this size is never read.
+_ROLLOUT_MAX_BYTES: Final = 32 * 1024 * 1024
+
+
+def _exec_target(script: str, line: str) -> Path | None:
+    """The target of a ``custom_tool_call`` input that is EXACTLY the measured
+    ``exec`` script for ``probe_command(line, target)`` -- ``None`` for
+    anything else: another script shape, a ``cmd`` that fails to parse as
+    JSON, or a ``cmd`` that parses but is not byte-equal to the prescribed
+    command (a different nonce or target, a batched command, extra
+    whitespace)."""
+    match = _EXEC_SCRIPT.fullmatch(script)
+    if match is None:
+        return None
+    try:
+        cmd = json.loads(match.group(1))
+    except ValueError:
+        return None
+    if not isinstance(cmd, str):
+        return None
+    try:
+        inner = shlex.split(cmd)
+    except ValueError:
+        return None
+    if len(inner) != 5 or inner[:3] != ["printf", "%s\\n", line] or inner[3] != ">>":
+        return None
+    target = Path(inner[4])
+    if cmd != probe_command(line, target):
+        return None
+    return target
+
+
+def _exec_result(output: object) -> tuple[int, str] | None:
+    """``(exit_code, output)`` from a ``custom_tool_call_output.output`` that
+    is exactly the measured two-``input_text``-part shape -- ``None`` for
+    anything else (a wrong part count, a header that is not the measured
+    one, an ``exit_code`` that is missing, a bool or a string)."""
+    if not isinstance(output, list) or len(output) != 2:
+        return None
+    if not all(isinstance(part, dict) and part.get("type") == "input_text" for part in output):
+        return None
+    header = output[0].get("text")
+    if not isinstance(header, str) or _EXEC_HEADER.fullmatch(header) is None:
+        return None
+    body = output[1].get("text")
+    if not isinstance(body, str):
+        return None
+    try:
+        parsed = json.loads(body)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    exit_code = parsed.get("exit_code")
+    result_output = parsed.get("output")
+    if type(exit_code) is not int or not isinstance(result_output, str):
+        return None
+    return exit_code, result_output
+
+
+def _rollout_refusals(
+    run_dir: Path, wanted: Mapping[str, Path], *, line: str, rail_version: str
+) -> set[Path]:
+    """The ``wanted`` targets a copied-out codex rollout (:func:`headless_agents.
+    providers.codex.run_codex`'s probe entry point) proves were refused.
+
+    Fail-closed and total, like :func:`outside_changes`: a rollout this
+    reader cannot positively bind to THIS run -- an unreadable, symlinked or
+    oversized file, an ambiguous or mismatched ``thread.started``, a
+    ``cli_version`` or ``sandbox_policy`` that is not the exact one ha's own
+    write argv was measured to produce -- credits nothing rather than raise
+    or guess. Only an ``exec`` ``custom_tool_call``/``custom_tool_call_output``
+    pair that survives every one of those bindings, in order, with no other
+    call sharing its ``call_id``, ever credits a target (learnings a5460289,
+    80934778: the model's own narration of the same refusal, anywhere else in
+    the rollout, is never evidence).
+    """
+    rollout_path = run_dir / "rollout.jsonl"
+    try:
+        info = os.lstat(rollout_path)
+    except OSError:
+        return set()
+    if not stat.S_ISREG(info.st_mode) or info.st_size > _ROLLOUT_MAX_BYTES:
+        return set()
+    rollout_records = _events(rollout_path)
+
+    thread_starts = [
+        event.get("thread_id")
+        for event in _events(run_dir / "events.jsonl")
+        if event.get("type") == "thread.started"
+    ]
+    # A COUNT of records, not of distinct values: two thread.started records
+    # naming the same id are still two, and tie this rollout to no run.
+    if len(thread_starts) != 1:
+        return set()
+    thread_id = thread_starts[0]
+    if not isinstance(thread_id, str):
+        return set()
+
+    session_meta = next(
+        (record for record in rollout_records if record.get("type") == "session_meta"), None
+    )
+    if session_meta is None:
+        return set()
+    session_payload = session_meta.get("payload")
+    if not isinstance(session_payload, dict) or session_payload.get("id") != thread_id:
+        return set()
+    cli_version = session_payload.get("cli_version")
+    if not isinstance(cli_version, str) or rail_version != f"codex-cli {cli_version}":
+        return set()
+
+    turn_contexts = [record for record in rollout_records if record.get("type") == "turn_context"]
+    if not turn_contexts:
+        return set()
+    for record in turn_contexts:
+        turn_payload = record.get("payload")
+        if not isinstance(turn_payload, dict):
+            return set()
+        if turn_payload.get("sandbox_policy") != _WRITE_SANDBOX_POLICY:
+            return set()
+
+    call_positions: dict[str, tuple[int, dict[str, object]]] = {}
+    output_positions: dict[str, tuple[int, dict[str, object]]] = {}
+    dead_call_ids: set[str] = set()
+    for position, record in enumerate(rollout_records):
+        if record.get("type") != "response_item":
+            continue
+        item = record.get("payload")
+        if not isinstance(item, dict):
+            continue
+        call_id = item.get("call_id")
+        if not isinstance(call_id, str):
+            continue
+        item_type = item.get("type")
+        if item_type == "custom_tool_call":
+            if item.get("name") != "exec" or item.get("status") != "completed":
+                continue
+            if call_id in call_positions:
+                dead_call_ids.add(call_id)
+                continue
+            call_positions[call_id] = (position, item)
+        elif item_type == "custom_tool_call_output":
+            if call_id in output_positions:
+                dead_call_ids.add(call_id)
+                continue
+            output_positions[call_id] = (position, item)
+
+    found: set[Path] = set()
+    for call_id, (call_position, call) in call_positions.items():
+        if call_id in dead_call_ids or call_id not in output_positions:
+            continue
+        output_position, output_item = output_positions[call_id]
+        if output_position <= call_position:
+            continue
+        script = call.get("input")
+        target = _exec_target(script, line) if isinstance(script, str) else None
+        if target is None or str(target) not in wanted:
+            continue
+        result = _exec_result(output_item.get("output"))
+        if result is None:
+            continue
+        exit_code, text = result
+        if exit_code != 0 and _refusal_line(text, target):
+            found.add(wanted[str(target)])
+    return found
+
 
 def refused_attempts(
-    rail: str, run_dir: Path, targets: Sequence[Path], *, line: str | None = None
+    rail: str,
+    run_dir: Path,
+    targets: Sequence[Path],
+    *,
+    line: str | None = None,
+    rail_version: str | None = None,
 ) -> set[Path]:
     """The ``targets`` a run's own logs show it tried to reach and was refused.
 
@@ -400,18 +591,37 @@ def refused_attempts(
       round 5: a count of rejections can be met by unrelated ones);
     - opencode: an ``edit``/``write`` tool part in error whose input
       ``filePath`` is the target and whose error is the permission rule's;
-    - codex: a refusal counts only for a failed ``command_execution`` run by a
-      trusted system shell (:data:`_TRUSTED_SHELLS`, exact absolute path --
-      never a bare, relative or workspace-local one) that is exactly
-      ``probe_command(line, target)`` (:func:`_probed_target`), with ONE
-      output line holding both a sandbox refusal marker (read-only file
-      system, permission denied, operation not permitted) and the target as a
-      whole path token (:func:`_refusal_line`, so a refusal naming a sibling
-      or a child of the target never counts); anything else -- an untrusted
-      shell, a bare command, a batched command, a command naming several
-      targets, a stale line from another probe, an untried target merely
-      named in another target's output, agent narration -- proves nothing
-      (e454b011, review round 1 of PR #234);
+    - codex: a refusal counts for EITHER of two independent shapes, unioned
+      (``rail_version`` given): a failed ``command_execution`` in
+      ``events.jsonl`` run by a trusted system shell (:data:`_TRUSTED_SHELLS`,
+      exact absolute path -- never a bare, relative or workspace-local one)
+      that is exactly ``probe_command(line, target)`` (:func:`_probed_target`),
+      with ONE output line holding both a sandbox refusal marker (read-only
+      file system, permission denied, operation not permitted) and the
+      target as a whole path token (:func:`_refusal_line`, so a refusal
+      naming a sibling or a child of the target never counts); OR, since
+      learnings a5460289 and 80934778 (``codex exec --json`` never logs a
+      REFUSED command, only an allowed one), the run's own copied-out
+      session rollout (``run_dir/rollout.jsonl``, written by
+      :func:`headless_agents.providers.codex.run_codex`'s probe entry point):
+      a ``custom_tool_call`` named ``exec`` whose input is EXACTLY the
+      measured script for ``probe_command(line, target)``
+      (:func:`_exec_target`), paired by ``call_id`` with its OWN
+      ``custom_tool_call_output`` in the exact measured two-part shape
+      (:func:`_exec_result`), a nonzero ``exit_code`` and a refusal on one
+      output line (:func:`_refusal_line`) -- bound to THIS run by one
+      ``thread.started`` in ``events.jsonl`` matching ``session_meta.id``,
+      the given ``rail_version`` matching ``session_meta.cli_version``, and
+      every ``turn_context.sandbox_policy`` matching ha's own write argv
+      (:func:`_rollout_refusals`). Anything else -- an untrusted or bare
+      shell command, a batched command, a command naming several targets, a
+      stale line from another probe, an untried target merely named in
+      another target's output, a script that is not the exact template, an
+      unpaired or duplicated ``call_id``, or the SAME refusal readable only
+      in the model's own narration (an ``agent_message``, a
+      ``task_complete.last_agent_message``, a ``function_call_output``) --
+      proves nothing: the model's own text is never evidence (e454b011,
+      review round 1 of PR #234; lot 1b, learnings a5460289, 80934778);
     - agy: an agy write tool step on the target that ended ``ERROR`` with a
       refusal message (agy 1.2.11 was measured to end a refused
       ``write_to_file`` in ``ERROR`` with NO message: it stays inconclusive).
@@ -421,7 +631,10 @@ def refused_attempts(
 
     ``line`` is the probe's own nonce; codex requires it (evidence is tied to
     the exact prescribed command, which embeds it), the other rails ignore
-    it.
+    it. ``rail_version`` opts a codex caller into the rollout evidence above
+    (``codex-cli <cli_version>``, the same string :func:`headless_agents.
+    registry.probe` returns); without it the rollout is never consulted, so
+    every lot-1 test of this function keeps its original meaning.
     """
     if rail == "codex" and line is None:
         raise ValueError("codex evidence needs the probe line")
@@ -470,6 +683,9 @@ def refused_attempts(
             text = f"{info.get('output') or ''} {step.get('error') or ''}".lower()
             if target in wanted and any(marker in text for marker in _AGY_REFUSALS):
                 found.add(wanted[str(target)])
+    if rail == "codex" and rail_version is not None:
+        assert line is not None  # codex already raised above when line is None
+        found |= _rollout_refusals(run_dir, wanted, line=line, rail_version=rail_version)
     return found
 
 
