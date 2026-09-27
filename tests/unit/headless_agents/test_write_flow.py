@@ -534,6 +534,31 @@ def test_admission_takes_every_lock_before_reading_state_and_runs_no_git(
     assert events.index("quarantine check") > events.index(locks_taken[-1])
 
 
+def test_write_registry_wait_expires_before_intent(world: World, tmp_path: Path) -> None:
+    lock = lineage.registry_lock(world.state)
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "registry-held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), "ex", str(ready)])
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        planned = world.write_plan()
+        planned = replace(
+            planned,
+            request=replace(planned.request, wait_seconds=0.15),
+        )
+        with pytest.raises(UsageError, match=r"--wait 0\.15 s.*lineage registry lock"):
+            execute(planned, say=world.said.append)
+        assert world.agent.specs == []
+        assert world.registry().run_ids() == []
+        assert list((world.state / "lineages").glob("*.json")) == []
+    finally:
+        holder.kill()
+        holder.wait()
+
+
 def test_the_first_git_comes_after_the_intent_and_the_registry_release(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
