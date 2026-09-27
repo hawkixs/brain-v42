@@ -59,6 +59,18 @@ class ReviewRefused(Exception):  # noqa: N818 - a refusal, not a crash
     """The review cannot start: exit ``2``, no agent ran."""
 
 
+class AdmissionWaitExpired(ReviewRefused):
+    """A :class:`ReviewRefused` raised because an explicit ``--wait`` deadline
+    expired while admitting the lineage registry or a lineage lock.
+
+    ``engine.py`` uses this type -- not the refusal's message -- to decide
+    whether to forget the run's entry and run dir outright instead of
+    marking it ``"failed"``: matching a message prefix would silently break
+    if the wording ever changed, and the message is user-facing text, not a
+    contract (codex review of PR #239, round 5).
+    """
+
+
 @dataclass(frozen=True)
 class Prepared:
     """What a review reads, pinned before its reviewers start."""
@@ -201,12 +213,16 @@ def prepare(
     base_ref: str | None,
     reviewed_lineage: str | None,
     reviewers: Mapping[str, Sequence[str]],
+    admission_wait: locks.AdmissionWait | None = None,
 ) -> Prepared:
     """Steps 1-6 of §3.8.4, then the patch and the detached worktree; :class:`ReviewRefused`.
 
     A state or repository file that cannot be read or written before the
     reviewers start refuses the review -- exit ``2``, nothing ran (§3.9) --
     instead of escaping as a crash that leaves the run ``incomplete``.
+    ``admission_wait`` is the deadline ``execute`` shares with the global
+    lock (spec §3.3, lot 3); a direct caller that omits it keeps the
+    per-lock :data:`locks.LOCK_WAIT_SECONDS` default.
     """
     try:
         return _prepare(
@@ -220,6 +236,7 @@ def prepare(
             base_ref=base_ref,
             reviewed_lineage=reviewed_lineage,
             reviewers=reviewers,
+            admission_wait=admission_wait,
         )
     except OSError as exc:
         raise ReviewRefused(f"{exc}; nothing ran") from None
@@ -237,9 +254,11 @@ def _prepare(
     base_ref: str | None,
     reviewed_lineage: str | None,
     reviewers: Mapping[str, Sequence[str]],
+    admission_wait: locks.AdmissionWait | None = None,
 ) -> Prepared:
     """Steps 1-6 of §3.8.4, then the patch and the detached worktree; :class:`ReviewRefused`."""
     common = identity.common_dir
+    wait = admission_wait if admission_wait is not None else locks.AdmissionWait(None)
     with ExitStack() as stack:
         try:
             stack.enter_context(
@@ -247,7 +266,7 @@ def _prepare(
                     lineages.registry_lock(state),
                     rank=Rank.LINEAGE_REGISTRY,
                     exclusive=False,
-                    wait=locks.LOCK_WAIT_SECONDS,
+                    wait=wait.remaining("the lineage registry lock"),
                     what="the lineage registry lock",
                 )
             )
@@ -261,11 +280,15 @@ def _prepare(
                         rank=Rank.LINEAGE,
                         key=owner,
                         exclusive=False,
-                        wait=locks.LOCK_WAIT_SECONDS,
+                        wait=wait.remaining(f"the lineage lock of {owner}"),
                         what=f"the lineage lock of {owner}",
                     )
                 )
         except LockTimeout as exc:
+            if wait.seconds is not None:
+                raise AdmissionWaitExpired(
+                    f"--wait {wait.seconds:g} s expired: {exc}: a write holds it; nothing ran"
+                ) from None
             raise ReviewRefused(f"{exc}: a write holds it; nothing ran") from None
         # Step 1 checks under the locks: a write that finished while this review waited
         # may have quarantined the repository or left an unconfined intent.
@@ -371,6 +394,7 @@ def finish(
 
 
 __all__ = [
+    "AdmissionWaitExpired",
     "CHANGES_EXIT_CODE",
     "DEFAULT_BASE",
     "Prepared",
