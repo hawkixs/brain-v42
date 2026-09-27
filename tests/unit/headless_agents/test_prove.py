@@ -66,7 +66,11 @@ def _prove(
         model="m",
         state=tmp_path / "state",
         home=home,
-        environ={"PATH": "/usr/bin:/bin"},
+        # This suite exercises the harness's own rules (leaks, refusals, moved
+        # versions), never the checkout guard -- opted out by default so it stays
+        # deterministic whether this venv's own headless-agents install is editable
+        # or not. The guard itself is exercised directly, below.
+        environ={"PATH": "/usr/bin:/bin", "HA_PROVE_FROM_CHECKOUT": "1"},
         root=tmp_path / "root",
         run=run,
     )
@@ -182,6 +186,102 @@ def test_an_unavailable_rail_is_skipped_without_a_run(
     verdict = _prove(tmp_path, "agy", "isolation", run)
     assert verdict.outcome == "skipped" and "not found" in verdict.reason
     assert calls == []
+
+
+def test_prove_refuses_isolation_from_a_checkout_before_any_run(
+    tmp_path: Path, versions: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entry point enforces its own guard: a caller that forgets to check
+    ``checkout_refusal`` first (unlike the CLI and the live tests) must not be able to
+    record an isolation proof under the checkout's own fingerprint (review round 1)."""
+    monkeypatch.setattr(prove_module, "running_from_checkout", lambda: True)
+    home = tmp_path / "home"
+    home.mkdir()
+    calls, run = _recorder(lambda rail, spec, keep: _result(spec))
+    verdict = prove_module.prove(
+        "codex",
+        "isolation",
+        model="m",
+        state=tmp_path / "state",
+        home=home,
+        environ={"PATH": "/usr/bin:/bin"},  # no HA_PROVE_FROM_CHECKOUT
+        root=tmp_path / "root",
+        run=run,
+    )
+    assert verdict.outcome == "skipped" and not verdict.recorded
+    assert "HA_PROVE_FROM_CHECKOUT=1" in verdict.reason
+    assert calls == []
+    assert not proof_path(tmp_path / "state", "codex").exists()
+
+
+def test_prove_proceeds_from_a_checkout_when_the_operator_opts_in(
+    tmp_path: Path, versions: list[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(prove_module, "running_from_checkout", lambda: True)
+    home = tmp_path / "home"
+    home.mkdir()
+    calls, run = _recorder(lambda rail, spec, keep: _result(spec))
+    verdict = prove_module.prove(
+        "codex",
+        "isolation",
+        model="m",
+        state=tmp_path / "state",
+        home=home,
+        environ={"PATH": "/usr/bin:/bin", "HA_PROVE_FROM_CHECKOUT": "1"},
+        root=tmp_path / "root",
+        run=run,
+    )
+    assert verdict.outcome == "passed" and verdict.recorded
+    assert len(calls) == 2
+
+
+def test_prove_records_nothing_when_neither_probe_reads_a_concrete_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both probes ``available``, neither returning version text: recording would name no
+    version at all (review round 1, item 2)."""
+    monkeypatch.setattr(
+        prove_module, "probe", lambda rail, **_: Probe(available=True, detail="ok", version=None)
+    )
+    _, run = _recorder(lambda rail, spec, keep: _result(spec))
+    verdict = _prove(tmp_path, "codex", "isolation", run)
+    assert verdict.outcome == "inconclusive" and not verdict.recorded
+    assert "concrete" in verdict.reason
+    assert not proof_path(tmp_path / "state", "codex").exists()
+
+
+def test_prove_records_nothing_when_the_version_string_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        prove_module, "probe", lambda rail, **_: Probe(available=True, detail="ok", version="")
+    )
+    _, run = _recorder(lambda rail, spec, keep: _result(spec))
+    verdict = _prove(tmp_path, "codex", "isolation", run)
+    assert verdict.outcome == "inconclusive" and not verdict.recorded
+    assert "concrete" in verdict.reason
+    assert not proof_path(tmp_path / "state", "codex").exists()
+
+
+def test_prove_records_nothing_when_the_rail_becomes_unavailable_after_the_proof(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An ``available`` probe before the runs and an unavailable one after must not
+    record a pass: the rail is no longer verifiably there (review round 1, item 2)."""
+    seen = [0]
+
+    def fake_probe(rail: str, **_: object) -> Probe:
+        seen[0] += 1
+        if seen[0] == 1:
+            return Probe(available=True, detail="ok", version="codex 1.0")
+        return Probe(available=False, detail="vanished")
+
+    monkeypatch.setattr(prove_module, "probe", fake_probe)
+    _, run = _recorder(lambda rail, spec, keep: _result(spec))
+    verdict = _prove(tmp_path, "codex", "isolation", run)
+    assert verdict.outcome == "inconclusive" and not verdict.recorded
+    assert "unavailable" in verdict.reason
+    assert not proof_path(tmp_path / "state", "codex").exists()
 
 
 # ── confinement ───────────────────────────────────────────────────────────────

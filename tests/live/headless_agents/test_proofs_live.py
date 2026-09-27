@@ -86,12 +86,12 @@ def _judge(verdict: prove.Verdict) -> None:
 
 @pytest.mark.parametrize("rail", ["claude", "codex", "agy", "opencode"])
 def test_isolation(rail: str, live_root: Path) -> None:
-    if prove.running_from_checkout() and os.environ.get("HA_PROVE_FROM_CHECKOUT") != "1":
-        pytest.fail(
-            "isolation cannot be recorded from a development install: its fingerprint is "
-            "this checkout's, not the installed ha's; run the installed `ha prove`, or set "
-            "HA_PROVE_FROM_CHECKOUT=1 if both are the same source"
-        )
+    # The same guard `prove.prove` itself now enforces (review round 1, item 1) --
+    # checked here too, and first, so a checkout fails loudly instead of the quiet
+    # `skipped` outcome the entry point would otherwise return.
+    refusal = prove.checkout_refusal(os.environ)
+    if refusal is not None:
+        pytest.fail(refusal)
     _judge(_prove(rail, "isolation", live_root))
 
 

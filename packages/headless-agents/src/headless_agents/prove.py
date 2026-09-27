@@ -64,7 +64,7 @@ from .proofs import (
     refused_attempts,
 )
 from .providers.codex import CodexProvider, resolve_real_codex_home
-from .registry import get_provider, probe
+from .registry import Probe, get_provider, probe
 from .result import RunResult
 from .spec import RunSpec
 
@@ -600,6 +600,32 @@ def _prove_confinement(
     return outcome, verdict.reason, len(run_dirs), tuple(run_dirs)
 
 
+def _version_unsettled_reason(before: Probe, after: Probe) -> str | None:
+    """Why recording must be refused because the rail's version cannot be confirmed
+    settled across the proof's runs, or ``None`` when it can.
+
+    Recording needs BOTH probes ``available`` with the SAME concrete (non-empty)
+    version string. Comparing version strings alone let a pass be recorded when both
+    probes read no version text (``None`` == ``None``) or when the rail went
+    unavailable between the two probes (``after.version`` also ``None``, matching a
+    ``before.version`` that happened to be ``None`` too) -- neither proves the rail is
+    still verifiably the one just run (review round 1, item 2).
+    """
+    if not after.available:
+        return f"the rail became unavailable after the proof ({after.detail}); no proof recorded"
+    if not before.version or not after.version:
+        return (
+            "the rail's version could not be read as a concrete string before and "
+            "after the proof; no proof recorded"
+        )
+    if before.version != after.version:
+        return (
+            f"version moved during the proof: {before.version} -> {after.version}; "
+            "no proof recorded"
+        )
+    return None
+
+
 # ── the one entry point ───────────────────────────────────────────────────────
 
 
@@ -622,6 +648,15 @@ def prove(
     runner = run if run is not None else _default_run
     if kind == "confinement" and rail in UNPROVABLE_CONFINEMENT:
         return Verdict(rail, kind, None, "skipped", UNPROVABLE_CONFINEMENT[rail], False, 0)
+    if kind == "isolation":
+        # Enforced here too, not only by the CLI and the live tests: a caller of this
+        # entry point that forgot the guard must not be able to record an isolation
+        # proof under a checkout's own fingerprint (review round 1, item 1). The CLI
+        # preflight stays, so a multi-proof command still refuses before announcing or
+        # spending anything, rather than failing midway through here.
+        refusal = checkout_refusal(environ)
+        if refusal is not None:
+            return Verdict(rail, kind, None, "skipped", refusal, False, 0)
     executable = executable_for(rail, home)
     before = probe(rail, executable=executable)
     if not before.available:
@@ -650,20 +685,12 @@ def prove(
             run=runner,
         )
     after = probe(rail, executable=executable)
-    if after.version != before.version:
-        # A CLI that updated itself mid-proof (Claude Code does, spec Q2): the runs
-        # proved nothing about the version installed now, nor surely about the old one.
-        return Verdict(
-            rail,
-            kind,
-            before.version,
-            "inconclusive",
-            f"version moved during the proof: {before.version} -> {after.version}; "
-            "no proof recorded",
-            False,
-            runs,
-            run_dirs,
-        )
+    unsettled = _version_unsettled_reason(before, after)
+    if unsettled is not None:
+        # A CLI that updated itself mid-proof (Claude Code does, spec Q2), went
+        # unavailable, or never named a concrete version either side: the runs proved
+        # nothing about the version installed now, nor surely about the old one.
+        return Verdict(rail, kind, before.version, "inconclusive", unsettled, False, runs, run_dirs)
     recorded = False
     if record and outcome in ("passed", "failed"):
         passed = outcome == "passed"
