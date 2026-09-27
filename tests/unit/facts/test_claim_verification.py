@@ -15,7 +15,11 @@ from brain_v42.facts.claims import ResolvedClaim, resolve_claim
 from brain_v42.facts.compare import Comparison
 from brain_v42.facts.model import FactTarget, Measured, Measurement, SourceIdentity, Unreadable
 from brain_v42.facts.registry import FactRegistry
-from brain_v42.facts.verification import ClaimVerificationService, WriteMeasurement
+from brain_v42.facts.verification import (
+    ClaimVerificationService,
+    VerificationOutcome,
+    WriteMeasurement,
+)
 from brain_v42.models.claim_input import ClaimInput
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.repositories.pg_claim_verdicts import ScopedClaim, VerdictRow
@@ -1073,3 +1077,81 @@ async def test_write_gate_is_a_free_no_op_for_a_declared_only_batch() -> None:
     finally:
         released.set()
         await holder
+
+
+# ---------------------------------------------------------------------------
+# T1.2 (ADR 27 lot C): `verify_outcome` reports whether the row was replayed.
+# ---------------------------------------------------------------------------
+
+
+async def test_verify_outcome_reports_replayed_only_on_the_stored_row_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A fresh append is `replayed=False`; the idempotent retry is `replayed=True`."""
+    probe = _Probe()
+    service = _service(_registry(probe))
+    await _memory_repository(monkeypatch, _claim())
+
+    first = await service.verify_outcome(
+        _claim().id,
+        issuer_identity="mcp:codex",
+        issuer_kind="robot",
+        idempotency_key="request-1",
+        session=SimpleNamespace(),
+    )
+    replay = await service.verify_outcome(
+        _claim().id,
+        issuer_identity="mcp:codex",
+        issuer_kind="robot",
+        idempotency_key="request-1",
+        session=SimpleNamespace(),
+    )
+
+    assert isinstance(first, VerificationOutcome)
+    assert first.replayed is False
+    assert replay.replayed is True
+    assert replay.row == first.row
+    assert probe.runs == 1
+
+
+async def test_verify_outcome_propagates_the_same_error_codes_as_verify(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _memory_repository(monkeypatch, _claim(retired=True))
+    service = _service(_registry(_Probe()))
+
+    with pytest.raises(ClaimVerificationError) as error:
+        await service.verify_outcome(
+            _claim().id,
+            issuer_identity="mcp:codex",
+            issuer_kind="robot",
+            idempotency_key="request-1",
+            session=SimpleNamespace(),
+        )
+
+    assert error.value.code == "claim_retired"
+
+
+async def test_verify_returns_exactly_the_outcome_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`verify`'s signature and behaviour are unchanged: it unwraps `verify_outcome`."""
+    probe = _Probe()
+    service = _service(_registry(probe))
+    await _memory_repository(monkeypatch, _claim())
+
+    outcome = await service.verify_outcome(
+        _claim().id,
+        issuer_identity="mcp:codex",
+        issuer_kind="robot",
+        idempotency_key="request-unwrap",
+        session=SimpleNamespace(),
+    )
+    replay = await service.verify(
+        _claim().id,
+        issuer_identity="mcp:codex",
+        issuer_kind="robot",
+        idempotency_key="request-unwrap",
+        session=SimpleNamespace(),
+    )
+
+    assert replay == outcome.row
+    assert not isinstance(replay, VerificationOutcome)

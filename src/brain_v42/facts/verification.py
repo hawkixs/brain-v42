@@ -120,6 +120,19 @@ def _comparison(
 
 
 @dataclass(frozen=True, slots=True)
+class VerificationOutcome:
+    """A verdict row together with whether it was replayed from a stored request.
+
+    `replayed` is set on the SAME branch `_verify` already used to decide whether to
+    return a stored row untouched: it is never inferred from the row afterwards (spec
+    ADR 27 lot C, T1.2).
+    """
+
+    row: VerdictRow
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
 class WriteMeasurement:
     """The AMENDED write-time result (spec 2026-09-19 section 6.3, order amended 2026-09-26).
 
@@ -195,6 +208,28 @@ class ClaimVerificationService:
         session: AsyncSession | None = None,
     ) -> VerdictRow:
         """Return a replay or append a verdict from a registry-owned observation."""
+        return (
+            await self.verify_outcome(
+                claim_id,
+                issuer_identity,
+                issuer_kind,
+                idempotency_key,
+                project_key=project_key,
+                session=session,
+            )
+        ).row
+
+    async def verify_outcome(
+        self,
+        claim_id: UUID,
+        issuer_identity: str,
+        issuer_kind: Literal["robot", "human"],
+        idempotency_key: str,
+        *,
+        project_key: str | None = None,
+        session: AsyncSession | None = None,
+    ) -> VerificationOutcome:
+        """Same as `verify`, but also reports whether the row was replayed from storage."""
         checked_id, issuer, kind, key = _validate_arguments(
             claim_id, issuer_identity, issuer_kind, idempotency_key
         )
@@ -219,7 +254,7 @@ class ClaimVerificationService:
         idempotency_key: str,
         *,
         project_key: str | None,
-    ) -> VerdictRow:
+    ) -> VerificationOutcome:
         claim = await lookup_locked_claim(session, claim_id, project_key)
         if claim is None:
             raise ClaimVerificationError("claim_not_found")
@@ -242,7 +277,7 @@ class ClaimVerificationService:
         if existing is not None:
             if existing.request_fingerprint != request:
                 raise ClaimVerificationError("idempotency_conflict")
-            return existing
+            return VerificationOutcome(existing, True)
 
         measurement = await self._measure(claim)
         _reject_if_refresh_budget_exhausted(measurement)
@@ -262,7 +297,7 @@ class ClaimVerificationService:
             registry=self._registry,
             measurement=measurement,
         )
-        return await append_verdict(
+        row = await append_verdict(
             session,
             claim_id=claim.id,
             verdict=comparison.verdict,
@@ -277,6 +312,7 @@ class ClaimVerificationService:
             idempotency_key=idempotency_key,
             emitted_at=measurement.measured_at,
         )
+        return VerificationOutcome(row, False)
 
     async def _measure(self, claim: ScopedClaim, *, force_fresh: bool = False) -> Measurement:
         """Use the closed registry only after replay; a missing definition is historical drift."""
