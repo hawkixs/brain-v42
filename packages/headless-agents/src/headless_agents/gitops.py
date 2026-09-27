@@ -51,6 +51,7 @@ def git(
     hooks: bool = False,
     tampered: Sequence[str] = (),
     binary: Literal[True],
+    stdin: bytes | None = None,
 ) -> subprocess.CompletedProcess[bytes]: ...
 
 
@@ -63,6 +64,7 @@ def git(
     hooks: bool = False,
     tampered: Sequence[str] = (),
     binary: bool = False,
+    stdin: bytes | None = None,
 ) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     """Run ``git args`` in ``root``; ``hooks=True`` is for the engine commit ONLY.
 
@@ -76,7 +78,10 @@ def git(
     ``\r`` turned into ``\n``. ``binary=True`` returns the bytes untouched, for
     what is recorded, parsed on its own separators, or shown to a model as the
     repository holds it: a patch, a hook's output, a log (review of #236).
+    ``stdin``, bytes too, is what a ``--pathspec-from-file=-`` reads.
     """
+    if stdin is not None and not binary:
+        raise ValueError("stdin is bytes: pass binary=True")
     command = git_command(root, tampered=tampered)
     if not hooks:
         empty = empty_hooks_dir(state)
@@ -86,7 +91,12 @@ def git(
     argv, env = [*command, *args], git_environment(environ, root)
     if binary:
         return subprocess.run(  # noqa: S603 - argv list, no shell
-            argv, env=env, capture_output=True, timeout=GIT_TIMEOUT_SECONDS, check=False
+            argv,
+            env=env,
+            input=stdin,
+            capture_output=True,
+            timeout=GIT_TIMEOUT_SECONDS,
+            check=False,
         )
     return subprocess.run(  # noqa: S603 - argv list, no shell
         argv,

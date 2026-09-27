@@ -367,6 +367,35 @@ def test_a_write_whose_agent_only_ran_pytest_changed_nothing(world: World) -> No
     assert _subjects(world, f"ha/{outcome.run_id}") == []
 
 
+def _committed(world: World, run_id: str) -> list[str]:
+    return sorted(_git(world.repo, "show", "--name-only", "--format=", f"ha/{run_id}").split())
+
+
+def test_a_deleted_tracked_bytecode_fixture_is_committed(world: World) -> None:
+    """Review of #236: tool-artifact rules applied to tracked paths too, so deleting a
+    tracked ``.pyc`` read as no change. Only untracked output is ever left out."""
+    (world.repo / "fixtures").mkdir()
+    (world.repo / "fixtures" / "old.pyc").write_bytes(b"\x00fixture")
+    _git(world.repo, "add", "fixtures/old.pyc")
+    _git(world.repo, "commit", "-q", "-m", "fixture")
+    world.agent.edit = lambda root: (root / "fixtures" / "old.pyc").unlink()
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    shown = _git(world.repo, "show", "--name-status", "--format=", f"ha/{outcome.run_id}")
+    assert shown.split() == ["D", "fixtures/old.pyc"]
+
+
+def test_an_edited_tracked_file_under_a_cache_directory_is_committed(world: World) -> None:
+    (world.repo / ".pytest_cache").mkdir()
+    (world.repo / ".pytest_cache" / "README.md").write_text("tracked on purpose\n")
+    _git(world.repo, "add", "-f", ".pytest_cache/README.md")
+    _git(world.repo, "commit", "-q", "-m", "tracked cache readme")
+    world.agent.edit = lambda root: (root / ".pytest_cache" / "README.md").write_text("edited\n")
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    assert _committed(world, outcome.run_id) == [".pytest_cache/README.md"]
+
+
 def test_the_worktree_creation_is_not_attributed_to_the_agent(world: World) -> None:
     """The start point is taken after preparation (§3.8.3 step 4)."""
     world.agent.edit = _edit_app

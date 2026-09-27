@@ -27,6 +27,7 @@ and the unconfined lock (§3.8.2) around the whole call and writes the report.
 
 from __future__ import annotations
 
+import fnmatch
 import os
 import re
 import shutil
@@ -59,18 +60,14 @@ UNCONFINED_INTENT: Final = "unconfined-intent.json"
 UNCONFINED_WRITERS: Final = "unconfined-writers.json"
 #: A commit id as git writes it: SHA-1 or SHA-256, lowercase hex.
 _OBJECT_ID: Final = re.compile(rb"[0-9a-f]{40}|[0-9a-f]{64}")
-#: What tools write into a worktree while an agent works, never the task's files, as
-#: git glob pathspecs (review of #236). The engine's commit, its "anything changed?"
-#: and a continuation's "clean?" all leave them out; the engine names what it left.
-TOOL_ARTIFACTS: Final = (
-    # Python bytecode: any Python run writes it, pytest's assertion rewriting included.
-    "**/__pycache__/**",
-    "**/*.py[co]",
-    # pytest's cache ignores itself only when pytest creates its directory.
-    "**/.pytest_cache/**",
-    # pytest's default temp root, had the temp dir fallen back to the worktree.
-    "**/pytest-of-*/**",
-)
+#: Untracked tool output the engine's commit leaves out (review of #236): what lies
+#: under a directory whose name matches one of these, at any depth -- Python's
+#: bytecode, pytest's cache (it ignores itself only when pytest creates the
+#: directory), pytest's default temp root -- and files with these suffixes. The
+#: engine's commit, its "anything changed?" and a continuation's "clean?" leave it
+#: out alike, and the engine names what it left. A tracked path never is.
+TOOL_ARTIFACT_DIRS: Final = ("__pycache__", ".pytest_cache", "pytest-of-*")
+TOOL_ARTIFACT_SUFFIXES: Final = (".pyc", ".pyo")
 
 
 class WriteRefused(Exception):  # noqa: N818 - a refusal, not a crash
@@ -143,10 +140,12 @@ class _Write:
         return result.returncode, result.stdout, result.stderr
 
     def git_bytes(
-        self, root: Path, args: Sequence[str], *, hooks: bool = False
+        self, root: Path, args: Sequence[str], *, hooks: bool = False, stdin: bytes | None = None
     ) -> tuple[int, bytes, bytes]:
         """``git`` for what is recorded as git printed it (ticket 0b3fcdbf)."""
-        result = git(root, args, self.environ, state=self.state, hooks=hooks, binary=True)
+        result = git(
+            root, args, self.environ, state=self.state, hooks=hooks, binary=True, stdin=stdin
+        )
         return result.returncode, result.stdout, result.stderr
 
     def save(self, lineage: LineageState) -> None:
@@ -431,11 +430,11 @@ def _prepare_continued(write: _Write) -> str:
     continuation's commit elsewhere than on the branch a review reads.
     """
     worktree, branch = write.worktree, write.branch
-    excludes, _ = _tool_artifacts(write)
-    code, out, err = write.git(worktree, ["status", "--porcelain", "--", ".", *excludes])
-    if code != 0:
-        raise _PreparationRefused(f"git status failed in {worktree}: {err.strip()}")
-    if out.strip():
+    try:
+        changes = _changes(write)
+    except _StatusFailed as exc:
+        raise _PreparationRefused(f"git status failed in {worktree}: {exc}") from None
+    if changes.any:
         raise _PreparationRefused(
             f"the worktree {worktree} has uncommitted changes: commit or discard them first"
         )
@@ -606,18 +605,15 @@ def _reflog_gained(write: _Write, tip: str) -> tuple[bool, bool, list[str]]:
 # ── steps 6 to 8 ───────────────────────────────────────────────────────────
 
 
-def _pytest_temp_roots(write: _Write) -> list[str]:
+def _pytest_temp_roots(write: _Write, untracked: Sequence[bytes]) -> list[str]:
     """Every untracked directory pytest laid out as a numbered temp root, whatever named it.
 
     A project's own ``--basetemp`` may be any relative path, so no declared name can
     match it; pytest's layout can: a ``<prefix>current`` symlink naming a sibling
     ``<prefix><N>`` directory (its ``make_numbered_dir``). The outermost roots only.
     """
-    code, out, _ = write.git_bytes(
-        write.worktree, ["ls-files", "--others", "--exclude-standard", "-z"]
-    )
     found: set[str] = set()
-    for raw in out.split(b"\0") if code == 0 else ():
+    for raw in untracked:
         relative = os.fsdecode(raw)
         parent, name = os.path.split(relative)
         prefix = name.removesuffix("current")
@@ -633,27 +629,71 @@ def _pytest_temp_roots(write: _Write) -> list[str]:
     return [root for root in sorted(found) if not any(root.startswith(f"{o}/") for o in found)]
 
 
-def _tool_artifacts(write: _Write) -> tuple[list[str], list[str]]:
-    """``(excludes, left_out)``: the pathspecs that leave :data:`TOOL_ARTIFACTS` and
-    pytest's temp roots out, and what they leave out of the worktree's changes now."""
-    roots = _pytest_temp_roots(write)
-    excludes = [f":(exclude,glob){glob}" for glob in TOOL_ARTIFACTS]
-    excludes += [f":(exclude,literal){root}" for root in roots]
-    wanted = [f":(glob){glob}" for glob in TOOL_ARTIFACTS] + [f":(literal){r}" for r in roots]
-    code, out, _ = write.git_bytes(
-        write.worktree, ["status", "--porcelain", "-z", "--untracked-files=normal", "--", *wanted]
+def _declared_artifact(path: str) -> str | None:
+    """Where ``path`` lies as :data:`TOOL_ARTIFACT_DIRS` or :data:`TOOL_ARTIFACT_SUFFIXES`
+    output -- its artifact directory, or itself -- or ``None``."""
+    parts = path.split("/")
+    for index, part in enumerate(parts[:-1]):
+        if any(fnmatch.fnmatchcase(part, pattern) for pattern in TOOL_ARTIFACT_DIRS):
+            return "/".join(parts[: index + 1]) + "/"
+    return path if parts[-1].endswith(TOOL_ARTIFACT_SUFFIXES) else None
+
+
+class _StatusFailed(Exception):
+    pass
+
+
+@dataclass(frozen=True)
+class _Changes:
+    """The worktree against its ``HEAD``, as the engine's commit takes it."""
+
+    #: A tracked path modified, deleted, or anything staged: always the task's.
+    tracked: bool
+    #: The untracked paths the commit takes, as git printed them.
+    untracked: tuple[bytes, ...]
+    #: The untracked tool output it leaves out, named for the operator.
+    left_out: tuple[str, ...]
+
+    @property
+    def any(self) -> bool:
+        return self.tracked or bool(self.untracked)
+
+
+def _changes(write: _Write) -> _Changes:
+    """What changed in the worktree, read once (review of #236); :class:`_StatusFailed`.
+
+    Only UNTRACKED tool output is ever left out; a tracked modification or deletion
+    under an artifact's name is the task's, and goes into the commit.
+    """
+    code, out, err = write.git_bytes(
+        write.worktree, ["status", "--porcelain", "-z", "--untracked-files=all"]
     )
-    left_out: set[str] = set()
-    fields = iter(out.split(b"\0") if code == 0 else ())
+    if code != 0:
+        raise _StatusFailed(err.decode("utf-8", "replace").strip())
+    tracked, untracked = False, []
+    fields = iter(out.split(b"\0"))
     for entry in fields:
         if len(entry) < 4:
             continue
+        if entry[:2] == b"??":
+            untracked.append(entry[3:])
+            continue
+        tracked = True
         if entry[:1] in (b"R", b"C"):
             next(fields, None)  # a rename's or a copy's source follows
-        path = os.fsdecode(entry[3:])
-        root = next((r for r in roots if path == r or path.startswith(f"{r}/")), None)
-        left_out.add(f"{root}/" if root is not None else path)
-    return excludes, sorted(left_out)
+    roots = _pytest_temp_roots(write, untracked)
+    kept: list[bytes] = []
+    left_out: set[str] = set()
+    for raw in untracked:
+        path = os.fsdecode(raw)
+        where = _declared_artifact(path) or next(
+            (f"{root}/" for root in roots if path.startswith(f"{root}/")), None
+        )
+        if where is None:
+            kept.append(raw)
+        else:
+            left_out.add(where)
+    return _Changes(tracked=tracked, untracked=tuple(kept), left_out=tuple(sorted(left_out)))
 
 
 def _new_commits(write: _Write, start: str, tips: Sequence[str | None]) -> list[str]:
@@ -723,11 +763,21 @@ def _commit(
     start: str,
     step_dir: Path,
     before: int,
-    excludes: Sequence[str],
+    untracked: Sequence[bytes],
 ) -> tuple[str | None, list[tuple[str, MadeBy]], str | None]:
-    """Step 8: ``(failure_reason, commits, head)`` of the engine's commit."""
+    """Step 8: ``(failure_reason, commits, head)`` of the engine's commit.
+
+    Every tracked change, then exactly the ``untracked`` paths :func:`_changes` kept --
+    literal, NUL-separated on stdin, so no name is read as a pattern or cut short.
+    """
     # Bytes: the repository's hooks print whatever they like, recorded as printed.
-    code, out, err = write.git_bytes(write.worktree, ["add", "-A", "--", ".", *excludes])
+    code, out, err = write.git_bytes(write.worktree, ["add", "-u"])
+    if code == 0 and untracked:
+        code, out, err = write.git_bytes(
+            write.worktree,
+            ["--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"],
+            stdin=b"".join(path + b"\0" for path in untracked),
+        )
     if code == 0:
         code, out, err = write.git_bytes(
             write.worktree, ["commit", "-q", "-m", message], hooks=True
@@ -991,19 +1041,19 @@ def run_write_step(
                 1, "failed", "agent_moved_head", write, commits=commits, head=head, final=final
             )
 
-        excludes, left_out = _tool_artifacts(write)
-        if left_out:
+        try:
+            changes = _changes(write)
+        except _StatusFailed as exc:
+            _compromise(write, "status_failed")
+            say(f"git status failed in {write.worktree}: {exc}")
+            return _outcome(1, "failed", "status_failed", write, head=head, final=final)
+        if changes.left_out:
             say(
                 f"left out of the commit, as tool artifacts (kept in {write.worktree}): "
-                + ", ".join(left_out)
+                + ", ".join(changes.left_out)
             )
-        code, out, err = write.git(write.worktree, ["status", "--porcelain", "--", ".", *excludes])
-        if code != 0:
-            _compromise(write, "status_failed")
-            say(f"git status failed in {write.worktree}: {err.strip()}")
-            return _outcome(1, "failed", "status_failed", write, head=head, final=final)
         failed_step = final.exit_code != 0
-        if not out.strip():
+        if not changes.any:
             status = "failed" if failed_step else "no_change"
             _publish(write, status=status, commits=(), compromised=None)
             if failed_step:
@@ -1018,7 +1068,9 @@ def run_write_step(
         before = len(_branch_reflog(write))
         attributed: Sequence[tuple[str, MadeBy]] | None = None
         try:
-            reason, commits, head = _commit(write, message, tip, step_dir, before, excludes)
+            reason, commits, head = _commit(
+                write, message, tip, step_dir, before, changes.untracked
+            )
             attributed = commits
             _crash_after("commit")
             if reason is not None:
