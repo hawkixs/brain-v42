@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .runs import RUN_ID_PATTERN, STORED_STATUSES
-from .state import Unknown, create_once, publish, read
+from .state import Missing, Unknown, create_once, publish, read
 
 
 @dataclass(frozen=True)
@@ -168,13 +168,19 @@ def of_repository(state: Path, common_dir: Path) -> list[str]:
     """Owners whose repository shares ``common_dir``, ascending.
 
     An unreadable lineage is included: it reads as ``Unknown`` when loaded and
-    refuses, rather than silently leaving the set.
+    refuses, rather than silently leaving the set. A lineage listed and then gone
+    before it could be read (:class:`~headless_agents.state.Missing`) is left
+    out: its own write withdrew it, having created nothing else.
     """
     key = common_dir.resolve()
     found = []
     for owner in owners(state):
         try:
             document = read(lineage_path(state, owner), expect_id=("owner", owner))
+        except Missing:
+            # Listed, then gone before it was read: a new lineage its own write
+            # withdrew (ticket 9ec19a4e) -- absent, the truth, not unknown.
+            continue
         except Unknown:
             found.append(owner)
             continue

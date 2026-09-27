@@ -9,7 +9,15 @@ from pathlib import Path
 
 import pytest
 
-from headless_agents.state import Unknown, create_once, ensure_dir, publish, read, read_optional
+from headless_agents.state import (
+    Missing,
+    Unknown,
+    create_once,
+    ensure_dir,
+    publish,
+    read,
+    read_optional,
+)
 
 
 def test_publish_then_read_round_trips(tmp_path: Path) -> None:
@@ -104,3 +112,36 @@ def test_ensure_dir_is_private(tmp_path: Path) -> None:
     directory = ensure_dir(tmp_path / "a" / "b")
     assert directory.is_dir()
     assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+
+
+# ── Missing: absent, not doubtful (0.5.3 lot 4a, ticket 9ec19a4e) ────────────
+
+
+def test_a_missing_document_is_missing_and_still_unknown(tmp_path: Path) -> None:
+    with pytest.raises(Missing) as caught:
+        read(tmp_path / "nope.json")
+    assert isinstance(caught.value, Unknown)
+
+
+def test_a_missing_parent_directory_is_missing(tmp_path: Path) -> None:
+    with pytest.raises(Missing):
+        read(tmp_path / "no-such-dir" / "doc.json")
+
+
+@pytest.mark.parametrize("kind", ["directory", "garbage", "dangling-link", "not-a-directory"])
+def test_only_an_absent_document_is_missing(tmp_path: Path, kind: str) -> None:
+    """A document that exists in a wrong shape, or a link to nothing, stays a plain
+    Unknown: only a truly absent file may be read as absent."""
+    path = tmp_path / "doc.json"
+    if kind == "directory":
+        path.mkdir()
+    elif kind == "garbage":
+        path.write_text("{not json")
+    elif kind == "dangling-link":
+        path.symlink_to(tmp_path / "nowhere.json")
+    else:
+        (tmp_path / "file").write_text("x")
+        path = tmp_path / "file" / "doc.json"
+    with pytest.raises(Unknown) as caught:
+        read(path)
+    assert not isinstance(caught.value, Missing), kind

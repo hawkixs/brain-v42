@@ -10,7 +10,7 @@ import pytest
 
 from headless_agents import lineage, provenance
 from headless_agents.lineage import LineageState, PendingWrite
-from headless_agents.state import Unknown
+from headless_agents.state import Missing, Unknown
 
 _OWNER = "20260925T000000-aaaaaaaa"
 
@@ -126,6 +126,31 @@ def test_of_repository_includes_an_unreadable_lineage(tmp_path: Path) -> None:
     broken = "20260925T000000-dddddddd"
     lineage.lineage_path(state, broken).write_text("{not json")
     assert lineage.of_repository(state, tmp_path / "repo/.git") == [_OWNER, broken]
+
+
+def test_of_repository_skips_a_lineage_that_vanished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Listed, then gone before it was read: a withdrawn new lineage (9ec19a4e) --
+    absent, not unknown. An unreadable one is still included (the test above)."""
+    state = tmp_path / "state"
+    gone, kept = "20260925T000000-aaaaaaaa", "20260925T000000-bbbbbbbb"
+    lineage.create(state, _lineage(tmp_path, gone))
+    lineage.create(state, _lineage(tmp_path, kept))
+    real_read = lineage.read
+
+    def vanishing(path: Path, **kwargs: object) -> dict[str, object]:
+        if path == lineage.lineage_path(state, gone):
+            path.unlink()
+        return real_read(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(lineage, "read", vanishing)
+    assert lineage.of_repository(state, tmp_path / "repo/.git") == [kept]
+
+
+def test_a_vanished_lineage_loads_as_missing(tmp_path: Path) -> None:
+    with pytest.raises(Missing):
+        lineage.load(tmp_path, _OWNER)
 
 
 def test_of_repository_without_lineages_is_empty(tmp_path: Path) -> None:

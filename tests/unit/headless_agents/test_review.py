@@ -1167,3 +1167,21 @@ def test_findings_must_name_a_review_run(world: World) -> None:
     built = world.implement()
     with pytest.raises(UsageError, match=f"--findings {built.run_id}: not a review run"):
         plan(world.request("build", "x", findings_run=built.run_id))
+
+
+# ── A lineage withdrawn during a review's admission is absent (9ec19a4e) ─────
+
+
+def test_a_review_ignores_a_lineage_that_vanished(tmp_path: Path) -> None:
+    """Listed under the registry lock, then withdrawn by its own write before the
+    review loads it: absent, never "unknown"."""
+    assert review_flow._admitted(tmp_path, ["20260925T000000-aaaaaaaa"]) == {}
+
+
+def test_a_review_still_refuses_a_corrupt_lineage(tmp_path: Path) -> None:
+    owner = "20260925T000000-aaaaaaaa"
+    path = lineage.lineage_path(tmp_path, owner)
+    path.parent.mkdir(parents=True)
+    path.write_text("{broken")
+    with pytest.raises(review_flow.ReviewRefused, match="is unknown"):
+        review_flow._admitted(tmp_path, [owner])

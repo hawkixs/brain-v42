@@ -48,7 +48,7 @@ from .profile import Workspace
 from .provenance import MadeBy
 from .repo import RepoIdentity
 from .result import RunResult
-from .state import Unknown, publish, read_optional
+from .state import Missing, Unknown, publish, read_optional
 
 if TYPE_CHECKING:
     from .engine import Plan
@@ -220,6 +220,11 @@ def check_repository(state: Path, common: Path, *, own: str) -> None:
             continue
         try:
             other = lineages.load(state, owner)
+        except Missing:
+            # Withdrawn by its own refused write after it was listed (ticket
+            # 9ec19a4e): that write holds its lineage lock, not the registry lock,
+            # when it withdraws -- absent, never unknown.
+            continue
         except Unknown as exc:
             raise WriteRefused(f"lineage {owner} is unknown ({exc}); nothing ran") from None
         if other.pending is not None and is_free(lineages.lineage_lock(state, owner)):

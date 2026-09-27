@@ -37,7 +37,7 @@ from .gitops import git
 from .lineage import LineageState
 from .locks import LockTimeout, Rank, held
 from .repo import RepoIdentity
-from .state import Unknown
+from .state import Missing, Unknown
 from .templates import Verdict
 from .vendor import VendorCheck, VendorRefused, attribute, check_independence
 from .write_flow import (
@@ -153,6 +153,9 @@ def _admitted(state: Path, owners: Sequence[str]) -> dict[str, LineageState]:
     for owner in owners:
         try:
             current = lineages.load(state, owner)
+        except Missing:
+            # Withdrawn by its own refused write after it was listed (ticket 9ec19a4e).
+            continue
         except Unknown as exc:
             raise ReviewRefused(f"lineage {owner} is unknown ({exc}); nothing ran") from None
         if current.compromised is not None:
