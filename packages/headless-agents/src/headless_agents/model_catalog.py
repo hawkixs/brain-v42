@@ -19,23 +19,30 @@ duplicate task kind, an unknown provider, a model value that is not a table,
 or ``schema != 1``) raises :class:`CatalogueError` naming the offending key.
 
 ``tasks`` is frozen as an inline array of inline tables (``tasks = [{kind =
-"..."}]``) and ``cost`` as an inline table (``cost = {kind = "..."}``);
-:mod:`tomllib` yields the same ``list[dict]`` / ``dict`` for the non-inline
-spellings TOML also allows (``[[provider."model".tasks]]``,
-``[provider."model".cost]``), so every header line is checked against the
-raw text before the parsed document is walked: a ``[[...]]``/``[...]``
-header whose key path, decoded through :mod:`tomllib` itself (never a
-hand-rolled unquoter -- an escaped key is otherwise a bypass), is exactly
-three segments deep (``provider.model.field``) and ends in ``tasks``/
-``cost`` raises :class:`CatalogueError`, even though the parsed values
-would otherwise validate. A model whose own (quoted) name merely contains
-the text ``.cost`` or ``.tasks`` is two segments deep, not three, and is
-not a field header.
+"..."}]``) and ``cost`` as an inline table (``cost = {kind = "..."}``).
+:mod:`tomllib` yields the identical ``list[dict]`` / ``dict`` for every
+non-inline spelling TOML also allows -- a ``[provider."model".cost]``
+header, dotted keys (``cost.kind = "..."``), and, for ``tasks``, a
+``[[provider."model".tasks]]`` array of tables -- so no amount of parsed-
+value inspection tells inline from non-inline apart, and neither does a
+scan for header lines: dotted keys open no header at all. What *does*
+distinguish them is TOML's own immutability rule (TOML v1.0, "Inline
+Table"/"Array"): once written, an inline table or a statically-declared
+array is closed -- no later header may extend it -- while a table opened
+by a ``[header]`` or by dotted keys, and an array of tables, both accept
+a later element. :func:`_reject_non_inline_cost` and
+:func:`_reject_non_inline_tasks` probe exactly that: they append one more
+header addressing the same field (through a key that no real catalogue
+uses, so it never collides) and re-parse. ``TOMLDecodeError`` means the
+field refused the extension -- it was inline, the frozen shape -- and a
+successful parse means it accepted one, so it was not. The header segments
+themselves are also encoded through :func:`_toml_basic_string`, never
+string-formatted directly: a provider or model name is not filtered
+anywhere upstream and can itself carry a quote, a backslash or a dot.
 """
 
 from __future__ import annotations
 
-import re
 import tomllib
 from dataclasses import dataclass
 from datetime import date
@@ -67,10 +74,9 @@ _MODEL_FIELDS = frozenset({"purpose", "tasks", "cost", "pitfalls", "verified_at"
 _TASK_FIELDS = frozenset({"kind", "effort"})
 _COST_FIELDS = frozenset({"kind", "windows", "note"})
 
-#: A TOML array-of-tables header, ``[[ path ]]``, always alone on its line.
-_ARRAY_TABLE_HEADER = re.compile(r"^\[\[(?P<path>[^\[\]]+)\]\]\s*(#.*)?$")
-#: A TOML standalone table header, ``[ path ]`` -- excludes the ``[[`` above.
-_TABLE_HEADER = re.compile(r"^\[(?!\[)(?P<path>[^\[\]]+)\]\s*(#.*)?$")
+#: A key no real catalogue declares (a control character no operator types),
+#: used to probe a field's mutability without touching its real content.
+_INLINE_PROBE_KEY = "\x00ha-inline-probe"
 
 
 class CatalogueError(ValueError):
@@ -141,58 +147,71 @@ def _load_document(path: Path) -> tuple[dict[str, object], str]:
         raise CatalogueError(f"{path}: nested too deeply to be a catalogue") from None
 
 
-def _header_key_segments(path: str) -> list[str] | None:
-    """Decode a TOML header's dotted key path into its literal segments,
-    through :mod:`tomllib` itself rather than a hand-rolled unquoter: a
-    quoted key can carry any string escape (``\\"``, ``\\u0063``, ...), and
-    only the real TOML decoder resolves it exactly as the document itself
-    would. ``f"{path} = 0"`` is valid TOML whenever ``path`` is a valid
-    header path (the caller already matched it with a header regex), and
-    parses to a chain of single-key tables ending in the leaf ``0``; walking
-    that chain recovers the segments in order. Returns ``None`` if ``path``
-    somehow fails to parse standalone -- defensive, should not happen for a
-    path lifted from a document that already parsed as a whole."""
+def _toml_basic_string(value: str) -> str:
+    """``value`` as a TOML basic string literal, quotes included, escaping
+    backslash, quote and control characters exactly as the TOML v1.0
+    grammar requires. Deliberately not :func:`json.dumps`: JSON's escaping
+    does not always coincide with TOML's -- U+007F (DEL) is left raw by
+    JSON but is a control character TOML forbids unescaped, for one."""
+    out = ['"']
+    for char in value:
+        codepoint = ord(char)
+        if char == "\\":
+            out.append("\\\\")
+        elif char == '"':
+            out.append('\\"')
+        elif char == "\b":
+            out.append("\\b")
+        elif char == "\t":
+            out.append("\\t")
+        elif char == "\n":
+            out.append("\\n")
+        elif char == "\f":
+            out.append("\\f")
+        elif char == "\r":
+            out.append("\\r")
+        elif codepoint < 0x20 or codepoint == 0x7F:
+            out.append(f"\\u{codepoint:04x}")
+        else:
+            out.append(char)
+    out.append('"')
+    return "".join(out)
+
+
+def _accepts_extension(text: str, probe_header: str) -> bool:
+    """Whether re-parsing ``text`` with ``probe_header`` appended still
+    parses: an inline table or a statically-declared array is immutable
+    (TOML v1.0) -- no later header may extend it, so the probe fails with
+    ``TOMLDecodeError``; a table opened by a ``[header]``/dotted keys, and
+    an array of tables, both accept one more element and parse clean."""
     try:
-        parsed: object = tomllib.loads(f"{path} = 0")
+        tomllib.loads(f"{text}\n{probe_header}\n")
     except tomllib.TOMLDecodeError:
-        return None
-    segments: list[str] = []
-    while isinstance(parsed, dict) and len(parsed) == 1:
-        key, parsed = next(iter(parsed.items()))
-        segments.append(key)
-    return segments
+        return False
+    return True
 
 
-def _reject_non_inline_tasks_and_cost(text: str) -> None:
-    """``tasks`` is frozen as an inline array of inline tables and ``cost`` as
-    an inline table; tomllib yields the identical ``list[dict]`` / ``dict``
-    for the non-inline spellings TOML also allows (``[[provider."model".
-    tasks]]``, ``[provider."model".cost]``), so the raw source is checked
-    line by line, before the parsed document is walked, for a header at
-    model-field depth (``provider.model.field``, exactly three segments)
-    whose last key is ``tasks`` or ``cost``. A model whose own name merely
-    contains that text (``[codex."gpt.cost"]``, two segments) is not one."""
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        array_header = _ARRAY_TABLE_HEADER.match(stripped)
-        if array_header is not None:
-            segments = _header_key_segments(array_header.group("path"))
-            if segments is not None and len(segments) == 3 and segments[-1] == "tasks":
-                raise CatalogueError(
-                    f"{'.'.join(segments)}: must be an inline array of inline tables "
-                    "(tasks = [{...}]), not a [[...]] array of tables"
-                )
-            continue
-        table_header = _TABLE_HEADER.match(stripped)
-        if table_header is not None:
-            segments = _header_key_segments(table_header.group("path"))
-            if segments is not None and len(segments) == 3 and segments[-1] == "cost":
-                raise CatalogueError(
-                    f"{'.'.join(segments)}: must be an inline table (cost = {{...}}), "
-                    "not a standalone [...] table"
-                )
+def _reject_non_inline_cost(text: str, provider: str, model: str) -> None:
+    provider_key = _toml_basic_string(provider)
+    model_key = _toml_basic_string(model)
+    probe_key = _toml_basic_string(_INLINE_PROBE_KEY)
+    header = f"[{provider_key}.{model_key}.cost.{probe_key}]"
+    if _accepts_extension(text, header):
+        raise CatalogueError(
+            f"{provider}.{model}.cost: must be an inline table (cost = {{...}}), "
+            "not a standalone [...] table or dotted keys"
+        )
+
+
+def _reject_non_inline_tasks(text: str, provider: str, model: str) -> None:
+    provider_key = _toml_basic_string(provider)
+    model_key = _toml_basic_string(model)
+    header = f"[[{provider_key}.{model_key}.tasks]]"
+    if _accepts_extension(text, header):
+        raise CatalogueError(
+            f"{provider}.{model}.tasks: must be an inline array of inline tables "
+            "(tasks = [{...}]), not a [[...]] array of tables"
+        )
 
 
 def _schema(document: dict[str, object]) -> None:
@@ -257,7 +276,9 @@ def _pitfalls(value: object, prefix: str) -> tuple[str, ...]:
     return tuple(_string(item, f"{prefix}[{index}]") for index, item in enumerate(raw))
 
 
-def _model_entry(provider: str, model: str, table: object, warnings: list[str]) -> ModelEntry:
+def _model_entry(
+    provider: str, model: str, table: object, warnings: list[str], text: str
+) -> ModelEntry:
     prefix = f"{provider}.{model}"
     if not model:
         raise CatalogueError(f"{prefix}: model name must not be empty")
@@ -270,6 +291,7 @@ def _model_entry(provider: str, model: str, table: object, warnings: list[str]) 
     raw_tasks = _require(table, "tasks", prefix)
     if not isinstance(raw_tasks, list) or not raw_tasks:
         raise CatalogueError(f"{tasks_key}: must be a non-empty array of tables")
+    _reject_non_inline_tasks(text, provider, model)
     seen_kinds: set[str] = set()
     tasks: list[tuple[str, str | None]] = []
     for index, raw_task in enumerate(raw_tasks):
@@ -277,9 +299,10 @@ def _model_entry(provider: str, model: str, table: object, warnings: list[str]) 
         tasks.append(parsed)
         warnings.extend(task_warnings)
 
-    cost_kind, windows, cost_note, cost_warnings = _cost(
-        _require(table, "cost", prefix), f"{prefix}.cost"
-    )
+    raw_cost = _require(table, "cost", prefix)
+    if isinstance(raw_cost, dict):
+        _reject_non_inline_cost(text, provider, model)
+    cost_kind, windows, cost_note, cost_warnings = _cost(raw_cost, f"{prefix}.cost")
     warnings.extend(cost_warnings)
 
     pitfalls = _pitfalls(table.get("pitfalls"), f"{prefix}.pitfalls")
@@ -310,7 +333,6 @@ def load_catalogue(path: Path) -> Catalogue:
     """Read and validate ``path`` against the frozen schema v1; never rewrites it."""
     document, text = _load_document(path)
     _schema(document)
-    _reject_non_inline_tasks_and_cost(text)
 
     warnings: list[str] = []
     entries: list[ModelEntry] = []
@@ -325,7 +347,7 @@ def load_catalogue(path: Path) -> Catalogue:
                 f"{key}: unknown provider; valid names: {', '.join(PROVIDER_NAMES)}"
             )
         for model, table in value.items():
-            entries.append(_model_entry(key, model, table, warnings))
+            entries.append(_model_entry(key, model, table, warnings, text))
 
     return Catalogue(entries=tuple(entries), warnings=tuple(warnings))
 

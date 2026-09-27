@@ -93,6 +93,36 @@ def test_a_model_name_containing_dot_cost_is_not_a_cost_header(tmp_path: Path) -
     assert result.entries[0].cost_kind == "subscription"
 
 
+def test_several_inline_models_across_providers_still_load(tmp_path: Path) -> None:
+    """The immutability probe (round 3) re-parses the document once per
+    model; it must not misfire on a catalogue with several valid, fully
+    inline entries."""
+    result = _load(
+        tmp_path,
+        "schema = 1\n"
+        '[codex."gpt-6-sol"]\n'
+        'purpose = "Review."\n'
+        'tasks = [{kind = "code-review", effort = "high"}]\n'
+        'cost = {kind = "subscription"}\n'
+        "verified_at = 2026-09-27\n"
+        'source = "bench"\n'
+        '[opencode."present"]\n'
+        'purpose = "Build."\n'
+        'tasks = [{kind = "build"}, {kind = "build-deep"}]\n'
+        'cost = {kind = "window", windows = ["5h"]}\n'
+        "verified_at = 2026-09-27\n"
+        'source = "bench"\n'
+        '[openrouter."third/model"]\n'
+        'purpose = "Draft."\n'
+        'tasks = [{kind = "draft"}]\n'
+        'cost = {kind = "per_token"}\n'
+        "verified_at = 2026-09-27\n"
+        'source = "bench"\n',
+    )
+    assert result.warnings == ()
+    assert {entry.model for entry in result.entries} == {"gpt-6-sol", "present", "third/model"}
+
+
 @pytest.mark.parametrize("provider", PROVIDERS)
 def test_every_provider_accepts_a_model_table_without_effort(
     tmp_path: Path,
@@ -288,6 +318,29 @@ def test_non_string_effort_names_its_key(tmp_path: Path) -> None:
             'kind = "build"\n',
             "codex.gpt-6-sol.tasks",
             id="tasks-array-of-tables-with-an-escaped-key-is-still-rejected",
+        ),
+        pytest.param(
+            'schema = 1\n[codex."gpt-6-sol"]\n'
+            'purpose = "Review and build."\n'
+            'tasks = [{kind = "design-review", effort = "high"}, {kind = "build"}]\n'
+            'cost.kind = "subscription"\n'
+            'cost.windows = ["5h", "weekly"]\n'
+            'pitfalls = ["Check findings."]\n'
+            "verified_at = 2026-09-27\n"
+            'source = "Brain decision ea4e57a1"\n',
+            "codex.gpt-6-sol.cost",
+            id="cost-dotted-keys-are-not-inline",
+        ),
+        pytest.param(
+            'schema = 1\n[codex."gpt.name"]\n'
+            'purpose = "Review and build."\n'
+            'tasks = [{kind = "design-review", effort = "high"}, {kind = "build"}]\n'
+            'cost.kind = "subscription"\n'
+            'pitfalls = ["Check findings."]\n'
+            "verified_at = 2026-09-27\n"
+            'source = "Brain decision ea4e57a1"\n',
+            "codex.gpt.name.cost",
+            id="cost-dotted-keys-inside-a-dotted-quoted-model-id",
         ),
         pytest.param(
             GOOD.replace('kind = "subscription"', 'kind = "future"'),
