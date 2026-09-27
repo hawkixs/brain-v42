@@ -383,27 +383,34 @@ ha --version
 
 - **`--wait SECONDS`** (spec §3.3): a bounded admission wait. Ordinary reads and confined
   writes share the global lock; an unconfined write holds it exclusively, serialising every
-  other run while it is in flight. `ha clean` is admitted through this same gate, not a lock
-  of its own. `--wait` gives one explicit, positive number of seconds, spent as a single
-  absolute deadline across the global lock and, for a write or a review, the lineage
-  registry and lineage locks it admits under -- time spent on one does not extend the
-  budget for the next, and a lock granted past the deadline is refused, never accepted
-  late. Without `--wait`, each of those locks keeps its own existing ten-second bound. A
-  deadline that expires exits `2` before any provider step runs and leaves nothing behind
-  (an unstarted run's entry is forgotten), naming the contested lock and the wait
-  requested. An invalid `--wait` -- zero, negative, `nan`, `inf`, or a missing value -- is
+  other run while it is in flight. `ha clean` is admitted through this same queue, not a
+  lock of its own. `--wait` gives one explicit, positive number of seconds, spent as a
+  single absolute deadline across the admission queue, the global lock and, for a write or
+  a review, the lineage registry and lineage locks it admits under -- time spent on one
+  does not extend the budget for the next, and a lock granted past the deadline is refused,
+  never accepted late. Without `--wait`, each of those locks keeps its own existing
+  ten-second bound. A deadline that expires exits `2` before any provider step runs and
+  leaves nothing behind (an unstarted run's entry is forgotten). At the global admission it
+  names what the run waited for: the admissions queued ahead of it, by run id, or the runs
+  holding the lock, as in
+  `--wait 30 s expired: waiting behind 2 earlier admission(s) (…); nothing ran`.
+  An invalid `--wait` -- zero, negative, `nan`, `inf`, or a missing value -- is
   rejected before any admission is even attempted, so nothing is named but the flag
   itself: `--wait needs a finite number of seconds greater than zero`. `--timeout` is
   unrelated in both cases, and always the provider run's own timeout. Example:
   `ha run codex --wait 30 "Summarise the change"`.
 
-  An unconfined writer that already holds the short-lived admission gate excludes every
-  later run -- shared or not -- until it releases it; a reader that arrives after a writer
-  has already won that gate queues behind it too. This is a **best-effort** mitigation, not
-  a fairness guarantee: `flock` does not order waiters, so a writer still *polling* for
-  admission (not yet holding it) can in principle be overtaken by a continuous, overlapping
-  stream of readers, and a continuous stream of writers can likewise make a waiting reader
-  time out. A fair FIFO admission queue is planned for 0.5.3.
+  **Admission is first come, first served** (0.5.3). Every run takes a ticket in
+  `<state>/admission/` and waits its turn:
+  - shared runs queued together are admitted together;
+  - an unconfined write waits for every run queued before it, and every run queued after it
+    waits for it -- a stream of readers cannot keep a writer out, and a stream of writers
+    cannot time a reader out;
+  - a waiter that crashed never blocks anyone: its ticket is dropped at the next poll;
+  - `--wait` covers the queue and the global lock alike.
+
+  The queue only orders who may try the global lock: exclusion is still that lock's alone,
+  so an unconfined write never runs beside another run, whatever the queue holds.
 
 `TARGET` is a provider (`ha run codex "..."`), a role declared in
 `~/.config/ha/roles.toml` -- an executor: one provider, or a `chain` of them, with optional
