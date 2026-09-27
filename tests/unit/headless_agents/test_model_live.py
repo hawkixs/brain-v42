@@ -24,15 +24,24 @@ def test_recorded_agy_list_has_models() -> None:
 
 def test_agy_diagnostic_line_on_a_zero_exit_is_rejected() -> None:
     """A zero-exit ``agy models`` that answers a diagnostic, not a model list
-    (review finding #1), must not be read as a one-model catalogue: the first
-    token of ``ERROR: unsupported models command`` is not a model id."""
-    with pytest.raises(ValueError, match="model id"):
-        parse_agy("ERROR: unsupported models command\n")
+    (review finding #1), must not be read as a one-model catalogue. The real
+    format is ``<id>\\t<Display Name>`` (measured on the operator's machine,
+    agy on PATH; the progress banner goes to stderr, never stdout): a
+    lowercase, tab-free diagnostic like ``unsupported models command`` has no
+    tab at all, so it must raise rather than being read as one model named
+    after its first word."""
+    with pytest.raises(ValueError, match="tab"):
+        parse_agy("unsupported models command\n")
 
 
-def test_agy_header_line_is_rejected() -> None:
+def test_agy_line_with_no_display_name_is_rejected() -> None:
     with pytest.raises(ValueError):
-        parse_agy("MODEL CAPABILITIES\ngemini-3.1-pro-high      reasoning, tools\n")
+        parse_agy("gemini-3.8-flash-high\t\n")
+
+
+def test_agy_line_with_an_extra_tab_is_rejected() -> None:
+    with pytest.raises(ValueError, match="tab"):
+        parse_agy("gemini-3.8-flash-high\tGemini 3.8 Flash\t(High)\n")
 
 
 def test_live_models_reports_unreadable_for_agy_diagnostic_output(
@@ -43,7 +52,7 @@ def test_live_models_reports_unreadable_for_agy_diagnostic_output(
         model_live.subprocess,
         "run",
         lambda *args, **kwargs: subprocess.CompletedProcess(
-            args, 0, b"ERROR: unsupported models command\n", b""
+            args, 0, b"unsupported models command\n", b""
         ),
     )
     result = live_models("agy", environ={}, home=tmp_path)

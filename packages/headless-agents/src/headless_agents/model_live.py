@@ -30,10 +30,11 @@ from pathlib import Path
 from .engine import executable_for
 from .keys import PresetKey, preset_key
 
-#: A recorded ``agy models`` line is ``<model-id><whitespace><capability tags>``
-#: (``tests/unit/headless_agents/fixtures/model_lists/agy_models.txt``); the id
-#: column is a lowercase dash/dot slug, never a header (``MODEL``) or a
-#: diagnostic token (``ERROR:``).
+#: A recorded ``agy models`` line is ``<model-id>\t<Display Name>`` -- one
+#: literal TAB, measured on the operator's machine with agy on PATH
+#: (``tests/unit/headless_agents/fixtures/model_lists/agy_models.txt``); the
+#: progress banner ("Fetching available models...") goes to stderr, never
+#: stdout. The id column is a lowercase dash/dot slug.
 _AGY_MODEL_ID_PATTERN = re.compile(r"[a-z0-9]+(?:[.\-][a-z0-9]+)*")
 
 #: The only providers with a live-list query (parallel-runs design §3.6).
@@ -73,27 +74,29 @@ def parse_opencode(raw: str) -> tuple[str, ...]:
 
 
 def parse_agy(raw: str) -> tuple[str, ...]:
-    """Model IDs from ``agy models``: the first column of every non-empty line.
+    """Model IDs from ``agy models``: ``<model-id>\\t<Display Name>`` per
+    non-empty line, exactly one TAB (the recorded shape; see
+    ``_AGY_MODEL_ID_PATTERN`` above).
 
-    Every non-empty line is required to have the recorded shape, an id
-    column followed by a capability-tags column: a line with only one
-    column, or whose first token is not a lowercase dash/dot model id,
-    raises rather than being read as a one-model catalogue -- a header
-    (``MODEL ...``) or a diagnostic (``ERROR: unsupported models command``)
-    on an ``agy models`` that still exited 0 must be reported unreadable,
-    never mistaken for a live list.
+    A line split by a single TAB into anything other than exactly two
+    columns -- zero tabs, more than one, or a blank display name -- raises,
+    and so does an id that is not a lowercase dash/dot slug: a diagnostic
+    that still exited 0 (``unsupported models command``, no TAB at all)
+    must be reported unreadable, never read as a one-model catalogue named
+    after its first word.
     """
     ids: list[str] = []
     for line in raw.splitlines():
-        stripped = line.strip()
-        if not stripped:
+        if not line.strip():
             continue
-        columns = stripped.split(maxsplit=1)
-        if len(columns) < 2:
-            raise ValueError(f"agy models line has no capability column: {stripped!r}")
-        model_id = columns[0]
+        columns = line.split("\t")
+        if len(columns) != 2:
+            raise ValueError(f"agy models line does not have exactly one tab: {line!r}")
+        model_id, display_name = columns
         if not _AGY_MODEL_ID_PATTERN.fullmatch(model_id):
             raise ValueError(f"agy models line has an invalid model id: {model_id!r}")
+        if not display_name.strip():
+            raise ValueError(f"agy models line has an empty display name: {line!r}")
         ids.append(model_id)
     return _dedupe(ids)
 
