@@ -18,6 +18,7 @@ from headless_agents.structured import (
     SchemaError,
     check_chain,
     is_json_answer,
+    parse_json,
     refuse_unsupported,
     schema_text,
 )
@@ -108,7 +109,16 @@ def test_a_chain_is_refused_as_a_whole() -> None:
         ("", False),
         (None, False),
         ("NaN", False),
+        ("[" * 100_000 + "]" * 100_000, False),
     ],
+    ids=["compact", "spaced", "word", "empty", "none", "nan", "too-deep"],
 )
 def test_is_json_answer(text: str | None, expected: bool) -> None:
     assert is_json_answer(text) is expected
+
+
+def test_parse_json_is_strict_and_never_crashes_on_depth() -> None:
+    assert parse_json(' {"ok": [1, 2]} ') == {"ok": [1, 2]}
+    for text in ("Infinity", "{", "[" * 100_000 + "]" * 100_000):
+        with pytest.raises(ValueError):
+            parse_json(text)

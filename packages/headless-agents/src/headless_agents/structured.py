@@ -103,16 +103,25 @@ def _not_a_json_constant(name: str) -> object:
     raise ValueError(f"{name} is not JSON")
 
 
-def is_json_answer(text: str | None) -> bool:
-    """Whether ``text`` is one JSON document, surrounding whitespace allowed.
+def parse_json(text: str) -> object:
+    """``text`` as one JSON document, surrounding whitespace allowed; :class:`ValueError`.
 
-    Strict: ``NaN`` and ``Infinity``, which Python's ``json`` accepts by default,
-    are not JSON.
+    Strict: ``NaN`` and ``Infinity``, which Python's ``json`` accepts by default, are
+    not JSON. A document nested too deeply for Python's parser is refused the same
+    way -- as a ``ValueError``, never the ``RecursionError`` it would raise.
     """
+    try:
+        return json.loads(text, parse_constant=_not_a_json_constant)
+    except RecursionError:
+        raise ValueError("JSON nested too deeply to parse") from None
+
+
+def is_json_answer(text: str | None) -> bool:
+    """Whether ``text`` is one JSON document (:func:`parse_json`)."""
     if text is None:
         return False
     try:
-        json.loads(text, parse_constant=_not_a_json_constant)
+        parse_json(text)
     except ValueError:
         return False
     return True
@@ -124,6 +133,7 @@ __all__ = [
     "SchemaError",
     "check_chain",
     "is_json_answer",
+    "parse_json",
     "refuse_unsupported",
     "schema_text",
 ]

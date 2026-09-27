@@ -60,6 +60,7 @@ class Env:
         continue_run: str | None = None,
         head: str | None = None,
         review_run: str | None = None,
+        output_schema: dict[str, object] | None = None,
     ) -> Request:
         return Request(
             target=target,
@@ -72,6 +73,7 @@ class Env:
             continue_run=continue_run,
             head=head,
             review_run=review_run,
+            output_schema=output_schema,
             cwd=self.cwd,
             environ={"PATH": "/usr/bin:/bin", "HOME": str(self.home), **self.environ},
             home=self.home,
@@ -485,3 +487,34 @@ def test_continue_names_the_run_and_the_lineage_it_joins(
     env.register(RUN, target=IMPLEMENT, lineage=OWNER)
     planned = plan(env.request("build", "Fix it.", continue_run=RUN))
     assert planned.continues == RUN and planned.joins == OWNER
+
+
+# ── output schema (0.5.3 lot 1) ─────────────────────────────────────────────
+
+SCHEMA: dict[str, object] = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+
+@pytest.mark.parametrize("target", ["openrouter", "openai-compat"])
+def test_output_schema_is_refused_on_an_http_target(
+    env: Env, target: str, no_subprocess: list[object]
+) -> None:
+    overrides = Overrides(base_url="http://x", key_env="K") if target == "openai-compat" else None
+    with pytest.raises(UsageError, match=f"{target} cannot constrain"):
+        plan(env.request(target, "task", overrides=overrides, output_schema=SCHEMA))
+
+
+def test_an_output_schema_no_rail_can_take_is_a_usage_error(env: Env) -> None:
+    with pytest.raises(UsageError, match="object-rooted"):
+        plan(env.request("codex", "task", output_schema={"type": "array"}))
+
+
+def test_output_schema_is_refused_for_a_review_target_too(env: Env) -> None:
+    _panel(env)
+    with pytest.raises(UsageError, match="--output-schema needs a provider or a role"):
+        plan(env.request("check", "task", output_schema=SCHEMA))
+
+
+def test_a_schema_on_claude_or_codex_is_planned(env: Env, no_subprocess: list[object]) -> None:
+    env.roles('[pair]\nchain = ["codex", "claude"]\n')
+    planned = plan(env.request("pair", "task", output_schema=SCHEMA))
+    assert planned.request.output_schema == SCHEMA

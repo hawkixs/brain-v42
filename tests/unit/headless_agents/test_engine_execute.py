@@ -31,6 +31,8 @@ class _Fake:
     raises: BaseException | None = None
     #: The event log this provider writes, as its rail would (plan Task 5).
     events: str | None = None
+    #: The text of a failed run: codex keeps an answer that is not JSON (0.5.3 lot 1).
+    failure_text: str | None = None
     specs: list[RunSpec] = field(default_factory=list)
 
     def run(self, spec: RunSpec) -> RunResult:
@@ -53,7 +55,7 @@ class _Fake:
                 tokens=None,
                 duration_seconds=0.1,
                 tool_call_completed=False,
-                text=self.answer if self.code == 0 else None,
+                text=self.answer if self.code == 0 else self.failure_text,
                 run_id=run_id_of(spec),
                 cost_usd=0.5,
             ),
@@ -429,3 +431,77 @@ def test_a_chain_records_the_counts_of_the_link_that_answered(world: World) -> N
     world.fakes["codex"] = _Fake("codex", events=(TOOL_FIXTURES / "codex.events.jsonl").read_text())
     (step,) = _steps(world.run("pair"))
     assert step["provider"] == "codex" and step["tools"] == {"command_execution": 4}
+
+
+# ── output schema (0.5.3 lot 1) ─────────────────────────────────────────────
+
+SCHEMA = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+    "additionalProperties": False,
+}
+
+
+def test_output_schema_reaches_every_link_spec(world: World) -> None:
+    world.roles('[r]\nchain = ["codex", "claude"]\n')
+    world.fakes["codex"] = _Fake("codex", code=3)
+    world.fakes["claude"] = _Fake("claude", answer='{"ok":true}')
+    outcome = world.run("r", output_schema=SCHEMA)
+    assert outcome.exit_code == 0, world.said
+    assert [fake.specs[0].output_schema for fake in world.fakes.values()] == [SCHEMA, SCHEMA]
+
+
+def test_output_schema_is_refused_for_a_workflow_target(world: World) -> None:
+    world.roles('[implementer]\nprovider = "codex"\nwrite = true\n')
+    (world.home / ".config" / "ha" / "workflows.toml").write_text(
+        '[build]\nshape = "implement"\nimplement = "implementer"\n'
+    )
+    with pytest.raises(UsageError, match="--output-schema needs a provider or a role"):
+        world.run("build", output_schema=SCHEMA)
+    assert world.registry().run_ids() == []
+
+
+def test_output_schema_is_refused_when_any_link_cannot_honour_it(world: World) -> None:
+    world.roles('[r]\nchain = ["codex", "opencode"]\n')
+    with pytest.raises(UsageError, match="opencode cannot constrain"):
+        world.run("r", output_schema=SCHEMA)
+    assert world.registry().run_ids() == []
+    assert world.fakes == {}
+
+
+def test_a_non_json_answer_is_reported_as_output_not_json(world: World) -> None:
+    world.fakes["codex"] = _Fake("codex", code=1, failure_text="nope")
+    outcome = world.run("codex", output_schema=SCHEMA)
+    assert outcome.exit_code == 1
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["status"] == "failed" and report["failure_reason"] == "output_not_json"
+
+
+def test_a_json_answer_is_answered_verbatim(world: World) -> None:
+    world.fakes["codex"] = _Fake("codex", answer='{"ok":true}')
+    outcome = world.run("codex", output_schema=SCHEMA)
+    assert outcome.exit_code == 0
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["text"] == '{"ok":true}' and report["status"] == "answered"
+    assert report["failure_reason"] is None
+
+
+def test_an_answer_outside_the_schema_never_exits_0(world: World) -> None:
+    """Fail-closed at the engine too: a rail that answered text that is not JSON under
+    a schema -- whatever it returned -- fails the run, and the text is kept."""
+    world.fakes["codex"] = _Fake("codex", answer="I think ok is true")
+    outcome = world.run("codex", output_schema=SCHEMA)
+    assert outcome.exit_code == 1
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["status"] == "failed" and report["failure_reason"] == "output_not_json"
+    assert report["exit_code"] == 1 and report["text"] == "I think ok is true"
+    assert report["steps"][0]["exit_code"] == 0
+    assert world.registry().resolve(outcome.run_id).status == "failed"
+
+
+def test_without_a_schema_a_text_answer_is_answered(world: World) -> None:
+    outcome = world.run("codex")
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert outcome.exit_code == 0 and report["status"] == "answered"
+    assert report["failure_reason"] is None

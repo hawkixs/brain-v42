@@ -68,6 +68,7 @@ from .show import (
     read_task,
 )
 from .state import Unknown
+from .structured import MAX_SCHEMA_BYTES, parse_json
 from .write_flow import PATCH_FILE
 
 __all__ = ["PROVIDER_NAMES", "Probe", "UnknownProvider", "main"]
@@ -176,6 +177,13 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--key-env", metavar="VAR", help="the key variable of openai-compat")
     run.add_argument("--json", action="store_true", help="print run.json")
     run.add_argument("--run-dir", type=Path, help="the run's directory (must not exist)")
+    run.add_argument(
+        "--output-schema",
+        type=Path,
+        metavar="FILE",
+        help="constrain the answer to the JSON Schema in FILE (claude and codex only; "
+        "the answer must be JSON)",
+    )
     run.add_argument(
         "--continue",
         dest="continue_run",
@@ -338,6 +346,32 @@ def _prompt(args: argparse.Namespace, io: Io) -> tuple[str | None, bool]:
     return (None if is_tty else io.stdin.read()), is_tty
 
 
+def _read_output_schema(file: Path, *, cwd: Path) -> dict[str, object]:
+    """``--output-schema FILE``: one JSON object, read before anything runs (0.5.3 lot 1).
+
+    At most :data:`~headless_agents.structured.MAX_SCHEMA_BYTES` bytes: one byte past
+    the bound is read, so an oversized file is refused without being read whole.
+    Whether the object is a schema a rail can take is :func:`plan`'s question.
+    """
+    path = file if file.is_absolute() else cwd / file
+    try:
+        with path.open("rb") as stream:
+            raw = stream.read(MAX_SCHEMA_BYTES + 1)
+    except OSError as exc:
+        raise UsageError(
+            f"--output-schema {file}: cannot be read ({exc.strerror or type(exc).__name__})"
+        ) from None
+    if len(raw) > MAX_SCHEMA_BYTES:
+        raise UsageError(f"--output-schema {file}: larger than {MAX_SCHEMA_BYTES} bytes")
+    try:
+        schema = parse_json(raw.decode("utf-8"))
+    except ValueError as exc:  # a UnicodeDecodeError is one too
+        raise UsageError(f"--output-schema {file}: not JSON ({exc})") from None
+    if not isinstance(schema, dict):
+        raise UsageError(f"--output-schema {file}: not a JSON object")
+    return schema
+
+
 def _write_header(outcome: Outcome, branch: str) -> str:
     """What a write prints before its text (§3.9): the run id -- what ``--continue``
     takes -- the branch, the diffstat of ``change.patch`` and its path. No git: the
@@ -361,6 +395,12 @@ def _run(args: argparse.Namespace, io: Io) -> int:
             "--chain was removed in 0.5.0: declare the chain in a role of roles.toml "
             '(chain = ["codex:MODEL", "claude:MODEL"]) and run the role as the TARGET'
         )
+    # The schema file before stdin: a refused FILE never consumes the piped task.
+    output_schema = (
+        _read_output_schema(args.output_schema, cwd=io.cwd)
+        if args.output_schema is not None
+        else None
+    )
     prompt, is_tty = _prompt(args, io)
     request = Request(
         target=args.target,
@@ -389,6 +429,7 @@ def _run(args: argparse.Namespace, io: Io) -> int:
         head=args.head,
         review_run=args.review_run,
         findings_run=args.findings_run,
+        output_schema=output_schema,
     )
     outcome = execute(plan(request), say=io.say)
     report = outcome.report
