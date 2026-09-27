@@ -80,6 +80,41 @@ was lenient. Fixed before any new confinement proof is trusted (spec §3.1).
 The proof record format is unchanged (`confinement: {passed, date}`), so an installed
 headless-agents 0.5.1 honours a proof recorded by this harness.
 
+### lot 1b — a conclusive codex confinement proof from the kept session rollout
+
+Learnings a5460289 and 80934778: `codex exec --json` never logs a sandbox-refused
+command — the refusal exists only in the session's own rollout, as a `custom_tool_call`
+named `exec` plus its `custom_tool_call_output`. Lot 1's own reader (above) could
+therefore never see a codex refusal at all, and left the codex confinement proof
+inconclusive.
+
+- **A probe-only entry point** (`CodexProvider.run_with_rollout`, `run_codex(...,
+  rollout_log=...)`) runs codex WITHOUT `--ephemeral`, so its session rollout survives
+  inside the run-owned `CODEX_HOME` long enough to be copied out to
+  `run_dir/rollout.jsonl` (mode `0600`) before that home is torn down, on every exit
+  path. **Production argv is unaffected**: `CodexProvider.run` (used by every other
+  caller, and by `run_with_rollout` itself for everything except the one flag) still
+  builds the exact command it always has.
+- **`refused_attempts` now unions the rollout evidence into codex's existing
+  `events.jsonl` reading**, opt-in via a new `rail_version` keyword: a `custom_tool_call`
+  named `exec`, status `completed`, whose input is EXACTLY the one measured script for
+  `probe_command(line, target)` — not a JS parser, so any drift (another argument, a
+  second statement, a hand-written `text(...)`, another nonce or target, a batched
+  command) is inconclusive, never a false credit — paired by `call_id` with its own
+  `custom_tool_call_output` in the exact measured two-part shape, bound to THIS run by
+  its one `thread.started` in `events.jsonl` matching `session_meta.id`, `rail_version`
+  matching `session_meta.cli_version`, and every `turn_context.sandbox_policy` matching
+  ha's own write argv. The model's own narration of the same refusal — an
+  `agent_message`, a `task_complete.last_agent_message`, a `function_call_output` — is
+  never evidence. Every lot-1 test keeps its meaning: without `rail_version` the rollout
+  is never consulted.
+- **The live probe never touches the operator's real session store.** `test_confinement`
+  now fails the codex run closed to INCONCLUSIVE — not a pass — if any rollout under the
+  operator's real `~/.codex/sessions` was written during the probe.
+
+No contract surface change; production argv unchanged; the proof record format is
+unchanged (`confinement: {passed, date}`).
+
 ## 0.5.1 — 2026-09-26 (tag `headless-agents-v0.5.1` after merge)
 
 Ticket ha-051-agy: headless-agents 0.5.0 refused the agy rail outright, because agy
