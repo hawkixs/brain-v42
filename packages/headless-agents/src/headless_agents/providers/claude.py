@@ -23,6 +23,7 @@ import time
 from collections.abc import Mapping
 from contextlib import nullcontext
 from pathlib import Path
+from typing import Final
 
 from ..capability import (
     INVALID_USAGE_EXIT_CODE,
@@ -36,6 +37,7 @@ from ..profile import McpServer, Workspace
 from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
 from ..spec import RunSpec
+from ..structured import parse_json, schema_text
 from ..workspace import (
     argv_prompt_or_refusal,
     armed_run,
@@ -52,6 +54,10 @@ from ..workspace import (
 # preamble travels as ONE argv element (``--append-system-prompt``), so this
 # is the hard ceiling on how much context this rail can carry that way.
 MAX_APPEND_SYSTEM_PROMPT_BYTES = 131_071
+
+#: Where a schema-constrained run keeps claude's stdout -- its result envelope --
+#: next to ``report_log``, which receives the answer read from it (0.5.3 lot 1).
+RESULT_ENVELOPE_NAME: Final = "claude-result.json"
 
 # Ambient variables this rail needs on top of the base allowlist.
 #
@@ -110,6 +116,7 @@ def build_claude_command(
     executable: str = "claude",
     workspace: Workspace | None = None,
     append_system_prompt: str | None = None,
+    json_schema: str | None = None,
 ) -> list[str]:
     """Build the hardened non-interactive Claude command for one run.
 
@@ -129,6 +136,10 @@ def build_claude_command(
     tools it is NOT confined by ``--restricted``: a shell runs with the
     operator's own user rights, per spec 3.3 -- that confinement, if any, is
     the caller's to provide.
+
+    ``json_schema`` -- compact JSON, inline, as claude takes it -- constrains the
+    answer (0.5.3 lot 1): ``--output-format json --json-schema`` right after
+    ``--max-turns``, nothing else moved. Without it the command is unchanged.
     """
     if not model.strip():
         raise ValueError("Claude model must not be empty")
@@ -149,6 +160,8 @@ def build_claude_command(
         tools = ",".join(tool_list)
 
     command = [executable, "-p", "-", "--model", model, "--max-turns", str(max_turns)]
+    if json_schema is not None:
+        command.extend(("--output-format", "json", "--json-schema", json_schema))
     if workspace is not None:
         command.append("--restricted")
     command.extend(("--permission-mode", permission_mode, "--tools", tools))
@@ -332,6 +345,7 @@ def run_claude(
     answer_log: Path | None = None,
     workspace: Workspace | None = None,
     append_system_prompt: str | None = None,
+    json_schema: str | None = None,
 ) -> int:
     """Run one Claude invocation and return its exit code (``124`` on timeout).
 
@@ -344,6 +358,9 @@ def run_claude(
     console stream, any CLI warning -- stays in ``raw_log``, where the
     telemetry consumer and :func:`tool_call_completed` still find it.
     Without it, nothing changes.
+
+    ``json_schema`` is passed to :func:`build_claude_command`; the caller reads
+    the result envelope claude then prints on stdout (:func:`parse_result_envelope`).
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -406,6 +423,7 @@ def run_claude(
             executable=executable,
             workspace=workspace,
             append_system_prompt=append_system_prompt,
+            json_schema=json_schema,
         )
         # The temp dir stays the cwd when there is no workspace (unchanged);
         # a workspace becomes the cwd so relative paths in the agent's own
@@ -488,6 +506,95 @@ def run_claude(
     return PROVIDER_FALLBACK_EXIT_CODE
 
 
+def _two_documents(text: str) -> bool:
+    """Whether ``text`` starts with two JSON documents: only words a refusal."""
+    decoder = json.JSONDecoder()
+    try:
+        end = decoder.raw_decode(text)[1]
+        decoder.raw_decode(text[end:].lstrip())
+    except (ValueError, RecursionError):
+        return False
+    return True
+
+
+def _read_result_envelope(path: Path) -> dict[str, object] | str:
+    """The one ``type: "result"`` object claude printed, or why none can be read."""
+    try:
+        text = path.read_bytes().decode("utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return "envelope unreadable"
+    try:
+        document = parse_json(text)
+    except ValueError:
+        return "more than one document" if _two_documents(text) else "envelope unreadable"
+    if not isinstance(document, dict) or document.get("type") != "result":
+        return "envelope unreadable"
+    return document
+
+
+def _structured_answer(envelope: dict[str, object] | str) -> tuple[str | None, str | None]:
+    """``(text, refusal)`` of a read envelope: see :func:`parse_result_envelope`."""
+    if isinstance(envelope, str):
+        return None, envelope
+    subtype = envelope.get("subtype")
+    if subtype != "success" or envelope.get("is_error") is not False:
+        if subtype == "success":
+            name = f"success with is_error {json.dumps(envelope.get('is_error'))}"
+        else:
+            name = subtype if isinstance(subtype, str) and subtype else "no subtype"
+        errors = envelope.get("errors")
+        first = errors[0] if isinstance(errors, list) and errors else None
+        why = f"{name}: {first}" if isinstance(first, str) and first else name
+        return None, " ".join(why.split())
+    structured = envelope.get("structured_output")
+    if not isinstance(structured, dict):
+        return None, "no structured_output"
+    return json.dumps(structured, ensure_ascii=False), None
+
+
+def parse_result_envelope(path: Path) -> tuple[str | None, str | None]:
+    """``(text, refusal)`` of the result envelope a schema-constrained run printed.
+
+    Fail-closed: the file holds exactly one JSON object, ``type: "result"``,
+    ``subtype: "success"``, ``is_error: false``, and a ``structured_output`` that
+    is an object -- then ``text`` is that object serialised by ``ha``. The
+    envelope's ``result`` text never stands in for it. Anything else is
+    ``(None, refusal)``, one line: the subtype and ``errors[0]`` when the envelope
+    names them, else ``no structured_output``, ``envelope unreadable`` or
+    ``more than one document``.
+    """
+    return _structured_answer(_read_result_envelope(path))
+
+
+def _settle_structured(
+    exit_code: int, envelope_path: Path, report_log: Path, raw_log: Path
+) -> tuple[int, str | None]:
+    """The code and text of a schema-constrained run, from its envelope.
+
+    A refused envelope turns a ``0`` into ``1``. A readable envelope behind a
+    non-zero code proves claude ran and failed the schema (``error_max_turns``,
+    measured with exit 1): ``1``, never the replayable ``3`` -- the only way
+    this moves is towards "not replayable". A timeout stays ``124``, and a run
+    with no envelope at all keeps :func:`run_claude`'s own code. The answer
+    reaches ``report_log`` only when the run succeeded; the refusal is appended
+    to ``raw_log``.
+    """
+    envelope = _read_result_envelope(envelope_path)
+    text, refusal = _structured_answer(envelope)
+    if exit_code == 0 and text is None:
+        exit_code = 1
+    elif exit_code not in (0, TIMEOUT_EXIT_CODE) and isinstance(envelope, dict):
+        exit_code = 1
+    if exit_code != 0:
+        text = None
+    if refusal is not None and envelope_path.exists():
+        with raw_log.open("a", encoding="utf-8") as stream:
+            stream.write(f"structured output refused: {refusal}\n")
+    report_log.parent.mkdir(parents=True, exist_ok=True)
+    report_log.write_text(text or "", encoding="utf-8")
+    return exit_code, text
+
+
 #: What a run's preamble tells the agent about its tools, by mode. Keyed on
 #: whether the workspace is writable -- the only distinction a preamble needs,
 #: since ``workspace_of`` already resolved read/write/shell into one object.
@@ -528,6 +635,9 @@ class ClaudeProvider:
             executable=spec.executable or "claude",
             workspace=workspace,
             append_system_prompt=preamble or None,
+            json_schema=(
+                schema_text(spec.output_schema) if spec.output_schema is not None else None
+            ),
         )
 
     def child_environment(self, spec: RunSpec, environ: Mapping[str, str]) -> dict[str, str] | None:
@@ -541,6 +651,40 @@ class ClaudeProvider:
             return False
         return tool_call_completed(spec.raw_log)
 
+    @staticmethod
+    def _structured(spec: RunSpec) -> tuple[str | None, Path | None]:
+        """``(json_schema, envelope_path)`` of a schema-constrained run; ``(None, None)``.
+
+        Measured on claude 2.1.283 (0.5.3 Task 0, on the host):
+        ``--output-format json --json-schema`` answered ``structured_output`` with
+        ``subtype: "success"`` and exit 0 with no workspace at ``--max-turns 1``
+        and at 50, and in a read workspace (``--restricted``, ``dontAsk``,
+        ``Read,Glob,Grep``) -- two turns each time, so no minimum ``max_turns``
+        is imposed. ``--output-format text`` prints the bare JSON with no
+        ``subtype`` and no ``is_error``: the envelope is what ``ha`` reads. A
+        write workspace (``acceptEdits``) is unmeasured; the envelope check
+        fails closed if the schema does not survive there.
+
+        ``ValueError`` before any file or process exists: the envelope is read
+        from stdout alone, which needs a ``report_log``, and must not be the
+        file the answer is written to.
+        """
+        if spec.output_schema is None:
+            return None, None
+        json_schema = schema_text(spec.output_schema)
+        if spec.report_log is None:
+            raise ValueError(
+                "claude structured output needs a report_log (or a run_dir): without one "
+                "stdout and stderr share raw_log, where no result envelope can be read"
+            )
+        envelope_path = spec.report_log.with_name(RESULT_ENVELOPE_NAME)
+        if envelope_path == spec.report_log:
+            raise ValueError(
+                f"claude structured output keeps its result envelope in {RESULT_ENVELOPE_NAME}: "
+                "the report_log must be another file"
+            )
+        return json_schema, envelope_path
+
     def run(self, spec: RunSpec) -> RunResult:
         spec = spec.with_run_dir_defaults()
         assert spec.raw_log is not None, "RunSpec.raw_log (or run_dir) is required for Claude"
@@ -550,6 +694,7 @@ class ClaudeProvider:
         # warning) stays in raw_log. Without one, run_claude APPENDS both to
         # raw_log.
         answer_log = spec.report_log
+        json_schema, envelope_path = self._structured(spec)
         workspace = workspace_of(spec)
         preamble = _preamble_for(spec, workspace)
         refusal = argv_prompt_or_refusal(preamble, MAX_APPEND_SYSTEM_PROMPT_BYTES)
@@ -584,6 +729,10 @@ class ClaudeProvider:
         # Remember where this run starts, so an answer read from raw_log
         # never includes what an earlier run left in a reused log.
         offset = raw_log.stat().st_size if raw_log.is_file() else 0
+        if envelope_path is not None:
+            # Only this run's envelope may be read: a run that never starts must
+            # not find the one an earlier run left beside a reused report_log.
+            envelope_path.unlink(missing_ok=True)
         start = time.monotonic()
         tripwire = armed_run(workspace)
         exit_code = run_claude(
@@ -596,15 +745,20 @@ class ClaudeProvider:
             environment=spec.environment,
             executable=spec.executable or "claude",
             deadline=spec.deadline,
-            answer_log=answer_log,
+            answer_log=envelope_path if envelope_path is not None else answer_log,
             workspace=workspace,
             append_system_prompt=preamble or None,
+            json_schema=json_schema,
         )
         duration = time.monotonic() - start
         # claude has no separate stderr log: its stderr lands in raw_log.
         exit_code, git_tampered = settle_run(tripwire, exit_code, raw_log)
-        # This rail requests no JSON envelope: the text is read as written.
-        if answer_log is not None:
+        if envelope_path is not None:
+            assert answer_log is not None, "_structured requires a report_log"
+            exit_code, text = _settle_structured(exit_code, envelope_path, answer_log, raw_log)
+        # Without a schema this rail requests no JSON envelope: the text is read
+        # as written.
+        elif answer_log is not None:
             text = answer_text(answer_log, exit_code=exit_code)
         else:
             text = answer_text(raw_log, exit_code=exit_code, offset=offset)
