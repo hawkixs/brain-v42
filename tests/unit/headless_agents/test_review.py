@@ -646,6 +646,32 @@ def test_review_lineage_wait_expires_before_reviewers(world: World, tmp_path: Pa
         holder.wait()
 
 
+def test_a_plain_review_refusal_is_not_forgotten_even_if_its_message_starts_with_wait(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The engine decides whether to forget a refused review's entry from
+    review_flow.AdmissionWaitExpired's TYPE, never from the refusal's
+    message text: a plain ReviewRefused whose message happens to start
+    with "--wait " -- a coincidence, or a future rewording of some other
+    refusal -- must still go through the ordinary _refused path (codex
+    review of PR #239, round 5)."""
+    from headless_agents import review_flow
+
+    def fake_prepare(**kwargs: object) -> review_flow.Prepared:
+        raise review_flow.ReviewRefused(
+            "--wait 0.10 s expired: not really an admission timeout; nothing ran"
+        )
+
+    monkeypatch.setattr(review_flow, "prepare", fake_prepare)
+    before_ids = set(world.registry().run_ids())
+    with pytest.raises(UsageError, match="not really an admission timeout"):
+        world.review()
+    (new_id,) = set(world.registry().run_ids()) - before_ids
+    entry = world.registry().resolve(new_id)
+    assert entry.status == "failed"
+    assert entry.run_dir.is_dir()
+
+
 # ── records ─────────────────────────────────────────────────────────────────
 
 

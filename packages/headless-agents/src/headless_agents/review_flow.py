@@ -59,6 +59,18 @@ class ReviewRefused(Exception):  # noqa: N818 - a refusal, not a crash
     """The review cannot start: exit ``2``, no agent ran."""
 
 
+class AdmissionWaitExpired(ReviewRefused):
+    """A :class:`ReviewRefused` raised because an explicit ``--wait`` deadline
+    expired while admitting the lineage registry or a lineage lock.
+
+    ``engine.py`` uses this type -- not the refusal's message -- to decide
+    whether to forget the run's entry and run dir outright instead of
+    marking it ``"failed"``: matching a message prefix would silently break
+    if the wording ever changed, and the message is user-facing text, not a
+    contract (codex review of PR #239, round 5).
+    """
+
+
 @dataclass(frozen=True)
 class Prepared:
     """What a review reads, pinned before its reviewers start."""
@@ -274,7 +286,7 @@ def _prepare(
                 )
         except LockTimeout as exc:
             if wait.seconds is not None:
-                raise ReviewRefused(
+                raise AdmissionWaitExpired(
                     f"--wait {wait.seconds:g} s expired: {exc}: a write holds it; nothing ran"
                 ) from None
             raise ReviewRefused(f"{exc}: a write holds it; nothing ran") from None
@@ -382,6 +394,7 @@ def finish(
 
 
 __all__ = [
+    "AdmissionWaitExpired",
     "CHANGES_EXIT_CODE",
     "DEFAULT_BASE",
     "Prepared",

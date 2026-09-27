@@ -1161,14 +1161,16 @@ def _execute_review(
             admission_wait=admission_wait,
         )
     except review_flow.ReviewRefused as exc:
-        if str(exc).startswith("--wait "):
+        if isinstance(exc, review_flow.AdmissionWaitExpired):
             # An explicit deadline that expired while admitting the lineage
             # locks means nothing ran at all: forget the entry outright,
             # exactly like a read refused at the earlier global-lock gate
             # (c56a256c), instead of leaving it "failed" with an empty run
-            # dir (codex review of PR #239, round 4). The no-flag path is
-            # unchanged: _prepare only crafts this "--wait " prefix when
-            # request.wait_seconds is not None.
+            # dir (codex review of PR #239, round 4). Decided from the
+            # exception's TYPE, not its message (codex review, round 5): a
+            # message match would silently stop firing on a rewording, and
+            # would just as silently fire on an unrelated refusal whose text
+            # happens to start the same way.
             shutil.rmtree(entry.run_dir, ignore_errors=True)
             registry.forget(entry.run_id)
         else:
