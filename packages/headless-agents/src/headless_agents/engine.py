@@ -1161,7 +1161,18 @@ def _execute_review(
             admission_wait=admission_wait,
         )
     except review_flow.ReviewRefused as exc:
-        _refused(registry, entry)
+        if str(exc).startswith("--wait "):
+            # An explicit deadline that expired while admitting the lineage
+            # locks means nothing ran at all: forget the entry outright,
+            # exactly like a read refused at the earlier global-lock gate
+            # (c56a256c), instead of leaving it "failed" with an empty run
+            # dir (codex review of PR #239, round 4). The no-flag path is
+            # unchanged: _prepare only crafts this "--wait " prefix when
+            # request.wait_seconds is not None.
+            shutil.rmtree(entry.run_dir, ignore_errors=True)
+            registry.forget(entry.run_id)
+        else:
+            _refused(registry, entry)
         raise UsageError(str(exc)) from None
     task = plan.task or REVIEW_DEFAULT_TASK
     try:

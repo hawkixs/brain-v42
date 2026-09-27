@@ -35,10 +35,13 @@ own :data:`LOCK_WAIT_SECONDS` bound, as before.
   by codex review of PR #239: :func:`held` used to check the deadline only
   on a failed attempt, so a lock released just after it expired could still
   be granted).
-- An expired or invalid ``--wait`` starts no provider step and leaves
-  nothing behind: an unstarted write's entry and run dir are forgotten, and
-  so, since PR #239, is an unstarted read's -- previously a read was left
-  marked ``"failed"`` with an empty run dir, as if something had run.
+- An expired admission deadline starts no provider step and leaves nothing
+  behind: an unstarted write's entry and run dir are forgotten, and so,
+  since PR #239, are an unstarted read's and an unstarted review's --
+  previously a read or a review refused at the lineage locks was left
+  marked ``"failed"`` with an empty run dir, as if something had run. An
+  invalid ``--wait`` value is rejected before any admission is attempted,
+  so nothing is created to begin with.
 - ``ha clean`` is admitted through the very same gate as every other run,
   not a lock it takes directly: it queues behind an unconfined write that
   already holds the gate, exactly like a read would (also PR #239).

@@ -588,6 +588,7 @@ def test_a_review_waits_for_a_write_holding_its_lineage_then_is_refused(
         stdout=subprocess.PIPE,
         text=True,
     )
+    before_ids = set(world.registry().run_ids())
     try:
         assert holder.stdout is not None and holder.stdout.readline().strip() == "held"
         with pytest.raises(UsageError, match=f"the lineage lock of {built.run_id}"):
@@ -595,6 +596,13 @@ def test_a_review_waits_for_a_write_holding_its_lineage_then_is_refused(
     finally:
         holder.kill()
         holder.wait()
+    # No-flag behaviour is unchanged (codex review of PR #239, round 4): the
+    # review's own entry stays, marked "failed", with its run dir kept --
+    # exactly as any other refused read.
+    (new_id,) = set(world.registry().run_ids()) - before_ids
+    entry = world.registry().resolve(new_id)
+    assert entry.status == "failed"
+    assert entry.run_dir.is_dir()
 
 
 def test_review_lineage_wait_expires_before_reviewers(world: World, tmp_path: Path) -> None:
@@ -616,6 +624,8 @@ def test_review_lineage_wait_expires_before_reviewers(world: World, tmp_path: Pa
         ]
     )
     before = len(world.agents["claude"].specs)
+    before_ids = set(world.registry().run_ids())
+    before_dirs = {p.name for p in (world.home / ".cache" / "ha" / "runs").glob("*")}
     try:
         limit = time.monotonic() + 5
         while not ready.exists():
@@ -624,6 +634,13 @@ def test_review_lineage_wait_expires_before_reviewers(world: World, tmp_path: Pa
         with pytest.raises(UsageError, match=r"--wait 0\.15 s.*lineage lock"):
             world.review(wait_seconds=0.15)
         assert len(world.agents["claude"].specs) == before
+        # An explicit --wait timeout leaves nothing behind (codex review of
+        # PR #239, round 4): the review's own entry is forgotten outright,
+        # not kept "failed" with an empty run dir, exactly like a read at
+        # the global-lock gate (c56a256c).
+        assert set(world.registry().run_ids()) == before_ids
+        run_dirs = {p.name for p in (world.home / ".cache" / "ha" / "runs").glob("*")}
+        assert run_dirs == before_dirs
     finally:
         holder.kill()
         holder.wait()

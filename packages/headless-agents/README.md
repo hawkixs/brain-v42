@@ -389,10 +389,13 @@ ha --version
   registry and lineage locks it admits under -- time spent on one does not extend the
   budget for the next, and a lock granted past the deadline is refused, never accepted
   late. Without `--wait`, each of those locks keeps its own existing ten-second bound. A
-  deadline that expires -- or an invalid `--wait` -- exits `2` before any provider step
-  runs and leaves nothing behind (an unstarted run's entry is forgotten), naming the
-  contested lock and the wait requested; `--timeout` is unrelated, and always the provider
-  run's own timeout. Example: `ha run codex --wait 30 "Summarise the change"`.
+  deadline that expires exits `2` before any provider step runs and leaves nothing behind
+  (an unstarted run's entry is forgotten), naming the contested lock and the wait
+  requested. An invalid `--wait` -- zero, negative, `nan`, `inf`, or a missing value -- is
+  rejected before any admission is even attempted, so nothing is named but the flag
+  itself: `--wait needs a finite number of seconds greater than zero`. `--timeout` is
+  unrelated in both cases, and always the provider run's own timeout. Example:
+  `ha run codex --wait 30 "Summarise the change"`.
 
   An unconfined writer that already holds the short-lived admission gate excludes every
   later run -- shared or not -- until it releases it; a reader that arrives after a writer

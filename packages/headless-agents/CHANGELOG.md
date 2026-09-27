@@ -29,7 +29,9 @@ time the member rode a brain-v42 tag.
 - `ha run … --wait SECONDS` uses one explicit, monotonic admission deadline
   for the global, lineage registry, and lineage locks; expiry returns exit 2
   before any provider step runs, and leaves nothing behind -- an unstarted
-  run's entry is forgotten, read or write alike.
+  run's entry is forgotten, read, write, or review alike. An invalid
+  `--wait` value is rejected before any admission is attempted; it names no
+  contested lock, only the flag itself.
 - A lock granted past the deadline is refused, never accepted late.
 - `ha clean` is admitted through the same gate as every other run, instead
   of taking the global lock directly.
