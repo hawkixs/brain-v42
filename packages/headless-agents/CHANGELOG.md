@@ -24,6 +24,36 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.3, lot 4a: write and state robustness
+
+The state stays coherent under races, forged reports and failed git commands. No lock,
+gate, proof, exit-code meaning, `RunSpec`, `RunResult` or `result.json` changes; the new
+state keys are additive (an older ha ignores them).
+
+### Fixed
+- **A lineage withdrawn between listing and reading is absent, never "unknown"** (ticket
+  9ec19a4e). A refused new write withdraws its lineage after the registry lock is released
+  -- the lock order forbids retaking it there -- so another run's admission check could
+  list that lineage, fail to read it, and refuse with "lineage X is unknown (... missing)".
+  `state.read` now raises `Missing`, a subclass of `Unknown`, for an absent document and
+  only then (a directory or garbage in its place, a file as a path component, and a link to
+  nothing stay a plain `Unknown`); `lineage.of_repository`, `write_flow.check_repository`
+  and `review_flow._admitted` read a `Missing` lineage as absent. A corrupt lineage still
+  refuses. Pinned with two real processes, ordered around the registry lock.
+- **`ha clean` decides whether a run started from the registry, never from `run.json`**
+  (ticket fbcda7d5). A forged report turned a never-started run into a "cleaned" one, a
+  deleted report forgot a started run. The registry entry records `started_at` (null at
+  creation, set once by the engine when the run's first step starts); `ha clean` decides
+  from it. An entry older than the key has none and keeps the report rule, the one
+  witness it has.
+- **A lineage keeps its first compromised reason** (ticket e5b93270 item 1): a later
+  reason is appended to a new `compromised_history` instead of replacing the root cause.
+- **No `change.patch` from a failed `git diff`** (ticket e5b93270 item 2): an empty patch
+  read as "no change". The step's `commit.log` says why, and the write header prints
+  `patch: not written` instead of a path to nothing.
+- **A registry entry naming a provider ha does not know is `Unknown`** (ticket e5b93270
+  item 6): those names are the authors the vendor rule reads.
+
 ## Unreleased — 0.5.2, lot 3: bounded admission waits
 
 - `ha run … --wait SECONDS` uses one explicit, monotonic admission deadline
