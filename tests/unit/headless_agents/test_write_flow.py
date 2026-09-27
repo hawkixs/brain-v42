@@ -210,6 +210,45 @@ def test_a_committed_write(world: World) -> None:
     assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
 
 
+def test_a_failed_diff_writes_no_patch_and_says_why(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket e5b93270 item 2: an empty change.patch written from a failed git diff
+    reads as "no change" -- no patch at all, and the step's commit.log says why."""
+    world.agent.edit = _edit_app
+    real = write_flow._Write.git_bytes
+
+    def failing_diff(
+        self: write_flow._Write, root: Path, args: list[str], **kwargs: object
+    ) -> tuple[int, bytes, bytes]:
+        if args and args[0] == "diff":
+            return 128, b"", b"fatal: bad object HEAD\n"
+        return real(self, root, args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(write_flow._Write, "git_bytes", failing_diff)
+    outcome = world.write()
+    assert outcome.report["status"] == "committed"
+    assert not (outcome.run_dir / write_flow.PATCH_FILE).exists()
+    (step,) = outcome.report["steps"]  # type: ignore[misc]
+    commit_log = (outcome.run_dir / step["dir"] / write_flow.COMMIT_LOG).read_text()
+    assert "change.patch not written: git diff exited 128: fatal: bad object HEAD" in commit_log
+
+
+def test_the_write_header_says_a_missing_patch_was_not_written(world: World) -> None:
+    from headless_agents import cli
+
+    outcome = engine.Outcome(
+        exit_code=0,
+        run_id="20260927T000000-aaaaaaaa",
+        run_dir=world.home / "no-patch-run",
+        report={},
+        final=None,
+    )
+    header = cli._write_header(outcome, "ha/20260927T000000-aaaaaaaa")
+    assert "patch: not written (git diff failed: see the step's commit.log)" in header
+    assert "diffstat: -" in header
+
+
 def test_a_write_run_records_its_roles_providers(world: World) -> None:
     """Lot 3, §3.10: implement_providers copies the entry's providers, every link of the role."""
     world.agent.edit = _edit_app

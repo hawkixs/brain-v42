@@ -1142,8 +1142,18 @@ def run_write_step(
             # is left to rebuild (§3.8.3 step 9), and change.patch cannot be rebuilt from
             # it. Bytes: a file that is not UTF-8 is diffed raw, and replacing its bytes
             # would record a patch that no longer rebuilds the commit (ticket 0b3fcdbf).
-            code, patch, _ = write.git_bytes(write.worktree, ["diff", "--binary", base, "HEAD"])
-            (run_dir / PATCH_FILE).write_bytes(patch)
+            code, patch, err = write.git_bytes(write.worktree, ["diff", "--binary", base, "HEAD"])
+            if code == 0:
+                (run_dir / PATCH_FILE).write_bytes(patch)
+            else:
+                # No patch rather than an empty one (ticket e5b93270 item 2): an empty
+                # change.patch reads as "no change", and it would not rebuild the commit.
+                first = err.decode("utf-8", "replace").strip().splitlines()
+                with (step_dir / COMMIT_LOG).open("ab") as log:
+                    log.write(
+                        f"change.patch not written: git diff exited {code}: "
+                        f"{first[0] if first else '(no message)'}\n".encode()
+                    )
             status = "failed" if failed_step else "committed"
             _publish(write, status=status, commits=commits, compromised=None)
         except GitTampered:
