@@ -74,6 +74,8 @@ KINDS: Final[tuple[Kind, ...]] = ("isolation", "confinement")
 
 RUN_TIMEOUT_SECONDS: Final = 100.0
 CONFINEMENT_TIMEOUT_SECONDS: Final = 300.0
+#: Set to ``1``, lets isolation be recorded from a development install (checkout_refusal).
+PROVE_FROM_CHECKOUT_VARIABLE: Final = "HA_PROVE_FROM_CHECKOUT"
 
 #: What each rail needs from the operator's HOME to authenticate, copied into the
 #: probe's own operator HOME (relative paths).
@@ -192,6 +194,24 @@ def running_from_checkout() -> bool:
         return True
     dir_info = document.get("dir_info")
     return isinstance(dir_info, dict) and dir_info.get("editable") is True
+
+
+def checkout_refusal(environ: Mapping[str, str]) -> str | None:
+    """Why an isolation proof may not be recorded from here, or ``None`` when it may.
+
+    Checked by every caller BEFORE its first provider run (refusing after the runs
+    would spend tokens for nothing). ``HA_PROVE_FROM_CHECKOUT=1`` is the operator
+    saying the checkout and the installed package are the same source (lot 4 plan,
+    orchestrator default 1): a scratch-state acceptance, or a rail whose isolation
+    fingerprint was measured identical. Only the exact value ``1`` says so.
+    """
+    if not running_from_checkout() or environ.get(PROVE_FROM_CHECKOUT_VARIABLE) == "1":
+        return None
+    return (
+        "isolation cannot be recorded from a development install: its fingerprint is this "
+        "checkout's, not the installed ha's; run the installed ha, or set "
+        f"{PROVE_FROM_CHECKOUT_VARIABLE}=1 if both are the same source"
+    )
 
 
 def _default_run(rail: str, spec: RunSpec, keep_rollout: bool) -> RunResult:
@@ -664,10 +684,12 @@ __all__ = [
     "AUTH",
     "EXPOSED",
     "KINDS",
+    "PROVE_FROM_CHECKOUT_VARIABLE",
     "Kind",
     "Outcome",
     "RunRail",
     "Verdict",
+    "checkout_refusal",
     "planned_runs",
     "proof_root",
     "prove",

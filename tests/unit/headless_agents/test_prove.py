@@ -364,6 +364,29 @@ def test_running_from_checkout_reads_the_editable_flag(
     assert prove_module.running_from_checkout() is True
 
 
+@pytest.mark.parametrize(
+    ("from_checkout", "variable", "refused"),
+    [
+        (False, None, False),
+        (True, None, True),
+        (True, "1", False),
+        (True, "yes", True),  # only the exact "1" says both are the same source
+        (True, "", True),
+    ],
+)
+def test_isolation_is_refused_from_a_checkout_unless_the_operator_says_same_source(
+    monkeypatch: pytest.MonkeyPatch, from_checkout: bool, variable: str | None, refused: bool
+) -> None:
+    monkeypatch.setattr(prove_module, "running_from_checkout", lambda: from_checkout)
+    environ = {} if variable is None else {"HA_PROVE_FROM_CHECKOUT": variable}
+    refusal = prove_module.checkout_refusal(environ)
+    if refused:
+        assert refusal is not None and "development install" in refusal
+        assert "HA_PROVE_FROM_CHECKOUT=1" in refusal
+    else:
+        assert refusal is None
+
+
 def test_prove_imports_no_pytest() -> None:
     probe_script = "import headless_agents.prove, sys; print('pytest' in sys.modules)"
     output = subprocess.run(
