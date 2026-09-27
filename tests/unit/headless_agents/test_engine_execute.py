@@ -263,6 +263,29 @@ def test_expired_wait_exits_2_and_runs_no_provider(world: World, tmp_path: Path)
         holder.wait()
 
 
+def test_expired_wait_forgets_the_unstarted_read(world: World, tmp_path: Path) -> None:
+    """An explicit ``--wait`` timeout used to mark a read's entry ``failed``
+    and keep its (empty) run dir, as if a run that never started had left
+    something behind (codex review of PR #239). Nothing ran: forget it."""
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        request = world.request("codex", wait_seconds=0.15)
+        with pytest.raises(UsageError, match=r"--wait 0\.15 s.*unconfined lock"):
+            execute(plan(request), say=world.said.append)
+        assert "codex" not in world.fakes
+        assert list((world.state / "runs").glob("*.json")) == []
+    finally:
+        holder.kill()
+        holder.wait()
+
+
 def test_without_wait_keeps_the_ten_second_default(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -281,6 +304,10 @@ def test_without_wait_keeps_the_ten_second_default(
             world.run("codex")
         assert 0.18 <= time.monotonic() - started < 0.8
         assert "codex" not in world.fakes
+        # No-flag behaviour is unchanged (codex review of PR #239): the read's
+        # entry stays, marked "failed", instead of being forgotten.
+        (entry,) = (world.state / "runs").glob("*.json")
+        assert world.registry().resolve(entry.stem).status == "failed"
     finally:
         holder.kill()
         holder.wait()

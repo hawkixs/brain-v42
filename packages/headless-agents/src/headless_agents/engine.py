@@ -1346,7 +1346,17 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 locks.admit_global(plan.state, exclusive=unconfined, wait=admission_wait)
             )
         except LockTimeout as exc:
-            _refused(registry, entry)
+            if request.wait_seconds is not None:
+                # An explicit deadline that expires here means nothing ran at
+                # all, read or write alike: forget the entry outright instead
+                # of leaving a "failed" read behind with an empty run dir
+                # (codex review of PR #239). A write's entry was already
+                # forgotten this way (it names its own lineage); this makes
+                # a read's the same.
+                shutil.rmtree(entry.run_dir, ignore_errors=True)
+                registry.forget(entry.run_id)
+            else:
+                _refused(registry, entry)
             if request.wait_seconds is None:
                 if unconfined:
                     raise UsageError(
