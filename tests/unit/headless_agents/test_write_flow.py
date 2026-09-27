@@ -1005,6 +1005,45 @@ def test_clean_of_a_write_that_never_started_forgets_it(
     assert world.git_calls == []
 
 
+def test_clean_queues_behind_a_waiting_unconfined_writer(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``ha clean`` took ``unconfined.lock`` directly, bypassing the
+    admission gate entirely (codex review of PR #239): with the global lock
+    itself free, a clean slipped straight through even while an unconfined
+    writer was already queued on the gate, waiting its turn for that same
+    lock. Route ``clean`` through the same gate so it queues too."""
+    run_id = "20260925T000000-ffffffff"
+    world.registry().create(
+        run_id,
+        run_dir=None,
+        target={"kind": "role", "name": "codex"},
+        repository=world.repo,
+        lineage=None,
+    )
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.2)
+    ready = world.home / "gate-held"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _HOLD,
+            str(world.state / "admission-gate.lock"),
+            "ex",
+            str(ready),
+        ]
+    )
+    try:
+        while not ready.exists():
+            time.sleep(0.02)
+        with pytest.raises(UsageError, match="admission gate"):
+            _clean(world, run_id)
+    finally:
+        holder.kill()
+        holder.wait()
+    assert run_id in world.registry().run_ids(), "a refused clean must not forget the run"
+
+
 def test_clean_takes_its_locks_in_order_and_releases_the_registry_before_git(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1015,6 +1054,8 @@ def test_clean_takes_its_locks_in_order_and_releases_the_registry_before_git(
     taken = [e for e in events if e.startswith("lock")]
     assert [(e.split()[1], e.split()[-1]) for e in taken] == [
         ("LIFECYCLE", "ex"),
+        ("WRITER_INTENT", "sh"),
+        ("ADMISSION_GATE", "sh"),
         ("UNCONFINED", "sh"),
         ("LINEAGE_REGISTRY", "sh"),
         ("LINEAGE", "ex"),
