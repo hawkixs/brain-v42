@@ -206,7 +206,11 @@ services:
       # single-candidate probe body, not merely that a "scores" key exists
       # (MINOR review finding, PR #231): a wedged rerank returning
       # {"scores": null} or {"scores": []} used to still report healthy.
-      test: ["CMD", "python3", "-c", "import urllib.request,json,math; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/rerank',data=json.dumps({'query':'healthcheck','candidates':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=20); scores=json.loads(r.read())['scores']; assert isinstance(scores, list) and len(scores) == 1 and math.isfinite(scores[0])"]
+      # `type(scores[0]) in (int, float)` runs BEFORE isfinite() and excludes
+      # bool on purpose (ticket d8ac2273): bool is an int subclass, so
+      # {"scores": [true]} decodes to Python's True and math.isfinite(True)
+      # is True — the finite check alone would report that as healthy.
+      test: ["CMD", "python3", "-c", "import urllib.request,json,math; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/rerank',data=json.dumps({'query':'healthcheck','candidates':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=20); scores=json.loads(r.read())['scores']; assert isinstance(scores, list) and len(scores) == 1 and type(scores[0]) in (int, float) and math.isfinite(scores[0])"]
       interval: 60s
       timeout: 20s
       retries: 5
