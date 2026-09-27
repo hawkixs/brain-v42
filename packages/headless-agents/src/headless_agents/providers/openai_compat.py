@@ -54,6 +54,7 @@ from ..procgroup import preexec_for, spawn_watched
 from ..result import RunResult, TokenUsage
 from ..run_record import record, run_id_of
 from ..spec import RunSpec
+from ..structured import refuse_unsupported
 
 GENERIC_NAME: Final = "openai-compat"
 
@@ -248,6 +249,7 @@ class OpenAICompatProvider:
     # ── AgentProvider ─────────────────────────────────────────────────────
 
     def build_command(self, spec: RunSpec) -> list[str]:
+        refuse_unsupported(self.name, spec.output_schema)
         # -I: no PYTHONPATH, no user site -- the worker runs the INSTALLED package.
         return [spec.executable or sys.executable, "-I", "-m", WORKER_MODULE]
 
@@ -268,6 +270,10 @@ class OpenAICompatProvider:
         return False
 
     def run(self, spec: RunSpec) -> RunResult:
+        # 0.5.3 lot 1: a preset's support for a response format varies and cannot
+        # be checked before the call, so a schema is refused rather than guessed;
+        # a caller keeps extra["response_format"] for what a preset does support.
+        refuse_unsupported(self.name, spec.output_schema)
         spec = spec.with_run_dir_defaults()
         environ = spec.environment if spec.environment is not None else os.environ
         start = time.monotonic()

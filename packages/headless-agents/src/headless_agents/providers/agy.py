@@ -93,6 +93,7 @@ from ..sandbox import (
 )
 from ..sandbox import ephemeral_root as default_ephemeral_root
 from ..spec import RunSpec
+from ..structured import refuse_unsupported
 from ..workspace import (
     argv_prompt_or_refusal,
     armed_run,
@@ -852,6 +853,7 @@ class AgyProvider:
         return default_ephemeral_root(environ) or Path(tempfile.gettempdir())
 
     def build_command(self, spec: RunSpec) -> list[str]:
+        refuse_unsupported(self.name, spec.output_schema)
         workspace = _confined_workspace(spec.profile, workspace_of(spec))
         return build_agy_command(
             model=spec.model,
@@ -866,6 +868,7 @@ class AgyProvider:
         return None
 
     def prepare_home(self, spec: RunSpec) -> Path | None:
+        refuse_unsupported(self.name, spec.output_schema)
         environ = spec.environment if spec.environment is not None else os.environ
         return build_ephemeral_home(
             root=self._root(environ),
@@ -881,6 +884,9 @@ class AgyProvider:
         return tool_call_completed(spec.events_log)
 
     def run(self, spec: RunSpec) -> RunResult:
+        # 0.5.3 lot 1: agy has no measured schema mechanism, and a prompt-level
+        # imitation would only look constrained -- refused before any file exists.
+        refuse_unsupported(self.name, spec.output_schema)
         workspace = _confined_workspace(spec.profile, workspace_of(spec))
         spec = spec.with_run_dir_defaults()
         assert spec.events_log is not None
