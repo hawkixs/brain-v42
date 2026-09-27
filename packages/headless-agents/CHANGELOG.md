@@ -24,6 +24,29 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.2, lot 6: model catalogue and live drift
+
+Lot 6 of the parallel-runs design (§3.6): a native `ha models`, independent of lots 1-5
+and brought forward at the operator's request so the ha-delegate skill needs no interim
+script.
+
+### Added
+- **`ha models [--provider NAME] [--json] [--refresh]`.** Validates the operator's own
+  `~/.config/ha/catalog.toml` (or `$XDG_CONFIG_HOME/ha/catalog.toml` when that variable is
+  absolute) against the frozen schema v1 that red-skills owns, naming the offending key on
+  every departure from it -- a warning for an unknown field or a non-table top-level value,
+  an error for everything else, including an effort outside its provider's rule.
+- **Bounded live-list queries** for the three rails that have one: `opencode models`,
+  `agy models`, and OpenRouter's `GET /api/v1/models`. Every other rail is reported
+  `catalogue-only`. A query that times out or answers unreadable output is reported, never
+  fatal, and never taken to mean a catalogued model disappeared.
+- **Usage and drift reporting.** The report merges the catalogue with `roles.toml`'s
+  declared links and `models.toml`'s defaults; `--refresh` adds `live_uncatalogued`,
+  `catalogued_gone`, `unknown_role_model` and `stale_verification` (30 days) without
+  changing anything. The JSON form always carries the drift.
+- **Read-only contract.** `ha` never rewrites `catalog.toml`; the data is the operator's,
+  never the package's.
+
 ## Unreleased — 0.5.2, lot 1: a sound codex confinement proof
 
 Ticket e454b011: the codex confinement proof never concluded, and the reader behind it

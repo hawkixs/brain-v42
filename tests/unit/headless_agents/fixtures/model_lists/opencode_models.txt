@@ -1,0 +1,6 @@
+MODEL                                    CONTEXT   COST TIER
+opencode-go/deepseek-v4.1-flash          128000    included
+opencode-go/glm-5.3-flash                128000    included
+opencode-go/qwen-4-coder-plus            256000    included
+anthropic/claude-opus-5.5                200000    byok
+openai/gpt-6-sol                         256000    byok
