@@ -104,8 +104,21 @@ def read(path: Path, *, expect_id: tuple[str, str] | None = None) -> dict[str, o
 def read_optional(
     path: Path, *, expect_id: tuple[str, str] | None = None
 ) -> dict[str, object] | None:
-    """Like :func:`read`, but ``None`` when -- and only when -- the file is absent."""
-    if not path.exists() and not path.is_symlink():
+    """Like :func:`read`, but ``None`` when -- and only when -- the file is absent.
+
+    An access error other than "absent" -- a permission-denied parent directory, for
+    instance -- is not nothing: ``Path.exists()``/``Path.is_symlink()`` propagate a bare
+    ``OSError`` for it instead of returning ``False`` (review round, PR #241, item 2),
+    and every caller of this function only catches :class:`Unknown`. Left unguarded,
+    that ``OSError`` would escape as a crash instead of the fail-closed ``Unknown`` every
+    other unreadable document already produces -- for a caller built on this function,
+    that includes the engine's own isolation and confinement gate, not just a display.
+    """
+    try:
+        found = path.exists() or path.is_symlink()
+    except OSError as exc:
+        raise Unknown(f"{path}: unreadable ({type(exc).__name__})") from None
+    if not found:
         return None
     return read(path, expect_id=expect_id)
 

@@ -24,6 +24,114 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.2, lot 4a: `ha prove`
+
+Proofs used to be recorded only by the live test suite, from a repository checkout. A
+CLI that updated itself (Claude Code 2.1.282 to 2.1.283, spec Q2) left its rail refused
+until someone ran pytest in a checkout (spec §3.4). The harness now ships in the package
+(`headless_agents.prove`), and the installed `ha` records the proofs itself.
+
+### Added
+- **`ha prove [RAIL...] [--isolation] [--confinement] [--stale] [--keep] [--json]`.**
+  Proves the named CLI rails (default: all four) for the named kinds (default: both) on
+  the version installed now, one proof after another. It records each `passed` or
+  `failed` verdict for the engine; an `inconclusive` or `skipped` one records nothing.
+  - The report gives each verdict, whether it was recorded and why, then each rail's
+    resulting mode.
+  - `--json` prints `{"schema": 1, "verdicts": [...], "modes": {...}, "kept": ...}`.
+  - Exit codes: 0 when every proof that ran passed and was recorded, 1 otherwise, 2 for
+    a refusal before any run.
+  - The work directory, `~/.cache/ha/proofs/<id>`, is removed unless `--keep` is given.
+- **`--stale`** selects exactly the proofs of installed rails that have not passed on
+  the version installed now: what `ha providers` shows as `failed`, `missing`, `stale`
+  or `unreadable`. It never selects claude's confinement, which no proof can settle
+  (Q91=b). After installing a new `ha` or a new provider CLI, run `ha prove --stale`.
+- **The spend is announced before it happens.** Before the first provider run, stderr
+  names each proof's run count, the rail's version and the model, then the total and
+  "this spends provider tokens". No question is asked, since sessions run `ha` headless.
+  Models come from `models.toml`; agy chooses its own.
+- **Refusals before any run** (exit 2):
+  - a name that is not a CLI rail;
+  - claude's confinement asked for by name;
+  - a named rail that is not installed;
+  - a rail without a model;
+  - isolation from a development install.
+- **The development-install guard.** An isolation proof binds to the fingerprint of the
+  *installed* package's isolation source. A proof recorded from a checkout would name
+  the checkout's source, and the installed `ha` would refuse the rail. So `ha prove`
+  refuses isolation from an editable install unless `HA_PROVE_FROM_CHECKOUT=1` says both
+  are the same source. The live proof tests apply the same rule.
+- **Each proof probes the rail's version before and after its runs.** A CLI that updated
+  itself mid-proof records nothing.
+
+### Changed
+- **An isolation run that fails without a leak is now `inconclusive` and records
+  nothing.** It used to record `failed`, which switched a proven rail off on a quota
+  error, a retired model or a network failure. A leak (a marker in the answer, a
+  sentinel created) still records `failed`, even from a run that then failed.
+- **Every re-prove hint names `ha prove`** instead of a `pytest -m live` line:
+  - `ha providers`' `reprove`, in text and JSON, is `ha prove RAIL --isolation`,
+    `ha prove RAIL --confinement` or `ha prove RAIL`;
+  - the engine's isolation refusal now ends with
+    `Record a proof with: ha prove RAIL --isolation; after a CLI update: ha prove --stale`.
+
+The record format is unchanged: proofs the live tests recorded before this lot stay
+valid. The live tests (`tests/live/headless_agents/test_proofs_live.py`, same test ids)
+now record through the same code. No isolation source moved (`providers/*.py` and
+`sandbox.py` are untouched), so no installed proof goes stale because of this lot.
+
+## Unreleased — 0.5.2, lot 2: proof state visible
+
+`ha providers` used to say only whether a rail's executable was found: an isolation
+proof going stale silently -- a CLI updating itself overnight, with the proof still
+naming the old version -- refused every run on that rail with nothing having said so
+beforehand (spec §3.2, §4, Q2).
+
+### Added
+- **Five proof statuses, read ahead of a run**: `passed`, `failed`, `missing`, `stale`
+  (always naming what the proof was recorded for -- another version, or, at the same
+  version, the isolation source having moved under it) and `unreadable` (a record
+  present but unparsable, naming another rail, or shaped wrong -- distinct from
+  `missing`, since an operator fixes the two differently), per rail and per proof kind
+  (`headless_agents.proof_state`).
+- **Three modes**, computed only from `proofs.isolation_ok()` and `proofs.confinement()`
+  -- the exact functions the engine itself calls before a run, never re-derived from the
+  status above: `refused`, `writes serialised`, `parallel`.
+- **`ha providers` and `ha providers --json` show them.** A CLI rail's row gains
+  `isolation`, `confinement`, `mode` and `reprove` (the one command that would re-prove
+  whatever is not passed, or `null`/absent once everything already is); an HTTP
+  provider's row gets the same four keys as `null`. Additive only: every existing key
+  keeps its value and its meaning.
+- **One source for the re-prove command.** The engine's own isolation refusal now names
+  `proof_state.reprove_command()`'s output instead of building its own string, so the
+  refusal and `ha providers` can never name a different command for the same rail.
+
+No gate, lock, record format or exit code changed: `ha providers` still exits 0, and
+`proofs.py` and `providers/*.py` are untouched (lot 1b's territory, PR #237 in flight).
+
+## Unreleased — 0.5.2, lot 3: bounded admission waits
+
+- `ha run … --wait SECONDS` uses one explicit, monotonic admission deadline
+  for the global, lineage registry, and lineage locks; expiry returns exit 2
+  before any provider step runs, and leaves nothing behind -- an unstarted
+  run's entry is forgotten, read, write, or review alike. An invalid
+  `--wait` value is rejected before any admission is attempted; it names no
+  contested lock, only the flag itself.
+- A lock granted past the deadline is refused, never accepted late.
+- `ha clean` is admitted through the same gate as every other run, instead
+  of taking the global lock directly.
+- An admission gate gives an unconfined writer that already holds it
+  exclusion over every later run, shared or not, until it releases the gate
+  or times out; a reader arriving after a writer has won the gate queues
+  behind it. This is a **best-effort** mitigation, not a fairness
+  guarantee: `flock` does not order waiters, so a writer still polling for
+  admission can in principle be overtaken by a continuous, overlapping
+  stream of readers, and a continuous stream of writers can likewise make
+  a waiting reader time out. A fair FIFO admission queue is planned for
+  0.5.3.
+- Runs without `--wait` retain the existing 10-second lock bounds. Provider
+  `--timeout`, proof requirements, and exit-code meanings are unchanged.
+
 ## Unreleased — 0.5.2, lot 6: model catalogue and live drift
 
 Lot 6 of the parallel-runs design (§3.6): a native `ha models`, independent of lots 1-5

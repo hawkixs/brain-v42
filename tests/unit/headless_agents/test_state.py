@@ -100,6 +100,21 @@ def test_read_optional_is_none_only_when_absent(tmp_path: Path) -> None:
         read_optional(tmp_path / "bad.json")
 
 
+def test_an_inaccessible_directory_is_unknown_to_read_optional(tmp_path: Path) -> None:
+    """A permission-denied parent directory is an access error, not "absent" (review
+    round, PR #241, item 2): ``Path.exists()`` propagates a bare ``PermissionError`` for
+    it instead of returning ``False``, and an uncaught ``OSError`` would escape every
+    caller that only catches :class:`Unknown` -- crashing ``ha providers`` and the
+    engine's own isolation/confinement gate alike, instead of failing closed."""
+    blocked = tmp_path / "blocked"
+    blocked.mkdir(mode=0o000)
+    try:
+        with pytest.raises(Unknown, match="unreadable"):
+            read_optional(blocked / "codex.json")
+    finally:
+        blocked.chmod(0o700)
+
+
 def test_ensure_dir_is_private(tmp_path: Path) -> None:
     directory = ensure_dir(tmp_path / "a" / "b")
     assert directory.is_dir()
