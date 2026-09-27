@@ -227,6 +227,51 @@ class TestBuildCodexCommandWorkspace:
             assert len(shell_flags) == 1, mode
 
 
+class TestResolveRealCodexHome:
+    """Extracted from run_codex's own inline resolution (review round) so a
+    caller elsewhere (the live confinement probe's own-store guard) can
+    compute the exact same path for the exact same environment, rather than
+    re-implement the fallback."""
+
+    def test_an_explicit_codex_home_wins(self, tmp_path: Path) -> None:
+        given = tmp_path / "given-codex-home"
+        assert codex.resolve_real_codex_home({"CODEX_HOME": str(given)}) == given.resolve()
+
+    def test_falls_back_to_path_home_dot_codex(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        operator_home = tmp_path / "operator-home"
+        operator_home.mkdir()
+        monkeypatch.setenv("HOME", str(operator_home))
+        assert (
+            codex.resolve_real_codex_home({"PATH": "/usr/bin"})
+            == (operator_home / ".codex").resolve()
+        )
+
+    def test_the_fallback_ignores_environments_own_home_key(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Path.home() reads THIS PROCESS's own $HOME, never
+        environment['HOME']: an environment dict that sets a DIFFERENT HOME
+        (as the live probe's own spec does) must not change the fallback."""
+        process_home = tmp_path / "process-home"
+        process_home.mkdir()
+        monkeypatch.setenv("HOME", str(process_home))
+        spec_home = tmp_path / "spec-home"
+        spec_home.mkdir()
+        assert (
+            codex.resolve_real_codex_home({"HOME": str(spec_home)})
+            == (process_home / ".codex").resolve()
+        )
+
+    def test_none_environment_reads_os_environ(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        given = tmp_path / "os-environ-codex-home"
+        monkeypatch.setenv("CODEX_HOME", str(given))
+        assert codex.resolve_real_codex_home(None) == given.resolve()
+
+
 class TestBuildCodexHome:
     def test_links_auth_only(self, tmp_path: Path) -> None:
         real = tmp_path / "real"
@@ -2540,6 +2585,70 @@ class TestCodexConfinementProbeRollout:
 
         assert code == 0
         assert not rollout_log.exists()
+
+    def test_rollout_candidate_descriptors_reads_a_real_on_disk_tree(self, tmp_path: Path) -> None:
+        """Review round 2 (agy 'blocker', refuted): os.scandir DOES accept a
+        directory file descriptor on Unix since Python 3.7 -- measured here
+        on the package's own Python 3.12.12. This pins that against a REAL
+        on-disk sessions/YYYY/MM/DD tree, no mocks anywhere: a symlink or a
+        fake Popen could hide a real platform regression a mock cannot."""
+        home = tmp_path / "codex-home"
+        day_dir = home / "sessions" / "2026" / "09" / "27"
+        day_dir.mkdir(parents=True)
+        written = b'{"type":"session_meta","payload":{"id":"real-tree"}}\n'
+        (day_dir / "rollout-2026-09-27T04-18-26-real-tree.jsonl").write_bytes(written)
+        # A decoy at a shallower level must never be picked up: only the
+        # measured Y/M/D depth counts.
+        (home / "sessions" / "rollout-not-at-the-right-depth.jsonl").write_bytes(b"decoy\n")
+
+        descriptors = codex._rollout_candidate_descriptors(home)
+        try:
+            assert len(descriptors) == 1
+            (descriptor,) = descriptors
+            info = os.fstat(descriptor)
+            assert os.read(descriptor, info.st_size + 1) == written
+        finally:
+            for descriptor in descriptors:
+                os.close(descriptor)
+
+        rollout_log = tmp_path / "rollout.jsonl"
+        reason = codex._keep_rollout(home, rollout_log)
+        assert reason is None
+        assert rollout_log.read_bytes() == written
+        assert rollout_log.stat().st_mode & 0o777 == 0o600
+
+    def test_a_non_os_error_copying_the_rollout_never_changes_the_exit_code(
+        self, monkeypatch: pytest.MonkeyPatch, logs: dict[str, Path], tmp_path: Path
+    ) -> None:
+        """Review round 2 (agy blocker): _keep_rollout's caller only ever
+        caught OSError -- widened to Exception so ANY failure copying the
+        rollout (never promised to be only an OSError) still cannot change
+        the exit code _run already decided, or raise out of run_codex."""
+        real_home = self._real_home(tmp_path)
+        fake = _FakeProcess(returncode=0, events=_events(_turn_completed()), report="R")
+        _install(monkeypatch, fake, logs["report_log"])
+
+        def raising_keep_rollout(home: Path, rollout_log: Path) -> str | None:
+            raise RuntimeError("not an OSError at all")
+
+        monkeypatch.setattr(codex, "_keep_rollout", raising_keep_rollout)
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        rollout_log = tmp_path / "rollout.jsonl"
+
+        code = _run(
+            logs,
+            mcp=None,
+            workspace=None,
+            workspace_capability=Workspace(path=ws),
+            environment={"PATH": "/usr/bin", "CODEX_HOME": str(real_home)},
+            rollout_log=rollout_log,
+        )
+
+        assert code == 0
+        assert not rollout_log.exists()
+        stderr = logs["stderr_log"].read_text(encoding="utf-8")
+        assert "rollout not kept" in stderr and "RuntimeError" in stderr
 
     def test_run_with_rollout_writes_beside_events_log(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

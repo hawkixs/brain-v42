@@ -58,7 +58,7 @@ from headless_agents.proofs import (
     record_proof,
     refused_attempts,
 )
-from headless_agents.providers.codex import CodexProvider
+from headless_agents.providers.codex import CodexProvider, resolve_real_codex_home
 from headless_agents.registry import get_provider, probe
 from headless_agents.spec import RunSpec
 
@@ -354,41 +354,54 @@ def _codex_confinement_prompt(control: Path, target: Path, line: str) -> str:
     )
 
 
-def _operator_codex_home(environ: Mapping[str, str], *, real_home: Path) -> Path:
-    """The CODEX_HOME codex itself resolves for an unplanted run (review
-    round: honour ``$CODEX_HOME`` when set, never assume ``~/.codex``)."""
-    value = environ.get("CODEX_HOME")
-    return Path(value) if value else real_home / ".codex"
+def _codex_operator_stores_to_check(spec_environment: Mapping[str, str] | None) -> set[Path]:
+    """Every session store codex could plausibly have written to for THIS
+    probe run: the one :func:`headless_agents.providers.codex.
+    resolve_real_codex_home` gives for the probe's own ``RunSpec``
+    environment (what ``run_codex`` itself actually resolves auth.json
+    from), UNIONED with the one it gives for the PARENT (this pytest)
+    process's own environment (``None``).
+
+    Review round 2 (codex major): the probe's spec environment never
+    carries ``CODEX_HOME`` (only ``PATH``/``HOME``/``LANG``), so
+    ``run_codex`` falls back to ``Path.home()/.codex`` -- reading THIS
+    PROCESS's own ``$HOME``, never the spec's. A guard that read
+    ``$CODEX_HOME`` from the parent process's own environment ALONE could
+    therefore watch a store ``run_codex`` never resolves to for this spec at
+    all (whenever the parent process's own ``$CODEX_HOME`` happens to be
+    set), missing a real write elsewhere. Checking both, rather than
+    re-implementing either resolution, is what keeps this in lock-step with
+    ``run_codex``'s own logic if it ever changes.
+    """
+    return {
+        resolve_real_codex_home(spec_environment),
+        resolve_real_codex_home(None),
+    }
 
 
 def _codex_touched_the_operator_session_store(
-    marker: float, *, environ: Mapping[str, str] | None = None, real_home: Path | None = None
+    marker: float, *, spec_environment: Mapping[str, str] | None = None
 ) -> bool:
-    """Did codex write ANY session rollout to the operator's real session
-    store since ``marker``? The probe's own rollout must only ever land at
-    ``run_dir/rollout.jsonl`` (a run-owned, torn-down ``CODEX_HOME``, lot 1b
-    Task 1) -- a write here means it did not, which must make this run
-    INCONCLUSIVE, never a pass. Fails closed: an unreadable session store
-    cannot prove it was untouched either. ``environ``/``real_home`` are for
-    tests; the live probe always reads the process environment and
-    ``REAL_HOME``."""
-    sessions = (
-        _operator_codex_home(
-            environ if environ is not None else os.environ,
-            real_home=real_home if real_home is not None else REAL_HOME,
-        )
-        / "sessions"
-    )
-    try:
-        candidates = list(sessions.glob("**/rollout-*.jsonl"))
-    except OSError:
-        return True
-    for path in candidates:
+    """Did codex write ANY session rollout to a store it could plausibly
+    have used for this probe run, since ``marker``? The probe's own rollout
+    must only ever land at ``run_dir/rollout.jsonl`` (a run-owned, torn-down
+    ``CODEX_HOME``, lot 1b Task 1) -- a write to any store in
+    :func:`_codex_operator_stores_to_check` means it did not, which must
+    make this run INCONCLUSIVE, never a pass. Fails closed: an unreadable
+    session store cannot prove it was untouched either.
+    """
+    for home in _codex_operator_stores_to_check(spec_environment):
+        sessions = home / "sessions"
         try:
-            if path.stat().st_mtime >= marker:
-                return True
+            candidates = list(sessions.glob("**/rollout-*.jsonl"))
         except OSError:
             return True
+        for path in candidates:
+            try:
+                if path.stat().st_mtime >= marker:
+                    return True
+            except OSError:
+                return True
     return False
 
 
@@ -490,7 +503,9 @@ def test_confinement(rail: str, live_root: Path) -> None:
                 shutil.rmtree(path.parent.parent, ignore_errors=True)
         # The probe must never touch the operator's real session store: a
         # write there makes the run inconclusive, not a pass (lot 1b Task 4).
-        if rail == "codex" and _codex_touched_the_operator_session_store(marker):
+        if rail == "codex" and _codex_touched_the_operator_session_store(
+            marker, spec_environment=environment
+        ):
             incomplete.append("operator session store written")
     verdict = confinement_verdict(changed=changed, incomplete=incomplete, unrefused=unrefused)
     if verdict.passed is None:

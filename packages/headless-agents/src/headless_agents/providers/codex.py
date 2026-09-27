@@ -370,6 +370,35 @@ def event_stream_error(
     return None
 
 
+def resolve_real_codex_home(environment: Mapping[str, str] | None) -> Path:
+    """The 'real' ``CODEX_HOME`` ``run_codex`` reads ``auth.json`` from for a
+    given child environment (never the ephemeral one this provider builds
+    per run): ``environment['CODEX_HOME']`` when given, else
+    ``Path.home()/.codex``. ``Path.home()`` reads THIS PROCESS's own
+    ``$HOME`` -- never ``environment['HOME']`` -- so an ``environment`` dict
+    that sets a different ``HOME`` (as a sandboxed-home caller's does) does
+    not change the fallback.
+
+    Extracted from what was inline in ``run_codex`` (review round) so a
+    caller elsewhere can compute EXACTLY the same path for the exact same
+    environment, rather than re-implement the fallback and risk it
+    drifting: the live confinement probe's own-store guard
+    (``tests/live/headless_agents/test_proofs_live.py``) uses this to know
+    which store ``run_codex`` could actually have written auth.json's
+    session state to, instead of assuming its own process's ``$CODEX_HOME``
+    is the same one.
+
+    Does not validate the result is absolute: ``run_codex`` still refuses a
+    relative ``CODEX_HOME`` before any spawn; this function only resolves.
+    ``None`` reads ``os.environ`` (this process's own environment).
+    """
+    visible = environment if environment is not None else os.environ
+    codex_home_value = visible.get("CODEX_HOME")
+    return (
+        Path(codex_home_value).resolve() if codex_home_value else (Path.home() / ".codex").resolve()
+    )
+
+
 def build_codex_home(*, root: Path, real_codex_home: Path) -> Path:
     """The ephemeral ``CODEX_HOME`` a workspace-capability run gets instead of
     the caller's real one: a private ``0700`` directory holding nothing but a
@@ -1054,9 +1083,7 @@ def run_codex(
             encoding="utf-8",
         )
         return PROVIDER_FALLBACK_EXIT_CODE
-    real_codex_home = (
-        Path(codex_home_value).resolve() if codex_home_value else (Path.home() / ".codex").resolve()
-    )
+    real_codex_home = resolve_real_codex_home(visible)
     if not (real_codex_home / "auth.json").is_file():
         stderr_log.write_text(
             f"codex auth.json not found under {real_codex_home}\n", encoding="utf-8"
@@ -1237,12 +1264,17 @@ def run_codex(
             )
             # Confinement-probe only (rollout_log set): keep the session
             # rollout before this ephemeral home is gone. Never changes the
-            # exit code above, and never raises -- an OSError from
-            # _keep_rollout itself is caught here too, belt and suspenders.
+            # exit code above, and never raises: _keep_rollout is total by
+            # design, but this catch-all is the actual promise -- a failed
+            # copy simply leaves no rollout, which the reader treats as
+            # inconclusive (fail-safe), never a crash of the run itself.
+            # Broadened from OSError to Exception (review round 2, agy
+            # blocker): nothing guarantees a future failure mode here stays
+            # an OSError, and this boundary must hold regardless.
             if rollout_log is not None:
                 try:
                     reason = _keep_rollout(ephemeral_home, rollout_log)
-                except OSError as exc:
+                except Exception as exc:  # broad on purpose, see docstring above
                     reason = f"{type(exc).__name__}: {exc}"
                 if reason is not None:
                     try:
