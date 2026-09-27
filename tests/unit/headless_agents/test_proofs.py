@@ -62,6 +62,24 @@ def test_a_corrupt_record_is_not_proven(tmp_path: Path) -> None:
     assert read_proof(tmp_path, "codex") is None
 
 
+def test_an_inaccessible_proofs_directory_fails_closed_without_crashing(
+    tmp_path: Path,
+) -> None:
+    """The engine's own gate must fail closed on a permission-denied proofs directory,
+    exactly like a corrupt record -- never crash on the bare ``OSError`` a chmod-000
+    directory raises (review round, PR #241, item 2: this is the same access error
+    :func:`headless_agents.state.read_optional` now turns into ``Unknown`` for
+    :func:`read_proof`'s existing ``except Unknown: return None``)."""
+    proofs_dir = tmp_path / "proofs"
+    proofs_dir.mkdir(mode=0o000)
+    try:
+        assert not isolation_ok(tmp_path, "codex", "codex 0.156.0")
+        assert confinement(tmp_path, "codex", "codex 0.156.0") == ("unconfined", None)
+        assert read_proof(tmp_path, "codex") is None
+    finally:
+        proofs_dir.chmod(0o700)
+
+
 def test_isolation_and_confinement_of_one_version_are_kept_together(tmp_path: Path) -> None:
     record_proof(tmp_path, "codex", version="v1", isolation=True, today="2026-09-25")
     record_proof(tmp_path, "codex", version="v1", confinement=True, today="2026-09-26")
