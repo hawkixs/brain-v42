@@ -77,6 +77,15 @@ left its unconfined intent behind for the operator quarantine to find.
   `gitops.git` now decodes its output with undecodable bytes replaced, and
   `binary=True` returns the bytes untouched: `change.patch` and `commit.log` are
   written as git printed them, so the patch still rebuilds the commit.
+- **A review reads the diff the commit holds, or is refused.** Its `git diff --binary`
+  went through the text path, which also turns `\r\n` into `\n`: the reviewers and
+  the judge read, and `change.patch` kept, content the reviewed commit does not hold.
+  The diff is now read as bytes, written to `change.patch` as is, and handed to the
+  panel decoded strictly; a diff holding bytes that are not UTF-8 is refused before
+  any reviewer runs, naming the file. The range's `git log` is split on its own
+  separators, so a subject holding `\r` no longer crashes the attribution, and the
+  tripwire reads `core.hooksPath` as bytes decoded like a path, so a value that is not
+  UTF-8 is watched exactly instead of crashing the arming.
 - **A failure after the engine's commit finalises the run instead of leaving it for the
   operator quarantine.** An exception raised by the live engine from its commit through
   publication left `run.json` at `running`, the pending write and the unconfined intent

@@ -72,8 +72,10 @@ def git(
     Git prints what the repository holds -- the diff of a file that is not
     UTF-8, a hook's message, a commit subject -- so its output is decoded as
     UTF-8 with every undecodable byte replaced: none of it may crash ``ha``
-    (ticket 0b3fcdbf). ``binary=True`` returns the bytes untouched, for what
-    is recorded as git printed it: a patch, a hook's output.
+    (ticket 0b3fcdbf). That text is for reading only: it also has ``\r\n`` and
+    ``\r`` turned into ``\n``. ``binary=True`` returns the bytes untouched, for
+    what is recorded, parsed on its own separators, or shown to a model as the
+    repository holds it: a patch, a hook's output, a log (review of #236).
     """
     command = git_command(root, tampered=tampered)
     if not hooks:

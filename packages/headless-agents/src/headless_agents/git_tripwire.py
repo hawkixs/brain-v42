@@ -181,14 +181,15 @@ def _hooks_paths(config_files: Sequence[Path], root: Path) -> list[Path]:
             completed = subprocess.run(
                 ["git", "config", "--file", str(config), "--get-all", "core.hooksPath"],
                 capture_output=True,
-                text=True,
                 timeout=10,
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
             continue
-        for line in completed.stdout.splitlines():
-            value = line.strip()
+        # Bytes, decoded as a path: a value that is not UTF-8 names a real directory,
+        # which strict text decoding crashed on (review of #236).
+        for line in completed.stdout.split(b"\n"):
+            value = os.fsdecode(line.strip())
             if not value:
                 continue
             path = Path(os.path.expanduser(value))
