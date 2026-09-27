@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from headless_agents.registry import PROVIDER_NAMES
 from headless_agents.runs import (
     RUN_ID_PATTERN,
     Registry,
@@ -488,3 +489,29 @@ def test_a_started_at_ha_never_writes_is_unknown(tmp_path: Path, value: object) 
     path.write_text(json.dumps(document))
     with pytest.raises(Unknown, match="started_at"):
         registry.resolve(_RID)
+
+
+# ── providers names what ha knows (0.5.3 lot 4a, ticket e5b93270 item 6) ─────
+
+
+def _with_providers(tmp_path: Path, providers: list[str]) -> Registry:
+    registry = _registry(tmp_path)
+    registry.create(
+        _RID, run_dir=None, target=_TARGET, repository=None, lineage=_RID, providers=["codex"]
+    )
+    path = tmp_path / "state" / "runs" / f"{_RID}.json"
+    document = json.loads(path.read_text())
+    document["providers"] = providers
+    path.write_text(json.dumps(document))
+    return registry
+
+
+def test_an_unknown_provider_name_makes_the_entry_unknown(tmp_path: Path) -> None:
+    registry = _with_providers(tmp_path, ["codex", "evil"])
+    with pytest.raises(Unknown, match="unknown provider 'evil'"):
+        registry.resolve(_RID)
+
+
+@pytest.mark.parametrize("name", PROVIDER_NAMES)
+def test_every_registry_name_is_a_provider_an_entry_may_name(tmp_path: Path, name: str) -> None:
+    assert _with_providers(tmp_path, [name]).resolve(_RID).providers == (name,)

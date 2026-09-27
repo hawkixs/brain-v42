@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Final
 
 from .locks import is_free
+from .registry import PROVIDER_NAMES
 from .state import Unknown, create_once, publish, read
 
 RUN_ID_PATTERN: Final = re.compile(r"\d{8}T\d{6}-[0-9a-f]{8}")
@@ -203,6 +204,11 @@ class Registry:
         # A write's authors are never invented: a lineage's entry must name them.
         if not isinstance(providers, list) or not all(isinstance(p, str) and p for p in providers):
             raise Unknown(f"{path}: providers is malformed")
+        # A provider ha does not know is not one ha wrote (ticket e5b93270 item 6):
+        # the vendor rule would read an invented name as an author.
+        for name in providers:
+            if name not in PROVIDER_NAMES:
+                raise Unknown(f"{path}: providers names an unknown provider {name!r}")
         # Absent from an entry older than the key; present, it is null until the first
         # step starts, then the time it did -- anything else is not what ha writes.
         start_recorded = "started_at" in document
