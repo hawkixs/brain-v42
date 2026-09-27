@@ -5,11 +5,8 @@ git subprocess inherits one, and a lock dies with the ``ha`` process that
 took it. The order is fixed, which excludes a deadlock:
 
 1. the run's own lifecycle lock;
-2. the writer-intent lock: an unconfined writer holds it exclusively from
-   before it ever polls the gate below, until it wins the gate or times out;
-   a reader takes it shared only for the instant of checking that no writer
-   currently holds it;
-3. the admission gate, held only for the instant of taking the lock below;
+2. the admission ticket lock, held only for the instant of issuing a ticket;
+3. the admission waiter: the run's own ``.wait`` file, held while it waits its turn;
 4. the global unconfined lock;
 5. the lineage registry lock;
 6. lineage locks, in ascending owner-id order.
@@ -26,9 +23,10 @@ a write or a review admits under it. Without ``--wait``, each lock keeps its
 own :data:`LOCK_WAIT_SECONDS` bound, as before.
 
 **What ``--wait`` guarantees** (real-process tests in ``test_locks.py``,
-``test_engine_execute.py``, ``test_write_flow.py``, ``test_review.py``):
+``test_admission_queue.py``, ``test_engine_execute.py``, ``test_write_flow.py``,
+``test_review.py``):
 
-- ``--wait SECONDS`` bounds the *whole* admission -- the gate, the global
+- ``--wait SECONDS`` bounds the *whole* admission -- the queue, the global
   lock, and, for a write or a review, the lineage registry and lineage locks
   -- with one absolute monotonic deadline, spent across every lock in turn.
 - A lock granted past that deadline is refused, never accepted late (fixed
@@ -42,34 +40,34 @@ own :data:`LOCK_WAIT_SECONDS` bound, as before.
   marked ``"failed"`` with an empty run dir, as if something had run. An
   invalid ``--wait`` value is rejected before any admission is attempted,
   so nothing is created to begin with.
-- ``ha clean`` is admitted through the very same gate as every other run,
-  not a lock it takes directly: it queues behind an unconfined write that
-  already holds the gate, exactly like a read would (also PR #239).
-- The writer-intent lock (point 2 above) makes one case exact, not
-  heuristic: once an unconfined writer *holds* it, any reader that arrives
-  afterward blocks on its own attempt to take it shared until the writer
-  releases it -- ordinary ``flock`` mutual exclusion against a single
-  exclusive holder, true regardless of timing.
+- ``ha clean`` is admitted through the very same queue as every other run,
+  not a lock it takes directly: it waits behind an unconfined write queued
+  before it, exactly like a read would (also PR #239).
 
-**What is deliberately NOT guaranteed** (operator decision, 2026-09-27: keep
-this mechanism as best-effort writer preference rather than block PR #239 on
-a real fix):
+**Global admission is first come, first served** (0.5.3 lot 4b, decision
+7ef98bc4). 0.5.2 gave an unconfined writer only a best-effort preference --
+a writer-intent lock and an admission gate -- because ``flock`` orders no
+waiters: overlapping readers could keep a polling writer out until its
+deadline, and a stream of writers could time a reader out. Every admission
+now takes a ticket (:func:`_issue_ticket`) and waits its turn in
+``<state>/admission/``:
 
-- ``flock`` gives no fairness between waiters. The writer-intent lock only
-  narrows the starvation window described below; it does not close it.
-- A writer that has not yet won the writer-intent lock -- still polling for
-  it, not holding it -- can be overtaken indefinitely by a continuous,
-  overlapping stream of readers: each reader holds the intent lock shared
-  only briefly, but if new ones keep arriving before the last one releases
-  it, the writer's own exclusive attempt may never see a free instant.
-- Symmetrically, a continuous stream of writers can make a waiting reader
-  time out: a reader releases the intent lock before it ever touches the
-  gate, and a new writer racing in during that gap can win the gate ahead
-  of it, repeatedly.
-- Neither case is exercised by the process tests here on purpose: they
-  would be flaky proof of a property this mechanism does not hold. A real
-  fix -- a fair FIFO admission queue -- is planned for headless-agents
-  0.5.3, not this lot.
+- an unconfined write waits for every admission queued before it, and
+  every admission queued after it waits for it;
+- shared admissions queued together are admitted together;
+- a waiter that dies stops blocking at the next poll: its ``.wait`` file
+  is visible only once locked, and removed before its lock drops, so a
+  visible file nobody holds is exactly a dead waiter's -- no pid probing,
+  no heartbeat;
+- ``--wait`` covers the queue and the global lock alike.
+
+**Exclusion did not move.** The global lock is still the ``flock`` of
+``unconfined.lock``, shared or exclusive, taken by :func:`held` exactly as
+before: the queue only decides *who may try it, and when*. A queue bug can
+cost fairness or time, never let an unconfined write run beside another run
+(``test_admission_queue.py``'s invariants pin it). Not ordered by the queue:
+an ``ha`` 0.5.2 process still running during an upgrade, which admits
+through its gate -- exclusion holds between the two, fairness does not.
 """
 
 from __future__ import annotations
@@ -86,7 +84,7 @@ from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 #: Spec §3.8.2: every wait on a lock is bounded by ten seconds.
 LOCK_WAIT_SECONDS: Final = 10.0
@@ -97,16 +95,34 @@ class LockTimeout(Exception):
     """A lock not obtained within its bound; the message names which."""
 
 
+class AdmissionTimeout(LockTimeout):
+    """A global admission not granted within its budget, and why -- as fields: a
+    caller formats its refusal from ``phase`` and ``ahead``, never from the message.
+
+    ``phase`` is ``"queue"`` when admissions queued earlier kept it waiting (they are
+    ``ahead``: the live waiters it was waiting for), ``"global"`` when nothing was
+    ahead but the global lock stayed held (``ahead`` is empty).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: Literal["queue", "global"],
+        ahead: tuple[Waiter, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.phase: Literal["queue", "global"] = phase
+        self.ahead = ahead
+
+
 class Rank(IntEnum):
     LIFECYCLE = 1
-    WRITER_INTENT = 2
-    ADMISSION_GATE = 3
+    ADMISSION_TICKET = 2
+    ADMISSION_WAITER = 3
     UNCONFINED = 4
     LINEAGE_REGISTRY = 5
     LINEAGE = 6
-    # The admission queue's ranks: the gate's own, which the queue replaces.
-    ADMISSION_TICKET = 2
-    ADMISSION_WAITER = 3
 
 
 _held = threading.local()
@@ -221,96 +237,6 @@ class AdmissionWait:
                 raise LockTimeout(f"{what}: --wait {self.seconds:g} s expired")
             raise LockTimeout(f"{what}: not obtained within {self.seconds:g} s")
         return left
-
-
-@contextmanager
-def admit_global(state: Path, *, exclusive: bool, wait: AdmissionWait) -> Iterator[None]:
-    """Take the global unconfined lock at ``state``, gated for BEST-EFFORT writer preference.
-
-    The admission gate (``admission-gate.lock``) is held only for the instant
-    of acquiring the global lock: shared for an ordinary run, exclusive for an
-    unconfined write. A writer that already holds the gate holds it
-    exclusively for as long as it waits for the global lock, and every later
-    run -- shared or not -- queues behind it instead of slipping in first.
-    The gate is released as soon as the global lock is taken, or on a
-    timeout; the global lock itself is held for the caller's block.
-
-    A gate held nonblocking excludes a reader only once the writer already
-    owns it, not while the writer is still polling for it: a reader that
-    keeps arriving during that polling window could otherwise take the gate
-    shared every time, starving the writer out. The writer-intent lock
-    narrows that window (codex review of PR #239): an unconfined writer
-    takes it exclusively *before* it ever polls the gate, and holds it for
-    as long as that polling lasts; a reader takes it shared only for the
-    instant of checking that no writer currently holds it, then releases it
-    before it ever touches the gate itself.
-
-    This is a heuristic mitigation, not a fairness guarantee: ``flock`` does
-    not order waiters. A writer still *polling* for writer-intent (not yet
-    holding it) can in principle be overtaken indefinitely by a continuous,
-    overlapping stream of readers, each holding intent only briefly; and a
-    continuous stream of writers can likewise make a waiting reader time out
-    by winning the gate first, repeatedly, in the gap after a reader
-    releases intent and before it takes the gate. What *is* guaranteed:
-    once a writer holds writer-intent, a reader that arrives afterward
-    blocks on that lock -- ordinary mutual exclusion, not scheduling order.
-    A real fix (a fair FIFO admission queue) is planned for 0.5.3.
-    """
-    budget = wait if wait.seconds is not None else AdmissionWait(LOCK_WAIT_SECONDS, explicit=False)
-    intent = state / "writer-intent.lock"
-    gate = state / "admission-gate.lock"
-    unconfined = state / "unconfined.lock"
-    with ExitStack() as global_lock:
-        if exclusive:
-            with held(
-                intent,
-                rank=Rank.WRITER_INTENT,
-                exclusive=True,
-                wait=budget.remaining("a pending write"),
-                what="a pending write",
-            ):
-                with held(
-                    gate,
-                    rank=Rank.ADMISSION_GATE,
-                    exclusive=True,
-                    wait=budget.remaining("the admission gate"),
-                    what="the admission gate",
-                ):
-                    global_lock.enter_context(
-                        held(
-                            unconfined,
-                            rank=Rank.UNCONFINED,
-                            exclusive=True,
-                            wait=budget.remaining("the unconfined lock"),
-                            what="the unconfined lock",
-                        )
-                    )
-        else:
-            with held(
-                intent,
-                rank=Rank.WRITER_INTENT,
-                exclusive=False,
-                wait=budget.remaining("a pending write"),
-                what="a pending write",
-            ):
-                pass
-            with held(
-                gate,
-                rank=Rank.ADMISSION_GATE,
-                exclusive=False,
-                wait=budget.remaining("the admission gate"),
-                what="the admission gate",
-            ):
-                global_lock.enter_context(
-                    held(
-                        unconfined,
-                        rank=Rank.UNCONFINED,
-                        exclusive=False,
-                        wait=budget.remaining("the unconfined lock"),
-                        what="the unconfined lock",
-                    )
-                )
-        yield
 
 
 # ── the admission queue ─────────────────────────────────────────────────────
@@ -610,6 +536,74 @@ def _issue_ticket(state: Path, *, exclusive: bool, label: str, wait: AdmissionWa
     return _Queued(ticket=ticket, fd=descriptor, path=published, _entry=entry)
 
 
+@contextmanager
+def admit_global(
+    state: Path, *, exclusive: bool, wait: AdmissionWait, label: str = ""
+) -> Iterator[None]:
+    """Take the global unconfined lock at ``state``, first come, first served.
+
+    The admission takes a ticket, then polls: an exclusive one tries the global lock
+    only when no live waiter is ahead of it; a shared one, only when no exclusive
+    waiter is ahead. Every poll re-reads the queue, so a waiter that dies ahead stops
+    blocking at the next one. Admitted or not, the admission leaves the queue; the
+    global lock itself is held for the caller's block. ``label`` names the waiter in
+    the queue -- a run id, ``clean`` -- for display only.
+
+    One deadline covers the ticket, the queue and the global lock: without ``--wait``,
+    :data:`LOCK_WAIT_SECONDS`. On expiry, :class:`AdmissionTimeout`; a global lock
+    granted past the deadline is released and refused, as :func:`held` does.
+    """
+    budget = wait if wait.seconds is not None else AdmissionWait(LOCK_WAIT_SECONDS, explicit=False)
+    seconds = budget.seconds if budget.seconds is not None else LOCK_WAIT_SECONDS
+    deadline = budget.started + seconds
+    expiry = (
+        f"--wait {seconds:g} s expired" if budget.explicit else f"not obtained within {seconds:g} s"
+    )
+    try:
+        queued = _issue_ticket(state, exclusive=exclusive, label=label, wait=budget)
+    except LockTimeout:
+        raise AdmissionTimeout(f"the admission queue: {expiry}", phase="queue") from None
+    unconfined = state / "unconfined.lock"
+    with ExitStack() as global_lock:
+        try:
+            while True:
+                ahead = tuple(
+                    waiter
+                    for waiter in waiters(state)
+                    if waiter.alive and waiter.ticket < queued.ticket
+                )
+                blocking = ahead if exclusive else tuple(w for w in ahead if w.exclusive)
+                if not blocking:
+                    try:
+                        global_lock.enter_context(
+                            held(
+                                unconfined,
+                                rank=Rank.UNCONFINED,
+                                exclusive=exclusive,
+                                wait=None,
+                                what="the unconfined lock",
+                            )
+                        )
+                    except LockTimeout:
+                        pass
+                    else:
+                        if time.monotonic() > deadline:
+                            global_lock.close()
+                            raise AdmissionTimeout(f"the unconfined lock: {expiry}", phase="global")
+                        break
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    if blocking:
+                        raise AdmissionTimeout(
+                            f"the admission queue: {expiry}", phase="queue", ahead=blocking
+                        )
+                    raise AdmissionTimeout(f"the unconfined lock: {expiry}", phase="global")
+                time.sleep(min(_POLL_SECONDS, left))
+        finally:
+            queued.leave()
+        yield
+
+
 def is_free(path: Path) -> bool:
     """No process holds ``path`` exclusively: a non-blocking shared lock succeeds.
 
@@ -635,6 +629,7 @@ def is_free(path: Path) -> bool:
 __all__ = [
     "ADMISSION_DIR",
     "LOCK_WAIT_SECONDS",
+    "AdmissionTimeout",
     "AdmissionWait",
     "LockTimeout",
     "Rank",

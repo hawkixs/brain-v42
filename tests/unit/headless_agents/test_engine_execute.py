@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -511,3 +512,27 @@ def test_a_chain_records_the_counts_of_the_link_that_answered(world: World) -> N
     world.fakes["codex"] = _Fake("codex", events=(TOOL_FIXTURES / "codex.events.jsonl").read_text())
     (step,) = _steps(world.run("pair"))
     assert step["provider"] == "codex" and step["tools"] == {"command_execution": 4}
+
+
+# ── admission refusals read the timeout's fields, never its text (0.5.3 lot 4b) ─
+
+
+def test_no_exception_text_is_parsed() -> None:
+    """A refusal that matched words in an exception's message broke silently the day
+    the message changed: the admission gate's own did, when the queue replaced it.
+    The engine reads ``AdmissionTimeout.phase`` and ``.ahead`` instead."""
+    tree = ast.parse(Path(engine.__file__).read_text(encoding="utf-8"))
+    offending = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        if not any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops):
+            continue
+        for operand in (node.left, *node.comparators):
+            if (
+                isinstance(operand, ast.Constant)
+                and isinstance(operand.value, str)
+                and ("admission gate" in operand.value or "queue" in operand.value)
+            ):
+                offending.append(f"line {node.lineno}: {operand.value!r}")
+    assert offending == []

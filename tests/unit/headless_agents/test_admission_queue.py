@@ -496,3 +496,123 @@ def test_waiters_never_raises(tmp_path: Path) -> None:
     assert isinstance(listed, list), f"waiters() raised {listed!r}"
     assert {waiter.ticket for waiter in listed} <= {1, 2, 3, 4, 5, 6, 7}
     assert all(not waiter.alive and waiter.label == "<unreadable>" for waiter in listed)
+
+
+# ── admission through the queue: first come, first served (Task 3) ─────────────
+
+
+def _admission_order(events: Path, labels: list[str]) -> list[str]:
+    logged = _log(events)
+    return sorted(labels, key=lambda label: logged[(label, "admitted")])
+
+
+def test_writers_are_admitted_in_ticket_order(tmp_path: Path) -> None:
+    with _children(tmp_path) as (_, events, spawn):
+        holder = spawn("holder-shared", "H")
+        _until_logged(events, ("H", "admitted"))
+        writers = []
+        labels = [f"E{index}" for index in range(1, 6)]
+        for label in labels:
+            writers.append(spawn("admit-exclusive", label, hold=0.1))
+            _until_logged(events, (label, "queued"))
+            time.sleep(0.15)  # it holds its ticket before the next one even starts
+        _release(events, "H")
+        assert holder.wait(timeout=10) == 0
+        assert all(writer.wait(timeout=20) == 0 for writer in writers)
+        assert _admission_order(events, labels) == labels
+
+
+def test_a_reader_is_not_timed_out_by_later_writers(tmp_path: Path) -> None:
+    with _children(tmp_path) as (_, events, spawn):
+        holder = spawn("holder-shared", "H")
+        _until_logged(events, ("H", "admitted"))
+        first = spawn("admit-exclusive", "E1", hold=0.3)
+        _until_logged(events, ("E1", "queued"))
+        time.sleep(0.15)
+        reader = spawn("admit-shared", "R", wait="5")
+        _until_logged(events, ("R", "queued"))
+        time.sleep(0.15)
+        later = []
+        for index in range(2, 6):
+            later.append(spawn("admit-exclusive", f"E{index}", hold=0.3))
+            _until_logged(events, (f"E{index}", "queued"))
+            time.sleep(0.15)
+        _release(events, "H")
+        assert reader.wait(timeout=10) == 0, "the reader timed out"
+        assert all(process.wait(timeout=20) == 0 for process in [holder, first, *later])
+        logged = _log(events)
+        assert ("R", "timeout") not in logged
+        assert logged[("E1", "released")] < logged[("R", "admitted")]
+        assert logged[("R", "released")] < logged[("E2", "admitted")]
+
+
+def test_a_writer_is_not_starved_by_overlapping_readers(tmp_path: Path) -> None:
+    with _children(tmp_path) as (_, events, spawn):
+        processes = []
+        for index in range(1, 7):  # two waves of overlapping readers
+            processes.append(spawn("admit-shared", f"R{index}", hold=0.4))
+            time.sleep(0.15)
+        writer = spawn("admit-exclusive", "E", wait="5", hold=0.1)
+        _until_logged(events, ("E", "queued"))
+        time.sleep(0.05)
+        for index in range(7, 11):  # the readers arriving after it
+            processes.append(spawn("admit-shared", f"R{index}", hold=0.4))
+            time.sleep(0.15)
+        assert writer.wait(timeout=10) == 0, "the writer timed out"
+        assert all(process.wait(timeout=20) == 0 for process in processes)
+        logged = _log(events)
+        for index in range(7, 11):
+            assert logged[(f"R{index}", "admitted")] > logged[("E", "released")], (
+                f"R{index}, arriving after the writer, got in before it"
+            )
+
+
+def test_a_waiter_dying_ahead_stops_blocking_at_the_next_poll(tmp_path: Path) -> None:
+    with _children(tmp_path) as (state, events, spawn):
+        spawn("holder-shared", "H")
+        _until_logged(events, ("H", "admitted"))
+        writer = spawn("admit-exclusive", "E1")
+        _until_a_writer_waits(state)
+        spawn("admit-shared", "R")
+        _until_logged(events, ("R", "queued"))
+        time.sleep(0.3)
+        assert ("R", "admitted") not in _log(events), "the reader got in behind a waiting writer"
+        writer.kill()
+        writer.wait()
+        killed = time.monotonic_ns()
+        _until_logged(events, ("R", "admitted"))
+        assert _log(events)[("R", "admitted")] - killed < 0.5e9, "a dead waiter kept blocking"
+
+
+def test_an_expired_wait_leaves_the_queue_and_names_the_phase(tmp_path: Path) -> None:
+    with _children(tmp_path) as (state, events, spawn):
+        spawn("holder-shared", "H")
+        _until_logged(events, ("H", "admitted"))
+        with pytest.raises(locks.AdmissionTimeout) as blocked_by_holders:
+            with admit_global(state, exclusive=True, wait=AdmissionWait(0.3)):
+                pass
+        assert blocked_by_holders.value.phase == "global"
+        assert blocked_by_holders.value.ahead == ()
+        assert locks.waiters(state) == [], "the expired waiter left the queue"
+        started = time.monotonic()
+        with admit_global(state, exclusive=False, wait=AdmissionWait(0.3)):
+            pass
+        assert time.monotonic() - started < 0.2, "a later reader must get in at once"
+
+        writer = spawn("admit-exclusive", "W")
+        _until_a_writer_waits(state)
+        with pytest.raises(locks.AdmissionTimeout) as blocked_by_the_queue:
+            with admit_global(state, exclusive=False, wait=AdmissionWait(0.3)):
+                pass
+        assert blocked_by_the_queue.value.phase == "queue"
+        (ahead,) = blocked_by_the_queue.value.ahead
+        assert ahead.exclusive and ahead.alive and ahead.pid == writer.pid
+        assert [waiter.pid for waiter in locks.waiters(state)] == [writer.pid]
+
+
+def test_the_order_stack_is_clean_after_admission(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    for exclusive in (False, True):
+        with admit_global(state, exclusive=exclusive, wait=AdmissionWait(None)):
+            assert [rank for rank, _ in locks._stack()] == [locks.Rank.UNCONFINED]  # noqa: SLF001
+        assert locks._stack() == []  # noqa: SLF001

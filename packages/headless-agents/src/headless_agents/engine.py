@@ -1380,7 +1380,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 ) from None
             if unconfined:
                 holder = "active runs"
-            elif "admission gate" in str(exc):
+            elif isinstance(exc, locks.AdmissionTimeout) and exc.phase == "queue":
                 holder = "a waiting unconfined writer"
             else:
                 holder = "an unconfined write"
@@ -1538,7 +1538,7 @@ def clean(
         except LockTimeout:
             raise UsageError(f"{run_id} is active: nothing cleaned") from None
         try:
-            # Through the same admission gate as every other run (codex review
+            # Through the same admission queue as every other run (codex review
             # of PR #239): taking ``unconfined.lock`` directly here let a clean
             # slip past a queued unconfined writer whenever the global lock
             # itself happened to be free.
@@ -1546,9 +1546,9 @@ def clean(
                 locks.admit_global(state, exclusive=False, wait=locks.AdmissionWait(None))
             )
         except LockTimeout as exc:
-            if "admission gate" in str(exc):
+            if isinstance(exc, locks.AdmissionTimeout) and exc.phase == "queue":
                 raise UsageError(
-                    "the admission gate is held by a waiting unconfined writer: nothing cleaned"
+                    "a waiting unconfined writer is ahead in the admission queue: nothing cleaned"
                 ) from None
             raise UsageError("an unconfined write is running: nothing cleaned") from None
         if entry.lineage is not None:

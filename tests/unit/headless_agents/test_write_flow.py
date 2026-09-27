@@ -661,9 +661,19 @@ def _instrument(world: World, monkeypatch: pytest.MonkeyPatch) -> list[str]:
         events.append("git")
         return real_git(*args, **kwargs)  # type: ignore[arg-type]
 
+    real_issue = locks._issue_ticket  # noqa: SLF001
+
+    def issue(state: Path, *, exclusive: bool, label: str, wait: locks.AdmissionWait):  # type: ignore[no-untyped-def]
+        # A waiter is registered by the queue itself, not through held(): recorded
+        # here, in the admission's own mode.
+        queued = real_issue(state, exclusive=exclusive, label=label, wait=wait)
+        events.append(f"lock ADMISSION_WAITER {'ex' if exclusive else 'sh'}")
+        return queued
+
     monkeypatch.setattr(engine, "held", held)
     monkeypatch.setattr(write_flow, "held", held)
     monkeypatch.setattr(locks, "held", held)
+    monkeypatch.setattr(locks, "_issue_ticket", issue)
     monkeypatch.setattr(quarantine, "check", check)
     monkeypatch.setattr(lineage, "create", create)
     monkeypatch.setattr(write_flow, "git", git)
@@ -701,8 +711,8 @@ def test_admission_takes_every_lock_before_reading_state_and_runs_no_git(
     locks_taken = [e for e in events if e.startswith("lock")]
     assert [e.split()[1] for e in locks_taken] == [
         "LIFECYCLE",
-        "WRITER_INTENT",
-        "ADMISSION_GATE",
+        "ADMISSION_TICKET",
+        "ADMISSION_WAITER",
         "UNCONFINED",
         "LINEAGE_REGISTRY",
         "LINEAGE",
@@ -1410,14 +1420,25 @@ def test_clean_of_a_write_that_never_started_forgets_it(
     assert world.git_calls == []
 
 
+_QUEUED_WRITER = """
+import sys, time
+from pathlib import Path
+from headless_agents import locks
+queued = locks._issue_ticket(Path(sys.argv[1]), exclusive=True, label="W",
+                             wait=locks.AdmissionWait(10))
+Path(sys.argv[2]).write_text("queued")
+time.sleep(60)
+"""
+
+
 def test_clean_queues_behind_a_waiting_unconfined_writer(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``ha clean`` took ``unconfined.lock`` directly, bypassing the
-    admission gate entirely (codex review of PR #239): with the global lock
-    itself free, a clean slipped straight through even while an unconfined
-    writer was already queued on the gate, waiting its turn for that same
-    lock. Route ``clean`` through the same gate so it queues too."""
+    """``ha clean`` took ``unconfined.lock`` directly, bypassing admission
+    entirely (codex review of PR #239): with the global lock itself free, a
+    clean slipped straight through even while an unconfined writer was
+    already waiting its turn for that same lock. ``clean`` is admitted like
+    every other run, so it queues behind that writer too."""
     run_id = "20260925T000000-ffffffff"
     world.registry().create(
         run_id,
@@ -1427,21 +1448,13 @@ def test_clean_queues_behind_a_waiting_unconfined_writer(
         lineage=None,
     )
     monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.2)
-    ready = world.home / "gate-held"
-    holder = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            _HOLD,
-            str(world.state / "admission-gate.lock"),
-            "ex",
-            str(ready),
-        ]
-    )
+    ready = world.home / "writer-queued"
+    holder = subprocess.Popen([sys.executable, "-c", _QUEUED_WRITER, str(world.state), str(ready)])
     try:
         while not ready.exists():
+            assert holder.poll() is None
             time.sleep(0.02)
-        with pytest.raises(UsageError, match="admission gate"):
+        with pytest.raises(UsageError, match="admission queue"):
             _clean(world, run_id)
     finally:
         holder.kill()
@@ -1459,8 +1472,8 @@ def test_clean_takes_its_locks_in_order_and_releases_the_registry_before_git(
     taken = [e for e in events if e.startswith("lock")]
     assert [(e.split()[1], e.split()[-1]) for e in taken] == [
         ("LIFECYCLE", "ex"),
-        ("WRITER_INTENT", "sh"),
-        ("ADMISSION_GATE", "sh"),
+        ("ADMISSION_TICKET", "ex"),
+        ("ADMISSION_WAITER", "sh"),
         ("UNCONFINED", "sh"),
         ("LINEAGE_REGISTRY", "sh"),
         ("LINEAGE", "ex"),
