@@ -25,6 +25,7 @@ from functools import partial
 from pathlib import Path
 from typing import Final
 
+from .capability import scoped_environment
 from .keys import KeysError, preset_key
 from .protocol import AgentProvider
 from .providers.agy import MAX_PROMPT_BYTES as AGY_MAX_PROMPT_BYTES
@@ -123,6 +124,46 @@ def tool_counts(result: RunResult) -> dict[str, int] | None:
     return None if counter is None else counter(result.events_log)
 
 
+#: Each CLI rail's OWN documented home/config variable, kept for THAT rail's
+#: subprocess (a version probe, or a vendor updater) alone -- never another
+#: rail's: claude resolves its own config directory from CLAUDE_CONFIG_DIR
+#: (providers.claude.CHILD_ENV_PASSTHROUGH), codex its state directory from
+#: CODEX_HOME (providers.codex.CHILD_ENV_PASSTHROUGH, which holds nothing
+#: else). agy and opencode read neither: both resolve their home from HOME
+#: alone (providers.agy._source_home, providers.opencode's own equivalent),
+#: which :func:`probe_environment` forces below regardless of a rail's own
+#: passthrough. Deliberately NOT importing each provider's own
+#: CHILD_ENV_PASSTHROUGH: claude's and codex's also carry OTEL, MCP and API
+#: key variables that a version probe or an updater has no business seeing.
+_RAIL_HOME_PASSTHROUGH: Final[Mapping[str, frozenset[str]]] = {
+    "claude": frozenset({"CLAUDE_CONFIG_DIR"}),
+    "codex": frozenset({"CODEX_HOME"}),
+    "agy": frozenset(),
+    "opencode": frozenset(),
+}
+
+
+def probe_environment(rail: str, home: Path, environ: Mapping[str, str]) -> dict[str, str]:
+    """The environment a CLI rail's own subprocess -- a version probe, or a vendor
+    updater -- should run with: the shared child-environment allowlist
+    (:func:`capability.scoped_environment` -- PATH, HOME, locale, proxy and CA
+    variables), plus, for the rail alone, its own documented home/config variable
+    (see :data:`_RAIL_HOME_PASSTHROUGH`). ``HOME`` is forced to ``home``, so the
+    subprocess reads the same identity the caller resolved its executable against.
+
+    A name that is not one of the four CLI rails -- an HTTP provider, say -- gets
+    ``environ`` back UNCHANGED: :func:`probe` never spawns a subprocess for it, only
+    checks a key variable's presence, and sanitising here would hide the very key
+    a caller is checking for.
+    """
+    passthrough = _RAIL_HOME_PASSTHROUGH.get(rail)
+    if passthrough is None:
+        return dict(environ)
+    child = scoped_environment(environ, passthrough=passthrough)
+    child["HOME"] = str(home)
+    return child
+
+
 def _probe_http(name: str, environ: Mapping[str, str]) -> Probe:
     preset = PRESETS.get(name)
     if preset is None:
@@ -200,6 +241,14 @@ def probe(
 
     An HTTP provider: is its key variable set in ``environ`` (default: this
     process's environment)? The detail names the variable, never its value.
+
+    For a CLI rail, ``environ`` -- when given -- is what the ``--version``
+    subprocess ITSELF runs with, verbatim: this function never widens or
+    narrows it. A caller with an operator environment to hand a rail's own
+    subprocess builds it with :func:`probe_environment` first; passing the raw
+    process environment through unfiltered is the caller's choice, not a
+    default made here silently (default, when ``environ`` is omitted: this
+    process's own environment, as before).
     """
     _known(name)
     if name in HTTP_PROVIDER_NAMES:
@@ -220,6 +269,7 @@ def probe(
             encoding="utf-8",
             errors="replace",
             start_new_session=True,
+            env=dict(os.environ if environ is None else environ),
         )
     except OSError as exc:
         return Probe(available=False, detail=f"{path} --version: {exc}")

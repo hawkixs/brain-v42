@@ -45,6 +45,7 @@ from .registry import (
     get_provider,
     max_prompt_bytes,
     probe,
+    probe_environment,
     tool_counts,
 )
 from .repo import RepoError, RepoIdentity, discover
@@ -813,7 +814,11 @@ def _run_links(
 
 
 def _installed_version(provider: str, home: Path, environ: Mapping[str, str]) -> str | None:
-    return probe(provider, executable=executable_for(provider, home), environ=environ).version
+    return probe(
+        provider,
+        executable=executable_for(provider, home),
+        environ=probe_environment(provider, home, environ),
+    ).version
 
 
 def _check_isolation(plan: Plan) -> None:
