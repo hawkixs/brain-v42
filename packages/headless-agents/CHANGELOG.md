@@ -18,18 +18,58 @@ commit that shipped it — deliberately outside the `v*` pattern, which names br
 version and drives its release workflow. Pin it:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.1#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.2#subdirectory=packages/headless-agents"
 ```
 
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
-## Unreleased — 0.5.2, lot 4b: `ha providers --update`
+## 0.5.2 — 2026-09-27 (tag `headless-agents-v0.5.2` after merge)
 
-One operator command updates the provider CLIs, re-proves what changed and reports each
-rail's resulting mode (spec §3.4, G4), without ever weakening the unproven path.
+Parallel runs across sessions, and one operator command to update the provider CLIs
+(spec `2026-09-27-headless-agents-0.5.2-parallel-runs-design.md`; Brain tickets
+`e454b011`, `0b3fcdbf`; lot 1b learnings `a5460289`, `80934778`). **After installing:
+`ha prove`** -- the codex isolation source moved (lot 1b), so isolation is re-recorded
+under 0.5.2 (lot 1b operator decision 1).
 
 ### Added
+
+- `--wait SECONDS` (`ha run`, `ha clean`): a bounded, explicit admission wait, with a
+  best-effort writer preference (a writer-intent lock, an admission gate).
+- `ha providers`' per-rail proof state (`passed`/`failed`/`missing`/`stale`/`unreadable`)
+  and the resulting mode (`refused`/`writes serialised`/`parallel`), visible before any
+  run fails.
+- `ha prove [RAIL...] [--isolation] [--confinement] [--stale] [--keep] [--json]`: proofs
+  recorded by the installed package itself, no repository checkout needed.
+- `ha providers --update [RAIL...] [--check] [--no-prove] [--wait SECONDS]`: updates the
+  CLI rails with their vendors' own updaters and re-proves what changed.
+- `ha models [--provider NAME] [--json] [--refresh]`: the operator's model catalogue
+  against what each provider really offers right now (lot 6, independent of lots 1-5).
+- Lot 5's own: the G1 live concurrency test (two confined codex writes and a read run
+  proven in flight together), a README-synopsis test pinning the CLI docs to the parser,
+  and this release-metadata test.
+
+#### lot 6 — model catalogue and live drift
+
+- **`ha models [--provider NAME] [--json] [--refresh]`.** Validates the operator's own
+  `~/.config/ha/catalog.toml` (or `$XDG_CONFIG_HOME/ha/catalog.toml` when that variable is
+  absolute) against the frozen schema v1 that red-skills owns, naming the offending key on
+  every departure from it -- a warning for an unknown field or a non-table top-level value,
+  an error for everything else, including an effort outside its provider's rule.
+- **Bounded live-list queries** for the three rails that have one: `opencode models`,
+  `agy models`, and OpenRouter's `GET /api/v1/models`. Every other rail is reported
+  `catalogue-only`. A query that times out or answers unreadable output is reported, never
+  fatal, and never taken to mean a catalogued model disappeared.
+- **Usage and drift reporting.** The report merges the catalogue with `roles.toml`'s
+  declared links and `models.toml`'s defaults; `--refresh` adds `live_uncatalogued`,
+  `catalogued_gone`, `unknown_role_model` and `stale_verification` (30 days) without
+  changing anything. The JSON form always carries the drift.
+- **Read-only contract.** `ha` never rewrites `catalog.toml`; the data is the operator's,
+  never the package's.
+
+
+#### lot 4b — `ha providers --update`
+
 - **`ha providers [RAIL...] --update [--check] [--no-prove] [--wait SECONDS] [--json]`.**
   Each CLI rail runs its vendor's own updater, as measured on 2026-09-27 from each
   `--help` (no updater was run to measure them):
@@ -84,14 +124,9 @@ in `updaters.py`, outside the fingerprinted `providers/*.py`, so no installed pr
 stale because of this lot. Known wording gap: while an update holds the global lock, a
 run without `--wait` is refused with "an unconfined write is running".
 
-## Unreleased — 0.5.2, lot 4a: `ha prove`
 
-Proofs used to be recorded only by the live test suite, from a repository checkout. A
-CLI that updated itself (Claude Code 2.1.282 to 2.1.283, spec Q2) left its rail refused
-until someone ran pytest in a checkout (spec §3.4). The harness now ships in the package
-(`headless_agents.prove`), and the installed `ha` records the proofs itself.
+#### lot 4a — `ha prove`, added
 
-### Added
 - **`ha prove [RAIL...] [--isolation] [--confinement] [--stale] [--keep] [--json]`.**
   Proves the named CLI rails (default: all four) for the named kinds (default: both) on
   the version installed now, one proof after another. It records each `passed` or
@@ -124,52 +159,8 @@ until someone ran pytest in a checkout (spec §3.4). The harness now ships in th
 - **Each proof probes the rail's version before and after its runs.** A CLI that updated
   itself mid-proof records nothing.
 
-### Changed
-- **An isolation run that fails without a leak is now `inconclusive` and records
-  nothing.** It used to record `failed`, which switched a proven rail off on a quota
-  error, a retired model or a network failure. A leak (a marker in the answer, a
-  sentinel created) still records `failed`, even from a run that then failed.
-- **Every re-prove hint names `ha prove`** instead of a `pytest -m live` line:
-  - `ha providers`' `reprove`, in text and JSON, is `ha prove RAIL --isolation`,
-    `ha prove RAIL --confinement` or `ha prove RAIL`;
-  - the engine's isolation refusal now ends with
-    `Record a proof with: ha prove RAIL --isolation; after a CLI update: ha prove --stale`.
 
-The record format is unchanged: proofs the live tests recorded before this lot stay
-valid. The live tests (`tests/live/headless_agents/test_proofs_live.py`, same test ids)
-now record through the same code. No isolation source moved (`providers/*.py` and
-`sandbox.py` are untouched), so no installed proof goes stale because of this lot.
-
-## Unreleased — 0.5.2, lot 2: proof state visible
-
-`ha providers` used to say only whether a rail's executable was found: an isolation
-proof going stale silently -- a CLI updating itself overnight, with the proof still
-naming the old version -- refused every run on that rail with nothing having said so
-beforehand (spec §3.2, §4, Q2).
-
-### Added
-- **Five proof statuses, read ahead of a run**: `passed`, `failed`, `missing`, `stale`
-  (always naming what the proof was recorded for -- another version, or, at the same
-  version, the isolation source having moved under it) and `unreadable` (a record
-  present but unparsable, naming another rail, or shaped wrong -- distinct from
-  `missing`, since an operator fixes the two differently), per rail and per proof kind
-  (`headless_agents.proof_state`).
-- **Three modes**, computed only from `proofs.isolation_ok()` and `proofs.confinement()`
-  -- the exact functions the engine itself calls before a run, never re-derived from the
-  status above: `refused`, `writes serialised`, `parallel`.
-- **`ha providers` and `ha providers --json` show them.** A CLI rail's row gains
-  `isolation`, `confinement`, `mode` and `reprove` (the one command that would re-prove
-  whatever is not passed, or `null`/absent once everything already is); an HTTP
-  provider's row gets the same four keys as `null`. Additive only: every existing key
-  keeps its value and its meaning.
-- **One source for the re-prove command.** The engine's own isolation refusal now names
-  `proof_state.reprove_command()`'s output instead of building its own string, so the
-  refusal and `ha providers` can never name a different command for the same rail.
-
-No gate, lock, record format or exit code changed: `ha providers` still exits 0, and
-`proofs.py` and `providers/*.py` are untouched (lot 1b's territory, PR #237 in flight).
-
-## Unreleased — 0.5.2, lot 3: bounded admission waits
+#### lot 3 — bounded admission waits
 
 - `ha run … --wait SECONDS` uses one explicit, monotonic admission deadline
   for the global, lineage registry, and lineage locks; expiry returns exit 2
@@ -192,35 +183,64 @@ No gate, lock, record format or exit code changed: `ha providers` still exits 0,
 - Runs without `--wait` retain the existing 10-second lock bounds. Provider
   `--timeout`, proof requirements, and exit-code meanings are unchanged.
 
-## Unreleased — 0.5.2, lot 6: model catalogue and live drift
 
-Lot 6 of the parallel-runs design (§3.6): a native `ha models`, independent of lots 1-5
-and brought forward at the operator's request so the ha-delegate skill needs no interim
-script.
+#### lot 2 — proof state visible
 
-### Added
-- **`ha models [--provider NAME] [--json] [--refresh]`.** Validates the operator's own
-  `~/.config/ha/catalog.toml` (or `$XDG_CONFIG_HOME/ha/catalog.toml` when that variable is
-  absolute) against the frozen schema v1 that red-skills owns, naming the offending key on
-  every departure from it -- a warning for an unknown field or a non-table top-level value,
-  an error for everything else, including an effort outside its provider's rule.
-- **Bounded live-list queries** for the three rails that have one: `opencode models`,
-  `agy models`, and OpenRouter's `GET /api/v1/models`. Every other rail is reported
-  `catalogue-only`. A query that times out or answers unreadable output is reported, never
-  fatal, and never taken to mean a catalogued model disappeared.
-- **Usage and drift reporting.** The report merges the catalogue with `roles.toml`'s
-  declared links and `models.toml`'s defaults; `--refresh` adds `live_uncatalogued`,
-  `catalogued_gone`, `unknown_role_model` and `stale_verification` (30 days) without
-  changing anything. The JSON form always carries the drift.
-- **Read-only contract.** `ha` never rewrites `catalog.toml`; the data is the operator's,
-  never the package's.
+- **Five proof statuses, read ahead of a run**: `passed`, `failed`, `missing`, `stale`
+  (always naming what the proof was recorded for -- another version, or, at the same
+  version, the isolation source having moved under it) and `unreadable` (a record
+  present but unparsable, naming another rail, or shaped wrong -- distinct from
+  `missing`, since an operator fixes the two differently), per rail and per proof kind
+  (`headless_agents.proof_state`).
+- **Three modes**, computed only from `proofs.isolation_ok()` and `proofs.confinement()`
+  -- the exact functions the engine itself calls before a run, never re-derived from the
+  status above: `refused`, `writes serialised`, `parallel`.
+- **`ha providers` and `ha providers --json` show them.** A CLI rail's row gains
+  `isolation`, `confinement`, `mode` and `reprove` (the one command that would re-prove
+  whatever is not passed, or `null`/absent once everything already is); an HTTP
+  provider's row gets the same four keys as `null`. Additive only: every existing key
+  keeps its value and its meaning.
+- **One source for the re-prove command.** The engine's own isolation refusal now names
+  `proof_state.reprove_command()`'s output instead of building its own string, so the
+  refusal and `ha providers` can never name a different command for the same rail.
 
-## Unreleased — 0.5.2, lot 1: a sound codex confinement proof
+No gate, lock, record format or exit code changed: `ha providers` still exits 0, and
+`proofs.py` and `providers/*.py` are untouched (lot 1b's territory, PR #237 in flight).
 
-Ticket e454b011: the codex confinement proof never concluded, and the reader behind it
-was lenient. Fixed before any new confinement proof is trusted (spec §3.1).
+
+### Changed
+
+- The engine's isolation refusal, and every `ha providers` re-prove hint, now names
+  `ha prove` instead of a `pytest -m live` invocation (lot 4a).
+- `ha providers --json`'s per-rail row gained `isolation`, `confinement`, `mode` and
+  `reprove` -- additive only, every existing key keeps its value and its meaning (lot 2).
+- The lock order gained a writer-intent lock and an admission gate, both taken ahead of
+  the global lock (lot 3): lifecycle, writer intent, the admission gate, the global
+  lock, the lineage registry, lineage locks ascending.
+
+#### lot 4a — `ha prove`, changed
+
+- **An isolation run that fails without a leak is now `inconclusive` and records
+  nothing.** It used to record `failed`, which switched a proven rail off on a quota
+  error, a retired model or a network failure. A leak (a marker in the answer, a
+  sentinel created) still records `failed`, even from a run that then failed.
+- **Every re-prove hint names `ha prove`** instead of a `pytest -m live` line:
+  - `ha providers`' `reprove`, in text and JSON, is `ha prove RAIL --isolation`,
+    `ha prove RAIL --confinement` or `ha prove RAIL`;
+  - the engine's isolation refusal now ends with
+    `Record a proof with: ha prove RAIL --isolation; after a CLI update: ha prove --stale`.
+
+The record format is unchanged: proofs the live tests recorded before this lot stay
+valid. The live tests (`tests/live/headless_agents/test_proofs_live.py`, same test ids)
+now record through the same code. No isolation source moved (`providers/*.py` and
+`sandbox.py` are untouched), so no installed proof goes stale because of this lot.
+
 
 ### Fixed
+
+Ticket `e454b011`: the codex confinement proof never concluded, and the reader behind it
+was lenient. Fixed before any new confinement proof was trusted (spec §3.1).
+
 - **The live confinement probe runs one outside target per provider run**, each with its
   own prescribed shell command and its own nonce, plus a workspace control write so a run
   that could not write at all is not mistaken for confinement.
@@ -248,7 +268,8 @@ was lenient. Fixed before any new confinement proof is trusted (spec §3.1).
 The proof record format is unchanged (`confinement: {passed, date}`), so an installed
 headless-agents 0.5.1 honours a proof recorded by this harness.
 
-### lot 1b — a conclusive codex confinement proof from the kept session rollout
+
+#### lot 1b — a conclusive codex confinement proof from the kept session rollout
 
 Learnings a5460289 and 80934778: `codex exec --json` never logs a sandbox-refused
 command — the refusal exists only in the session's own rollout, as a `custom_tool_call`
@@ -343,7 +364,8 @@ Review round 3, before merge:
 No contract surface change; production argv unchanged; the proof record format is
 unchanged (`confinement: {passed, date}`).
 
-### Fixed — write-run robustness (ticket 0b3fcdbf)
+
+#### Fixed — write-run robustness (ticket 0b3fcdbf)
 
 A codex write run whose agent ran the test suite (run 20260927T014150-f71e5aaa, ha 0.5.1)
 committed pytest's temporary tree with the task's files, crashed on the diff, and
@@ -412,6 +434,14 @@ left its unconfined intent behind for the operator quarantine to find.
   that dies there, an interruption, a git found tampered, or a publication that fails
   in turn still leaves the intent, and the quarantine of a genuinely stale one is
   unchanged.
+
+
+### Unchanged
+
+- `RunSpec`, `RunResult`/`result.json` schema 1, the `AgentProvider` protocol, the
+  registry facade, exit-code meanings, and the proof record format
+  (`confinement: {passed, date}`, `isolation: {passed, date, fingerprint?}`) are all
+  unchanged by every lot of 0.5.2: nothing above is a breaking entry.
 
 ## 0.5.1 — 2026-09-26 (tag `headless-agents-v0.5.1` after merge)
 
