@@ -101,6 +101,76 @@ was lenient. Fixed before any new confinement proof is trusted (spec §3.1).
 The proof record format is unchanged (`confinement: {passed, date}`), so an installed
 headless-agents 0.5.1 honours a proof recorded by this harness.
 
+### Fixed — write-run robustness (ticket 0b3fcdbf)
+
+A codex write run whose agent ran the test suite (run 20260927T014150-f71e5aaa, ha 0.5.1)
+committed pytest's temporary tree with the task's files, crashed on the diff, and
+left its unconfined intent behind for the operator quarantine to find.
+
+- **A codex write run's sandbox gets one writable temp root outside the worktree.**
+  `/tmp` and the operator's `$TMPDIR` were closed and nothing replaced them, so Python's
+  `tempfile` fell back to the current directory -- the worktree -- and a sandboxed
+  `pytest` created `pytest-of-<user>/` there, which the engine's `git add -A` swept
+  into the commit. The per-run scratch directory (fresh, empty, outside the workspace,
+  removed after the run) is now declared as `sandbox_workspace_write.writable_roots`,
+  and `TMPDIR`, `TEMP` and `TMP` all name it; `/tmp` and the operator's `$TMPDIR` stay
+  closed.
+- **The engine's commit leaves tool artifacts out, on every write rail, and names
+  them.** A writable temp dir does not stop a project's own relative `--basetemp`, a
+  cache directory pytest did not create (so it wrote no `.gitignore` into it) or
+  bytecode from landing in the worktree, and `git add -A` committed them. The engine's
+  commit, its "anything changed?" check and a continuation's "clean?" check now leave
+  out UNTRACKED tool output only -- under `write_flow.TOOL_ARTIFACT_DIRS`
+  (`__pycache__/`, `.pytest_cache/`, `pytest-of-*/`), with
+  `write_flow.TOOL_ARTIFACT_SUFFIXES` (`.pyc`, `.pyo`), and the entries of every
+  pytest temp root recognised by the layout pytest writes, whatever `--basetemp` named
+  it: a `<prefix>current` symlink naming a sibling `<prefix><N>` directory. Only the
+  symlink and those numbered directories are left out, and only when each is new (a
+  real directory git tracks nothing under) -- never the directory holding them, so a
+  forged layout hides neither a tracked edit nor a file beside it (review of #236). A
+  tracked modification or deletion is always the task's and always committed, whatever
+  its name (review of #236: a deleted tracked `.pyc` fixture read as no change). The
+  engine reads the worktree once (`git status -z`), stages every tracked change
+  (`git add -u`) and exactly the untracked paths it kept, literally, NUL-separated on
+  stdin. What is left out stays in the worktree and is named on stderr; a run whose
+  agent only ran the tests changes nothing (exit `5`).
+- **Git output that is not UTF-8 no longer crashes the engine, and what is recorded
+  keeps its bytes.** The diff of a file that is not UTF-8 (`'utf-8' codec can't decode
+  byte 0xff`) and a hook printing such bytes both crashed the run after its commit.
+  `gitops.git` now decodes its output with undecodable bytes replaced, and
+  `binary=True` returns the bytes untouched: `change.patch` and `commit.log` are
+  written as git printed them, so the patch still rebuilds the commit.
+- **A review reads the diff the commit holds, or is refused.** Its `git diff --binary`
+  went through the text path, which also turns `\r\n` into `\n`: the reviewers and
+  the judge read, and `change.patch` kept, content the reviewed commit does not hold.
+  The diff is now read as bytes, written to `change.patch` as is, and handed to the
+  panel decoded strictly; a diff holding bytes that are not UTF-8 is refused before
+  any reviewer runs, naming the file. The range's `git log` is split on its own
+  separators, so a subject holding `\r` no longer crashes the attribution, and the
+  tripwire reads `core.hooksPath` as bytes decoded like a path, so a value that is not
+  UTF-8 is watched exactly instead of crashing the arming.
+- **A forged reflog subject names no commit.** The branch reflog and the `HEAD` log an
+  unconfined write reads were decoded with replacement and split with
+  `str.splitlines`, so a subject holding `\r` -- which git never writes, but an agent or
+  a hook can -- became an entry of its own, and the commit id inside it was attributed:
+  an unrelated commit could be recorded as a hook's or the agent's. Both logs are now
+  read as bytes and split on git's own separators (`-z` for `git reflog`, `\n` for the
+  file); an entry whose id is not a commit id (40 or 64 lowercase hex) is never
+  attributed -- the branch reflog then fails the attribution, the `HEAD` log reads as
+  rewritten.
+- **A failure after the engine's commit finalises the run instead of leaving it for the
+  operator quarantine.** An exception raised by the live engine from its commit through
+  publication left `run.json` at `running`, the pending write and the unconfined intent
+  behind, so the next run found the operator quarantined (`stale_unconfined_intent`). The
+  write is now published as `failed` with its lineage compromised (`engine_error`),
+  `run.json` is written and the intent removed -- only once the lineage holds no pending
+  write. Every commit is attributed first: the ones the commit step named, or, when it
+  failed before naming them, the ones recovered from the branch, `HEAD` and the branch
+  reflog; a commit no one can name keeps the pending write and the intent. A process
+  that dies there, an interruption, a git found tampered, or a publication that fails
+  in turn still leaves the intent, and the quarantine of a genuinely stale one is
+  unchanged.
+
 ## 0.5.1 — 2026-09-26 (tag `headless-agents-v0.5.1` after merge)
 
 Ticket ha-051-agy: headless-agents 0.5.0 refused the agy rail outright, because agy

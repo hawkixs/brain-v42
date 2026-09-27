@@ -340,6 +340,11 @@ class TestComposeHealthcheckContract:
         return command[-1]
 
     @staticmethod
+    def _healthcheck_condition() -> str:
+        script = TestComposeHealthcheckContract._healthcheck_script()
+        return script.split("; assert ", 1)[1]
+
+    @staticmethod
     def _healthcheck_request() -> tuple[str, dict[str, Any]]:
         import ast
         import re
@@ -366,6 +371,17 @@ class TestComposeHealthcheckContract:
 
         assert "math.isfinite(scores[0])" in script
         assert "len(scores) == 1" in script
+
+    def test_the_pinned_predicate_rejects_a_boolean_score(self) -> None:
+        """Ticket d8ac2273: JSON has no boolean/number distinction on the Python
+        side — ``{"scores": [true]}`` decodes to ``True``, and ``bool`` is an
+        ``int`` subclass, so ``math.isfinite(True)`` is ``True``. Evaluated
+        before a type check that excludes ``bool``, the pinned predicate would
+        report a wedged rerank returning a boolean score as healthy.
+        """
+        condition = self._healthcheck_condition()
+
+        assert eval(condition, {"math": math}, {"scores": [True]}) is False
 
     @pytest.mark.asyncio
     async def test_the_real_healthcheck_stays_green_in_required_mode(self) -> None:

@@ -32,13 +32,21 @@ array is closed -- no later header may extend it -- while a table opened
 by a ``[header]`` or by dotted keys, and an array of tables, both accept
 a later element. :func:`_reject_non_inline_cost` and
 :func:`_reject_non_inline_tasks` probe exactly that: they append one more
-header addressing the same field (through a key that no real catalogue
-uses, so it never collides) and re-parse. ``TOMLDecodeError`` means the
-field refused the extension -- it was inline, the frozen shape -- and a
-successful parse means it accepted one, so it was not. The header segments
-themselves are also encoded through :func:`_toml_basic_string`, never
-string-formatted directly: a provider or model name is not filtered
-anywhere upstream and can itself carry a quote, a backslash or a dot.
+header addressing the same field and re-parse. ``TOMLDecodeError`` means
+the field refused the extension -- it was inline, the frozen shape -- and
+a successful parse means it accepted one, so it was not. For ``cost`` the
+probe targets a sub-key that must itself be absent from the field's own
+parsed content (:func:`_unused_probe_key`): a catalogue can declare
+``_INLINE_PROBE_KEY`` itself, through an escaped TOML key, to collide with
+a *fixed* probe key and make the appended header fail for the wrong reason
+-- key-already-defined, not inline -- misreading a non-inline ``cost`` as
+inline (ticket 115f68a3). ``tasks`` needs no equivalent care: its probe is
+an anonymous ``[[...]]`` array-of-tables element with no key of its own,
+and a real array of tables accepts one unconditionally, whatever it
+already contains. The header segments themselves are also encoded through
+:func:`_toml_basic_string`, never string-formatted directly: a provider or
+model name is not filtered anywhere upstream and can itself carry a quote,
+a backslash or a dot.
 """
 
 from __future__ import annotations
@@ -178,6 +186,22 @@ def _toml_basic_string(value: str) -> str:
     return "".join(out)
 
 
+def _unused_probe_key(cost: dict[str, object]) -> str:
+    """A probe key absent from ``cost``'s own parsed keys (ticket 115f68a3):
+    a catalogue that already declares ``_INLINE_PROBE_KEY`` under ``cost``,
+    through an escaped TOML key, would make the fixed probe header collide
+    with that existing key instead of opening a fresh one -- a
+    ``TOMLDecodeError`` for "already defined", not for "inline" -- and a
+    non-inline ``cost`` table would be misread as the frozen shape. Try
+    successive suffixes until one is not already a key of this table."""
+    key = _INLINE_PROBE_KEY
+    suffix = 0
+    while key in cost:
+        suffix += 1
+        key = f"{_INLINE_PROBE_KEY}-{suffix}"
+    return key
+
+
 def _accepts_extension(text: str, probe_header: str) -> bool:
     """Whether re-parsing ``text`` with ``probe_header`` appended still
     parses: an inline table or a statically-declared array is immutable
@@ -191,10 +215,26 @@ def _accepts_extension(text: str, probe_header: str) -> bool:
     return True
 
 
-def _reject_non_inline_cost(text: str, provider: str, model: str) -> None:
+def _reject_inline_model(text: str, provider: str, model: str, table: dict[str, object]) -> None:
+    """The model must be a ``[provider."model"]`` table, never an inline one
+    (review of the 115f68a3 fix): inside an inline model, or an inline
+    provider, the field probes below fail because an ANCESTOR is immutable,
+    and a non-inline ``cost.kind = ...`` written there would be misread as
+    the frozen inline shape. So the model table itself must accept an
+    extension first, through a key absent from its own parsed content."""
     provider_key = _toml_basic_string(provider)
     model_key = _toml_basic_string(model)
-    probe_key = _toml_basic_string(_INLINE_PROBE_KEY)
+    probe_key = _toml_basic_string(_unused_probe_key(table))
+    if not _accepts_extension(text, f"[{provider_key}.{model_key}.{probe_key}]"):
+        raise CatalogueError(
+            f'{provider}.{model}: must be a [{provider}."{model}"] table, not an inline table'
+        )
+
+
+def _reject_non_inline_cost(text: str, provider: str, model: str, cost: dict[str, object]) -> None:
+    provider_key = _toml_basic_string(provider)
+    model_key = _toml_basic_string(model)
+    probe_key = _toml_basic_string(_unused_probe_key(cost))
     header = f"[{provider_key}.{model_key}.cost.{probe_key}]"
     if _accepts_extension(text, header):
         raise CatalogueError(
@@ -285,6 +325,7 @@ def _model_entry(
     if not isinstance(table, dict):
         raise CatalogueError(f"{prefix}: must be a table")
 
+    _reject_inline_model(text, provider, model, table)
     purpose = _string(_require(table, "purpose", prefix), f"{prefix}.purpose", nonempty=True)
 
     tasks_key = f"{prefix}.tasks"
@@ -301,7 +342,7 @@ def _model_entry(
 
     raw_cost = _require(table, "cost", prefix)
     if isinstance(raw_cost, dict):
-        _reject_non_inline_cost(text, provider, model)
+        _reject_non_inline_cost(text, provider, model, raw_cost)
     cost_kind, windows, cost_note, cost_warnings = _cost(raw_cost, f"{prefix}.cost")
     warnings.extend(cost_warnings)
 

@@ -310,6 +310,20 @@ def test_non_string_effort_names_its_key(tmp_path: Path) -> None:
         pytest.param(
             'schema = 1\n[codex."gpt-6-sol"]\n'
             'purpose = "Review and build."\n'
+            'tasks = [{kind = "design-review", effort = "high"}, {kind = "build"}]\n'
+            'pitfalls = ["Check findings."]\n'
+            "verified_at = 2026-09-27\n"
+            'source = "Brain decision ea4e57a1"\n'
+            '\n[codex."gpt-6-sol".cost]\n'
+            'kind = "subscription"\n'
+            'windows = ["5h", "weekly"]\n'
+            '"\\u0000ha-inline-probe" = true\n',
+            "codex.gpt-6-sol.cost",
+            id="cost-standalone-table-pre-declaring-the-probe-key-is-still-rejected",
+        ),
+        pytest.param(
+            'schema = 1\n[codex."gpt-6-sol"]\n'
+            'purpose = "Review and build."\n'
             'cost = {kind = "subscription", windows = ["5h", "weekly"]}\n'
             'pitfalls = ["Check findings."]\n'
             "verified_at = 2026-09-27\n"
@@ -341,6 +355,20 @@ def test_non_string_effort_names_its_key(tmp_path: Path) -> None:
             'source = "Brain decision ea4e57a1"\n',
             "codex.gpt.name.cost",
             id="cost-dotted-keys-inside-a-dotted-quoted-model-id",
+        ),
+        pytest.param(
+            "schema = 1\n[codex]\n"
+            '"gpt-6-sol" = {purpose = "Review.", tasks = [{kind = "build"}], '
+            'cost.kind = "subscription", verified_at = 2026-09-27, source = "bench"}\n',
+            "codex.gpt-6-sol",
+            id="model-declared-as-an-inline-table-hides-dotted-cost",
+        ),
+        pytest.param(
+            "schema = 1\n"
+            'codex = {"gpt-6-sol" = {purpose = "Review.", tasks = [{kind = "build"}], '
+            'cost.kind = "subscription", verified_at = 2026-09-27, source = "bench"}}\n',
+            "codex.gpt-6-sol",
+            id="provider-declared-as-an-inline-table-hides-dotted-cost",
         ),
         pytest.param(
             GOOD.replace('kind = "subscription"', 'kind = "future"'),
