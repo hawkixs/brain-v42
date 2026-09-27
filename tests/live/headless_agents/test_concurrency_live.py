@@ -21,12 +21,18 @@ learning 940ab2d8) -- and (4) the ``ha`` under test must report codex's mode as
 turns out to be bypassed, FAILS instead (see the precondition checks below): every
 uncertainty after launch is a failure, never a skip or a pass.
 
-DEVIATION FROM THE PLAN, FLAGGED HERE (2026-09-27): the plan names
-``headless_agents.prove.MODEL["codex"]`` (lot 4a) as the model source. This branch
-merges lot 2 only -- lot 4a is not on it, and Part A tasks 1-2 are scoped to lot 2 by the
-plan's own prerequisites table. ``_codex_model()`` below imports ``headless_agents.prove``
-opportunistically and falls back to requiring ``HA_LIVE_CODEX_MODEL``, skipping with a
-named reason rather than copying a model string that could drift from the real table.
+CORRECTED FROM THE PLAN (2026-09-27, host rehearsal finding): the plan named
+``headless_agents.prove.MODEL["codex"]`` as the model source, assumed before lot 4a
+merged. Measured once lot 4a actually landed (PR #242): the package hard-codes no model
+table at all -- ``ha prove`` resolves each rail's model through ``cli._prove_models``,
+i.e. the operator's own ``models.toml`` (``cli_models.load_models``); only
+``tests/live/headless_agents/test_proofs_live.py`` keeps a test-owned ``MODEL`` dict, for
+driving ``prove.prove()`` directly, which is a different call path from the real ``ha``
+runs this file launches. ``_codex_model()`` below therefore reuses ``cli_models.load_models``
+and ``config_paths.config_file`` -- the exact functions ``_prove_models`` is built from --
+resolving from the operator's real ``models.toml``, never a copied or hard-coded model
+string. ``HA_LIVE_CODEX_MODEL`` always overrides either way, and an import failure (this
+resolution surface already moved once, mid-lot) degrades to a clean skip, never a crash.
 
 WHAT STAYS THROWAWAY. ``XDG_CONFIG_HOME`` and ``XDG_STATE_HOME`` point at a fresh root
 under ``~/.cache/ha-live/concurrency-<uuid8>/`` for every call in this file (never the
@@ -106,28 +112,32 @@ def _write_task(lane: str, nonce: str) -> str:
     )
 
 
-def _codex_model() -> str:
-    """The model every codex run in this test uses.
+def _codex_model() -> str | None:
+    """The codex model this test's runs use, resolved exactly as ``ha prove`` resolves
+    it (``cli._prove_models``): from the operator's real ``models.toml``, via the same
+    ``cli_models.load_models`` / ``config_paths.config_file`` calls, never copied or
+    hard-coded here. ``HA_LIVE_CODEX_MODEL`` always overrides either way.
 
-    The plan's authoritative source is ``headless_agents.prove.MODEL["codex"]`` (lot
-    4a); this branch merges lot 2 only (see the module docstring's DEVIATION note), so
-    that module may not exist. ``HA_LIVE_CODEX_MODEL`` always overrides either way, and
-    nothing here copies a literal model string that could drift from the real table.
+    ``None`` when no model can be resolved -- an absent declaration, an unreadable
+    config path, or this resolution surface failing to import (it already moved once,
+    mid-lot, when lot 4a landed and the plan's assumed ``headless_agents.prove.MODEL``
+    turned out not to exist). The caller skips on ``None``; this function never raises,
+    never fails, and never fabricates a model.
     """
     override = os.environ.get("HA_LIVE_CODEX_MODEL")
     if override:
         return override
     try:
-        from headless_agents.prove import MODEL  # noqa: PLC0415
-    except ModuleNotFoundError:
-        pytest.skip(
-            "codex model unknown: headless_agents.prove is not on this branch yet "
-            "(lot 4a not merged) and HA_LIVE_CODEX_MODEL is not set"
-        )
-    model = MODEL.get("codex")
-    if not model:
-        pytest.skip("codex model unknown: headless_agents.prove.MODEL has no 'codex' entry")
-    return model
+        from headless_agents.cli_models import MODELS_FILE_NAME, load_models  # noqa: PLC0415
+        from headless_agents.config_paths import ConfigPathError, config_file  # noqa: PLC0415
+    except ImportError:
+        return None
+    try:
+        found = config_file(MODELS_FILE_NAME, os.environ, home=REAL_HOME)
+    except ConfigPathError:
+        return None
+    declared = load_models(found) if found is not None else {}
+    return declared.get("codex") or None
 
 
 def _resolve_ha() -> Path:
@@ -367,6 +377,14 @@ def test_two_confined_codex_writes_and_a_read_are_in_flight_together() -> None:
         pytest.skip("codex unavailable here: not found on PATH")
 
     model = _codex_model()
+    if model is None:
+        from headless_agents.cli_models import default_models_path  # noqa: PLC0415
+
+        path = default_models_path(os.environ, home=REAL_HOME)
+        pytest.skip(
+            f'codex model unknown: declare it in {path} (codex = "MODEL", the same '
+            "resolution `ha prove` uses), or set HA_LIVE_CODEX_MODEL"
+        )
 
     root = LIVE_ROOT / f"concurrency-{uuid.uuid4().hex[:8]}"
     root.mkdir(parents=True)
