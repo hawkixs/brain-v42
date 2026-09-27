@@ -446,6 +446,68 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   opencode = "opencode-go/glm-5.3-flash"
   mistral = "mistral-small-latest"
   ```
+- **Model catalogue and live drift** (`ha models [--provider NAME] [--json] [--refresh]`):
+  the catalogue is the operator's own file, never ha's -- `~/.config/ha/catalog.toml`, or
+  `$XDG_CONFIG_HOME/ha/catalog.toml` when that variable is absolute (a relative value falls
+  back to the default path, like every other file `config_paths` resolves). `ha` validates
+  it against a frozen schema v1 and never rewrites it:
+
+  ```toml
+  schema = 1
+
+  [codex."gpt-6-sol"]
+  purpose = "Judgment: reviews of specs, plans and code, and builds that need reasoning."
+  tasks = [{kind = "design-review", effort = "high"}, {kind = "build-deep", effort = "high"}]
+  cost = {kind = "subscription", windows = ["5h", "weekly"]}
+  pitfalls = ["A codex write is unconfined in ha 0.5.1: it serialises every ha run."]
+  verified_at = 2026-09-27
+  source = "red-skills decision: codex model and effort tiering for ha runs"
+
+  [openrouter."deepseek/deepseek-v4.1-flash"]
+  purpose = "Cheap wide reading and drafts; every finding and number verified by hand."
+  tasks = [{kind = "bulk-read"}, {kind = "draft"}]
+  cost = {kind = "per_token", note = "0.004 to 0.35 USD per task"}
+  verified_at = 2026-09-27
+  source = "Brain decision ea4e57a1"
+  ```
+
+  A top-level key is either `schema` (the integer `1`, required) or a provider table named
+  after one of the eight rails; any other table-valued key is an unknown-provider error,
+  and any non-table top-level value is a warning (named, and ignored) whether or not its
+  name matches a provider. Inside a model table, an unknown field in the model, in a
+  `tasks` entry or in `cost` is likewise a warning naming the key; every other departure
+  (a missing field, a wrong type, a value outside a closed list, a duplicate task kind, a
+  model value that is not a table) is an error naming the key. `tasks[].effort` follows a
+  per-provider rule: optional for `codex` (one of `none`, `minimal`, `low`, `medium`,
+  `high`, `xhigh`, `max`, `ultra`); optional and passed through as-is for `opencode`'s own
+  `--variant` (ha performs no model-specific variant check); forbidden for `agy`, `claude`,
+  `openrouter`, `mistral`, `nvidia` and `openai-compat`, an error even when the value would
+  otherwise be valid.
+
+  `ha models` merges the catalogue with three sources per provider: the live list, where
+  the provider has one (`opencode models`, `agy models`, and OpenRouter's own
+  `GET /api/v1/models` with the key `keys.toml` or the environment names); `roles.toml`'s
+  declared links; and `models.toml`'s defaults. Only `opencode`, `agy` and `openrouter`
+  have a live list; the other five rails (`claude`, `codex`, `mistral`, `nvidia`,
+  `openai-compat`) are always reported `catalogue-only` -- this reflects which providers
+  publish one, never a claim that the others have no models. A live query that times out
+  or answers unreadable garbage is reported `unavailable`/`unreadable`, never fatal, and
+  never turns into a claim that a catalogued model has disappeared: that judgement is
+  only ever drawn from a live list that actually answered.
+
+  ```bash
+  ha models                                # every provider, catalogue vs. declared use
+  ha models --provider opencode --json     # one provider, machine-readable
+  ha models --refresh                      # add drift: uncatalogued, gone, unknown, stale
+  ```
+
+  `--refresh` reports drift without changing anything: a model the live list offers but
+  the catalogue does not know (`live_uncatalogued`), a catalogued model the live list no
+  longer offers (`catalogued_gone`, only ever raised for a provider whose live list
+  answered), a role pointing at a model the catalogue does not know
+  (`unknown_role_model`), and a catalogue entry whose `verified_at` is more than 30 days
+  old (`stale_verification`; exactly 30 days is not stale). The JSON form always includes
+  the drift, whatever `--refresh` is, so a client never has to guess from display mode.
 - **`--mcp NAME`** maps a profile from `~/.config/ha/mcp.toml` (or
   `$XDG_CONFIG_HOME/ha/mcp.toml`) to the run; no MCP unless asked:
 
