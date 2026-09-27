@@ -110,7 +110,37 @@ inconclusive.
   is never consulted.
 - **The live probe never touches the operator's real session store.** `test_confinement`
   now fails the codex run closed to INCONCLUSIVE — not a pass — if any rollout under the
-  operator's real `~/.codex/sessions` was written during the probe.
+  operator's real `~/.codex/sessions` was written during the probe (honouring `$CODEX_HOME`
+  when set, else `~/.codex`).
+
+Review round, before merge:
+- **`session_meta` must be exactly one record, and the first one**; a call's governing
+  `turn_context` must be the LATEST one strictly BEFORE it, never one appended after; every
+  `custom_tool_call` is tracked by `call_id` regardless of its own name or status BEFORE the
+  `exec`/`completed` filter runs, so an id reused by an ineligible call is dropped just like
+  two eligible calls sharing one.
+- **The rollout copy (`_keep_rollout`) and the reader (`_rollout_refusals`) are both
+  TOCTOU-free**: every directory level from the run-owned `CODEX_HOME` down to the rollout
+  file is opened `dir_fd`-relative with `O_NOFOLLOW` (never a symlinked intermediate
+  directory, which `Path.glob` would happily traverse), the size cap is enforced on bytes
+  actually read through the opened descriptor in a loop (a single `os.read` can be short),
+  never on an earlier `stat` a concurrent writer could race past.
+- **`turn_context.sandbox_policy` also accepts ha's own write argv plus a `writable_roots`
+  entry** (ticket 0b3fcdbf / PR #236 adds `sandbox_workspace_write.writable_roots=["<scratch>"]`
+  to every workspace-write run; codex 0.156.0 measured 2026-09-27 to record it verbatim,
+  never replacing the four required keys) — but only when every entry is structurally safe:
+  never the workspace, and never equal to or an ancestor of any probed target. A forged or
+  misrecorded entry naming one of them credits nothing, rather than trust a policy that would
+  make the refusal meaningless.
+- **Documented residual**: `refused_attempts` alone cannot see whether an outside target's
+  own bytes changed — that ordering lives in `confinement_verdict`, which checks bytes
+  UNCONDITIONALLY before any rollout evidence matters (pinned by a dedicated test). A
+  rollout-based PASS still assumes a non-adversarial agent for the narrower claim "this
+  reader's credited refusal is genuine": codex's own `--json` event stream carries no record
+  at all for the code-mode `exec` tool call (allowed or refused) and shares no `call_id` with
+  the rollout, so there is no independent, ha-observed stream to cross-check a credited
+  `call_id` against. An agent that escapes the sandbox, leaves every target untouched and
+  forges its own rollout is not defended against by this module.
 
 No contract surface change; production argv unchanged; the proof record format is
 unchanged (`confinement: {passed, date}`).
