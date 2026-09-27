@@ -22,15 +22,36 @@ it exists at report time:
 - agy keeps nothing, so ``--update`` copies its binary aside first, to
   ``<state>/rollback/agy/<v>/agy`` (lot 4 plan, orchestrator default 3).
 - opencode keeps nothing either, but reinstalls a version: ``opencode upgrade <v>``.
+
+ORDER, and nothing else (:func:`run_updates`): take the global lock EXCLUSIVELY, so no
+run executes while a binary changes (it honours ``--wait``); per rail, probe the
+version, run the updater -- the exact path the probe measured, never a bare name --
+and probe again, even after a failed updater; release the lock; only then prove the
+rails whose version changed, so runs on the unchanged rails resume meanwhile, and runs
+on an updated rail stay refused until its new version is proven: fail-closed by
+construction. ``--check`` runs nothing and takes no lock: no vendor has a dry run
+(measured), so it reports ``unknown``.
 """
 
 from __future__ import annotations
 
+import os
 import re
-from collections.abc import Mapping
+import shutil
+import signal
+import subprocess
+import time
+import uuid
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import ExitStack, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
+
+from . import locks, proof_state, prove
+from .engine import UsageError, executable_for
+from .registry import Probe, probe
+from .state import ensure_dir
 
 
 @dataclass(frozen=True)
@@ -98,11 +119,365 @@ def rollback(
     return None, None
 
 
+# ── run_updates ─────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class UpdateRow:
+    """One rail's update, as ``ha providers --update`` reports it."""
+
+    rail: str
+    old_version: str | None
+    #: Probed after the updater, even a failed one; ``None`` under ``--check``.
+    new_version: str | None
+    #: The argv run -- or that would run, under ``--check``.
+    updater: tuple[str, ...]
+    #: ``None``: no updater ran, or it was killed at its timeout (``note`` says which).
+    exit_code: int | None
+    log: Path | None
+    verdicts: tuple[prove.Verdict, ...]
+    #: The mode the engine leaves the rail in now (``proof_state.rail_state``).
+    mode: str
+    rollback_path: Path | None
+    rollback_command: str | None
+    note: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "rail": self.rail,
+            "old_version": self.old_version,
+            "new_version": self.new_version,
+            "updater": list(self.updater),
+            "exit_code": self.exit_code,
+            "log": None if self.log is None else str(self.log),
+            "verdicts": [verdict.to_dict() for verdict in self.verdicts],
+            "mode": self.mode,
+            "rollback_path": None if self.rollback_path is None else str(self.rollback_path),
+            "rollback_command": self.rollback_command,
+            "note": self.note,
+        }
+
+
+@dataclass(frozen=True)
+class _Attempt:
+    rail: str
+    old_version: str | None
+    new_version: str | None
+    updater: tuple[str, ...]
+    exit_code: int | None
+    log: Path | None
+    note: str | None
+    ran: bool
+
+    @property
+    def changed(self) -> bool:
+        return self.new_version is not None and self.new_version != self.old_version
+
+
+def _probe(rail: str, home: Path, environ: Mapping[str, str]) -> Probe:
+    return probe(rail, executable=executable_for(rail, home), environ=environ)
+
+
+def _kill_group(process: subprocess.Popen[bytes]) -> None:
+    """The updater and everything it started: it leads its own process group."""
+    with suppress(ProcessLookupError, PermissionError):
+        os.killpg(process.pid, signal.SIGKILL)
+    with suppress(subprocess.TimeoutExpired):
+        process.wait(timeout=5.0)
+
+
+def _run_updater(
+    argv: tuple[str, ...], log: Path, environ: Mapping[str, str]
+) -> tuple[int | None, str | None]:
+    """The updater's exit code, or ``None`` and why; its output goes to ``log`` (0600)."""
+    ensure_dir(log.parent)
+    descriptor = os.open(
+        log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+    )
+    try:
+        process = subprocess.Popen(  # nosec B603 - the probed path of a declared updater
+            list(argv),
+            stdin=subprocess.DEVNULL,
+            stdout=descriptor,
+            stderr=subprocess.STDOUT,
+            env=dict(environ),
+            start_new_session=True,
+        )
+    except OSError as exc:
+        return None, f"the updater did not start: {exc}"
+    finally:
+        os.close(descriptor)
+    try:
+        return process.wait(timeout=UPDATE_TIMEOUT_SECONDS), None
+    except subprocess.TimeoutExpired:
+        _kill_group(process)
+        return None, f"timed out after {UPDATE_TIMEOUT_SECONDS:g} s: its process group was killed"
+    except BaseException:
+        # Ctrl-C: the updater dies with us, never left running under a released lock.
+        _kill_group(process)
+        raise
+
+
+def _copy_agy_aside(executable: str, version: str | None, state: Path) -> str | None:
+    """Keep the agy binary about to be replaced (orchestrator default 3); why not, or
+    ``None`` once kept. Only the copy of the version being replaced is kept: agy is
+    a 220 MB binary (measured)."""
+    kept = semver(version)
+    if kept is None:
+        return f"no rollback copy: its version {version!r} does not parse"
+    target = agy_copy(state, kept)
+    temporary = target.with_name(f".agy.{os.getpid()}.tmp")
+    try:
+        ensure_dir(target.parent)
+        shutil.copy2(executable, temporary)
+        os.replace(temporary, target)
+    except OSError as exc:
+        with suppress(OSError):
+            os.unlink(temporary)
+        return f"no rollback copy: {exc}"
+    for other in target.parent.parent.iterdir():
+        if other != target.parent:
+            shutil.rmtree(other, ignore_errors=True)
+    return None
+
+
+def _update_one(
+    rail: str,
+    *,
+    logs: Path,
+    state: Path,
+    home: Path,
+    environ: Mapping[str, str],
+    say: Callable[[str], None],
+) -> _Attempt:
+    before = _probe(rail, home, environ)
+    if not before.available:
+        return _Attempt(
+            rail=rail,
+            old_version=None,
+            new_version=None,
+            updater=(),
+            exit_code=None,
+            log=None,
+            note=f"not installed: {before.detail}",
+            ran=False,
+        )
+    argv = (before.detail, *UPDATERS[rail].args)
+    if rail == "agy":
+        refusal = _copy_agy_aside(before.detail, before.version, state)
+        if refusal is not None:
+            return _Attempt(
+                rail=rail,
+                old_version=before.version,
+                new_version=before.version,
+                updater=argv,
+                exit_code=None,
+                log=None,
+                note=f"not updated: {refusal}",
+                ran=False,
+            )
+    say(f"updating {rail} ({before.version or 'version unknown'}): {' '.join(argv)}")
+    log = logs / f"{rail}.log"
+    exit_code, note = _run_updater(argv, log, environ)
+    after = _probe(rail, home, environ)
+    if not after.available:
+        gone = f"unavailable after the update: {after.detail}"
+        note = gone if note is None else f"{note}; {gone}"
+    return _Attempt(
+        rail=rail,
+        old_version=before.version,
+        new_version=after.version if after.available else None,
+        updater=argv,
+        exit_code=exit_code,
+        log=log,
+        note=note,
+        ran=True,
+    )
+
+
+def _update_all(
+    rails: Sequence[str],
+    *,
+    state: Path,
+    home: Path,
+    environ: Mapping[str, str],
+    wait: locks.AdmissionWait,
+    say: Callable[[str], None],
+) -> list[_Attempt]:
+    logs = (
+        state
+        / "updates"
+        / f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{uuid.uuid4().hex[:8]}"
+    )
+    with ExitStack() as held:
+        try:
+            held.enter_context(locks.admit_global(state, exclusive=True, wait=wait))
+        except locks.LockTimeout:
+            if wait.seconds is not None:
+                raise UsageError(
+                    f"--wait {wait.seconds:g} s expired: runs still running; nothing updated"
+                ) from None
+            raise UsageError(
+                "runs still running after the bound: an update waits for none of them; "
+                "nothing updated"
+            ) from None
+        return [
+            _update_one(rail, logs=logs, state=state, home=home, environ=environ, say=say)
+            for rail in rails
+        ]
+
+
+def _prove_changed(
+    changed: Sequence[_Attempt],
+    *,
+    state: Path,
+    home: Path,
+    environ: Mapping[str, str],
+    models: Mapping[str, str],
+    say: Callable[[str], None],
+) -> dict[str, list[prove.Verdict]]:
+    """Prove each changed rail, after the lock is released: isolation, then confinement
+    where it can be proven. Announced before the first provider run."""
+    pairs = [
+        (attempt.rail, kind, attempt.new_version)
+        for attempt in changed
+        for kind in prove.KINDS
+        if not (kind == "confinement" and attempt.rail in proof_state.UNPROVABLE_CONFINEMENT)
+    ]
+    for rail, kind, version in pairs:
+        model = f"model {models[rail]}" if models.get(rail) else f"the model {rail} chooses"
+        say(
+            f"prove {rail} {kind}: {prove.planned_runs(rail, kind)} provider runs on "
+            f"{version} ({model})"
+        )
+    total = sum(prove.planned_runs(rail, kind) for rail, kind, _ in pairs)
+    say(
+        f"proving {len(changed)} rails whose version changed: {total} provider runs; "
+        "this spends provider tokens"
+    )
+    verdicts: dict[str, list[prove.Verdict]] = {}
+    root = prove.proof_root(home)
+    try:
+        for rail, kind, _ in pairs:
+            verdicts.setdefault(rail, []).append(
+                prove.prove(
+                    rail,
+                    kind,
+                    model=models.get(rail, ""),
+                    state=state,
+                    home=home,
+                    environ=environ,
+                    root=root,
+                )
+            )
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    return verdicts
+
+
+def _settled(verdicts: Sequence[prove.Verdict]) -> bool:
+    return all(verdict.outcome == "passed" and verdict.recorded for verdict in verdicts)
+
+
+def run_updates(
+    rails: Sequence[str],
+    *,
+    state: Path,
+    home: Path,
+    environ: Mapping[str, str],
+    wait: locks.AdmissionWait,
+    check: bool,
+    prove_after: bool,
+    models: Mapping[str, str],
+    say: Callable[[str], None],
+) -> list[UpdateRow]:
+    """Update ``rails`` and re-prove the ones whose version changed (see the module
+    docstring for the order). ``models`` gives each rail the model its proofs run on.
+    Refuses (:class:`UsageError`) before any updater runs when the global lock is not
+    obtained within ``wait``.
+    """
+    if check:
+        rows = []
+        for rail in rails:
+            found = _probe(rail, home, environ)
+            version = found.version if found.available else None
+            path, command = rollback(rail, version, home, state)
+            rows.append(
+                UpdateRow(
+                    rail=rail,
+                    old_version=version,
+                    new_version=None,
+                    updater=(found.detail, *UPDATERS[rail].args) if found.available else (),
+                    exit_code=None,
+                    log=None,
+                    verdicts=(),
+                    mode=proof_state.rail_state(state, rail, version).mode,
+                    rollback_path=path,
+                    rollback_command=command,
+                    note="update available: unknown (no vendor dry run)"
+                    if found.available
+                    else f"not installed: {found.detail}",
+                )
+            )
+        return rows
+
+    attempts = _update_all(rails, state=state, home=home, environ=environ, wait=wait, say=say)
+    changed = [attempt for attempt in attempts if attempt.changed]
+    verdicts: dict[str, list[prove.Verdict]] = {}
+    unproven: str | None = None
+    if changed and prove_after:
+        refusal = prove.checkout_refusal(environ)
+        if refusal is None:
+            verdicts = _prove_changed(
+                changed, state=state, home=home, environ=environ, models=models, say=say
+            )
+        else:
+            unproven = f"not proven: development install ({refusal})"
+
+    rows = []
+    for attempt in attempts:
+        # The mode on the version installed NOW, the one the engine will probe.
+        now = _probe(attempt.rail, home, environ)
+        mode = proof_state.rail_state(
+            state, attempt.rail, now.version if now.available else None
+        ).mode
+        proven = tuple(verdicts.get(attempt.rail, ()))
+        note = attempt.note
+        if attempt.changed and unproven is not None:
+            note = unproven if note is None else f"{note}; {unproven}"
+        failed = (
+            (attempt.ran and attempt.exit_code != 0)
+            or (attempt.ran and attempt.new_version is None)
+            or not _settled(proven)
+        )
+        path, command = (
+            rollback(attempt.rail, attempt.old_version, home, state) if failed else (None, None)
+        )
+        rows.append(
+            UpdateRow(
+                rail=attempt.rail,
+                old_version=attempt.old_version,
+                new_version=attempt.new_version,
+                updater=attempt.updater,
+                exit_code=attempt.exit_code,
+                log=attempt.log,
+                verdicts=proven,
+                mode=mode,
+                rollback_path=path,
+                rollback_command=command,
+                note=note,
+            )
+        )
+    return rows
+
+
 __all__ = [
     "UPDATERS",
     "UPDATE_TIMEOUT_SECONDS",
+    "UpdateRow",
     "Updater",
     "agy_copy",
     "rollback",
+    "run_updates",
     "semver",
 ]
