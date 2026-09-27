@@ -17,7 +17,7 @@ record one level below :func:`headless_agents.proofs.read_proof`, which already 
 "no record" and "a record that does not parse" into the same ``None`` -- by design, for
 the engine's fail-closed gate, which treats both alike. This module tells them apart as
 ``missing`` and ``unreadable`` because an operator fixes those two differently: a missing
-proof is recorded with a live test; an unreadable one names a bug or a hand-edited file.
+proof is recorded with ``ha prove``; an unreadable one names a bug or a hand-edited file.
 
 ``stale`` always names what the proof was recorded for: another version of the rail, or
 -- for isolation only, at the SAME rail version -- the installed package's own isolation
@@ -47,7 +47,7 @@ Mode = Literal["refused", "writes serialised", "parallel"]
 
 #: Rails whose confinement can never be proven: a live probe has no way to tie a
 #: rejected write to a path (operator decision Q91=b), so the displayed reason says so
-#: instead of a live test invited to reprove a thing it cannot prove either way.
+#: instead of an invitation to re-prove a thing no proof can settle either way.
 UNPROVABLE_CONFINEMENT: Final[dict[str, str]] = {
     "claude": "claude's tool log names no path for a rejected call (Q91=b)",
 }
@@ -139,16 +139,14 @@ def proof_status(
 
 
 def reprove_command(rail: str, kinds: Sequence[str]) -> str:
-    """The one command that re-proves ``rail`` for ``kinds`` (until lot 4: ``ha prove``).
+    """The one command that re-proves ``rail`` for ``kinds``: ``ha prove`` (lot 4a).
 
-    A single kind narrows the live test's selection to it; more than one just selects the
-    rail, since the live test always proves every kind it can for a rail in one pass.
+    A single kind names its flag; more than one names none, since ``ha prove RAIL``
+    proves every kind it can for the rail in one pass. The installed ``ha`` records the
+    proof: no repository checkout, no pytest.
     """
     kinds = list(kinds)
-    selector = f"{kinds[0]} and {rail}" if len(kinds) == 1 else rail
-    return (
-        f'HA_LIVE=1 pytest -m live tests/live/headless_agents/test_proofs_live.py -k "{selector}"'
-    )
+    return f"ha prove {rail} --{kinds[0]}" if len(kinds) == 1 else f"ha prove {rail}"
 
 
 def rail_state(state: Path, rail: str, version: str | None) -> RailState:
@@ -162,7 +160,7 @@ def rail_state(state: Path, rail: str, version: str | None) -> RailState:
         if status.status != "passed"
     ]
     if rail in UNPROVABLE_CONFINEMENT:
-        # A live test cannot prove confinement here either way (Q91=b): offering a
+        # A live probe cannot prove confinement here either way (Q91=b): offering a
         # reprove command for it would spend tokens on a probe that stays inconclusive.
         needs = [kind for kind in needs if kind != "confinement"]
 

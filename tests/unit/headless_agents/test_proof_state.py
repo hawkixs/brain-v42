@@ -191,9 +191,7 @@ def test_claude_confinement_is_never_offered_a_reprove_command(tmp_path: Path) -
     rs = rail_state(tmp_path, "claude", "2.1.283 (Claude Code)")
     assert rs.isolation.status == "stale"
     assert "unprovable" in rs.confinement.reason
-    assert rs.reprove is not None
-    assert 'isolation and claude"' in rs.reprove
-    assert "confinement" not in rs.reprove
+    assert rs.reprove == "ha prove claude --isolation"
 
 
 def test_reprove_is_none_when_everything_passed(tmp_path: Path) -> None:
@@ -206,10 +204,9 @@ def test_reprove_is_none_when_everything_passed(tmp_path: Path) -> None:
 
 
 def test_reprove_names_one_kind_or_both() -> None:
-    live = "HA_LIVE=1 pytest -m live tests/live/headless_agents/test_proofs_live.py"
-    assert reprove_command("codex", ("isolation",)) == f'{live} -k "isolation and codex"'
-    assert reprove_command("codex", ("confinement",)) == f'{live} -k "confinement and codex"'
-    assert reprove_command("codex", ("isolation", "confinement")) == f'{live} -k "codex"'
+    assert reprove_command("codex", ("isolation",)) == "ha prove codex --isolation"
+    assert reprove_command("codex", ("confinement",)) == "ha prove codex --confinement"
+    assert reprove_command("codex", ("isolation", "confinement")) == "ha prove codex"
 
 
 def test_unprovable_confinement_is_declared_for_claude_only() -> None:

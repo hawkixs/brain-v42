@@ -185,9 +185,7 @@ def test_providers_json_lists_every_registry_name(world: _World, monkeypatch) ->
             "reason": "no proof recorded",
         },
         "mode": "refused",
-        "reprove": (
-            'HA_LIVE=1 pytest -m live tests/live/headless_agents/test_proofs_live.py -k "codex"'
-        ),
+        "reprove": "ha prove codex",
     }
 
 
@@ -278,7 +276,7 @@ def test_providers_text_names_a_stale_version_and_the_reprove_command(
     assert code == 0
     assert "isolation stale (recorded for claude 1.0" in out
     assert "mode refused" in out
-    assert '-k "isolation and claude"' in out
+    assert "re-prove: ha prove claude --isolation" in out
 
 
 def test_providers_text_shows_no_reprove_line_for_a_parallel_rail(
