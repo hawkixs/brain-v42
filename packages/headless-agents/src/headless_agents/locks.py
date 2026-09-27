@@ -92,22 +92,35 @@ def held(
 
     ``wait=None`` tries once. ``what`` names the lock in a refusal; ``key``
     orders locks of the same rank (the lineage owner id).
+
+    The deadline is an absolute point in time, checked before every attempt
+    and again right after a successful one, with each poll sleep capped to
+    the time actually left: trying ``flock`` first and only checking the
+    deadline on failure let a lock released just past the deadline be
+    accepted late instead of refused (codex review of PR #239).
     """
     _check_order(rank, key)
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     descriptor = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
     try:
         operation = (fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH) | fcntl.LOCK_NB
-        deadline = time.monotonic() + (wait or 0.0)
+        deadline = None if wait is None else time.monotonic() + wait
         while True:
+            if deadline is not None and time.monotonic() > deadline:
+                raise LockTimeout(f"{what}: not obtained within {wait:g} s")
             try:
                 fcntl.flock(descriptor, operation)
-                break
             except BlockingIOError:
-                if wait is None or time.monotonic() >= deadline:
-                    bound = "at once" if wait is None else f"within {wait:g} s"
-                    raise LockTimeout(f"{what}: not obtained {bound}") from None
-                time.sleep(_POLL_SECONDS)
+                if wait is None:
+                    raise LockTimeout(f"{what}: not obtained at once") from None
+                remaining = deadline - time.monotonic()  # type: ignore[operator]
+                time.sleep(max(min(_POLL_SECONDS, remaining), 0.0))
+                continue
+            else:
+                if deadline is not None and time.monotonic() > deadline:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    raise LockTimeout(f"{what}: not obtained within {wait:g} s") from None
+                break
         stack = _stack()
         entry = (rank, key)
         stack.append(entry)

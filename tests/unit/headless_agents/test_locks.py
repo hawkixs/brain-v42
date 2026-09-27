@@ -289,3 +289,55 @@ def test_one_deadline_covers_two_contested_locks(tmp_path: Path) -> None:
                 ):
                     pass
             assert time.monotonic() - started < 0.16
+
+
+# ── review round 1 (PR #239): a lock granted just after the deadline was
+# still accepted, instead of refused ───────────────────────────────────────
+
+_TIMED_HOLDER = """
+import fcntl, os, pathlib, sys, time
+path, ready, hold_seconds = sys.argv[1], sys.argv[2], float(sys.argv[3])
+fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+pathlib.Path(ready).write_text("ok")
+time.sleep(hold_seconds)
+fcntl.flock(fd, fcntl.LOCK_UN)
+time.sleep(5)
+"""
+
+
+def test_a_lock_released_just_after_the_deadline_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``held()`` tried ``flock`` before checking the deadline on the next
+    iteration, so a lock released just past the deadline was granted late
+    instead of refused. Deterministic timing: with the poll interval fixed at
+    0.1 s and a 0.15 s wait, the fixed implementation caps its sleep to the
+    remaining budget and lands its last attempt exactly at the deadline
+    (0.1 s, then 0.05 s); the unfixed implementation always sleeps a full
+    poll interval and lands its next attempt at 0.2 s -- after the holder's
+    0.18 s release -- and would accept the lock late.
+    """
+    monkeypatch.setattr(locks, "_POLL_SECONDS", 0.1)
+    path = tmp_path / "l.lock"
+    ready = tmp_path / "ready"
+    release_after = 0.18
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _TIMED_HOLDER, str(path), str(ready), str(release_after)]
+    )
+    try:
+        limit = time.monotonic() + 10
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        started = time.monotonic()
+        with pytest.raises(LockTimeout, match="the test lock"):
+            with held(path, rank=Rank.LIFECYCLE, exclusive=True, wait=0.15, what="the test lock"):
+                pass
+        elapsed = time.monotonic() - started
+        assert elapsed < release_after, (
+            "the deadline must expire before the lock is actually released, not after"
+        )
+    finally:
+        holder.kill()
+        holder.wait()
