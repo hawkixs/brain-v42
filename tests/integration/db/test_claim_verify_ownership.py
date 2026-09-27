@@ -250,7 +250,17 @@ async def test_transaction_requires_successful_acquisition(engine: AsyncEngine) 
 async def test_a_failed_end_of_transaction_check_rolls_back_the_update(
     engine: AsyncEngine, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
-    """An advisory unlock forced mid-transaction must roll the UPDATE back."""
+    """An advisory unlock forced mid-transaction must roll the UPDATE back.
+
+    Session-level advisory locks are per-backend: only the backend that took
+    the lock can release it with `pg_advisory_unlock` (a call from another
+    connection is a silent no-op against it, per PostgreSQL's own semantics --
+    see `test_same_backend_without_the_advisory_lock_is_rejected` above, which
+    already unlocks through the owner's own connection). The unlock must
+    therefore run through `session`, which `owner.transaction()` binds to the
+    SAME backend connection as the lock, to actually force the loss this test
+    is proving.
+    """
     owner = VerifyRunOwnership(engine)
     assert await owner.acquire()
     try:
@@ -263,10 +273,9 @@ async def test_a_failed_end_of_transaction_check_rolls_back_the_update(
                     .where(dream_runs.c.id == run_id)
                     .values(status="done", duration_s=1.0)
                 )
-                async with engine.begin() as other:
-                    await other.scalar(
-                        sa.text("SELECT pg_advisory_unlock(:key)"), {"key": owner.LOCK_KEY}
-                    )
+                await session.execute(
+                    sa.text("SELECT pg_advisory_unlock(:key)"), {"key": owner.LOCK_KEY}
+                )
 
         row = await _row(session_factory, run_id)
         assert row["status"] == "fail"  # the D1 initial status, never "done"

@@ -256,7 +256,25 @@ async def test_a_retired_claim_is_never_selected(
 async def test_per_project_round_robin_ranking_with_a_cap(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """Oldest of each project first, then the second oldest, ... under LIMIT."""
+    """Oldest of each project first, then the second oldest, ... under LIMIT.
+
+    This module shares one disposable database across every test in the file
+    (`knowledge_claims` is append-only, see `test_claim_write_path.py`'s note on
+    the 055 trigger): every earlier test in this file leaves its own claims
+    committed and select-eligible with a long default validity. A global
+    `LIMIT max_claims` ranks rank-1 claims of ALL eligible projects before
+    rank-2 of any one project, so those leftover claims from earlier tests
+    compete with (and can starve) this test's own three projects for the top-4
+    slots -- non-deterministically, depending on test order. Retiring every
+    not-yet-retired claim first makes the eligible set exactly this test's
+    own, so the cap and round-robin order are asserted against a known set.
+    """
+    async with session_factory() as session, session.begin():
+        await session.execute(
+            sa.update(knowledge_claims)
+            .where(knowledge_claims.c.retired_at.is_(None))
+            .values(retired_at=datetime.now(UTC))
+        )
     now = datetime.now(UTC)
     project_a = f"nightly-a-{uuid4().hex[:8]}"
     project_b = f"nightly-b-{uuid4().hex[:8]}"

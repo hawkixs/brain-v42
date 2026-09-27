@@ -53,6 +53,7 @@ from brain_v42.facts.nightly import (
     key_for,
 )
 from brain_v42.facts.registry import FactRegistry, RefreshBudget
+from brain_v42.facts.sources import PostgresSourceFactory, PostgresSourceSession
 from brain_v42.facts.verification import ClaimVerificationService
 from brain_v42.repositories.pg_claim_nightly import (
     VerifyRunOwnership,
@@ -93,6 +94,30 @@ async def session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSessio
     return async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def _retire_claims_left_by_earlier_tests(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Retire every not-yet-retired claim before each test (module isolation).
+
+    This file shares ONE disposable database across the whole session
+    (`knowledge_claims` is append-only, see the module docstring). A claim that
+    stays perpetually eligible for `select_nightly_claims` -- an `unreadable`
+    latest verdict (never conclusive), a claim whose fact a later registry does
+    not know, or one skipped by a refresh budget -- otherwise gets re-selected
+    by a later test and skews its counts and report fields (`retired_mid_run`,
+    `stopped_facts`, the plain verdict-count assertions several tests make).
+    Retiring is an UPDATE, which the append-only trigger allows (it refuses
+    only DELETE).
+    """
+    async with session_factory() as session, session.begin():
+        await session.execute(
+            sa.update(knowledge_claims)
+            .where(knowledge_claims.c.retired_at.is_(None))
+            .values(retired_at=datetime.now(UTC))
+        )
+
+
 class _Source:
     async def identity(self) -> SourceIdentity:
         return SourceIdentity("1", "brain_test", "127.0.0.1", 5432)
@@ -109,10 +134,19 @@ class _RealHeadProbe:
     policies: Mapping[str, int] = {}
     value_schema = {"revision": "string"}
 
-    def __init__(self, name: str, revision: str) -> None:
+    def __init__(self, name: str, revision: str, *, ttl_seconds: int | None = None) -> None:
         self.name = name
         self.revision = revision
         self.runs = 0
+        if ttl_seconds is not None:
+            # Per-instance override (the class attribute stays the shared
+            # default): `FactRegistry.measure` only spends the refresh budget
+            # on a FORCED refresh, i.e. when the caller's `max_age` (here,
+            # the claim's own `validity_seconds`) is SMALLER than the probe's
+            # own TTL. A budget-exhaustion scenario across several claims of
+            # one fact therefore needs a TTL larger than those claims'
+            # `validity_seconds`, not the reverse.
+            self.ttl = timedelta(seconds=ttl_seconds)
 
     async def measure(self, source: _Source) -> Mapping[str, object]:
         self.runs += 1
@@ -363,7 +397,7 @@ async def test_a_disabled_drifted_fact_named_by_an_eligible_claim_fails_closed(
 
     async with session_factory() as session, session.begin():
         await _seed_wrong_digest_definition(session, fact_name=fact_name)
-        await _insert_claim(session, fact_name=fact_name, expected_revision="057")
+        claim_id = await _insert_claim(session, fact_name=fact_name, expected_revision="057")
 
     registered_ok = await register_fact_definitions(registry, session_factory)
     eligible_facts = await eligible_fact_names(session_factory, now=datetime.now(UTC))
@@ -372,8 +406,13 @@ async def test_a_disabled_drifted_fact_named_by_an_eligible_claim_fails_closed(
     assert failure is not None
     assert failure.reason == f"definition_drift: {fact_name}"
     async with session_factory() as session:
+        # Scoped to this test's own claim: `knowledge_claim_verdicts` is
+        # append-only and accumulates across the whole module (shared
+        # database), so an unscoped count would include earlier tests' rows.
         verdict_count = await session.scalar(
-            sa.select(sa.func.count()).select_from(knowledge_claim_verdicts)
+            sa.select(sa.func.count())
+            .select_from(knowledge_claim_verdicts)
+            .where(knowledge_claim_verdicts.c.claim_id == claim_id)
         )
     assert verdict_count == 0
 
@@ -381,47 +420,68 @@ async def test_a_disabled_drifted_fact_named_by_an_eligible_claim_fails_closed(
 async def test_refresh_budget_exhaustion_skips_the_rest_of_one_fact_and_verifies_others(
     session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine
 ) -> None:
-    forced_probe = _RealHeadProbe(f"nightly_forced_{uuid4().hex}", revision="057")
+    """Spec §6.4: an exhausted TARGET bucket stops each OTHER fact on it in turn.
+
+    `FactRegistry.measure` only spends a refresh-budget token on a FORCED
+    charge (`max_age < ttl`) that is also a genuine cache MISS. Three claims
+    sharing ONE fact name cannot demonstrate exhaustion in a fast, real-clock
+    test: the first claim's successful measurement is cached, and every claim
+    validity is at least 60s (`knowledge_claims_validity_seconds_valid`), so a
+    second or third claim of the SAME fact always finds that cache still
+    fresh -- `_charge_refresh` is never even reached for it, whatever the
+    budget's size (confirmed empirically: with one shared fact, all three
+    claims came back `holds`, `skipped_budget == 0`). Spec §4.5 makes the same
+    point about the per-FACT bucket specifically ("not reachable within one
+    invocation"). Three DIFFERENT facts sharing one TARGET have no such
+    shared cache: each is a genuine, independent cache miss, so the shared
+    per_target_per_minute=1 bucket is what exhausts, per §6.4 -- the first
+    fact's claim spends the only token, and the other two facts each hit the
+    empty bucket once and are stopped.
+    """
+    probe_a = _RealHeadProbe(f"nightly_budget_a_{uuid4().hex}", revision="057", ttl_seconds=3600)
+    probe_b = _RealHeadProbe(f"nightly_budget_b_{uuid4().hex}", revision="057", ttl_seconds=3600)
+    probe_c = _RealHeadProbe(f"nightly_budget_c_{uuid4().hex}", revision="057", ttl_seconds=3600)
     other_probe = _RealHeadProbe(f"nightly_other_{uuid4().hex}", revision="057")
-    registry = _registry(forced_probe, other_probe, refresh_budget=RefreshBudget(1, 1))
+    registry = _registry(probe_a, probe_b, probe_c, other_probe, refresh_budget=RefreshBudget(1, 1))
     assert await register_fact_definitions(registry, session_factory)
 
     async with session_factory() as session, session.begin():
-        forced_ids = [
-            await _insert_claim(
-                session,
-                fact_name=forced_probe.name,
-                expected_revision="057",
-                validity_seconds=3650 * 86400,
-            )
-            for _ in range(3)
-        ]
+        # Distinct (default, random) project keys put each claim at rank 1 of
+        # its own project; the tie-break on equal `age_key` (one shared
+        # transaction) is `seq`, so dispatch follows this insertion order
+        # under `max_concurrency=1`: a, b, c, then other.
+        claim_a = await _insert_claim(
+            session, fact_name=probe_a.name, expected_revision="057", validity_seconds=60
+        )
+        claim_b = await _insert_claim(
+            session, fact_name=probe_b.name, expected_revision="057", validity_seconds=60
+        )
+        claim_c = await _insert_claim(
+            session, fact_name=probe_c.name, expected_revision="057", validity_seconds=60
+        )
         other_id = await _insert_claim(session, fact_name=other_probe.name, expected_revision="057")
 
     _, report = await _wet_pass(engine, session_factory, registry, max_concurrency=1)
 
-    assert report.stopped_facts == [forced_probe.name]
-    assert report.skipped_budget >= 2
-    assert report.holds >= 1
+    assert report.stopped_facts == sorted([probe_b.name, probe_c.name])
+    assert report.skipped_budget == 2
+    assert report.holds == 2  # claim_a and the untouched other_id
     async with session_factory() as session:
-        forced_count = await session.scalar(
-            sa.select(sa.func.count())
-            .select_from(knowledge_claim_verdicts)
-            .where(knowledge_claim_verdicts.c.claim_id.in_(forced_ids))
-        )
-        other_row = (
-            (
+        verdicts_by_claim = {
+            row["claim_id"]: row["verdict"]
+            for row in (
                 await session.execute(
                     sa.select(knowledge_claim_verdicts).where(
-                        knowledge_claim_verdicts.c.claim_id == other_id
+                        knowledge_claim_verdicts.c.claim_id.in_(
+                            [claim_a, claim_b, claim_c, other_id]
+                        )
                     )
                 )
             )
             .mappings()
-            .one()
-        )
-    assert forced_count == 1
-    assert other_row["verdict"] == "holds"
+            .all()
+        }
+    assert verdicts_by_claim == {claim_a: "holds", other_id: "holds"}
 
 
 async def test_a_mid_run_retirement_is_counted_and_writes_no_row(
@@ -466,6 +526,15 @@ async def test_dry_mode_writes_no_verdict_takes_no_lock_and_marks_the_row_dry(
     async with session_factory() as session, session.begin():
         await _insert_claim(session, fact_name=probe.name, expected_revision="057")
 
+    # `knowledge_claim_verdicts` is append-only and accumulates across the
+    # whole module (shared database): the dry pass must add zero rows to
+    # whatever earlier tests already committed, so the proof is a before/after
+    # delta rather than an absolute count.
+    async with session_factory() as session:
+        verdict_count_before = await session.scalar(
+            sa.select(sa.func.count()).select_from(knowledge_claim_verdicts)
+        )
+
     statements: list[str] = []
 
     def _capture(conn: object, cursor: object, statement: str, *args: object) -> None:
@@ -489,11 +558,11 @@ async def test_dry_mode_writes_no_verdict_takes_no_lock_and_marks_the_row_dry(
     assert not any("FOR UPDATE" in statement.upper() for statement in statements)
     assert not any("pg_advisory_lock" in statement for statement in statements)
     async with session_factory() as session:
-        verdict_count = await session.scalar(
+        verdict_count_after = await session.scalar(
             sa.select(sa.func.count()).select_from(knowledge_claim_verdicts)
         )
     row = await _run_id_row(session_factory, run_id)
-    assert verdict_count == 0
+    assert verdict_count_after == verdict_count_before
     assert row["phase_dry_run"] is True
 
 
@@ -510,13 +579,18 @@ async def test_dream_last_night_measured_during_a_wet_run_includes_its_own_row(
     """
     from brain_v42.facts.probes.dream_last_night import DreamLastNightProbe
 
-    @asynccontextmanager
-    async def source() -> AsyncIterator[_Source]:
-        yield _Source()
+    # Unlike `_RealHeadProbe` (which never touches `source`), `DreamLastNightProbe`
+    # queries `dream_runs` through a REAL `PostgresSourceSession` -- the bare
+    # `_Source` fixture used elsewhere in this module has no `.session` and
+    # turns every call into an `Unreadable` `probe_error`. The expected
+    # identity must be the disposable database's own, measured the same way
+    # the registry measures it (plan T1.9: "the identity measured from that DB").
+    async with session_factory() as identity_session, identity_session.begin():
+        real_identity = await PostgresSourceSession(identity_session).identity()
 
     dream_last_night_registry = FactRegistry(
-        sources={FactTarget.PRODUCTION: source},
-        expected={FactTarget.PRODUCTION: SourceIdentity("1", "brain_test", "127.0.0.1", 5432)},
+        sources={FactTarget.PRODUCTION: PostgresSourceFactory(session_factory)},
+        expected={FactTarget.PRODUCTION: real_identity},
     )
     dream_last_night_registry.register(DreamLastNightProbe())
     dream_last_night_registry.freeze()
