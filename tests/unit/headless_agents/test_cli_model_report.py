@@ -120,6 +120,28 @@ def test_relative_xdg_config_home_uses_default_directory(
     assert path.read_bytes() == before
 
 
+def test_text_report_prints_role_and_default_usage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A role link and a ``models.toml`` default are drift a human reads in the
+    text report too, not only in ``--json`` (review finding #2)."""
+    _catalogue(tmp_path)
+    roles_path = tmp_path / ".config" / "ha" / "roles.toml"
+    roles_path.write_text('[reviewer]\nprovider = "codex"\nmodel = "known"\n')
+    models_path = tmp_path / ".config" / "ha" / "models.toml"
+    models_path.write_text('codex = "known"\n')
+    monkeypatch.setattr(
+        cli,
+        "live_models",
+        lambda provider, **kwargs: LiveList("catalogue-only", (), "no live-list query specified"),
+    )
+    code, out, err = _invoke(tmp_path, "models", "--provider", "codex")
+    assert code == 0 and err == ""
+    assert "reviewer" in out
+    assert "models.toml" in out
+
+
 def test_refresh_prints_drift_without_changing_catalogue(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
