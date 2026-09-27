@@ -77,6 +77,15 @@ left its unconfined intent behind for the operator quarantine to find.
   `gitops.git` now decodes its output with undecodable bytes replaced, and
   `binary=True` returns the bytes untouched: `change.patch` and `commit.log` are
   written as git printed them, so the patch still rebuilds the commit.
+- **A failure after the engine's commit finalises the run instead of leaving it for the
+  operator quarantine.** An exception raised by the live engine from its commit through
+  publication left `run.json` at `running`, the pending write and the unconfined intent
+  behind, so the next run found the operator quarantined (`stale_unconfined_intent`). The
+  write is now published as `failed` with its lineage compromised (`engine_error`), the
+  commits the commit step named keep their provenance, `run.json` is written and the
+  intent removed -- only once the lineage holds no pending write. A process that dies
+  there, an interruption, or a publication that fails in turn still leaves the intent,
+  and the quarantine of a genuinely stale one is unchanged.
 
 ## 0.5.1 — 2026-09-26 (tag `headless-agents-v0.5.1` after merge)
 

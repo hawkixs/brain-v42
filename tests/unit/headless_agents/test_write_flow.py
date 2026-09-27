@@ -23,6 +23,7 @@ import pytest
 
 from headless_agents import engine, lineage, locks, provenance, quarantine, write_flow
 from headless_agents.engine import Overrides, Request, UsageError, execute, plan
+from headless_agents.git_tripwire import GitTampered
 from headless_agents.proofs import CLI_RAILS, record_proof
 from headless_agents.registry import Probe
 from headless_agents.result import RunResult
@@ -860,6 +861,125 @@ def test_a_crash_between_the_lineage_rename_and_the_intent_removal_quarantines_t
     with pytest.raises(UsageError, match="stale unconfined intent"):
         unconfined.write()
     assert quarantine.check(unconfined.state, None) is not None
+
+
+def test_a_failure_after_the_commit_finalises_the_run_and_clears_the_intent(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket 0b3fcdbf: an exception after the engine's commit left run.json ``running``
+    and the unconfined intent behind, and the next run found the operator quarantined.
+    A live process finalises its own write: failed, its lineage compromised."""
+
+    def fail(step: str) -> None:
+        if step == "commit":
+            raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(write_flow, "_crash_after", fail)
+    unconfined.agent.edit = _edit_app
+    outcome = unconfined.write()
+    assert outcome.exit_code == 1
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["status"] == "failed" and report["failure_reason"] == "engine_error"
+    assert not (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    state = lineage.load(unconfined.state, outcome.run_id)
+    assert state.pending is None and state.compromised == "engine_error"
+    assert state.members[outcome.run_id] == "failed"
+    tip = _git(unconfined.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
+    assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
+    record_ = provenance.lookup(unconfined.state, tip)
+    assert record_ is not None and record_["made_by"] == "engine"
+    assert any("No space left on device" in line for line in unconfined.said)
+
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    assert quarantine.check(unconfined.state, None) is None
+    assert unconfined.write(repo=_second_repository(unconfined)).exit_code == 0
+
+
+def test_a_failure_inside_the_commit_step_finalises_without_naming_its_commits(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Once ``git commit`` ran but before the step named what it made, no commit is
+    attributed: none gets provenance, and the compromised lineage says why."""
+
+    def fail(write: object, start: str, tips: object) -> list[str]:
+        raise RuntimeError("the engine lost track")
+
+    monkeypatch.setattr(write_flow, "_new_commits", fail)
+    unconfined.agent.edit = _edit_app
+    outcome = unconfined.write()
+    assert outcome.exit_code == 1
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["failure_reason"] == "engine_error" and report["commits"] == []
+    assert not (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    state = lineage.load(unconfined.state, outcome.run_id)
+    assert state.pending is None and state.compromised == "engine_error"
+    tip = _git(unconfined.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
+    assert provenance.lookup(unconfined.state, tip) is None
+
+
+def test_a_death_after_the_commit_still_leaves_the_intent_for_the_quarantine(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a live process finalises: one that dies there, modelled by ``SystemExit``,
+    leaves the pending write and the intent, and the operator quarantine follows."""
+
+    def die(step: str) -> None:
+        if step == "commit":
+            raise SystemExit("killed")
+
+    monkeypatch.setattr(write_flow, "_crash_after", die)
+    unconfined.agent.edit = _edit_app
+    with pytest.raises(SystemExit):
+        unconfined.write()
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()
+    assert quarantine.check(unconfined.state, None) is not None
+
+
+def test_git_found_tampered_after_the_commit_is_not_finalised(unconfined: World) -> None:
+    """A tamper signal is no engine error: a hook of the engine's commit that plants a
+    hook for ``ha``'s own git commands leaves the intent, and the quarantine follows."""
+    planted = unconfined.state / "empty-hooks" / "pre-commit"
+    _hook(unconfined, "post-commit", f"touch '{planted}'\n")
+    unconfined.agent.edit = _edit_app
+    with pytest.raises(GitTampered):
+        unconfined.write()
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    planted.unlink()
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()
+
+
+def test_a_finalisation_that_fails_in_turn_leaves_the_intent_for_the_quarantine(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The intent goes only once the lineage no longer holds the pending write."""
+
+    def fail(step: str) -> None:
+        if step == "commit":
+            raise OSError(28, "No space left on device")
+
+    real_save = lineage.save
+
+    def save(state: Path, current: lineage.LineageState) -> None:
+        if current.pending is None:
+            raise OSError(28, "No space left on device")
+        real_save(state, current)
+
+    monkeypatch.setattr(write_flow, "_crash_after", fail)
+    monkeypatch.setattr(write_flow.lineages, "save", save)
+    unconfined.agent.edit = _edit_app
+    with pytest.raises(OSError, match="No space left"):
+        unconfined.write()
+    (owner,) = lineage.owners(unconfined.state)
+    assert lineage.load(unconfined.state, owner).pending is not None
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    monkeypatch.setattr(write_flow, "_crash_after", lambda step: None)
+    monkeypatch.setattr(write_flow.lineages, "save", real_save)
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()
 
 
 def test_a_write_final_in_its_lineage_already_has_its_patch(

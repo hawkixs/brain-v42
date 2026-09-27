@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Final
 
 from . import lineage as lineages
 from . import locks, provenance, quarantine
-from .git_tripwire import Tripwire, resolve_git_dir
+from .git_tripwire import GitTampered, Tripwire, resolve_git_dir
 from .gitops import git
 from .lineage import LineageState, PendingWrite
 from .locks import LockTimeout, Rank, held, is_free
@@ -717,6 +717,31 @@ def _outcome(
     )
 
 
+def _abandon(
+    write: _Write, error: Exception, commits: Sequence[tuple[str, MadeBy]], *, final: RunResult
+) -> WriteOutcome:
+    """A failure of this LIVE process once the engine's commit began (ticket 0b3fcdbf).
+
+    Left alone, the pending write and the unconfined intent would make the next
+    admission quarantine the operator for a writer that did not die. The write is
+    published instead -- failed, its lineage compromised (``engine_error``): the
+    repository is not in a state the engine expected -- and :func:`_publish` removes
+    the intent only once the lineage no longer holds the pending write. The commits
+    the commit step named get their provenance; any other stays without, like a
+    commit no witness named. A process that dies here, an interruption, a git
+    found tampered, or a publication that fails in turn still leaves both for the
+    quarantine: the one git command here runs before the publication.
+    """
+    head = _head(write)
+    _publish(write, status="failed", commits=commits, compromised="engine_error")
+    write.say(
+        f"the engine failed after its commit began ({type(error).__name__}: {error}): the "
+        f"run failed and lineage {write.owner} is compromised; inspect {write.worktree} "
+        "and recover it by hand"
+    )
+    return _outcome(1, "failed", "engine_error", write, commits=commits, head=head, final=final)
+
+
 def run_write_step(
     plan: Plan,
     *,
@@ -881,23 +906,34 @@ def run_write_step(
         # §3.6: "fix" instead of "implement" for a run taking a review's findings.
         verb = "residue" if failed_step else ("fix" if findings_head is not None else "implement")
         message = f"chore(ha): {run_id} {verb} via {final.provider}/{model}"
-        reason, commits, head = _commit(write, message, tip, step_dir)
-        _crash_after("commit")
-        if reason is not None:
-            _publish(write, status="failed", commits=commits, compromised=reason)
-            say(
-                f"the commit was refused or a hook committed ({reason}): see "
-                f"{step_dir / COMMIT_LOG}; the lineage is compromised"
-            )
-            return _outcome(1, "failed", reason, write, commits=commits, head=head, final=final)
-        # The patch before the publication: after the lineage rename only the report is
-        # left to rebuild (§3.8.3 step 9), and change.patch cannot be rebuilt from it.
-        # Bytes: a file that is not UTF-8 is diffed raw, and replacing its bytes would
-        # record a patch that no longer rebuilds the commit (ticket 0b3fcdbf).
-        code, patch, _ = write.git_bytes(write.worktree, ["diff", "--binary", base, "HEAD"])
-        (run_dir / PATCH_FILE).write_bytes(patch)
-        status = "failed" if failed_step else "committed"
-        _publish(write, status=status, commits=commits, compromised=None)
+        attributed: Sequence[tuple[str, MadeBy]] = ()
+        try:
+            reason, commits, head = _commit(write, message, tip, step_dir)
+            attributed = commits
+            _crash_after("commit")
+            if reason is not None:
+                _publish(write, status="failed", commits=commits, compromised=reason)
+                say(
+                    f"the commit was refused or a hook committed ({reason}): see "
+                    f"{step_dir / COMMIT_LOG}; the lineage is compromised"
+                )
+                return _outcome(1, "failed", reason, write, commits=commits, head=head, final=final)
+            # The patch before the publication: after the lineage rename only the report
+            # is left to rebuild (§3.8.3 step 9), and change.patch cannot be rebuilt from
+            # it. Bytes: a file that is not UTF-8 is diffed raw, and replacing its bytes
+            # would record a patch that no longer rebuilds the commit (ticket 0b3fcdbf).
+            code, patch, _ = write.git_bytes(write.worktree, ["diff", "--binary", base, "HEAD"])
+            (run_dir / PATCH_FILE).write_bytes(patch)
+            status = "failed" if failed_step else "committed"
+            _publish(write, status=status, commits=commits, compromised=None)
+        except GitTampered:
+            # A tamper signal, not an engine error: the intent stays for the quarantine.
+            raise
+        except Exception as exc:  # a live process finalises its write: see _abandon
+            if write.current.pending is None:
+                # Already final in its lineage: only the intent's removal was left.
+                raise
+            return _abandon(write, exc, attributed, final=final)
         if failed_step:
             return _outcome(
                 1, "failed", "step_failed", write, commits=commits, head=head, final=final
