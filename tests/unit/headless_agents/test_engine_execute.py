@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from headless_agents import engine, locks
+from headless_agents import engine, locks, proof_state
 from headless_agents.engine import Overrides, Request, UsageError, execute, plan
 from headless_agents.proofs import CLI_RAILS, proof_path, record_proof
 from headless_agents.registry import Probe
@@ -290,6 +290,19 @@ def test_a_rail_without_an_isolation_proof_is_refused(world: World) -> None:
 def test_the_refusal_names_the_command_that_records_a_proof(world: World) -> None:
     proof_path(world.state, "codex").unlink()
     with pytest.raises(UsageError, match="test_proofs_live.py"):
+        world.run("codex")
+
+
+def test_the_refusal_names_the_reprove_command_of_proof_state(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One source: the engine's own refusal names whatever proof_state.reprove_command
+    says, so it and ``ha providers`` can never disagree (spec 0.5.2 lot 2, Task 3)."""
+    monkeypatch.setattr(
+        proof_state, "reprove_command", lambda rail, kinds: f"SENTINEL {rail} {list(kinds)}"
+    )
+    proof_path(world.state, "codex").unlink()
+    with pytest.raises(UsageError, match=r"SENTINEL codex \['isolation'\]"):
         world.run("codex")
 
 

@@ -26,7 +26,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from . import locks, procgroup, review_flow, reviews, write_flow
+from . import locks, procgroup, proof_state, review_flow, reviews, write_flow
 from .capability import scoped_environment
 from .chain import run_chain
 from .cli_models import ModelsError, models_for
@@ -824,8 +824,7 @@ def _check_isolation(plan: Plan) -> None:
         raise UsageError(
             f"{provider} {version or '(version unknown)'} has no passing isolation proof "
             f"({label}): a rail that may load the operator's configuration is refused. "
-            f"Record a proof with: HA_LIVE=1 pytest -m live "
-            f'tests/live/headless_agents/test_proofs_live.py -k "isolation and {provider}"'
+            f"Record a proof with: {proof_state.reprove_command(provider, ('isolation',))}"
         )
 
 
