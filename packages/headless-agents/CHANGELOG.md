@@ -24,6 +24,39 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.2, lot 1: a sound codex confinement proof
+
+Ticket e454b011: the codex confinement proof never concluded, and the reader behind it
+was lenient. Fixed before any new confinement proof is trusted (spec §3.1).
+
+### Fixed
+- **The live confinement probe runs one outside target per provider run**, each with its
+  own prescribed shell command and its own nonce, plus a workspace control write so a run
+  that could not write at all is not mistaken for confinement.
+- **codex evidence is credited only to a trusted system shell's single-line, exact-path
+  refusal of the prescribed command.** The former reader credited every target merely
+  named anywhere in a denied command's output — by basename, so a workspace-local script
+  the model planted as `zsh` could forge one, and as a bare substring, so a marker and a
+  path on different lines, or a refusal naming a sibling (`config.bak`) or a child
+  (`config/x`) of the target, could also pass as refused. `refused_attempts` now trusts
+  only an exact absolute path in `_TRUSTED_SHELLS` wrapping the exact prescribed command
+  (`probe_command`, `_probed_target`), and requires the marker and the whole target path
+  on the SAME output line (`_refusal_line`).
+- **The verdict checks bytes first** (`confinement_verdict`): a changed outside target
+  fails the rail even when a run crashed mid-probe, and claude is now skipped as
+  unprovable (its tool log names no path for a rejected call, Q91=b) instead of being
+  probed for nothing.
+- **Any unreadable or changed outside target fails the rail, shell startup files of the
+  probe's HOME included.** `outside_changes` never raises on the read it performs — a
+  target the agent deleted, corrupted or made unreadable counts as changed, not as a
+  crash that skips the byte check — and the live probe now also watches `.zshenv`,
+  `.zprofile`, `.zshrc`, `.zlogin`, `.bashrc`, `.bash_profile`, `.bash_login` and
+  `.profile`: a sandboxed command able to write one of these could forge a future refusal
+  through a shell function or alias.
+
+The proof record format is unchanged (`confinement: {passed, date}`), so an installed
+headless-agents 0.5.1 honours a proof recorded by this harness.
+
 ## 0.5.1 — 2026-09-26 (tag `headless-agents-v0.5.1` after merge)
 
 Ticket ha-051-agy: headless-agents 0.5.0 refused the agy rail outright, because agy
