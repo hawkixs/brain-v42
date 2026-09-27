@@ -75,11 +75,14 @@ a real fix):
 from __future__ import annotations
 
 import fcntl
+import json
 import os
+import re
+import stat
 import threading
 import time
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import ExitStack, contextmanager, suppress
 from dataclasses import dataclass, field
 from enum import IntEnum
 from pathlib import Path
@@ -101,6 +104,9 @@ class Rank(IntEnum):
     UNCONFINED = 4
     LINEAGE_REGISTRY = 5
     LINEAGE = 6
+    # The admission queue's ranks: the gate's own, which the queue replaces.
+    ADMISSION_TICKET = 2
+    ADMISSION_WAITER = 3
 
 
 _held = threading.local()
@@ -307,6 +313,303 @@ def admit_global(state: Path, *, exclusive: bool, wait: AdmissionWait) -> Iterat
         yield
 
 
+# ── the admission queue ─────────────────────────────────────────────────────
+
+#: Under ``<state>``: the ticket lock, the ticket counter and one ``.wait`` file per
+#: admission waiting its turn.
+ADMISSION_DIR: Final = "admission"
+_TICKETS_LOCK: Final = "tickets.lock"
+_COUNTER: Final = "next-ticket"
+_WAIT_NAME: Final = re.compile(r"(\d{16})\.wait")
+#: A waiter's payload is a few hundred bytes; anything past this is not one.
+_PAYLOAD_LIMIT: Final = 65536
+_UNREADABLE: Final = "<unreadable>"
+
+
+@dataclass(frozen=True)
+class Waiter:
+    """One admission in the queue, as :func:`waiters` read it."""
+
+    ticket: int
+    exclusive: bool
+    #: What is waiting -- a run id, ``clean``, ... -- for display only.
+    label: str
+    pid: int
+    #: When the ticket was issued (UTC, ISO 8601).
+    since: str
+    #: Its process still holds the file's lock. A dead waiter never blocks anyone.
+    alive: bool
+
+
+def _unreadable(ticket: int) -> Waiter:
+    return Waiter(ticket=ticket, exclusive=False, label=_UNREADABLE, pid=0, since="", alive=False)
+
+
+def _payload(descriptor: int, ticket: int) -> tuple[bool, str, int, str] | None:
+    """The waiter's ``(exclusive, label, pid, since)``, or ``None`` when the file is not
+    one this module wrote."""
+    chunks = []
+    size = 0
+    while size <= _PAYLOAD_LIMIT:
+        chunk = os.pread(descriptor, _PAYLOAD_LIMIT + 1 - size, size)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        size += len(chunk)
+    if size > _PAYLOAD_LIMIT:
+        return None
+    try:
+        document = json.loads(b"".join(chunks))
+    except (ValueError, RecursionError):  # nested too deeply is not a payload either
+        return None
+    if not isinstance(document, dict) or document.get("ticket") != ticket:
+        return None
+    exclusive, label = document.get("exclusive"), document.get("label")
+    pid, since = document.get("pid"), document.get("since")
+    if (
+        isinstance(exclusive, bool)
+        and isinstance(label, str)
+        and isinstance(pid, int)
+        and not isinstance(pid, bool)
+        and isinstance(since, str)
+    ):
+        return exclusive, label, pid, since
+    return None
+
+
+def _remove_if_same(path: Path, opened: os.stat_result) -> None:
+    """Unlink ``path`` if it still names the file that was found dead. Best effort."""
+    with suppress(OSError):
+        current = os.lstat(path)
+        if (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino):
+            os.unlink(path)
+
+
+def _inspect(path: Path, ticket: int) -> Waiter | None:
+    """``path`` as a waiter; ``None`` once it is gone (its waiter left meanwhile)."""
+    try:
+        # O_NONBLOCK: a FIFO named like a waiter must not hang the scan.
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return _unreadable(ticket)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            return _unreadable(ticket)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            alive = True
+        except OSError:
+            return _unreadable(ticket)
+        else:
+            # Nobody holds it: its process is gone, and the kernel dropped the lock.
+            alive = False
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        try:
+            payload = _payload(descriptor, ticket)
+        except OSError:
+            payload = None
+        if not alive:
+            _remove_if_same(path, opened)
+        if payload is None:
+            return _unreadable(ticket)
+        exclusive, label, pid, since = payload
+        return Waiter(
+            ticket=ticket, exclusive=exclusive, label=label, pid=pid, since=since, alive=alive
+        )
+    finally:
+        os.close(descriptor)
+
+
+def waiters(state: Path) -> list[Waiter]:
+    """The admission queue at ``state``, ascending by ticket.
+
+    A waiter whose process died is listed ``alive=False``, never blocks anyone, and
+    its file is removed on the way. Never raises and creates nothing: a file that is
+    not a waiter's is listed ``alive=False`` with the label ``<unreadable>``.
+    """
+    try:
+        with os.scandir(state / ADMISSION_DIR) as entries:
+            found = sorted(
+                (int(match.group(1)), entry.name)
+                for entry in entries
+                if (match := _WAIT_NAME.fullmatch(entry.name)) is not None
+            )
+    except OSError:
+        return []
+    listed = []
+    for ticket, name in found:
+        waiter = _inspect(state / ADMISSION_DIR / name, ticket)
+        if waiter is not None:
+            listed.append(waiter)
+    return listed
+
+
+def _highest_ticket(directory: Path) -> int:
+    """The highest ticket any ``.wait`` name carries, live or dead; 0 for none."""
+    with os.scandir(directory) as entries:
+        return max(
+            (
+                int(match.group(1))
+                for entry in entries
+                if (match := _WAIT_NAME.fullmatch(entry.name)) is not None
+            ),
+            default=0,
+        )
+
+
+def _read_counter(directory: Path) -> int:
+    """The persisted next ticket; 0 when missing or garbage (the directory recovers it)."""
+    try:
+        descriptor = os.open(directory / _COUNTER, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        return 0
+    try:
+        text = os.read(descriptor, 64).decode("ascii", errors="replace").strip()
+    except OSError:
+        return 0
+    finally:
+        os.close(descriptor)
+    return int(text) if text.isdigit() else 0
+
+
+def _write_counter(directory: Path, value: int) -> None:
+    temporary = directory / f".{_COUNTER}.{os.getpid()}.tmp"
+    descriptor = os.open(
+        temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+    )
+    try:
+        os.write(descriptor, str(value).encode("ascii"))
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    os.replace(temporary, directory / _COUNTER)
+
+
+def _remove_stale_temporaries(directory: Path) -> None:
+    """Remove what crashed issuers left. Called under ``tickets.lock``: every issuer
+    creates its temporaries under it, so any other one found now is a dead one's."""
+    with os.scandir(directory) as entries:
+        names = [entry.name for entry in entries if entry.name.startswith(".")]
+    for name in names:
+        if name.endswith(".tmp"):
+            with suppress(OSError):
+                os.unlink(directory / name)
+
+
+def _write_payload(descriptor: int, payload: dict[str, object]) -> None:
+    data = json.dumps(payload).encode("utf-8")
+    os.ftruncate(descriptor, 0)
+    written = 0
+    while written < len(data):
+        written += os.pwrite(descriptor, data[written:], written)
+    os.fsync(descriptor)
+
+
+def _utc_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+@dataclass(eq=False)
+class _Queued:
+    """A ticket being waited on: its ``.wait`` file, held locked through ``fd``."""
+
+    ticket: int
+    fd: int
+    path: Path
+    _entry: tuple[Rank, str]
+    _left: bool = False
+
+    def leave(self) -> None:
+        """Leave the queue: the name goes FIRST, then the lock. Closing first would
+        leave, for an instant, a visible file nobody holds -- which every scanner reads
+        as a dead waiter's. Idempotent."""
+        if self._left:
+            return
+        self._left = True
+        try:
+            with suppress(FileNotFoundError):
+                os.unlink(self.path)
+        finally:
+            os.close(self.fd)
+            _forget(self._entry)
+
+
+def _forget(entry: tuple[Rank, str]) -> None:
+    stack = _stack()
+    for index in range(len(stack) - 1, -1, -1):
+        if stack[index] is entry:
+            del stack[index]
+            break
+
+
+def _issue_ticket(state: Path, *, exclusive: bool, label: str, wait: AdmissionWait) -> _Queued:
+    """Take a ticket and publish its waiter file, locked, under ``tickets.lock``.
+
+    The ticket is ``max(counter, 1 + highest ticket on disk)``: the counter keeps
+    tickets increasing across an empty queue; the directory makes a lost or garbage
+    counter harmless. The file is created under a temporary name, locked, filled and
+    ``fsync``-ed, and only then hard-linked to its ticket's name: a ``.wait`` file is
+    never visible unlocked while its waiter lives, so "visible and unlocked" means
+    exactly "its waiter died". ``link`` fails on a name that exists, where ``rename``
+    would overwrite it: a taken name moves the ticket on instead.
+    """
+    directory = state / ADMISSION_DIR
+    with held(
+        directory / _TICKETS_LOCK,
+        rank=Rank.ADMISSION_TICKET,
+        exclusive=True,
+        wait=wait.remaining("the admission queue"),
+        what="the admission queue",
+    ):
+        _remove_stale_temporaries(directory)
+        ticket = max(_read_counter(directory), _highest_ticket(directory) + 1)
+        pid = os.getpid()
+        temporary = directory / f".{ticket:016d}.{pid}.tmp"
+        descriptor = os.open(
+            temporary, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600
+        )
+        published: Path | None = None
+        try:
+            # A file nobody else has opened yet: the lock is granted at once.
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            since = _utc_now()
+            while published is None:
+                _write_payload(
+                    descriptor,
+                    {
+                        "ticket": ticket,
+                        "exclusive": exclusive,
+                        "label": label,
+                        "pid": pid,
+                        "since": since,
+                    },
+                )
+                target = directory / f"{ticket:016d}.wait"
+                try:
+                    os.link(temporary, target)
+                except FileExistsError:
+                    ticket += 1
+                else:
+                    published = target
+            os.unlink(temporary)
+            _write_counter(directory, ticket + 1)
+            entry = (Rank.ADMISSION_WAITER, str(ticket))
+            _check_order(*entry)
+            _stack().append(entry)
+        except BaseException:
+            for leftover in (published, temporary):
+                if leftover is not None:
+                    with suppress(FileNotFoundError):
+                        os.unlink(leftover)
+            os.close(descriptor)
+            raise
+    return _Queued(ticket=ticket, fd=descriptor, path=published, _entry=entry)
+
+
 def is_free(path: Path) -> bool:
     """No process holds ``path`` exclusively: a non-blocking shared lock succeeds.
 
@@ -330,11 +633,14 @@ def is_free(path: Path) -> bool:
 
 
 __all__ = [
+    "ADMISSION_DIR",
     "LOCK_WAIT_SECONDS",
     "AdmissionWait",
     "LockTimeout",
     "Rank",
+    "Waiter",
     "admit_global",
     "held",
     "is_free",
+    "waiters",
 ]

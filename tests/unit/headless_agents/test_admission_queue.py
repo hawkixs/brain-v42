@@ -10,15 +10,22 @@ processes on a temporary state directory, and kills every child in a ``finally``
 
 from __future__ import annotations
 
+import fcntl
+import json
+import os
+import signal
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from headless_agents import locks
 from headless_agents.locks import AdmissionWait, LockTimeout, admit_global
 
 #: One admission in a child process. ``mode`` is ``holder-shared``,
@@ -104,10 +111,19 @@ def _log(events: Path) -> dict[tuple[str, str], int]:
     return logged
 
 
-def _until(condition: Callable[[], bool], what: str, timeout: float = 10.0) -> None:
+def _until(
+    condition: Callable[[], bool],
+    what: str,
+    timeout: float = 10.0,
+    children: tuple[subprocess.Popen[bytes], ...] = (),
+) -> None:
+    """Poll ``condition``; fail at ``timeout``, or as soon as one of ``children`` --
+    each meant to be still running meanwhile -- has exited."""
     limit = time.monotonic() + timeout
     while not condition():
         assert time.monotonic() < limit, f"timed out waiting for {what}"
+        for child in children:
+            assert child.poll() is None, f"a child exited {child.returncode} before {what}"
         time.sleep(0.01)
 
 
@@ -208,3 +224,275 @@ def test_a_waiting_writer_is_not_overtaken_by_later_readers(tmp_path: Path) -> N
         logged = _log(events)
         for index in range(1, 4):
             assert logged[(f"R{index}", "admitted")] > logged[("E", "released")]
+
+
+# ── the queue: tickets, waiter files, liveness (Task 2) ────────────────────────
+
+#: Issues one ticket and holds it until the test creates ``release``. ``os.link`` is
+#: wrapped to log each publication while ``tickets.lock`` is still held, so the order
+#: of the ``linked`` lines is the order in which the issuers took that lock.
+_ISSUER = """
+import os
+import sys
+import time
+from pathlib import Path
+
+from headless_agents import locks
+
+state, label, events = Path(sys.argv[1]), sys.argv[2], Path(sys.argv[3])
+link = os.link
+
+
+def logged_link(source, target, *args, **kwargs):
+    link(source, target, *args, **kwargs)
+    with events.open("a") as stream:
+        stream.write(f"{label} linked {Path(target).name} {time.monotonic_ns()}\\n")
+
+
+os.link = logged_link
+queued = locks._issue_ticket(state, exclusive=False, label=label, wait=locks.AdmissionWait(10))
+with events.open("a") as stream:
+    stream.write(f"{label} issued {queued.ticket} {time.monotonic_ns()}\\n")
+while not events.with_name("release").exists():
+    time.sleep(0.01)
+queued.leave()
+"""
+
+
+def _issuer_lines(events: Path, kind: str) -> list[tuple[str, str, int]]:
+    """``(label, value, monotonic_ns)`` of every ``kind`` line, in time order."""
+    if not events.exists():
+        return []
+    found = []
+    for line in events.read_text().splitlines():
+        label, event, value, ns = line.split()
+        if event == kind:
+            found.append((label, value, int(ns)))
+    return sorted(found, key=lambda item: item[2])
+
+
+def _lock_state(path: Path) -> str:
+    """How another open file description sees ``path``'s ``flock``."""
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "exclusive"
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return "shared"
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        return "free"
+    finally:
+        os.close(descriptor)
+
+
+def _issue(state: Path, label: str = "w", *, exclusive: bool = False) -> Any:
+    return locks._issue_ticket(  # noqa: SLF001
+        state, exclusive=exclusive, label=label, wait=AdmissionWait(5)
+    )
+
+
+def test_tickets_are_issued_in_order_across_processes(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    events = tmp_path / "events"
+    processes: list[subprocess.Popen[bytes]] = []
+    try:
+        for index in range(20):
+            processes.append(
+                subprocess.Popen(
+                    [sys.executable, "-c", _ISSUER, str(state), f"W{index}", str(events)]
+                )
+            )
+        _until(
+            lambda: len(_issuer_lines(events, "issued")) == 20,
+            "20 tickets issued",
+            30,
+            tuple(processes),
+        )
+        linked = _issuer_lines(events, "linked")
+        assert [name for _, name, _ in linked] == [f"{t:016d}.wait" for t in range(1, 21)]
+        issued = {label: int(ticket) for label, ticket, _ in _issuer_lines(events, "issued")}
+        assert [issued[label] for label, _, _ in linked] == list(range(1, 21))
+        listed = locks.waiters(state)
+        assert [waiter.ticket for waiter in listed] == list(range(1, 21))
+        assert all(waiter.alive and not waiter.exclusive for waiter in listed)
+        assert {waiter.label: waiter.ticket for waiter in listed} == issued
+        assert {waiter.pid for waiter in listed} == {process.pid for process in processes}
+    finally:
+        events.with_name("release").write_text("go")
+        for process in processes:
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+    assert all(process.returncode == 0 for process in processes)
+    assert locks.waiters(state) == []
+
+
+def test_a_waiter_file_is_visible_only_once_locked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = tmp_path / "state"
+    seen: list[tuple[str, list[str]]] = []
+    real_link = os.link
+
+    def checking_link(source: Any, target: Any, *args: Any, **kwargs: Any) -> None:
+        visible = sorted(path.name for path in Path(target).parent.glob("*.wait"))
+        seen.append((_lock_state(Path(source)), visible))
+        real_link(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(locks.os, "link", checking_link)
+    queued = _issue(state, exclusive=True)
+    try:
+        assert seen == [("exclusive", [])]
+        assert _lock_state(queued.path) == "exclusive"
+        assert [path.name for path in queued.path.parent.iterdir() if path.suffix == ".tmp"] == []
+    finally:
+        queued.leave()
+
+
+def test_a_dead_waiter_is_listed_dead_and_removed(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    events = tmp_path / "events"
+    child = subprocess.Popen([sys.executable, "-c", _ISSUER, str(state), "D", str(events)])
+    try:
+        _until(lambda: len(_issuer_lines(events, "issued")) == 1, "the ticket issued", 10, (child,))
+        (path,) = (state / "admission").glob("*.wait")
+        child.send_signal(signal.SIGKILL)
+        child.wait()
+        first = locks.waiters(state)
+        assert [(waiter.ticket, waiter.alive) for waiter in first] in ([], [(1, False)])
+        assert not path.exists(), "a scan removes a dead waiter's file"
+        assert locks.waiters(state) == []
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait()
+
+
+def test_a_stale_file_with_the_counters_value_is_not_overwritten(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    directory = state / "admission"
+    directory.mkdir(parents=True)
+    stale = directory / f"{7:016d}.wait"
+    stale.write_text('{"left": "by a waiter that died"}')
+    before = (stale.stat().st_ino, stale.read_bytes())
+    (directory / "next-ticket").write_text("7")
+    queued = _issue(state)
+    try:
+        assert queued.ticket == 8
+        assert (stale.stat().st_ino, stale.read_bytes()) == before
+        assert (directory / "next-ticket").read_text() == "9"
+        # A later scan removes the dead file; the live waiter stays.
+        assert [(waiter.ticket, waiter.alive) for waiter in locks.waiters(state)] == [
+            (7, False),
+            (8, True),
+        ]
+        assert not stale.exists()
+    finally:
+        queued.leave()
+
+
+def test_a_name_that_is_taken_fails_the_link_and_moves_to_the_next_ticket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``link`` refuses to overwrite: even a file the directory scan missed keeps its
+    bytes, and the ticket moves on (``rename`` would have replaced it silently)."""
+    state = tmp_path / "state"
+    directory = state / "admission"
+    directory.mkdir(parents=True)
+    taken = directory / f"{1:016d}.wait"
+    taken.write_text("not a waiter's")
+    monkeypatch.setattr(locks, "_highest_ticket", lambda _directory: 0)
+    queued = _issue(state, "moved")
+    try:
+        assert queued.ticket == 2
+        assert queued.path.name == f"{2:016d}.wait"
+        assert taken.read_text() == "not a waiter's"
+        payload = json.loads(queued.path.read_text())
+        assert payload["ticket"] == 2 and payload["label"] == "moved"
+    finally:
+        queued.leave()
+
+
+def test_a_garbage_counter_recovers_from_the_directory(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    directory = state / "admission"
+    directory.mkdir(parents=True)
+    (directory / "next-ticket").write_text("x")
+    held_open = []
+    try:
+        for ticket in (3, 5):
+            descriptor = os.open(directory / f"{ticket:016d}.wait", os.O_RDWR | os.O_CREAT, 0o600)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            held_open.append(descriptor)
+        queued = _issue(state)
+        try:
+            assert queued.ticket == 6
+        finally:
+            queued.leave()
+    finally:
+        for descriptor in held_open:
+            os.close(descriptor)
+
+
+def test_leave_unlinks_before_closing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    state = tmp_path / "state"
+    queued = _issue(state)
+    path, descriptor = queued.path, queued.fd
+    observed: list[bool] = []
+    real_close = os.close
+
+    def watching_close(fd: int) -> None:
+        if fd == descriptor and not observed:
+            observed.append(path.exists())
+        real_close(fd)
+
+    monkeypatch.setattr(locks.os, "close", watching_close)
+    queued.leave()
+    queued.leave()  # idempotent
+    monkeypatch.undo()
+    assert observed == [False], "the lock dropped while the file was still visible"
+    assert not path.exists()
+    assert locks.waiters(state) == []
+
+
+def test_waiters_never_raises(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    assert locks.waiters(state) == []
+    assert not (state / "admission").exists(), "listing creates nothing"
+    directory = state / "admission"
+    directory.mkdir(parents=True)
+    (directory / f"{1:016d}.wait").mkdir()
+    (directory / f"{2:016d}.wait").symlink_to(tmp_path / "elsewhere")
+    (directory / f"{3:016d}.wait").write_text("{not json")
+    (directory / f"{4:016d}.wait").write_text("[1, 2]")
+    os.mkfifo(directory / f"{5:016d}.wait")  # opening it for reading must not hang
+    (directory / f"{6:016d}.wait").write_text(
+        '{"ticket": 6, "exclusive": "yes", "label": "x", "pid": 1, "since": "now"}'
+    )
+    (directory / f"{7:016d}.wait").write_text("[" * 20000 + "]" * 20000)  # too deep to parse
+    (directory / "garbage.wait").write_text("{}")
+    outcome: list[object] = []
+
+    def scan_queue() -> None:
+        try:
+            outcome.append(locks.waiters(state))
+        except BaseException as exc:  # handed to the test, never lost with the thread
+            outcome.append(exc)
+
+    scan = threading.Thread(target=scan_queue, daemon=True)
+    scan.start()
+    scan.join(timeout=5)
+    assert not scan.is_alive(), "waiters() hung"
+    (listed,) = outcome
+    assert isinstance(listed, list), f"waiters() raised {listed!r}"
+    assert {waiter.ticket for waiter in listed} <= {1, 2, 3, 4, 5, 6, 7}
+    assert all(not waiter.alive and waiter.label == "<unreadable>" for waiter in listed)
