@@ -244,6 +244,48 @@ def test_an_unconfined_write_in_progress_refuses_the_run(
     assert "codex" not in world.fakes, "no provider may start"
 
 
+def test_expired_wait_exits_2_and_runs_no_provider(world: World, tmp_path: Path) -> None:
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        request = world.request("codex", wait_seconds=0.15)
+        with pytest.raises(UsageError, match=r"--wait 0\.15 s.*unconfined lock"):
+            execute(plan(request), say=world.said.append)
+        assert "codex" not in world.fakes
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_without_wait_keeps_the_ten_second_default(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.20)
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        started = time.monotonic()
+        with pytest.raises(UsageError, match="an unconfined write is running"):
+            world.run("codex")
+        assert 0.18 <= time.monotonic() - started < 0.8
+        assert "codex" not in world.fakes
+    finally:
+        holder.kill()
+        holder.wait()
+
+
 def test_an_interrupted_run_releases_its_locks_and_reads_incomplete(world: World) -> None:
     """Review Focus 5, in the engine: locks released, status left non-final."""
     world.fakes["codex"] = _Fake("codex", raises=KeyboardInterrupt())

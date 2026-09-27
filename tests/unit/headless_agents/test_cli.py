@@ -265,6 +265,26 @@ def test_the_parent_claude_session_markers_never_reach_the_child(world: _World) 
     assert env["KEEP_ME"] == "yes"
 
 
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "-inf"])
+def test_invalid_wait_refuses_before_a_provider_runs(world: _World, value: str) -> None:
+    code, _, err = world.run("run", "codex", "--wait", value, "go")
+    assert code == 2
+    assert "--wait" in err
+    assert not any(fake.specs for fake in world.fakes.values())
+
+
+def test_wait_needs_an_explicit_number(world: _World) -> None:
+    code, _, err = world.run("run", "codex", "--wait")
+    assert code == 2 and "argument" in err
+    assert not world.fakes
+
+
+def test_wait_does_not_change_the_provider_timeout(world: _World) -> None:
+    code, _, _ = world.run("run", "codex", "--wait", "1.5", "--timeout", "42", "go")
+    assert code == 0
+    assert world.spec("codex").timeout_seconds == 42.0
+
+
 def test_run_dir_can_be_named(world: _World, tmp_path: Path) -> None:
     target = tmp_path / "mine"
     code, *_ = world.run("run", "codex", "--run-dir", str(target), "go")
