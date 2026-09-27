@@ -26,11 +26,7 @@ time the member rode a brain-v42 tag.
 
 ## Unreleased — 0.5.3, lot 2: the agy and opencode rails fail fast and precisely
 
-Ticket 5921850d. This entry currently covers only the agy fix and the opencode
-refactor that precedes its own behaviour change: the opencode quota
-fall-through (ticket a93cc8f2) needs a host measurement of opencode's log
-channel (an orchestrator step, spending real opencode runs) before it can be
-implemented, and is not in this branch yet.
+Tickets 5921850d and a93cc8f2.
 
 ### Fixed
 - **agy's ephemeral-HOME root chooser skips a workspace-overlapping candidate**
@@ -38,13 +34,31 @@ implemented, and is not in this branch yet.
   overlap is now a reason to try the next candidate, exactly like a `.git`
   ancestor, and the run is refused only when every candidate is blocked --
   naming each kind of reason that occurred.
+- **An exhausted opencode provider quota falls through at once** instead of
+  waiting out the whole deadline for a plain timeout: opencode now runs with
+  `--print-logs --log-level ERROR` (Task 0 measured that the alternative --
+  its own log file under the ephemeral HOME -- silently drops exactly the
+  ERROR lines a quota exhaustion needs, when the process exits shortly after
+  writing them; `--print-logs`/stderr does not, and changes nothing in the
+  stdout JSON event stream). The wait polls stderr for `AI_APICallError:
+  ... usage limit exceeded` or `AI_RetryError` every 0.5 s; a signature ends
+  the run with exit 3 (replayable elsewhere) only when the event stream also
+  proves nothing could have been written yet -- the exact
+  `_nothing_could_have_been_written` predicate the deadline itself uses, so
+  the two paths can never disagree. A signature seen after a write step or a
+  tool call keeps the run waiting for the ordinary deadline, exactly as
+  before.
 
 ### Changed
 - **opencode's replayability test is named once**
   (`_nothing_could_have_been_written`), extracted verbatim from
-  `_deadline_exit_code`: no behaviour change, but a future early-exit path
-  (the still-pending quota fall-through) can ask the identical question
-  instead of risking a second definition that drifts from the deadline's own.
+  `_deadline_exit_code`: the early quota exit above and the deadline share it
+  rather than risking a second definition that drifts from the other's.
+- **opencode's wait is now a bounded poll** (`process.wait(timeout=...)` in a
+  loop) instead of one blocking `communicate(timeout=remaining)` call, so the
+  quota check above can run between polls. Interruption handling (Ctrl-C
+  kills the provider's group before propagating) and the deadline's own
+  reasoning are otherwise unchanged.
 
 The isolation fingerprints of `agy` and `opencode` move with this branch's
 changes to `providers/agy.py` and `providers/opencode.py`
