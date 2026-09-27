@@ -15,31 +15,59 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 from uuid import UUID
 
+from brain_v42.facts.model import Unreadable
 from brain_v42.facts.sources import release_sha_from_path
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.repositories.pg_claim_nightly import VerifyRunOwnershipLost
 
 if TYPE_CHECKING:
+    from brain_v42.facts.model import FactTarget, Measurement
     from brain_v42.repositories.pg_claim_verdicts import VerdictRow
 
 
 class NightlyClaimLike(Protocol):
-    """What the orchestrator reads from a selected claim (`pg_claim_nightly.NightlyClaim`)."""
+    """What the orchestrator reads from a selected claim (`pg_claim_nightly.NightlyClaim`).
 
-    id: UUID
-    project_key: str
-    fact_name: str
-    target: str
+    Read-only properties, not plain attributes: `NightlyClaim` is a frozen
+    dataclass, and a plain Protocol attribute annotation requires a SETTABLE
+    variable, which a frozen field is not.
+    """
+
+    @property
+    def id(self) -> UUID: ...
+    @property
+    def project_key(self) -> str: ...
+    @property
+    def fact_name(self) -> str: ...
+    @property
+    def target(self) -> str: ...
+    @property
+    def definition_version(self) -> int: ...
+
+
+class RegistryLike(Protocol):
+    """The subset of `FactRegistry` the fail-closed check and dry mode need."""
+
+    def names(self) -> tuple[str, ...]: ...
+    def refusals(self) -> dict[str, str]: ...
+    def disabled(self) -> dict[str, str]: ...
+    def describe(self, name: str) -> object: ...
+    def expected_identity(self, target: FactTarget) -> object | None: ...
+    async def measure(self, name: str, *, max_age: timedelta | None = None) -> Measurement: ...
 
 
 class VerificationOutcomeLike(Protocol):
-    row: VerdictRow
-    replayed: bool
+    """Read-only properties: `VerificationOutcome` is a frozen dataclass too."""
+
+    @property
+    def row(self) -> VerdictRow: ...
+    @property
+    def replayed(self) -> bool: ...
 
 
 class VerifyOutcomeCaller(Protocol):
@@ -79,6 +107,41 @@ def issuer_for(run_id: int) -> str:
 def key_for(run_date: date) -> str:
     """The idempotency key shared by every verdict one run writes."""
     return f"{KEY_PREFIX}{run_date.isoformat()}"
+
+
+# ---------------------------------------------------------------------------
+# T1.7: fail closed before any verification, in both modes (spec §6.1).
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class PreconditionFailure:
+    """Why the step must abort before touching a single claim."""
+
+    reason: str
+
+
+def check_preconditions(
+    registry: RegistryLike,
+    eligible_facts: Sequence[str],
+    *,
+    definitions_registered: bool,
+) -> PreconditionFailure | None:
+    """Refuse to start rather than durably misrecord a deployment defect as a verdict.
+
+    A fact absent from `eligible_facts` is never checked here: a refused or
+    disabled fact that no eligible claim names must not fail the step.
+    """
+    if not definitions_registered:
+        return PreconditionFailure("definitions_unregistered")
+    eligible = set(eligible_facts)
+    refused = sorted(set(registry.refusals()) & eligible)
+    if refused:
+        return PreconditionFailure(f"unverifiable_target: {', '.join(refused)}")
+    disabled = sorted(set(registry.disabled()) & eligible)
+    if disabled:
+        return PreconditionFailure(f"definition_drift: {', '.join(disabled)}")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +319,9 @@ class NightlyReport:
     skipped_release_unknown: int = 0
     retired_mid_run: int = 0
     errors: dict[str, int] = field(default_factory=dict)
+    #: Set only by `run_dry` (T1.7); `None` for a wet report.
+    dry_claims: dict[str, object] | None = None
+    dry_facts: dict[str, dict[str, object]] | None = None
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -276,6 +342,8 @@ class NightlyReport:
             "skipped_release_unknown": self.skipped_release_unknown,
             "retired_mid_run": self.retired_mid_run,
             "errors": dict(self.errors),
+            "dry_claims": self.dry_claims,
+            "dry_facts": self.dry_facts,
         }
 
 
@@ -441,4 +509,89 @@ class NightlyVerifier:
             report.status = "timeout"
         else:
             report.status = "done"
+        return report
+
+    async def run_dry(
+        self,
+        claims: Sequence[NightlyClaimLike],
+        *,
+        registry: RegistryLike,
+        run_id: int,
+        run_date: date,
+    ) -> NightlyReport:
+        """Classify and measure without ever calling `verify_outcome` (spec §3.4).
+
+        No claim row lock, no run lock, no verdict. `release_check` gates a
+        `live_release` claim exactly as the wet loop's `process()` does, so a
+        dry rehearsal previews what the same claim would do wet -- checked
+        BEFORE the historical-definition classification, matching `run()`'s
+        own order (the release check gates whether `verify_outcome`, whose
+        internals apply the historical check, is even reached).
+        """
+        report = NightlyReport(
+            run_date=run_date.isoformat(),
+            run_id=run_id,
+            mode="dry",
+            selected=len(claims),
+        )
+        names = set(registry.names())
+        historical: list[dict[str, object]] = []
+        release_skip = 0
+        measurable: set[str] = set()
+
+        for claim in claims:
+            if claim.target == "live_release":
+                decision = await self._release_check.decide()
+                if decision.action != "verify":
+                    release_skip += 1
+                    continue
+            if claim.fact_name not in names:
+                historical.append(
+                    {
+                        "fact": claim.fact_name,
+                        "stored_version": claim.definition_version,
+                        "current_version": None,
+                    }
+                )
+                continue
+            descriptor = registry.describe(claim.fact_name)
+            if (
+                descriptor.definition_version != claim.definition_version  # type: ignore[attr-defined]
+                or descriptor.target.value != claim.target  # type: ignore[attr-defined]
+            ):
+                historical.append(
+                    {
+                        "fact": claim.fact_name,
+                        "stored_version": claim.definition_version,
+                        "current_version": descriptor.definition_version,  # type: ignore[attr-defined]
+                    }
+                )
+                continue
+            measurable.add(claim.fact_name)
+
+        dry_facts: dict[str, dict[str, object]] = {}
+        for name in sorted(measurable):
+            measurement = await registry.measure(name, max_age=None)
+            if isinstance(measurement, Unreadable):
+                dry_facts[name] = {
+                    "status": "unreadable",
+                    "error_code": measurement.error_code,
+                    "identity_ok": None,
+                }
+            else:
+                expected = registry.expected_identity(measurement.target)
+                identity_ok = expected is not None and measurement.source == expected
+                dry_facts[name] = {
+                    "status": "measured",
+                    "error_code": None,
+                    "identity_ok": identity_ok,
+                }
+
+        report.dry_claims = {
+            "historical_definition": historical,
+            "release_skip": release_skip,
+            "measurable": len(measurable),
+        }
+        report.dry_facts = dry_facts
+        report.status = "done"
         return report
