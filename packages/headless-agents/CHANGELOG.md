@@ -71,6 +71,12 @@ left its unconfined intent behind for the operator quarantine to find.
   removed after the run) is now declared as `sandbox_workspace_write.writable_roots`,
   and `TMPDIR`, `TEMP` and `TMP` all name it; `/tmp` and the operator's `$TMPDIR` stay
   closed.
+- **Git output that is not UTF-8 no longer crashes the engine, and what is recorded
+  keeps its bytes.** The diff of a file that is not UTF-8 (`'utf-8' codec can't decode
+  byte 0xff`) and a hook printing such bytes both crashed the run after its commit.
+  `gitops.git` now decodes its output with undecodable bytes replaced, and
+  `binary=True` returns the bytes untouched: `change.patch` and `commit.log` are
+  written as git printed them, so the patch still rebuilds the commit.
 
 ## 0.5.1 — 2026-09-26 (tag `headless-agents-v0.5.1` after merge)
 

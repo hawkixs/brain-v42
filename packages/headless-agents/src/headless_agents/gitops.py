@@ -13,7 +13,7 @@ from __future__ import annotations
 import subprocess
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal, overload
 
 from .git_tripwire import GitTampered, git_command, git_environment
 
@@ -28,6 +28,7 @@ def empty_hooks_dir(state: Path) -> Path:
     return path
 
 
+@overload
 def git(
     root: Path,
     args: Sequence[str],
@@ -36,11 +37,43 @@ def git(
     state: Path,
     hooks: bool = False,
     tampered: Sequence[str] = (),
-) -> subprocess.CompletedProcess[str]:
+    binary: Literal[False] = False,
+) -> subprocess.CompletedProcess[str]: ...
+
+
+@overload
+def git(
+    root: Path,
+    args: Sequence[str],
+    environ: Mapping[str, str],
+    *,
+    state: Path,
+    hooks: bool = False,
+    tampered: Sequence[str] = (),
+    binary: Literal[True],
+) -> subprocess.CompletedProcess[bytes]: ...
+
+
+def git(
+    root: Path,
+    args: Sequence[str],
+    environ: Mapping[str, str],
+    *,
+    state: Path,
+    hooks: bool = False,
+    tampered: Sequence[str] = (),
+    binary: bool = False,
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     """Run ``git args`` in ``root``; ``hooks=True`` is for the engine commit ONLY.
 
     Raises :class:`GitTampered`, before anything runs, when the tripwire fired,
     ``root`` has no git dir to pin, or the empty hooks directory is not empty.
+
+    Git prints what the repository holds -- the diff of a file that is not
+    UTF-8, a hook's message, a commit subject -- so its output is decoded as
+    UTF-8 with every undecodable byte replaced: none of it may crash ``ha``
+    (ticket 0b3fcdbf). ``binary=True`` returns the bytes untouched, for what
+    is recorded as git printed it: a patch, a hook's output.
     """
     command = git_command(root, tampered=tampered)
     if not hooks:
@@ -48,11 +81,17 @@ def git(
         if any(empty.iterdir()):
             raise GitTampered(f"{empty}: the empty hooks directory is not empty")
         command += ["-c", f"core.hooksPath={empty}"]
+    argv, env = [*command, *args], git_environment(environ, root)
+    if binary:
+        return subprocess.run(  # noqa: S603 - argv list, no shell
+            argv, env=env, capture_output=True, timeout=GIT_TIMEOUT_SECONDS, check=False
+        )
     return subprocess.run(  # noqa: S603 - argv list, no shell
-        [*command, *args],
-        env=git_environment(environ, root),
+        argv,
+        env=env,
         capture_output=True,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         timeout=GIT_TIMEOUT_SECONDS,
         check=False,
     )

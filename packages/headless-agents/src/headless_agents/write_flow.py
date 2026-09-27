@@ -127,6 +127,13 @@ class _Write:
         result = git(root, args, self.environ, state=self.state, hooks=hooks)
         return result.returncode, result.stdout, result.stderr
 
+    def git_bytes(
+        self, root: Path, args: Sequence[str], *, hooks: bool = False
+    ) -> tuple[int, bytes, bytes]:
+        """``git`` for what is recorded as git printed it (ticket 0b3fcdbf)."""
+        result = git(root, args, self.environ, state=self.state, hooks=hooks, binary=True)
+        return result.returncode, result.stdout, result.stderr
+
     def save(self, lineage: LineageState) -> None:
         self.lineage = lineage
         lineages.save(self.state, lineage)
@@ -603,11 +610,14 @@ def _commit(
 ) -> tuple[str | None, list[tuple[str, MadeBy]], str | None]:
     """Step 8: ``(failure_reason, commits, head)`` of the engine's commit."""
     before = len(_branch_reflog(write))
-    code, out, err = write.git(write.worktree, ["add", "-A"])
+    # Bytes: the repository's hooks print whatever they like, recorded as printed.
+    code, out, err = write.git_bytes(write.worktree, ["add", "-A"])
     if code == 0:
-        code, out, err = write.git(write.worktree, ["commit", "-q", "-m", message], hooks=True)
+        code, out, err = write.git_bytes(
+            write.worktree, ["commit", "-q", "-m", message], hooks=True
+        )
     step_dir.mkdir(parents=True, exist_ok=True)
-    (step_dir / COMMIT_LOG).write_text(out + err, encoding="utf-8", errors="replace")
+    (step_dir / COMMIT_LOG).write_bytes(out + err)
     tip, head = _tip(write), _head(write)
     new_entries = _branch_reflog(write)[before:]
     engine_sha = next(
@@ -882,8 +892,10 @@ def run_write_step(
             return _outcome(1, "failed", reason, write, commits=commits, head=head, final=final)
         # The patch before the publication: after the lineage rename only the report is
         # left to rebuild (§3.8.3 step 9), and change.patch cannot be rebuilt from it.
-        code, patch, _ = write.git(write.worktree, ["diff", "--binary", base, "HEAD"])
-        (run_dir / PATCH_FILE).write_text(patch, encoding="utf-8", errors="replace")
+        # Bytes: a file that is not UTF-8 is diffed raw, and replacing its bytes would
+        # record a patch that no longer rebuilds the commit (ticket 0b3fcdbf).
+        code, patch, _ = write.git_bytes(write.worktree, ["diff", "--binary", base, "HEAD"])
+        (run_dir / PATCH_FILE).write_bytes(patch)
         status = "failed" if failed_step else "committed"
         _publish(write, status=status, commits=commits, compromised=None)
         if failed_step:

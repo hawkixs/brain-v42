@@ -265,6 +265,50 @@ def test_a_failed_step_without_changes_commits_nothing(world: World) -> None:
     assert _subjects(world, f"ha/{outcome.run_id}") == []
 
 
+#: Text to git (no NUL byte), so ``git diff --binary`` prints it raw; not UTF-8.
+_NOT_UTF8 = b"caf\xe9 \xff\xfe\n"
+
+
+def test_a_change_that_is_not_utf8_is_committed_and_its_patch_kept_byte_for_byte(
+    world: World,
+) -> None:
+    """Ticket 0b3fcdbf: the diff of a file that is not UTF-8 crashed the engine after its
+    commit (``'utf-8' codec can't decode byte 0xff``); the patch is bytes, kept as bytes."""
+
+    def edit(root: Path) -> None:
+        (root / "latin1.txt").write_bytes(_NOT_UTF8)
+        (root / "blob.bin").write_bytes(b"\x00\xff" * 64)
+
+    world.agent.edit = edit
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    branch = f"ha/{outcome.run_id}"
+    shown = subprocess.run(
+        ["git", "-C", str(world.repo), "show", f"{branch}:latin1.txt"],
+        check=True,
+        capture_output=True,
+        env=GIT_ENV,
+    ).stdout
+    assert shown == _NOT_UTF8
+    # Applied to the base, the recorded patch rebuilds exactly what was committed.
+    replay = world.home / "replay"
+    _git(world.repo, "worktree", "add", "-q", "--detach", str(replay), "main")
+    _git(replay, "apply", "--binary", str(outcome.run_dir / write_flow.PATCH_FILE))
+    assert (replay / "latin1.txt").read_bytes() == _NOT_UTF8
+    assert (replay / "blob.bin").read_bytes() == b"\x00\xff" * 64
+
+
+def test_a_hook_printing_bytes_that_are_not_utf8_does_not_crash_the_commit(
+    world: World,
+) -> None:
+    _hook(world, "post-commit", "printf 'caf\\351 \\377\\n' >&2\n")
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    assert outcome.exit_code == 0, world.said
+    step_dir = outcome.run_dir / "steps" / "01-run-codex"
+    assert (step_dir / write_flow.COMMIT_LOG).read_bytes() == b"caf\xe9 \xff\n"
+
+
 def test_the_worktree_creation_is_not_attributed_to_the_agent(world: World) -> None:
     """The start point is taken after preparation (§3.8.3 step 4)."""
     world.agent.edit = _edit_app
