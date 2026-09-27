@@ -49,9 +49,8 @@ from pathlib import Path
 from typing import Final, Literal
 
 from . import locks, proof_state, prove
-from .capability import scoped_environment
 from .engine import UsageError, executable_for
-from .registry import Probe, probe
+from .registry import Probe, probe, probe_environment
 from .state import ensure_dir
 
 
@@ -187,20 +186,16 @@ class _Attempt:
 
 
 def _probe(rail: str, home: Path, environ: Mapping[str, str]) -> Probe:
-    return probe(rail, executable=executable_for(rail, home), environ=environ)
-
-
-def _updater_environment(home: Path, environ: Mapping[str, str]) -> dict[str, str]:
-    """The vendor updater's own environment: the same child-environment allowlist
-    every provider run gets (:func:`capability.scoped_environment` -- PATH, HOME,
-    locale, proxy and CA variables), never the raw operator environment. A Claude
-    Code session marker or an unrelated credential sitting in the parent's environ
-    has no business reaching a vendor's update binary, which this package neither
-    audits nor sandboxes. ``HOME`` is forced to the ``home`` the rail was just
-    probed under, matching the path the version probe resolved against."""
-    child = scoped_environment(environ)
-    child["HOME"] = str(home)
-    return child
+    """Probe ``rail`` with its own sanitised environment (:func:`registry.
+    probe_environment`), never the raw operator environ: a Claude Code session
+    marker or an unrelated credential has no business reaching a version probe's
+    subprocess (PR #243 review round 2, finding 1), and a custom ``CODEX_HOME`` (or
+    claude's ``CLAUDE_CONFIG_DIR``) must still reach the vendor it belongs to, or a
+    probe against a non-default installation would read the wrong one (finding 2).
+    """
+    return probe(
+        rail, executable=executable_for(rail, home), environ=probe_environment(rail, home, environ)
+    )
 
 
 def _kill_group(process: subprocess.Popen[bytes]) -> None:
@@ -310,7 +305,7 @@ def _update_one(
             )
     say(f"updating {rail} ({before.version or 'version unknown'}): {' '.join(argv)}")
     log = logs / f"{rail}.log"
-    exit_code, note, timed_out = _run_updater(argv, log, _updater_environment(home, environ))
+    exit_code, note, timed_out = _run_updater(argv, log, probe_environment(rail, home, environ))
     after = _probe(rail, home, environ)
     if not after.available:
         gone = f"unavailable after the update: {after.detail}"

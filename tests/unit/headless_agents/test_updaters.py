@@ -141,21 +141,24 @@ VERSIONS = {
     "opencode": "1.0.0",
 }
 
-#: A fake CLI. ``--version`` prints ``<name>.version``; anything else is its updater,
-#: which records what it saw in ``<name>.updated`` (JSON) -- its argv, its own
-#: ``os.environ`` (to pin what the updater actually receives), whether the global
-#: lock is held by someone else, and, for ``agy``, whether its rollback copy already
-#: exists. The state directory and, for agy, the rollback copy are found relative to
-#: the script's own directory (``tmp_path/bin``'s sibling ``tmp_path/state``) -- never
-#: through an environment variable, since the sanitised updater environment carries
-#: none of the package's own names. Then behaves as ``<name>.behaviour`` says:
-#: ``bump`` (default), ``keep``, ``fail``, ``fail-bump`` or ``sleep``.
+#: A fake CLI. ``--version`` prints ``<name>.version`` and records the environment it
+#: was probed with in ``<name>.probed_environ.json`` (to pin what the version probe
+#: actually receives). Anything else is its updater, which records what it saw in
+#: ``<name>.updated`` (JSON) -- its argv, its own ``os.environ`` (to pin what the
+#: updater actually receives), whether the global lock is held by someone else, and,
+#: for ``agy``, whether its rollback copy already exists. The state directory and,
+#: for agy, the rollback copy are found relative to the script's own directory
+#: (``tmp_path/bin``'s sibling ``tmp_path/state``) -- never through an environment
+#: variable, since the sanitised environment carries none of the package's own
+#: names. Then behaves as ``<name>.behaviour`` says: ``bump`` (default), ``keep``,
+#: ``fail``, ``fail-bump`` or ``sleep``.
 _FAKE = """#!{python}
 import fcntl, json, os, pathlib, subprocess, sys, time
 here = pathlib.Path(__file__).resolve().parent
 name = pathlib.Path(__file__).name
 version = here / (name + ".version")
 if sys.argv[1:] == ["--version"]:
+    (here / (name + ".probed_environ.json")).write_text(json.dumps(dict(os.environ)))
     print(version.read_text().strip())
     sys.exit(0)
 old_version = version.read_text().strip()
@@ -200,6 +203,10 @@ class _Bin:
 
     def updated(self, rail: str) -> dict[str, Any] | None:
         path = self.directory / f"{rail}.updated"
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def probed_environ(self, rail: str) -> dict[str, str] | None:
+        path = self.directory / f"{rail}.probed_environ.json"
         return json.loads(path.read_text()) if path.exists() else None
 
 
@@ -538,6 +545,35 @@ def test_the_updater_environment_is_sanitised_never_the_raw_operator_environ(
     assert "SOME_SERVICE_API_KEY" not in child_environ
     assert child_environ["PATH"] == os.environ["PATH"]
     assert child_environ["HOME"] == str(tmp_path / "home")
+
+
+@pytest.mark.parametrize(
+    ("rail", "variable"),
+    [("codex", "CODEX_HOME"), ("claude", "CLAUDE_CONFIG_DIR")],
+)
+def test_a_vendor_home_variable_reaches_only_its_own_rails_updater_and_probe(
+    tmp_path: Path, fake_bin: _Bin, proved: _Proofs, rail: str, variable: str
+) -> None:
+    """PR #243 review round 2, finding 2: CODEX_HOME is codex's own documented
+    state directory (providers.codex.CHILD_ENV_PASSTHROUGH); CLAUDE_CONFIG_DIR is
+    claude's own (providers.claude.CHILD_ENV_PASSTHROUGH). Losing either from the
+    matching rail's sanitised environment would run its updater and its probe
+    against the DEFAULT home/config instead of the one the operator declared,
+    silently targeting the wrong installation; leaking it to another rail is the
+    opposite mistake."""
+    value = str(tmp_path / f"custom-{variable.lower()}")
+    environ = {"PATH": os.environ["PATH"], variable: value}
+    _update(tmp_path, proved, environ=environ)
+    for other in VERSIONS:
+        updated = fake_bin.updated(other)
+        probed = fake_bin.probed_environ(other)
+        assert updated is not None and probed is not None, other
+        if other == rail:
+            assert updated["environ"].get(variable) == value
+            assert probed.get(variable) == value
+        else:
+            assert variable not in updated["environ"], other
+            assert variable not in probed, other
 
 
 def test_agy_is_copied_aside_before_its_update(

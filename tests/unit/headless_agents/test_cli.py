@@ -152,6 +152,50 @@ def _report(world: _World, out: str) -> dict[str, object]:
 # ── ha providers ───────────────────────────────────────────────────────────
 
 
+def test_providers_probe_gets_a_sanitised_environment_not_the_raw_operator_one(
+    world: _World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """PR #243 review round 2, finding 1 and 2: no test here mocks ``probe`` --
+    the real subprocess-based ``registry.probe`` runs for a plain ``ha providers``
+    (no --update), and this pins what environment it actually receives. A session
+    marker or an unrelated credential from the ``world`` fixture's own environ must
+    not reach it, and codex's own CODEX_HOME must, while no other rail's probe sees
+    it (finding 2's per-vendor rule applies here too, not just under --update).
+
+    codex has no ``executable_for`` override (only opencode does): ``probe`` finds
+    it by bare name through ``shutil.which``, which reads the REAL process PATH,
+    never ``io.environ``'s -- so the real PATH is monkeypatched to find the fake
+    script, while the environ HANDED TO ``ha providers`` (``world.environ``, a
+    dict distinct from the real process environment) is what must reach the
+    spawned subprocess: if it fell back to the real ``os.environ`` instead, this
+    process's own ambient variables (a real secret, say) would show up in the
+    dump below instead of what this test put in ``world.environ``.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    dump = tmp_path / "codex-probed.env"
+    codex_script = bin_dir / "codex"
+    codex_script.write_text(f'#!/bin/sh\nenv > "{dump}"\necho "codex-cli 1.0.0"\n')
+    codex_script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ.get('PATH', '')}")
+    world.environ.update(
+        {
+            "PATH": f"{bin_dir}:{world.environ['PATH']}",
+            "CODEX_HOME": str(tmp_path / "custom-codex-home"),
+            "SOME_SERVICE_API_KEY": "super-secret-value",
+        }
+    )
+    code, _, _ = world.run("providers")
+    assert code == 0
+    assert dump.is_file(), "the fake codex executable was never probed"
+    seen = dict(line.split("=", 1) for line in dump.read_text().splitlines() if "=" in line)
+    assert seen.get("CODEX_HOME") == str(tmp_path / "custom-codex-home")
+    assert "CLAUDECODE" not in seen
+    assert "CLAUDE_CODE_ENTRYPOINT" not in seen
+    assert "SOME_SERVICE_API_KEY" not in seen
+    assert "KEEP_ME" not in seen
+
+
 def test_providers_json_lists_every_registry_name(world: _World, monkeypatch) -> None:
     monkeypatch.setattr(
         cli, "probe", lambda name, **_: cli.Probe(available=name == "codex", detail=f"d-{name}")

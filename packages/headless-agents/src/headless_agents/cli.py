@@ -61,7 +61,14 @@ from .model_live import live_models
 from .model_report import build_model_report
 from .proof_state import UNPROVABLE_CONFINEMENT, proof_status, rail_state
 from .proofs import CLI_RAILS
-from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, probe
+from .registry import (
+    PROVIDER_NAMES,
+    Probe,
+    UnknownProvider,
+    max_prompt_bytes,
+    probe,
+    probe_environment,
+)
 from .report import RUN_JSON
 from .run_record import RESULT_FILE_NAME
 from .runs import Registry, RegistryError
@@ -358,7 +365,11 @@ def _providers(args: argparse.Namespace, io: Io) -> int:
     state = state_dir(io.environ, home=io.home)
     rows = []
     for name in PROVIDER_NAMES:
-        found = probe(name, executable=executable_for(name, io.home), environ=io.environ)
+        found = probe(
+            name,
+            executable=executable_for(name, io.home),
+            environ=probe_environment(name, io.home, io.environ),
+        )
         row: dict[str, object] = {
             "name": name,
             "available": found.available,
@@ -463,7 +474,11 @@ def _prove(args: argparse.Namespace, io: Io) -> int:
     state = state_dir(io.environ, home=io.home)
 
     def probed(rail: str) -> Probe:
-        return probe(rail, executable=executable_for(rail, io.home), environ=io.environ)
+        return probe(
+            rail,
+            executable=executable_for(rail, io.home),
+            environ=probe_environment(rail, io.home, io.environ),
+        )
 
     found = {rail: probed(rail) for rail in rails}
     for rail in args.rails:

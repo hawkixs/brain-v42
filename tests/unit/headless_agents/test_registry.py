@@ -221,6 +221,22 @@ class TestProbe:
         assert found.available is True
         assert found.version == "v9.9.9"
 
+    def test_probe_hands_its_environ_to_the_subprocess_verbatim(self, tmp_path: Path) -> None:
+        """PR #243 review round 2, finding 1: the ``--version`` subprocess must run
+        with the environment ``probe`` was GIVEN, never the raw process environment
+        -- a caller that forgets to scope it is the bug, not this function silently
+        falling back to ``os.environ`` behind its back."""
+        dump = tmp_path / "seen.env"
+        cli = _script(tmp_path, f'env > "{dump}"\necho "1.0.0"')
+        registry.probe(
+            "claude",
+            executable=str(cli),
+            environ={"PATH": os.environ["PATH"], "ONLY_THIS_MARKER": "yes"},
+        )
+        seen = dict(line.split("=", 1) for line in dump.read_text().splitlines() if "=" in line)
+        assert seen.get("ONLY_THIS_MARKER") == "yes"
+        assert "HOME" not in seen, "an environ without HOME must not let the real one leak through"
+
     @_needs_procfs
     def test_a_grandchild_holding_the_pipe_does_not_survive_the_timeout(
         self, tmp_path: Path
@@ -368,3 +384,60 @@ class TestProbe:
         monkeypatch.setattr(registry.os, "killpg", _broken_killpg)
         with pytest.raises(KeyboardInterrupt):
             registry.probe("agy", executable=str(cli), timeout_seconds=10.0)
+
+
+class TestProbeEnvironment:
+    """PR #243 review round 2, finding 1 and 2: the environment a CLI rail's own
+    subprocess (a version probe, or a vendor updater) should run with -- the shared
+    base allowlist, ``HOME`` forced, and each vendor's OWN documented home/config
+    variable, never another vendor's."""
+
+    def test_a_cli_rails_environment_drops_session_markers_and_unrelated_secrets(
+        self, tmp_path: Path
+    ) -> None:
+        home = tmp_path / "home"
+        environ = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/should-not-be-used",
+            "CLAUDECODE": "1",
+            "CLAUDE_CODE_ENTRYPOINT": "cli",
+            "SOME_SERVICE_API_KEY": "super-secret",
+        }
+        child = registry.probe_environment("agy", home, environ)
+        assert "CLAUDECODE" not in child
+        assert "CLAUDE_CODE_ENTRYPOINT" not in child
+        assert "SOME_SERVICE_API_KEY" not in child
+        assert child["PATH"] == "/usr/bin:/bin"
+        assert child["HOME"] == str(home)
+
+    def test_codexs_own_home_variable_reaches_only_codex(self, tmp_path: Path) -> None:
+        """CODEX_HOME is codex's documented state directory (providers.codex);
+        another rail must never see it, and codex itself must keep it."""
+        home = tmp_path / "home"
+        environ = {"PATH": "/usr/bin:/bin", "CODEX_HOME": "/custom/codex/home"}
+        assert (
+            registry.probe_environment("codex", home, environ)["CODEX_HOME"] == "/custom/codex/home"
+        )
+        for rail in ("claude", "agy", "opencode"):
+            assert "CODEX_HOME" not in registry.probe_environment(rail, home, environ)
+
+    def test_claudes_own_config_dir_reaches_only_claude(self, tmp_path: Path) -> None:
+        """CLAUDE_CONFIG_DIR is claude's documented config directory
+        (providers.claude); mirrors the codex rule above for the other vendor
+        that has one."""
+        home = tmp_path / "home"
+        environ = {"PATH": "/usr/bin:/bin", "CLAUDE_CONFIG_DIR": "/custom/claude/config"}
+        assert (
+            registry.probe_environment("claude", home, environ)["CLAUDE_CONFIG_DIR"]
+            == "/custom/claude/config"
+        )
+        for rail in ("codex", "agy", "opencode"):
+            assert "CLAUDE_CONFIG_DIR" not in registry.probe_environment(rail, home, environ)
+
+    def test_an_http_provider_name_gets_the_environ_unchanged(self, tmp_path: Path) -> None:
+        """probe() never spawns a subprocess for an HTTP provider -- it only checks a
+        key variable's presence -- so there is nothing to sanitise, and doing so
+        would hide the very key the caller is checking for."""
+        home = tmp_path / "home"
+        environ = {"PATH": "/usr/bin:/bin", "OPENROUTER_API_KEY": "k"}
+        assert registry.probe_environment("openrouter", home, environ) == dict(environ)
