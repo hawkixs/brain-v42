@@ -428,3 +428,63 @@ def test_a_continuation_outside_any_lineage_is_unknown(tmp_path: Path) -> None:
     path.write_text(json.dumps(document))
     with pytest.raises(Unknown, match="has no lineage"):
         registry.resolve(run_id)
+
+
+# ── started_at: whether a run started is the registry's, never the report's ──
+# (0.5.3 lot 4a, ticket fbcda7d5)
+
+_RID = "20260927T000000-aaaaaaaa"
+
+
+def _created(tmp_path: Path) -> Registry:
+    registry = _registry(tmp_path)
+    registry.create(_RID, run_dir=None, target=_TARGET, repository=None, lineage=None)
+    return registry
+
+
+def test_a_new_entry_records_that_it_has_not_started(tmp_path: Path) -> None:
+    entry = _created(tmp_path).resolve(_RID)
+    assert entry.started_at is None
+    assert entry.start_recorded
+
+
+def test_started_at_is_written_once_and_read_back(tmp_path: Path) -> None:
+    registry = _created(tmp_path)
+    registry.set_started(_RID, "2026-09-27T00:00:01Z")
+    assert registry.resolve(_RID).started_at == "2026-09-27T00:00:01Z"
+    with pytest.raises(RuntimeError, match="already started"):
+        registry.set_started(_RID, "2026-09-27T00:00:02Z")
+    assert registry.resolve(_RID).started_at == "2026-09-27T00:00:01Z"
+
+
+def test_a_legacy_entry_without_started_at_resolves(tmp_path: Path) -> None:
+    """Made by 0.5.2 or earlier: the key is absent, and says nothing."""
+    registry = _created(tmp_path)
+    path = tmp_path / "state" / "runs" / f"{_RID}.json"
+    document = json.loads(path.read_text())
+    del document["started_at"]
+    path.write_text(json.dumps(document))
+    entry = registry.resolve(_RID)
+    assert entry.started_at is None
+    assert not entry.start_recorded
+
+
+def test_an_entry_with_a_key_ha_does_not_know_still_resolves(tmp_path: Path) -> None:
+    """Additive keys: an older ha reads a newer entry, as this one reads a later one."""
+    registry = _created(tmp_path)
+    path = tmp_path / "state" / "runs" / f"{_RID}.json"
+    document = json.loads(path.read_text())
+    document["a_later_key"] = {"any": "thing"}
+    path.write_text(json.dumps(document))
+    assert registry.resolve(_RID).run_id == _RID
+
+
+@pytest.mark.parametrize("value", [5, "", True, ["2026"]])
+def test_a_started_at_ha_never_writes_is_unknown(tmp_path: Path, value: object) -> None:
+    registry = _created(tmp_path)
+    path = tmp_path / "state" / "runs" / f"{_RID}.json"
+    document = json.loads(path.read_text())
+    document["started_at"] = value
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match="started_at"):
+        registry.resolve(_RID)

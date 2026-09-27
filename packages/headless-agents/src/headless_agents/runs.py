@@ -52,6 +52,12 @@ class Entry:
     providers: tuple[str, ...]
     #: The review ``--findings`` named, for a fix; ``None`` otherwise (§3.6, §3.10).
     findings_from: str | None = None
+    #: When the engine started the run's first step; ``None`` until then. Written
+    #: once, by the engine, never read from a report (0.5.3 lot 4a, ticket fbcda7d5).
+    started_at: str | None = None
+    #: Whether the entry records ``started_at`` at all: an entry made before the key
+    #: existed (0.5.2 or earlier) does not, and says nothing about its start.
+    start_recorded: bool = False
 
 
 def _optional_path(value: object) -> Path | None:
@@ -120,6 +126,7 @@ class Registry:
             "continues": continues,
             "providers": list(providers),
             "findings_from": findings_from,
+            "started_at": None,
         }
         create_once(self._path(run_id), document)
         return self._entry(document, self._path(run_id))
@@ -196,6 +203,12 @@ class Registry:
         # A write's authors are never invented: a lineage's entry must name them.
         if not isinstance(providers, list) or not all(isinstance(p, str) and p for p in providers):
             raise Unknown(f"{path}: providers is malformed")
+        # Absent from an entry older than the key; present, it is null until the first
+        # step starts, then the time it did -- anything else is not what ha writes.
+        start_recorded = "started_at" in document
+        started_at = document.get("started_at")
+        if started_at is not None and not (isinstance(started_at, str) and started_at):
+            raise Unknown(f"{path}: started_at is malformed")
         return Entry(
             run_id=str(document["run_id"]),
             run_dir=Path(run_dir),
@@ -207,6 +220,8 @@ class Registry:
             continues=continues,
             providers=tuple(providers),
             findings_from=findings_from,
+            started_at=started_at if isinstance(started_at, str) else None,
+            start_recorded=start_recorded,
         )
 
     def run_ids(self) -> list[str]:
@@ -240,6 +255,20 @@ class Registry:
 
     def set_cleaned(self, run_id: str, when: str) -> None:
         self._update(run_id, cleaned_at=when)
+
+    def set_started(self, run_id: str, when: str) -> None:
+        """Record that the run's first step started: once, by the engine.
+
+        ``ha clean`` decides from this whether the run started (ticket fbcda7d5) --
+        never from ``run.json``, a report anyone can forge or delete. A second call
+        is a programming error, never a user's.
+        """
+        path = self._path(run_id)
+        document = read(path, expect_id=("run_id", run_id))
+        if document.get("started_at"):
+            raise RuntimeError(f"{run_id} already started at {document['started_at']}")
+        document["started_at"] = when
+        publish(path, document)
 
     def forget(self, run_id: str) -> None:
         """Remove the entry of a run that never started (§3.8.1): nothing to keep."""

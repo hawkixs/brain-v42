@@ -17,7 +17,7 @@ from headless_agents.proofs import CLI_RAILS, proof_path, record_proof
 from headless_agents.registry import Probe
 from headless_agents.result import RunResult
 from headless_agents.run_record import record, run_id_of
-from headless_agents.runs import Registry
+from headless_agents.runs import Entry, Registry
 from headless_agents.spec import RunSpec
 
 
@@ -498,3 +498,68 @@ def test_a_chain_records_the_counts_of_the_link_that_answered(world: World) -> N
     world.fakes["codex"] = _Fake("codex", events=(TOOL_FIXTURES / "codex.events.jsonl").read_text())
     (step,) = _steps(world.run("pair"))
     assert step["provider"] == "codex" and step["tools"] == {"command_execution": 4}
+
+
+# ── started_at, and ha clean deciding from it (0.5.3 lot 4a, ticket fbcda7d5) ─
+
+
+def _only_entry(world: World) -> Entry:
+    (run_id,) = world.registry().run_ids()
+    return world.registry().resolve(run_id)
+
+
+def test_a_run_records_started_at_when_its_step_starts(world: World) -> None:
+    world.run("codex")
+    entry = _only_entry(world)
+    assert entry.started_at is not None
+    assert (entry.run_dir / "run.json").is_file()
+
+
+def test_a_run_refused_before_its_step_records_no_started_at(world: World) -> None:
+    (world.state / "proofs" / "codex.json").unlink()
+    with pytest.raises(UsageError):
+        world.run("codex")
+    entry = _only_entry(world)
+    assert entry.started_at is None
+
+
+def _clean(world: World, run_id: str) -> int:
+    return engine.clean(
+        run_id,
+        environ={"PATH": "/usr/bin:/bin", "HOME": str(world.home)},
+        home=world.home,
+        say=world.said.append,
+    )
+
+
+def test_clean_ignores_a_forged_report_on_a_run_that_never_started(world: World) -> None:
+    (world.state / "proofs" / "codex.json").unlink()
+    with pytest.raises(UsageError):
+        world.run("codex")
+    entry = _only_entry(world)
+    entry.run_dir.mkdir(parents=True, exist_ok=True)
+    (entry.run_dir / "run.json").write_text('{"schema": 1, "kind": "run"}')
+    assert _clean(world, entry.run_id) == 0
+    assert world.said[-1] == f"{entry.run_id} never started: forgotten"
+    assert world.registry().run_ids() == []
+
+
+def test_clean_ignores_a_deleted_report_on_a_run_that_started(world: World) -> None:
+    world.run("codex")
+    entry = _only_entry(world)
+    (entry.run_dir / "run.json").unlink()
+    assert _clean(world, entry.run_id) == 0
+    assert world.said[-1].startswith(f"{entry.run_id} cleaned:")
+    assert world.registry().resolve(entry.run_id).cleaned_at is not None
+
+
+def test_clean_of_a_legacy_entry_keeps_the_report_rule(world: World) -> None:
+    """An entry made before started_at existed: the report is all there is."""
+    world.run("codex")
+    entry = _only_entry(world)
+    path = world.state / "runs" / f"{entry.run_id}.json"
+    document = json.loads(path.read_text())
+    del document["started_at"]
+    path.write_text(json.dumps(document))
+    assert _clean(world, entry.run_id) == 0
+    assert world.said[-1].startswith(f"{entry.run_id} cleaned:")

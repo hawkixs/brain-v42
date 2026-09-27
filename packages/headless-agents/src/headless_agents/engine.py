@@ -959,6 +959,7 @@ def _execute_write(
     step_dir = run_dir / "steps" / step_name
 
     def run_links(workspace: Workspace, directory: Path) -> RunResult:
+        registry.set_started(entry.run_id, _utc_now())
         say(f"step 1 {slot} {role.name}: started")
         final = _run_links(
             plan, bundle, run_id=entry.run_id, step_dir=directory, workspace=workspace, say=say
@@ -1177,6 +1178,8 @@ def _execute_review(
             _refused(registry, entry)
         raise UsageError(str(exc)) from None
     task = plan.task or REVIEW_DEFAULT_TASK
+    # The change is pinned and its worktree added: the review has started.
+    registry.set_started(entry.run_id, _utc_now())
     try:
         report.update(
             head=prepared.head,
@@ -1453,6 +1456,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 findings_head=findings.head if findings is not None else None,
                 admission_wait=admission_wait,
             )
+        registry.set_started(entry.run_id, _utc_now())
         say(f"step 1 run {role.name}: started")
         final = _run_links(
             plan,
@@ -1513,8 +1517,10 @@ def clean(
     Resolved through the registry; the run's lifecycle lock taken without
     waiting (an active run is refused), then the unconfined lock shared. A run
     that never started is forgotten; any other has its directory removed and
-    ``cleaned_at`` set -- its entry stays. A write run follows the lineage
-    rules of :func:`headless_agents.write_flow.clean_write`.
+    ``cleaned_at`` set -- its entry stays. Whether it started is the registry's
+    ``started_at``, never ``run.json`` (an entry older than that key keeps the
+    report rule). A write run follows the lineage rules of
+    :func:`headless_agents.write_flow.clean_write`.
     """
     state = state_dir(environ, home=home)
     registry = Registry(state, runs_root=runs_root(home))
@@ -1566,7 +1572,14 @@ def clean(
                 )
             except LockTimeout as exc:
                 raise UsageError(f"{exc}: the lineage is in use; nothing cleaned") from None
-        started = (entry.run_dir / RUN_JSON).is_file()
+        # The registry decides (ticket fbcda7d5): a report is never an authority, and
+        # a forged or deleted run.json must not turn a never-started run into a
+        # cleaned one, or the reverse. Only an entry older than started_at falls
+        # back to the report, the one witness it has.
+        if entry.start_recorded:
+            started = entry.started_at is not None
+        else:
+            started = (entry.run_dir / RUN_JSON).is_file()
         worktree = entry.run_dir / review_flow.WORKTREE
         if worktree.is_dir() and entry.repository is not None:
             # A review whose cleanup failed kept its detached worktree: removed through
