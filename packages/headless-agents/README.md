@@ -366,14 +366,16 @@ uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@
 ```
 
 ```text
-ha run TARGET [PROMPT | -] [-m MODEL] [--effort E] [--timeout SECONDS] [--wait SECONDS]
+ha run TARGET [PROMPT | -] [-m|--model MODEL] [--effort E] [--timeout SECONDS] [--wait SECONDS]
        [--context full|global|none] [--context-parents] [--mcp PROFILE]
        [--base-url URL --key-env VAR] [--repo PATH] [--json] [--run-dir DIR]
        [--write [--shell] [--base REF]]
        [--continue RUN_ID] [--findings RUN_ID] [--head REF] [--run RUN_ID]
 ha roles [--json]
 ha workflows [--json]
-ha providers [--json]
+ha providers [RAIL...] [--update [--check] [--no-prove] [--wait SECONDS]] [--json]
+ha prove [RAIL...] [--isolation] [--confinement] [--stale] [--keep] [--json]
+ha models [--provider NAME] [--json] [--refresh]
 ha runs [--limit N] [--json]
 ha show RUN_ID [--json]
 ha show --dir PATH [--json]
@@ -381,29 +383,120 @@ ha clean RUN_ID
 ha --version
 ```
 
-- **`--wait SECONDS`** (spec §3.3): a bounded admission wait. Ordinary reads and confined
-  writes share the global lock; an unconfined write holds it exclusively, serialising every
-  other run while it is in flight. `ha clean` is admitted through this same gate, not a lock
-  of its own. `--wait` gives one explicit, positive number of seconds, spent as a single
-  absolute deadline across the global lock and, for a write or a review, the lineage
-  registry and lineage locks it admits under -- time spent on one does not extend the
-  budget for the next, and a lock granted past the deadline is refused, never accepted
-  late. Without `--wait`, each of those locks keeps its own existing ten-second bound. A
-  deadline that expires exits `2` before any provider step runs and leaves nothing behind
-  (an unstarted run's entry is forgotten), naming the contested lock and the wait
-  requested. An invalid `--wait` -- zero, negative, `nan`, `inf`, or a missing value -- is
-  rejected before any admission is even attempted, so nothing is named but the flag
-  itself: `--wait needs a finite number of seconds greater than zero`. `--timeout` is
-  unrelated in both cases, and always the provider run's own timeout. Example:
-  `ha run codex --wait 30 "Summarise the change"`.
+### Parallel runs: what runs together, what serialises, and why
+
+All locks live in the state directory (`ha providers`/`ha prove` read it from
+`~/.local/state/ha`, or `$XDG_STATE_HOME/ha` when that variable is absolute), are taken in
+one fixed order (lifecycle, writer intent, the admission gate, the global lock, the lineage
+registry, lineage locks ascending), are `flock` with `O_CLOEXEC` -- so no provider or git
+child ever inherits one -- and die with the `ha` process that took them.
+
+| Run kind | Global lock | Other locks held |
+|---|---|---|
+| read run | shared | -- |
+| review | shared | registry and its lineages shared, only while it pins the commit |
+| new confined write | shared | registry exclusive only until its intent is published (released before `git worktree add`); its own lineage exclusive for the whole run |
+| continuation | shared | registry shared; its own lineage exclusive |
+| unconfined write | exclusive | its lineage |
+
+**Why an unconfined write is exclusive**: its agent can write wherever the operator can,
+including another run's worktree, or the tree a read is reading. **What makes a write
+unconfined**: a link on a rail without a passing confinement proof for its installed version
+(the `mode` `ha providers` reports below), or a `--shell` write on claude, opencode or agy.
+Claude's confinement can never be proven either way (its tool log names no path for a
+rejected call), so a claude write always serialises. **Why a lineage serialises**: its runs
+share one worktree and one branch.
+
+This is proven live, not only designed: `tests/live/headless_agents/test_concurrency_live.py`
+(G1) runs two confined codex writes on distinct lineages and a read together, holds every
+provider step and every `git worktree add` at a barrier, and asserts all three are in flight
+at once -- the global lock reads shared, both lineage locks read exclusive, the registry lock
+reads free, and the two `git worktree add` calls measurably overlap -- before releasing them.
+
+- **`--wait SECONDS`** (spec §3.3): a bounded admission wait, for `ha run` and `ha clean`
+  alike (`ha clean` is admitted through this very same gate, not a lock of its own). Ordinary
+  reads and confined writes share the global lock; an unconfined write holds it exclusively,
+  serialising every other run while it is in flight. `--wait` gives one explicit, positive
+  number of seconds, spent as a single absolute deadline across the global lock and, for a
+  write or a review, the lineage registry and lineage locks it admits under -- time spent on
+  one does not extend the budget for the next, and a lock granted past the deadline is
+  refused, never accepted late. Without `--wait`, each of those locks keeps its own existing
+  ten-second bound. A deadline that expires exits `2` before any provider step runs and
+  leaves nothing behind (an unstarted run's entry is forgotten), naming the contested lock
+  and the wait requested. `--timeout` is unrelated in both cases, and always the provider
+  run's own timeout. Example: `ha run codex --wait 30 "Summarise the change"`.
+
+  An invalid **value** -- zero, negative, `nan` or `inf` -- is refused by `ha` itself, before
+  any admission is even attempted, naming nothing but the flag's own rule: `--wait needs a
+  finite number of seconds greater than zero`. A **missing** value (`--wait` given with
+  nothing after it, or as the last argument) is refused earlier still, by argparse's own
+  parsing, before that message ever runs: `argument --wait: expected one argument`. Both exit
+  `2`; only the first names `ha`'s own rule, the second is argparse's.
 
   An unconfined writer that already holds the short-lived admission gate excludes every
   later run -- shared or not -- until it releases it; a reader that arrives after a writer
-  has already won that gate queues behind it too. This is a **best-effort** mitigation, not
-  a fairness guarantee: `flock` does not order waiters, so a writer still *polling* for
-  admission (not yet holding it) can in principle be overtaken by a continuous, overlapping
-  stream of readers, and a continuous stream of writers can likewise make a waiting reader
-  time out. A fair FIFO admission queue is planned for 0.5.3.
+  has already won that gate queues behind it too. A **writer-intent lock**, taken exclusively
+  by an unconfined writer before it ever polls the gate, narrows -- but does not close -- the
+  window where a continuous stream of readers could otherwise starve it out: once a writer
+  holds writer-intent, a reader arriving afterward blocks on that same lock, plain mutual
+  exclusion, true regardless of timing. This is a **best-effort** mitigation, not a fairness
+  guarantee: `flock` orders no waiter, so a writer still *polling* for writer-intent (not yet
+  holding it) can in principle be overtaken by a continuous, overlapping stream of readers,
+  and a continuous stream of writers can likewise make a waiting reader time out. A fair FIFO
+  admission queue is planned for 0.5.3.
+
+### Proof state before a run fails
+
+`ha providers` (text and `--json`) shows each CLI rail's isolation and confinement proof
+status before anything runs, not only after a refusal: `passed`, `failed`, `missing`,
+`stale` (recorded for another rail version; or, isolation only, recorded for this version but
+a headless-agents upgrade changed how the rail is isolated since -- both name what the proof
+was recorded for), and `unreadable` (a proof file that does not parse: a bug or a hand edit,
+never conflated with `missing`). The resulting **mode**: `refused` (no passing isolation --
+the rail cannot run at all), `writes serialised` (isolation passes, confinement does not --
+the rail runs, but every write on it holds the global lock exclusively), or `parallel` (both
+pass -- confined writes on this rail run alongside other confined writes and reads). Claude's
+confinement is permanently unprovable (its tool log names no path for a rejected call), so it
+is reported that way rather than `missing`, and never offered a re-prove hint for it.
+Whenever re-proving would help, `ha providers` names the exact command that does it.
+
+### `ha prove`
+
+`ha prove [RAIL...] [--isolation] [--confinement] [--stale] [--keep] [--json]` records CLI
+rails' isolation and confinement proofs from the INSTALLED package -- the same live harness
+`tests/live/headless_agents/test_proofs_live.py` now wraps, so proving needs no repository
+checkout. Everything that can refuse does so before the first provider run: a name that is
+not a CLI rail, claude's unprovable confinement asked for by name, a named rail that is not
+installed, a rail with no model declared (`~/.config/ha/models.toml`, `RAIL = "MODEL"`), and
+-- for isolation specifically -- a development install (an editable checkout's own
+fingerprint is not the installed package's; set `HA_PROVE_FROM_CHECKOUT=1` only when both are
+provably the same source). Before anything spends, the command announces every run it is
+about to make and the total, on stderr: proving spends real provider tokens, and a session
+runs `ha` headless, so nothing asks first. `--stale` narrows the selection to exactly the
+proofs that have not passed for the version installed now -- the answer to a CLI updating
+itself silently (Claude Code moves its own version without any run failing yet): `ha prove
+--stale` after every install. `--keep` keeps the throwaway proof root under
+`~/.cache/ha/proofs/` for inspection instead of removing it. `--json` prints every verdict and
+the resulting mode; the exit code is `0` only when every requested proof passed and recorded
+(a `skipped` verdict -- an unprovable or unavailable rail -- never blocks it).
+
+### `ha providers --update`
+
+`ha providers --update [RAIL...] [--check] [--no-prove] [--wait SECONDS]` brings the CLI
+rails up to date and re-establishes their proofs, one operator command instead of a manual
+per-CLI routine: it takes the global lock exclusively first (honouring `--wait` exactly like
+`ha run`), so no run executes while a binary changes underneath it; then, per rail, records
+the installed version, runs the vendor's own updater (`claude update`, `codex update`, `agy
+update`, `opencode upgrade`) with a sanitised subprocess environment, and probes the new
+version; releases the lock; then runs `ha prove` on every rail whose version actually changed
+(unless `--no-prove`). It reports, per rail: the old and new version, each proof's verdict,
+the resulting mode, and, when a proof failed, the previous version's path for a manual
+rollback (claude keeps `~/.local/share/claude/versions/<v>`, codex keeps
+`~/.codex/packages/standalone/releases/<v>`). `--check` runs nothing and takes no lock: it
+shows what an update would do (`unknown` for a vendor with no dry-run support of its own),
+and is refused together with `--wait` (nothing to wait for when nothing runs). The exit code
+is `0` only when every rail settled: updated (or checked) with nothing failed, timed out, or
+left with an unrecorded proof after its version changed.
 
 `TARGET` is a provider (`ha run codex "..."`), a role declared in
 `~/.config/ha/roles.toml` -- an executor: one provider, or a `chain` of them, with optional
@@ -483,7 +576,7 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   purpose = "Judgment: reviews of specs, plans and code, and builds that need reasoning."
   tasks = [{kind = "design-review", effort = "high"}, {kind = "build-deep", effort = "high"}]
   cost = {kind = "subscription", windows = ["5h", "weekly"]}
-  pitfalls = ["A codex write is unconfined in ha 0.5.1: it serialises every ha run."]
+  pitfalls = ["A codex write serialises every ha run whenever codex's confinement proof has not passed (`ha providers` shows the mode)."]
   verified_at = 2026-09-27
   source = "red-skills decision: codex model and effort tiering for ha runs"
 
@@ -601,6 +694,19 @@ opencode 1.18.30, agy 1.2.9): `34 passed in 449.20s (0:07:29)`, 0 skipped, 0 fai
 suites after the pre-tag hardening) and their two documented failures are recorded in the
 CHANGELOG's 0.4.0 "Measured" section. A failure here is a finding, not a flake: re-run
 once to rule out the network, then report it -- never loosen the assertion.
+
+`tests/live/headless_agents/test_proofs_live.py` (lot 1, 1b) is now a thin wrapper over
+`headless_agents.prove`: it drives the exact live harness `ha prove` itself runs, so every
+proof it records is what `ha prove` would have recorded for the same rail, version and model.
+
+`tests/live/headless_agents/test_concurrency_live.py` (lot 5) proves G1 live: two confined
+codex writes on distinct lineages and one read run, held at PATH-shim barriers
+(`tests/live/headless_agents/_barrier.py`) before the provider's first token or before git
+touches the repository, asserted in flight together -- three simultaneous arrivals, the
+global lock shared, both lineage locks exclusive, the registry lock free, `git worktree add`
+under measured contention -- then released and checked to completion. `HA_LIVE_HA` names the
+`ha` under test (default: the checkout's own venv), so the same test also replays G1 against
+an installed release before it is tagged.
 
 ## Licence
 
