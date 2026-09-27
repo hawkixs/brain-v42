@@ -81,11 +81,14 @@ left its unconfined intent behind for the operator quarantine to find.
   operator quarantine.** An exception raised by the live engine from its commit through
   publication left `run.json` at `running`, the pending write and the unconfined intent
   behind, so the next run found the operator quarantined (`stale_unconfined_intent`). The
-  write is now published as `failed` with its lineage compromised (`engine_error`), the
-  commits the commit step named keep their provenance, `run.json` is written and the
-  intent removed -- only once the lineage holds no pending write. A process that dies
-  there, an interruption, or a publication that fails in turn still leaves the intent,
-  and the quarantine of a genuinely stale one is unchanged.
+  write is now published as `failed` with its lineage compromised (`engine_error`),
+  `run.json` is written and the intent removed -- only once the lineage holds no pending
+  write. Every commit is attributed first: the ones the commit step named, or, when it
+  failed before naming them, the ones recovered from the branch, `HEAD` and the branch
+  reflog; a commit no one can name keeps the pending write and the intent. A process
+  that dies there, an interruption, a git found tampered, or a publication that fails
+  in turn still leaves the intent, and the quarantine of a genuinely stale one is
+  unchanged.
 
 ## 0.5.1 — 2026-09-26 (tag `headless-agents-v0.5.1` after merge)
 

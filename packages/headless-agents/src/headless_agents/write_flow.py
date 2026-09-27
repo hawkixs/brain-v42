@@ -605,19 +605,16 @@ def _branch_reflog(write: _Write) -> list[tuple[str, str]]:
     return entries
 
 
-def _commit(
-    write: _Write, message: str, start: str, step_dir: Path
-) -> tuple[str | None, list[tuple[str, MadeBy]], str | None]:
-    """Step 8: ``(failure_reason, commits, head)`` of the engine's commit."""
-    before = len(_branch_reflog(write))
-    # Bytes: the repository's hooks print whatever they like, recorded as printed.
-    code, out, err = write.git_bytes(write.worktree, ["add", "-A"])
-    if code == 0:
-        code, out, err = write.git_bytes(
-            write.worktree, ["commit", "-q", "-m", message], hooks=True
-        )
-    step_dir.mkdir(parents=True, exist_ok=True)
-    (step_dir / COMMIT_LOG).write_bytes(out + err)
+def _attribute(
+    write: _Write, message: str, start: str, before: int
+) -> tuple[list[tuple[str, MadeBy]], str | None, str | None]:
+    """``(commits, engine_sha, head)``: every commit since ``start``, and who made it.
+
+    Only the engine and the repository's hooks can have committed here: an agent's
+    commit was refused before step 8. ``before`` is the branch reflog's length before
+    the engine's commit. Read-only, so it runs again when the commit step failed
+    before naming what it made (review of #236).
+    """
     tip, head = _tip(write), _head(write)
     new_entries = _branch_reflog(write)[before:]
     engine_sha = next(
@@ -633,6 +630,22 @@ def _commit(
     ]
     if engine_sha is not None and engine_sha not in shas:
         commits.insert(0, (engine_sha, "engine"))
+    return commits, engine_sha, head
+
+
+def _commit(
+    write: _Write, message: str, start: str, step_dir: Path, before: int
+) -> tuple[str | None, list[tuple[str, MadeBy]], str | None]:
+    """Step 8: ``(failure_reason, commits, head)`` of the engine's commit."""
+    # Bytes: the repository's hooks print whatever they like, recorded as printed.
+    code, out, err = write.git_bytes(write.worktree, ["add", "-A"])
+    if code == 0:
+        code, out, err = write.git_bytes(
+            write.worktree, ["commit", "-q", "-m", message], hooks=True
+        )
+    step_dir.mkdir(parents=True, exist_ok=True)
+    (step_dir / COMMIT_LOG).write_bytes(out + err)
+    commits, engine_sha, head = _attribute(write, message, start, before)
     if any(made_by == "hook" for _, made_by in commits):
         return "hook_committed", commits, head
     if code != 0 or engine_sha is None:
@@ -726,10 +739,11 @@ def _abandon(
     admission quarantine the operator for a writer that did not die. The write is
     published instead -- failed, its lineage compromised (``engine_error``): the
     repository is not in a state the engine expected -- and :func:`_publish` removes
-    the intent only once the lineage no longer holds the pending write. The commits
-    the commit step named get their provenance; any other stays without, like a
-    commit no witness named. A process that dies here, an interruption, a git
-    found tampered, or a publication that fails in turn still leaves both for the
+    the intent only once the lineage no longer holds the pending write. Every commit
+    gets its provenance: ``commits`` are the ones the commit step named, or, when it
+    failed first, the ones :func:`_attribute` recovered -- a commit no one can name
+    is never finalised. A process that dies here, an interruption, a git found
+    tampered, or a publication that fails in turn still leaves both for the
     quarantine: the one git command here runs before the publication.
     """
     head = _head(write)
@@ -906,9 +920,10 @@ def run_write_step(
         # §3.6: "fix" instead of "implement" for a run taking a review's findings.
         verb = "residue" if failed_step else ("fix" if findings_head is not None else "implement")
         message = f"chore(ha): {run_id} {verb} via {final.provider}/{model}"
-        attributed: Sequence[tuple[str, MadeBy]] = ()
+        before = len(_branch_reflog(write))
+        attributed: Sequence[tuple[str, MadeBy]] | None = None
         try:
-            reason, commits, head = _commit(write, message, tip, step_dir)
+            reason, commits, head = _commit(write, message, tip, step_dir, before)
             attributed = commits
             _crash_after("commit")
             if reason is not None:
@@ -933,6 +948,10 @@ def run_write_step(
             if write.current.pending is None:
                 # Already final in its lineage: only the intent's removal was left.
                 raise
+            if attributed is None:
+                # The commit step failed before naming what it made: named now. If even
+                # that fails, this raises and the pending write stays for the quarantine.
+                attributed = _attribute(write, message, tip, before)[0]
             return _abandon(write, exc, attributed, final=final)
         if failed_step:
             return _outcome(

@@ -895,26 +895,53 @@ def test_a_failure_after_the_commit_finalises_the_run_and_clears_the_intent(
     assert unconfined.write(repo=_second_repository(unconfined)).exit_code == 0
 
 
-def test_a_failure_inside_the_commit_step_finalises_without_naming_its_commits(
-    unconfined: World, monkeypatch: pytest.MonkeyPatch
+def _edit_then_block_the_commit_log(root: Path) -> None:
+    """The task's edit, and ``commit.log`` made unwritable: the engine's commit step then
+    fails once ``git commit`` has run, before it names the commits it made."""
+    _edit_app(root)
+    (root.parent / "steps" / "01-run-codex" / write_flow.COMMIT_LOG).mkdir(parents=True)
+
+
+def test_a_failure_inside_the_commit_step_attributes_its_commit_before_finalising(
+    unconfined: World,
 ) -> None:
-    """Once ``git commit`` ran but before the step named what it made, no commit is
-    attributed: none gets provenance, and the compromised lineage says why."""
-
-    def fail(write: object, start: str, tips: object) -> list[str]:
-        raise RuntimeError("the engine lost track")
-
-    monkeypatch.setattr(write_flow, "_new_commits", fail)
-    unconfined.agent.edit = _edit_app
+    """Review of #236: a commit the step made but had not named yet is recovered from
+    the branch and its reflog, and attributed, before the write is finalised -- no
+    commit of the lineage is left without provenance."""
+    unconfined.agent.edit = _edit_then_block_the_commit_log
     outcome = unconfined.write()
     assert outcome.exit_code == 1
+    tip = _git(unconfined.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
     report = json.loads((outcome.run_dir / "run.json").read_text())
-    assert report["failure_reason"] == "engine_error" and report["commits"] == []
-    assert not (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    assert report["failure_reason"] == "engine_error"
+    assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
+    record_ = provenance.lookup(unconfined.state, tip)
+    assert record_ is not None and record_["made_by"] == "engine"
     state = lineage.load(unconfined.state, outcome.run_id)
     assert state.pending is None and state.compromised == "engine_error"
-    tip = _git(unconfined.repo, "rev-parse", f"ha/{outcome.run_id}").strip()
-    assert provenance.lookup(unconfined.state, tip) is None
+    assert not (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+
+
+def test_a_commit_whose_identity_cannot_be_recovered_keeps_the_pending_write(
+    unconfined: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the commits cannot be named even after the failure, the write is not
+    finalised: the pending write and the intent stay for the quarantine."""
+
+    def lost(write: object, start: str, tips: object) -> list[str]:
+        raise RuntimeError("the engine lost track")
+
+    real_new_commits = write_flow._new_commits
+    monkeypatch.setattr(write_flow, "_new_commits", lost)
+    unconfined.agent.edit = _edit_then_block_the_commit_log
+    with pytest.raises(RuntimeError, match="lost track"):
+        unconfined.write()
+    (owner,) = lineage.owners(unconfined.state)
+    assert lineage.load(unconfined.state, owner).pending is not None
+    assert (unconfined.state / write_flow.UNCONFINED_INTENT).exists()
+    monkeypatch.setattr(write_flow, "_new_commits", real_new_commits)
+    with pytest.raises(UsageError, match="stale unconfined intent"):
+        unconfined.write()
 
 
 def test_a_death_after_the_commit_still_leaves_the_intent_for_the_quarantine(
