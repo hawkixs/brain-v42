@@ -214,3 +214,65 @@ def test_reprove_names_one_kind_or_both() -> None:
 
 def test_unprovable_confinement_is_declared_for_claude_only() -> None:
     assert set(UNPROVABLE_CONFINEMENT) == {"claude"}
+
+
+# ── claude confinement: display whatever the engine accepts (review, PR #241) ──
+
+
+def test_claude_confinement_with_no_record_is_missing_and_names_it_unprovable(
+    tmp_path: Path,
+) -> None:
+    """No record at all is the ONLY case the "unprovable" wording covers: there is
+    nothing else to show."""
+    status = proof_status(tmp_path, "claude", "confinement", "2.1.283 (Claude Code)")
+    assert status.status == "missing"
+    assert "unprovable" in status.reason
+
+
+def test_claude_confinement_reads_an_existing_passed_record_like_any_rail(
+    tmp_path: Path,
+) -> None:
+    """A recorded confinement proof for claude is real evidence the engine's own
+    :func:`headless_agents.proofs.confinement` accepts and can turn into mode
+    "parallel" -- displaying it as "missing" next to that mode would be a lie, not a
+    reservation of the unprovable wording for the case that actually has nothing to
+    show (review round, PR #241, item 1)."""
+    record_proof(
+        tmp_path,
+        "claude",
+        version="2.1.283 (Claude Code)",
+        isolation=True,
+        confinement=True,
+        today="2026-09-25",
+    )
+    status = proof_status(tmp_path, "claude", "confinement", "2.1.283 (Claude Code)")
+    assert status.status == "passed"
+    assert status.date == "2026-09-25"
+
+    rs = rail_state(tmp_path, "claude", "2.1.283 (Claude Code)")
+    assert rs.confinement.status == "passed"
+    assert rs.mode == "parallel"
+    assert rs.reprove is None
+
+
+def test_claude_confinement_reads_a_stale_record_instead_of_hiding_it_as_unprovable(
+    tmp_path: Path,
+) -> None:
+    """A recorded confinement proof for another claude version is "stale", not
+    "missing": the record exists and names what it is stale for, exactly like any
+    other rail -- "unprovable" is reserved for no record at all, never offered as a
+    re-prove command either way."""
+    record_proof(
+        tmp_path,
+        "claude",
+        version="2.1.282 (Claude Code)",
+        confinement=True,
+        today="2026-09-25",
+    )
+    status = proof_status(tmp_path, "claude", "confinement", "2.1.283 (Claude Code)")
+    assert status.status == "stale"
+    assert status.recorded_version == "2.1.282 (Claude Code)"
+
+    rs = rail_state(tmp_path, "claude", "2.1.283 (Claude Code)")
+    assert rs.confinement.status == "stale"
+    assert "confinement" not in (rs.reprove or "")

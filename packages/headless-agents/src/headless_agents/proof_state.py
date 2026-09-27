@@ -79,21 +79,29 @@ def _unreadable(reason: str) -> ProofStatus:
     return ProofStatus(status="unreadable", date=None, recorded_version=None, reason=reason)
 
 
+def _no_record_reason(rail: str, kind: Literal["isolation", "confinement"]) -> str:
+    """Why ``rail``'s ``kind`` has no record at all -- the ONLY case "unprovable" ever
+    names, reserved for a rail with no usable proof either way (review round, PR #241,
+    item 1): a rail actually holding a confinement record is shown exactly like any
+    other rail, whatever its status turns out to be."""
+    if kind == "confinement" and rail in UNPROVABLE_CONFINEMENT:
+        return f"unprovable on {rail} ({UNPROVABLE_CONFINEMENT[rail]})"
+    return "no proof recorded"
+
+
 def proof_status(
     state: Path, rail: str, kind: Literal["isolation", "confinement"], version: str | None
 ) -> ProofStatus:
     """The status of ``rail``'s ``kind`` proof against the installed ``version``."""
-    if kind == "confinement" and rail in UNPROVABLE_CONFINEMENT:
-        return _missing(f"unprovable on {rail} ({UNPROVABLE_CONFINEMENT[rail]})")
     try:
         document = read_optional(proofs.proof_path(state, rail), expect_id=("rail", rail))
     except Unknown:
         return _unreadable(f"{rail}.json does not name {rail!r} or does not parse")
     if document is None:
-        return _missing("no proof recorded")
+        return _missing(_no_record_reason(rail, kind))
     raw = document.get(kind)
     if raw is None:
-        return _missing("no proof recorded")
+        return _missing(_no_record_reason(rail, kind))
     if not isinstance(raw, dict):
         return _unreadable(f"{kind}: recorded value is not a table")
     passed, date = raw.get("passed"), raw.get("date")
