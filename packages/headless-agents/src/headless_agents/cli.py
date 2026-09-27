@@ -6,6 +6,7 @@
     ha roles [--json]
     ha workflows [--json]
     ha providers [--json]
+    ha models [--provider NAME] [--json] [--refresh]
     ha runs [--limit N] [--json]
     ha show RUN_ID [--json]
     ha show --dir PATH [--json]               display only
@@ -25,6 +26,7 @@ import os
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import date
 from importlib.metadata import version as package_version
 from pathlib import Path
 from typing import IO, Final
@@ -32,13 +34,15 @@ from typing import IO, Final
 from . import lineage as lineages
 from . import quarantine, show
 from .capability import INVALID_USAGE_EXIT_CODE
-from .config_paths import state_dir
+from .cli_models import load_models
+from .config_paths import config_dir, config_file, state_dir
 from .engine import (
     Outcome,
     Overrides,
     Request,
     UsageError,
     clean,
+    declared_roles,
     describe_roles,
     describe_workflows,
     executable_for,
@@ -47,6 +51,9 @@ from .engine import (
     prompt_is_optional,
     runs_root,
 )
+from .model_catalog import load_catalogue
+from .model_live import live_models
+from .model_report import build_model_report
 from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, probe
 from .report import RUN_JSON
 from .run_record import RESULT_FILE_NAME
@@ -130,6 +137,13 @@ def _parser() -> argparse.ArgumentParser:
 
     providers = commands.add_parser("providers", help="list the providers and their availability")
     providers.add_argument("--json", action="store_true", help="print the list as JSON")
+
+    models = commands.add_parser(
+        "models", help="compare the operator's model catalogue with live provider lists"
+    )
+    models.add_argument("--provider", choices=PROVIDER_NAMES, help="report one provider only")
+    models.add_argument("--json", action="store_true", help="print the report as JSON")
+    models.add_argument("--refresh", action="store_true", help="also print catalogue/live drift")
 
     run = commands.add_parser(
         "run",
@@ -256,6 +270,47 @@ def _providers(args: argparse.Namespace, io: Io) -> int:
     for row in rows:
         mark = "ok " if row["available"] else "-- "
         io.stdout.write(f"{mark}{row['name']:<14} {row['detail']}\n")
+    return 0
+
+
+# ── ha models ───────────────────────────────────────────────────────────────
+
+
+def _models(args: argparse.Namespace, io: Io) -> int:
+    path = config_file("catalog.toml", io.environ, home=io.home)
+    if path is None:
+        raise UsageError(f"{config_dir(io.environ, home=io.home) / 'catalog.toml'}: missing")
+    catalogue = load_catalogue(path)
+    roles, _ = declared_roles(io.environ, io.home)
+    defaults_path = config_file("models.toml", io.environ, home=io.home)
+    defaults = load_models(defaults_path) if defaults_path is not None else {}
+    names = (args.provider,) if args.provider else PROVIDER_NAMES
+    live = {name: live_models(name, environ=io.environ, home=io.home) for name in names}
+    rows = build_model_report(catalogue, live, roles, defaults, today=date.today())
+    rows = [row for row in rows if row["provider"] in names]
+    if args.json:
+        io.stdout.write(
+            json.dumps(
+                {"schema": 1, "warnings": list(catalogue.warnings), "providers": rows},
+                indent=2,
+            )
+            + "\n"
+        )
+        return 0
+    for warning in catalogue.warnings:
+        io.say(f"catalogue warning: {warning}")
+    for row in rows:
+        io.stdout.write(f"{row['provider']}: {row['live_status']} ({row['live_detail']})\n")
+        row_models = row["models"]
+        assert isinstance(row_models, list)
+        for model in row_models:
+            origin = "catalogued" if model["catalogue"] is not None else "uncatalogued"
+            io.stdout.write(f"  {model['id']}  {origin}  live={model['live']}\n")
+        if args.refresh:
+            row_drift = row["drift"]
+            assert isinstance(row_drift, list)
+            for item in row_drift:
+                io.stdout.write(f"  drift {item['kind']}: {item['model']} ({item['detail']})\n")
     return 0
 
 
@@ -619,6 +674,8 @@ def main(
             return 0
         if args.command == "providers":
             return _providers(args, io)
+        if args.command == "models":
+            return _models(args, io)
         if args.command == "run":
             return _run(args, io)
         if args.command == "roles":
@@ -632,7 +689,7 @@ def main(
         if args.command == "clean":
             return _clean(args, io)
         raise UsageError(
-            "a command is required: run, roles, workflows, providers, runs, show or clean"
+            "a command is required: run, roles, workflows, providers, models, runs, show or clean"
         )
     except UsageError as exc:
         io.say(str(exc))
