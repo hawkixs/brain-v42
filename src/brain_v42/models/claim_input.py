@@ -23,6 +23,7 @@ class ClaimInput(BaseModel):
     expected: dict[str, object]
     validity_seconds: int | None = None
     replaces: UUID | None = None
+    measure: bool = False
 
     @field_validator("statement", mode="before")
     @classmethod
@@ -51,6 +52,14 @@ class ClaimInput(BaseModel):
             return value
         if type(value) is not int or not 60 <= value <= 31_536_000:
             raise ValueError("validity_seconds rule requires an integer from 60 to 31536000")
+        return value
+
+    @field_validator("measure", mode="before")
+    @classmethod
+    def _validate_measure(cls, value: object) -> bool:
+        """Refuse coercions: a truthy non-bool must not silently opt into a write-time verdict."""
+        if type(value) is not bool:
+            raise ValueError("measure rule requires a bool")
         return value
 
     @field_validator("expected", mode="before")

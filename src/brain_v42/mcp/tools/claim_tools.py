@@ -87,9 +87,9 @@ def _bounded_limit(value: int) -> int:
     return value
 
 
-def _issuer() -> str:
+def _issuer(actor: str | None = None) -> str:
     """`mcp:<actor>` -- and nothing for a request whose actor the server did not resolve."""
-    actor = get_current_actor().strip()
+    actor = (get_current_actor() if actor is None else actor).strip()
     if actor in _UNRESOLVED_ACTORS:
         raise ClaimVerificationError("unknown_actor")
     return f"mcp:{actor}"

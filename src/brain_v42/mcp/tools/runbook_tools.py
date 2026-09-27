@@ -13,7 +13,9 @@ from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.claim_writes import (
+    claim_write_log_fields,
     claims_confirmation,
+    gated_claim_session,
     persist_claims,
     resolve_claim_inputs,
 )
@@ -41,11 +43,11 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from brain_v42.facts.registry import FactRegistry
+    from brain_v42.facts.verification import ClaimVerificationService
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.graph_helpers import RelationAuthorization
 
 _RUNBOOK_LIST_LIMIT_MAX = 50
-_CLAIM_VERIFICATION_REASON = "verification_unavailable"
 
 logger = structlog.get_logger(__name__)
 
@@ -56,6 +58,7 @@ def register_runbook_tools(
     access_logger: AccessLogger | None = None,
     fact_registry: FactRegistry | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
+    claim_verification_svc: ClaimVerificationService | None = None,
 ) -> None:
     """Register the runbook MCP tools on the FastMCP server."""
 
@@ -158,9 +161,11 @@ def register_runbook_tools(
             raise RuntimeError("declared claims require the fact registry and a session factory")
         resolved = await resolve_claim_inputs(fact_registry, claims)
         declared_at = datetime.now(UTC)
-        async with session_factory() as session, session.begin():
+        async with gated_claim_session(
+            session_factory, claim_verification_svc, resolved
+        ) as session:
             runbook = await runbook_svc.create(data, session=session)
-            claim_ids = await persist_claims(
+            outcomes = await persist_claims(
                 session,
                 entry_id=runbook.id,
                 entity_type="runbook",
@@ -168,6 +173,7 @@ def register_runbook_tools(
                 resolved=resolved,
                 declared_by=get_current_actor(),
                 declared_at=declared_at,
+                verification=claim_verification_svc,
             )
         runbook = await runbook_svc.enrich_created(
             runbook,
@@ -179,15 +185,14 @@ def register_runbook_tools(
             "mcp.brain_create_runbook",
             title_length=len(title),
             step_count=len(runbook.steps),
-            claim_count=len(claim_ids),
-            claim_verification_reason=_CLAIM_VERIFICATION_REASON,
+            **claim_write_log_fields(outcomes),
         )
         return format_confirmation(
             "Runbook created",
             runbook.title,
             id=str(runbook.id),
             steps=len(runbook.steps),
-            claims=claims_confirmation(claim_ids),
+            claims=claims_confirmation(outcomes),
         )
 
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
