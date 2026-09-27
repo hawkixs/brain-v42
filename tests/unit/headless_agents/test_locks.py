@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from headless_agents import locks
-from headless_agents.locks import LockTimeout, Rank, held, is_free
+from headless_agents.locks import AdmissionWait, LockTimeout, Rank, held, is_free
 
 _HOLDER = """
 import fcntl, os, pathlib, sys, time
@@ -147,3 +147,145 @@ def test_releasing_the_registry_lock_before_a_lineage_lock_keeps_the_order_true(
                 pass
     with held(tmp_path / "u", rank=Rank.UNCONFINED, exclusive=False, what="u"):
         pass
+
+
+# ── admission gate: writer preference, one deadline (plan lot 3, Task 1) ────
+
+_ADMISSION_CHILD = """
+import sys
+import time
+from pathlib import Path
+from headless_agents.locks import AdmissionWait, LockTimeout, Rank, admit_global, held
+
+state, mode, ready, events, seconds = sys.argv[1:]
+state, ready, events = Path(state), Path(ready), Path(events)
+if mode == "holder":
+    with held(state / "unconfined.lock", rank=Rank.UNCONFINED,
+              exclusive=False, wait=None, what="the unconfined lock"):
+        ready.write_text("held")
+        time.sleep(60)
+else:
+    ready.write_text("started")
+    try:
+        with admit_global(state, exclusive=mode == "writer",
+                          wait=AdmissionWait(float(seconds))):
+            with events.open("a") as stream:
+                stream.write(mode + "\\n")
+            if mode == "writer":
+                time.sleep(0.25)
+    except LockTimeout:
+        with events.open("a") as stream:
+            stream.write(mode + "-timeout\\n")
+        sys.exit(2)
+"""
+
+
+def _admission_child(
+    state: Path, mode: str, events: Path, seconds: float = 3.0
+) -> tuple[subprocess.Popen[bytes], Path]:
+    ready = state / f"{mode}-{time.monotonic_ns()}.ready"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _ADMISSION_CHILD,
+            str(state),
+            mode,
+            str(ready),
+            str(events),
+            str(seconds),
+        ]
+    )
+    limit = time.monotonic() + 5
+    while not ready.exists():
+        assert process.poll() is None and time.monotonic() < limit
+        time.sleep(0.01)
+    return process, ready
+
+
+def _gate_is_exclusive(state: Path) -> None:
+    limit = time.monotonic() + 5
+    while time.monotonic() < limit:
+        try:
+            with held(
+                state / "admission-gate.lock",
+                rank=Rank.ADMISSION_GATE,
+                exclusive=False,
+                wait=None,
+                what="the admission gate",
+            ):
+                pass
+        except LockTimeout:
+            return
+        time.sleep(0.01)
+    pytest.fail("the waiting writer never took the admission gate")
+
+
+def test_waiting_writer_precedes_a_later_shared_admission(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    events = tmp_path / "events"
+    holder, _ = _admission_child(state, "holder", events)
+    writer = reader = None
+    try:
+        writer, _ = _admission_child(state, "writer", events)
+        _gate_is_exclusive(state)
+        reader, _ = _admission_child(state, "reader", events)
+        time.sleep(0.12)
+        assert not events.exists(), "a later reader bypassed the waiting writer"
+        holder.kill()
+        assert writer.wait(timeout=5) == 0
+        assert reader.wait(timeout=5) == 0
+        assert events.read_text().splitlines() == ["writer", "reader"]
+    finally:
+        for process in (holder, writer, reader):
+            if process is not None and process.poll() is None:
+                process.kill()
+            if process is not None:
+                process.wait()
+
+
+def test_gate_is_released_after_writer_timeout(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    events = tmp_path / "events"
+    holder, _ = _admission_child(state, "holder", events)
+    writer = reader = None
+    try:
+        writer, _ = _admission_child(state, "writer", events, 0.15)
+        assert writer.wait(timeout=5) == 2
+        reader, _ = _admission_child(state, "reader", events)
+        assert reader.wait(timeout=5) == 0
+        assert events.read_text().splitlines() == ["writer-timeout", "reader"]
+    finally:
+        for process in (holder, writer, reader):
+            if process is not None and process.poll() is None:
+                process.kill()
+            if process is not None:
+                process.wait()
+
+
+def test_one_deadline_covers_two_contested_locks(tmp_path: Path) -> None:
+    budget = AdmissionWait(0.20)
+    path = tmp_path / "lineage.lock"
+    with _held_elsewhere(path, "ex", tmp_path):
+        with held(
+            tmp_path / "registry.lock",
+            rank=Rank.LINEAGE_REGISTRY,
+            exclusive=False,
+            wait=budget.remaining("the registry"),
+            what="the registry",
+        ):
+            time.sleep(0.12)
+            started = time.monotonic()
+            with pytest.raises(LockTimeout, match="the lineage"):
+                with held(
+                    path,
+                    rank=Rank.LINEAGE,
+                    exclusive=False,
+                    wait=budget.remaining("the lineage"),
+                    what="the lineage",
+                    key="owner",
+                ):
+                    pass
+            assert time.monotonic() - started < 0.16
