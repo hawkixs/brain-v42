@@ -106,6 +106,8 @@ from ..workspace import (
 
 # Kernel limit on a SINGLE argument (MAX_ARG_STRLEN = 32 pages). Beyond it,
 # execve returns E2BIG. We keep a margin for the rest of the command line.
+# `opencode run -f/--file` attaches files (measured on 1.18.30, `run --help`);
+# the argv cap may move there (ticket 60d914a2, 0.5.4).
 MAX_PROMPT_BYTES = 120_000
 
 # What a fresh HOME would otherwise fetch from npm. Symlinked from the real

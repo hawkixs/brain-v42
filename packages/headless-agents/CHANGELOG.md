@@ -24,6 +24,34 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.3, lot 2: the agy and opencode rails fail fast and precisely
+
+Ticket 5921850d. This entry currently covers only the agy fix and the opencode
+refactor that precedes its own behaviour change: the opencode quota
+fall-through (ticket a93cc8f2) needs a host measurement of opencode's log
+channel (an orchestrator step, spending real opencode runs) before it can be
+implemented, and is not in this branch yet.
+
+### Fixed
+- **agy's ephemeral-HOME root chooser skips a workspace-overlapping candidate**
+  instead of failing the run while another candidate is fine: a workspace
+  overlap is now a reason to try the next candidate, exactly like a `.git`
+  ancestor, and the run is refused only when every candidate is blocked --
+  naming each kind of reason that occurred.
+
+### Changed
+- **opencode's replayability test is named once**
+  (`_nothing_could_have_been_written`), extracted verbatim from
+  `_deadline_exit_code`: no behaviour change, but a future early-exit path
+  (the still-pending quota fall-through) can ask the identical question
+  instead of risking a second definition that drifts from the deadline's own.
+
+The isolation fingerprints of `agy` and `opencode` move with this branch's
+changes to `providers/agy.py` and `providers/opencode.py`
+(`proofs._ISOLATION_SOURCE_FILES`): re-record their isolation proofs after
+installing (`HA_LIVE=1 pytest -m live tests/live/headless_agents/test_proofs_live.py
+-k "isolation and (agy or opencode)"`, or `ha prove` once that lands).
+
 ## Unreleased — 0.5.2, lot 6: model catalogue and live drift
 
 Lot 6 of the parallel-runs design (§3.6): a native `ha models`, independent of lots 1-5
