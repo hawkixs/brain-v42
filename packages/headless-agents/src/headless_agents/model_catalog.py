@@ -215,6 +215,22 @@ def _accepts_extension(text: str, probe_header: str) -> bool:
     return True
 
 
+def _reject_inline_model(text: str, provider: str, model: str, table: dict[str, object]) -> None:
+    """The model must be a ``[provider."model"]`` table, never an inline one
+    (review of the 115f68a3 fix): inside an inline model, or an inline
+    provider, the field probes below fail because an ANCESTOR is immutable,
+    and a non-inline ``cost.kind = ...`` written there would be misread as
+    the frozen inline shape. So the model table itself must accept an
+    extension first, through a key absent from its own parsed content."""
+    provider_key = _toml_basic_string(provider)
+    model_key = _toml_basic_string(model)
+    probe_key = _toml_basic_string(_unused_probe_key(table))
+    if not _accepts_extension(text, f"[{provider_key}.{model_key}.{probe_key}]"):
+        raise CatalogueError(
+            f'{provider}.{model}: must be a [{provider}."{model}"] table, not an inline table'
+        )
+
+
 def _reject_non_inline_cost(text: str, provider: str, model: str, cost: dict[str, object]) -> None:
     provider_key = _toml_basic_string(provider)
     model_key = _toml_basic_string(model)
@@ -309,6 +325,7 @@ def _model_entry(
     if not isinstance(table, dict):
         raise CatalogueError(f"{prefix}: must be a table")
 
+    _reject_inline_model(text, provider, model, table)
     purpose = _string(_require(table, "purpose", prefix), f"{prefix}.purpose", nonempty=True)
 
     tasks_key = f"{prefix}.tasks"

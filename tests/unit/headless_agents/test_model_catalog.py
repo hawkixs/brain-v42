@@ -357,6 +357,20 @@ def test_non_string_effort_names_its_key(tmp_path: Path) -> None:
             id="cost-dotted-keys-inside-a-dotted-quoted-model-id",
         ),
         pytest.param(
+            "schema = 1\n[codex]\n"
+            '"gpt-6-sol" = {purpose = "Review.", tasks = [{kind = "build"}], '
+            'cost.kind = "subscription", verified_at = 2026-09-27, source = "bench"}\n',
+            "codex.gpt-6-sol",
+            id="model-declared-as-an-inline-table-hides-dotted-cost",
+        ),
+        pytest.param(
+            "schema = 1\n"
+            'codex = {"gpt-6-sol" = {purpose = "Review.", tasks = [{kind = "build"}], '
+            'cost.kind = "subscription", verified_at = 2026-09-27, source = "bench"}}\n',
+            "codex.gpt-6-sol",
+            id="provider-declared-as-an-inline-table-hides-dotted-cost",
+        ),
+        pytest.param(
             GOOD.replace('kind = "subscription"', 'kind = "future"'),
             "codex.gpt-6-sol.cost.kind",
             id="cost-kind-closed-list",
