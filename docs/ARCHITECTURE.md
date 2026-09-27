@@ -187,7 +187,7 @@ cross-encoder (see above) and never depended on `embedding-llama`.
 |-------|------|------|--------------|
 | Postgres 16 + pgvector | 5433 | CRUD + FTS + 1536-d vectors + audit + graph ledger/outbox + time series | `src/brain_v42/db/tables.py`, `alembic/versions/` |
 | Neo4j 5 Community | 7687 (bolt) / 7474 (browser) | Relationship traversal, clusters, neighbourhood, domain classification | `src/brain_v42/db/neo4j.py`, `src/brain_v42/services/graph_service.py` |
-| GPU embedding service | 8003 | Qodo-Embed-1-1.5B, 1536 dims, local HTTP; also serves cross-encoder reranker | `src/brain_v42/services/gpu_embedding_service.py` |
+| GPU embedding service | 8003 | Cross-encoder reranker (always on); `/embed*` only when the `qodo` profile runs `embedding-llama` (Qodo-Embed-1-1.5B, 1536 dims) — the shipped configuration (`BRAIN_EMBEDDING_BACKEND=shim`, `BRAIN_EMBEDDING_MODEL=qodo`) embeds through it, so it needs `--profile qodo`; the production deployment instead sets the OpenAI-compatible backend to Mistral codestral | `src/brain_v42/services/gpu_embedding_service.py` |
 | Reranker | 8003 | Cross-encoder rerank for hybrid search + ClusterGuard grey zone (same unified endpoint as embed) | `src/brain_v42/services/reranker_client.py` |
 
 ### 43 PG tables (`src/brain_v42/db/tables.py`)
@@ -977,7 +977,7 @@ brain_v42/
 | Network hops per tool call | 4 (HTTP chain) | 0 for tool logic; 1 HTTP hop for MCP protocol (loopback) |
 | Source of truth | Neo4j (CRUD + graph + vectors) | Postgres + pgvector |
 | Graph | Neo4j Cypher reduce() for similarity | Neo4j relationship index only, pgvector for similarity |
-| Embeddings | sentence-transformers / PyTorch in-process | Local GPU service :8003 (Qodo-Embed-1-1.5B, 1536d) |
+| Embeddings | sentence-transformers / PyTorch in-process | Configurable (`BRAIN_EMBEDDING_BACKEND`): shipped default `shim` → local :8003 (Qodo-Embed-1-1.5B, 1536d, `qodo` profile); production deployment: OpenAI-compatible backend on Mistral codestral |
 | Reranker | none | Cross-encoder :8003 unified endpoint, BatchingRerankerClient (20 ms window) |
 | MCP transport | stdio | HTTP loopback 127.0.0.1:8765 + HostOriginGuard + bearer obligatoire sous systemd (optionnel en HTTP dev direct) |
 | MCP tools | 21 | 72 always-on + 2 graph-gated = 74 |

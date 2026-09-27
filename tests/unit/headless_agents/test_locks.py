@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from headless_agents import locks
-from headless_agents.locks import LockTimeout, Rank, held, is_free
+from headless_agents.locks import AdmissionWait, LockTimeout, Rank, held, is_free
 
 _HOLDER = """
 import fcntl, os, pathlib, sys, time
@@ -147,3 +147,326 @@ def test_releasing_the_registry_lock_before_a_lineage_lock_keeps_the_order_true(
                 pass
     with held(tmp_path / "u", rank=Rank.UNCONFINED, exclusive=False, what="u"):
         pass
+
+
+# ── admission gate: writer preference, one deadline (plan lot 3, Task 1) ────
+
+_ADMISSION_CHILD = """
+import sys
+import time
+from pathlib import Path
+from headless_agents.locks import AdmissionWait, LockTimeout, Rank, admit_global, held
+
+state, mode, ready, events, seconds = sys.argv[1:]
+state, ready, events = Path(state), Path(ready), Path(events)
+if mode == "holder":
+    with held(state / "unconfined.lock", rank=Rank.UNCONFINED,
+              exclusive=False, wait=None, what="the unconfined lock"):
+        ready.write_text("held")
+        time.sleep(60)
+else:
+    ready.write_text("started")
+    try:
+        with admit_global(state, exclusive=mode == "writer",
+                          wait=AdmissionWait(float(seconds))):
+            with events.open("a") as stream:
+                stream.write(mode + "\\n")
+            if mode == "writer":
+                time.sleep(0.25)
+    except LockTimeout:
+        with events.open("a") as stream:
+            stream.write(mode + "-timeout\\n")
+        sys.exit(2)
+"""
+
+
+def _admission_child(
+    state: Path, mode: str, events: Path, seconds: float = 3.0
+) -> tuple[subprocess.Popen[bytes], Path]:
+    ready = state / f"{mode}-{time.monotonic_ns()}.ready"
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _ADMISSION_CHILD,
+            str(state),
+            mode,
+            str(ready),
+            str(events),
+            str(seconds),
+        ]
+    )
+    limit = time.monotonic() + 5
+    while not ready.exists():
+        assert process.poll() is None and time.monotonic() < limit
+        time.sleep(0.01)
+    return process, ready
+
+
+def _gate_is_exclusive(state: Path) -> None:
+    limit = time.monotonic() + 5
+    while time.monotonic() < limit:
+        try:
+            with held(
+                state / "admission-gate.lock",
+                rank=Rank.ADMISSION_GATE,
+                exclusive=False,
+                wait=None,
+                what="the admission gate",
+            ):
+                pass
+        except LockTimeout:
+            return
+        time.sleep(0.01)
+    pytest.fail("the waiting writer never took the admission gate")
+
+
+def _intent_is_exclusive(state: Path) -> None:
+    limit = time.monotonic() + 5
+    while time.monotonic() < limit:
+        try:
+            with held(
+                state / "writer-intent.lock",
+                rank=Rank.WRITER_INTENT,
+                exclusive=False,
+                wait=None,
+                what="a pending write",
+            ):
+                pass
+        except LockTimeout:
+            return
+        time.sleep(0.01)
+    pytest.fail("the waiting writer never took writer-intent")
+
+
+def test_a_reader_arriving_after_the_writer_holds_intent_queues_behind_it(
+    tmp_path: Path,
+) -> None:
+    """The one guarantee the writer-intent lock actually gives, pinned on
+    its own, apart from anything about the gate: once a writer holds
+    writer-intent exclusively, a reader that arrives afterward blocks on its
+    own (shared) attempt to check intent until the writer releases it --
+    ordinary ``flock`` mutual exclusion against a single exclusive holder,
+    true regardless of the fairness caveats in the module docstring (those
+    are about who *wins* intent under contention, not about what a lock
+    already held exclusively does to a later arrival)."""
+    state = tmp_path / "state"
+    state.mkdir()
+    events = tmp_path / "events"
+    holder, _ = _admission_child(state, "holder", events)
+    writer = reader = None
+    try:
+        writer, _ = _admission_child(state, "writer", events)
+        _intent_is_exclusive(state)
+        reader, _ = _admission_child(state, "reader", events)
+        time.sleep(0.12)
+        assert not events.exists(), "a later reader bypassed the writer holding intent"
+        holder.kill()
+        assert writer.wait(timeout=5) == 0
+        assert reader.wait(timeout=5) == 0
+        assert events.read_text().splitlines() == ["writer", "reader"]
+    finally:
+        for process in (holder, writer, reader):
+            if process is not None and process.poll() is None:
+                process.kill()
+            if process is not None:
+                process.wait()
+
+
+def test_waiting_writer_precedes_a_later_shared_admission(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    events = tmp_path / "events"
+    holder, _ = _admission_child(state, "holder", events)
+    writer = reader = None
+    try:
+        writer, _ = _admission_child(state, "writer", events)
+        _gate_is_exclusive(state)
+        reader, _ = _admission_child(state, "reader", events)
+        time.sleep(0.12)
+        assert not events.exists(), "a later reader bypassed the waiting writer"
+        holder.kill()
+        assert writer.wait(timeout=5) == 0
+        assert reader.wait(timeout=5) == 0
+        assert events.read_text().splitlines() == ["writer", "reader"]
+    finally:
+        for process in (holder, writer, reader):
+            if process is not None and process.poll() is None:
+                process.kill()
+            if process is not None:
+                process.wait()
+
+
+def test_gate_is_released_after_writer_timeout(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    events = tmp_path / "events"
+    holder, _ = _admission_child(state, "holder", events)
+    writer = reader = None
+    try:
+        writer, _ = _admission_child(state, "writer", events, 0.15)
+        assert writer.wait(timeout=5) == 2
+        reader, _ = _admission_child(state, "reader", events)
+        assert reader.wait(timeout=5) == 0
+        assert events.read_text().splitlines() == ["writer-timeout", "reader"]
+    finally:
+        for process in (holder, writer, reader):
+            if process is not None and process.poll() is None:
+                process.kill()
+            if process is not None:
+                process.wait()
+
+
+def test_one_deadline_covers_two_contested_locks(tmp_path: Path) -> None:
+    budget = AdmissionWait(0.20)
+    path = tmp_path / "lineage.lock"
+    with _held_elsewhere(path, "ex", tmp_path):
+        with held(
+            tmp_path / "registry.lock",
+            rank=Rank.LINEAGE_REGISTRY,
+            exclusive=False,
+            wait=budget.remaining("the registry"),
+            what="the registry",
+        ):
+            time.sleep(0.12)
+            started = time.monotonic()
+            with pytest.raises(LockTimeout, match="the lineage"):
+                with held(
+                    path,
+                    rank=Rank.LINEAGE,
+                    exclusive=False,
+                    wait=budget.remaining("the lineage"),
+                    what="the lineage",
+                    key="owner",
+                ):
+                    pass
+            assert time.monotonic() - started < 0.16
+
+
+def test_a_writer_that_has_won_intent_blocks_late_readers_through_gate_contention(
+    tmp_path: Path,
+) -> None:
+    """What the writer-intent lock actually guarantees, pinned precisely:
+    once a writer *holds* writer-intent (which it wins uncontested here --
+    nothing else holds it when the writer arrives, the ordinary case), it
+    keeps blocking every reader that arrives afterward for as long as it
+    holds intent, including the whole time it is separately stuck contending
+    for a busy gate. ``test_waiting_writer_precedes_a_later_shared_admission``
+    only checks this once the writer already holds the *gate*; this test
+    checks it while the writer is still only polling for the gate, holding
+    intent the whole time.
+
+    This is NOT a demonstration that a writer always wins the race for
+    writer-intent itself under contention -- codex review of PR #239 found
+    that a continuous, overlapping stream of readers taking intent shared
+    could in principle starve a writer still *polling* for intent, and
+    ``flock`` gives no fairness to make that deterministic either way, so it
+    is not something a process test can pin. See the module docstring:
+    best-effort mitigation, not a fairness guarantee; a real fix (a fair
+    FIFO admission queue) is planned for 0.5.3.
+
+    An exclusive holder on the global lock (not the ``_ADMISSION_CHILD``
+    "holder" mode, which only takes it shared and would let ordinary shared
+    readers straight through) forces two seed readers to stay stuck holding
+    the gate shared, so the gate is already unavailable the moment the
+    writer starts polling for it; a further stream of readers keeps arriving
+    while the writer is still polling, not once it already holds the gate.
+    """
+    state = tmp_path / "state"
+    state.mkdir()
+    events = tmp_path / "events"
+    writer: subprocess.Popen[bytes] | None = None
+    seed_readers: list[subprocess.Popen[bytes]] = []
+    late_readers: list[subprocess.Popen[bytes]] = []
+    try:
+        with _held_elsewhere(state / "unconfined.lock", "ex", tmp_path):
+            for _ in range(2):
+                process, _ = _admission_child(state, "seed", events)
+                seed_readers.append(process)
+            time.sleep(0.1)
+
+            writer, _ = _admission_child(state, "writer", events, seconds=3.0)
+            # Deliberately not waiting for the writer to hold the gate (unlike
+            # test_waiting_writer_precedes_a_later_shared_admission): the
+            # readers below arrive while it is still polling for the gate,
+            # not after.
+            deadline = time.monotonic() + 0.4
+            while time.monotonic() < deadline:
+                process, _ = _admission_child(state, "late", events)
+                late_readers.append(process)
+                time.sleep(0.05)
+
+            assert not events.exists(), "an admission completed before the holder was released"
+        # The ``with`` block above killed the exclusive holder on exit.
+
+        assert writer.wait(timeout=5) == 0
+        for process in seed_readers + late_readers:
+            assert process.wait(timeout=5) == 0
+
+        lines = events.read_text().splitlines()
+        writer_index = lines.index("writer")
+        for index, line in enumerate(lines):
+            if line == "late":
+                assert index > writer_index, (
+                    "a reader arriving while the writer was still polling for the gate overtook it"
+                )
+        assert lines.count("late") == len(late_readers)
+        assert lines.count("seed") == len(seed_readers)
+    finally:
+        for process in (writer, *seed_readers, *late_readers):
+            if process is not None and process.poll() is None:
+                process.kill()
+            if process is not None:
+                process.wait()
+
+
+# ── review round 1 (PR #239): a lock granted just after the deadline was
+# still accepted, instead of refused ───────────────────────────────────────
+
+_TIMED_HOLDER = """
+import fcntl, os, pathlib, sys, time
+path, ready, hold_seconds = sys.argv[1], sys.argv[2], float(sys.argv[3])
+fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(fd, fcntl.LOCK_EX)
+pathlib.Path(ready).write_text("ok")
+time.sleep(hold_seconds)
+fcntl.flock(fd, fcntl.LOCK_UN)
+time.sleep(5)
+"""
+
+
+def test_a_lock_released_just_after_the_deadline_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``held()`` tried ``flock`` before checking the deadline on the next
+    iteration, so a lock released just past the deadline was granted late
+    instead of refused. Deterministic timing: with the poll interval fixed at
+    0.1 s and a 0.15 s wait, the fixed implementation caps its sleep to the
+    remaining budget and lands its last attempt exactly at the deadline
+    (0.1 s, then 0.05 s); the unfixed implementation always sleeps a full
+    poll interval and lands its next attempt at 0.2 s -- after the holder's
+    0.18 s release -- and would accept the lock late.
+    """
+    monkeypatch.setattr(locks, "_POLL_SECONDS", 0.1)
+    path = tmp_path / "l.lock"
+    ready = tmp_path / "ready"
+    release_after = 0.18
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _TIMED_HOLDER, str(path), str(ready), str(release_after)]
+    )
+    try:
+        limit = time.monotonic() + 10
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        started = time.monotonic()
+        with pytest.raises(LockTimeout, match="the test lock"):
+            with held(path, rank=Rank.LIFECYCLE, exclusive=True, wait=0.15, what="the test lock"):
+                pass
+        elapsed = time.monotonic() - started
+        assert elapsed < release_after, (
+            "the deadline must expire before the lock is actually released, not after"
+        )
+    finally:
+        holder.kill()
+        holder.wait()

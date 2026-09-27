@@ -15,6 +15,7 @@ in the engine every entry point shares, and ``cli.py`` only parses and prints.
 
 from __future__ import annotations
 
+import math
 import os
 import shutil
 import threading
@@ -129,6 +130,10 @@ class Request:
     review_run: str | None = None
     #: ``--findings RUN_ID`` of an implement run: a review whose verdict was read (§3.6).
     findings_run: str | None = None
+    #: ``--wait SECONDS`` (spec §3.3, lot 3): an explicit, positive admission deadline
+    #: shared by the global lock and, for a write or a review, lineage admission.
+    #: ``None`` keeps every lock's own :data:`locks.LOCK_WAIT_SECONDS` bound.
+    wait_seconds: float | None = None
 
 
 @dataclass(frozen=True)
@@ -648,6 +653,9 @@ def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan
 
 def plan(request: Request) -> Plan:
     """Resolve ``request`` and apply every gate that needs no git; raise :class:`UsageError`."""
+    if request.wait_seconds is not None:
+        if not math.isfinite(request.wait_seconds) or request.wait_seconds <= 0:
+            raise UsageError("--wait needs a finite number of seconds greater than zero")
     config = load_config(request.environ, request.home)
     workflow = config.workflows.get(request.target)
     if workflow is not None:
@@ -943,6 +951,7 @@ def _execute_write(
     unconfined: bool,
     say: Callable[[str], None],
     findings_head: str | None = None,
+    admission_wait: locks.AdmissionWait | None = None,
 ) -> Outcome:
     """A write run -- a role's, or an ``implement`` workflow's: §3.8.3, then its report."""
     role, run_dir = plan.role, entry.run_dir
@@ -971,6 +980,7 @@ def _execute_write(
             joins=plan.joins,
             named=plan.continues,
             findings_head=findings_head,
+            admission_wait=admission_wait,
         )
     except write_flow.WriteRefused as exc:
         _refused(registry, entry)
@@ -1128,6 +1138,7 @@ def _execute_review(
     report: dict[str, object],
     started: float,
     say: Callable[[str], None],
+    admission_wait: locks.AdmissionWait | None = None,
 ) -> Outcome:
     """A review run: the vendor rule and the pinned change, the reviewers in parallel,
     then the judge; the verdict, the result and the cleanup (§3.5, §3.8.4)."""
@@ -1146,9 +1157,23 @@ def _execute_review(
             base_ref=request.base,
             reviewed_lineage=plan.reviewed_lineage,
             reviewers={slot.role.name: slot.role.providers for _, slot in reviewers},
+            admission_wait=admission_wait,
         )
     except review_flow.ReviewRefused as exc:
-        _refused(registry, entry)
+        if isinstance(exc, review_flow.AdmissionWaitExpired):
+            # An explicit deadline that expired while admitting the lineage
+            # locks means nothing ran at all: forget the entry outright,
+            # exactly like a read refused at the earlier global-lock gate
+            # (c56a256c), instead of leaving it "failed" with an empty run
+            # dir (codex review of PR #239, round 4). Decided from the
+            # exception's TYPE, not its message (codex review, round 5): a
+            # message match would silently stop firing on a rewording, and
+            # would just as silently fire on an unrelated refusal whose text
+            # happens to start the same way.
+            shutil.rmtree(entry.run_dir, ignore_errors=True)
+            registry.forget(entry.run_id)
+        else:
+            _refused(registry, entry)
         raise UsageError(str(exc)) from None
     task = plan.task or REVIEW_DEFAULT_TASK
     try:
@@ -1246,12 +1271,16 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
     locks, and record it.
 
     In order: identify the repository from the filesystem (no git, plan
-    decision P2); mint the run, hold its lifecycle lock, then register it; take
-    the unconfined lock shared (§3.8.2); build the real context bundle and
-    check the prompt size again; run the role's chain in
+    decision P2); mint the run, hold its lifecycle lock, then register it;
+    admit through the gate, then take the unconfined lock, exclusive for an
+    unconfined write and shared otherwise (§3.8.2, §3.3 lot 3); build the real
+    context bundle and check the prompt size again; run the role's chain in
     ``steps/01-<slot>-<role>``; write ``run.json`` and the registry status. An
     interruption propagates with every lock released and the status left
-    non-final, so the run reads ``incomplete``.
+    non-final, so the run reads ``incomplete``. ``request.wait_seconds`` sets
+    one explicit admission deadline for this lock and, for a write or a
+    review, the lineage locks admitted under it; absent it, each lock keeps
+    its own default bound.
     """
     request, role = plan.request, plan.role
     start = request.repo.resolve() if request.repo is not None else request.cwd.resolve()
@@ -1297,6 +1326,10 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         target = {"kind": "provider" if role.implicit else "role", "name": role.name}
         slot = "run"
 
+    # One admission deadline (spec §3.3, lot 3), shared by the global lock below and,
+    # for a write or a review, the lineage locks _execute_write/_execute_review admit.
+    admission_wait = locks.AdmissionWait(request.wait_seconds)
+
     with ExitStack() as held_locks:
         try:
             entry = _admit(
@@ -1322,23 +1355,39 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         unconfined = role.write and write_is_unconfined(plan)
         try:
             held_locks.enter_context(
-                held(
-                    plan.state / "unconfined.lock",
-                    rank=Rank.UNCONFINED,
-                    exclusive=unconfined,
-                    wait=locks.LOCK_WAIT_SECONDS,
-                    what="the unconfined lock",
-                )
+                locks.admit_global(plan.state, exclusive=unconfined, wait=admission_wait)
             )
-        except LockTimeout:
-            _refused(registry, entry)
-            if unconfined:
+        except LockTimeout as exc:
+            if request.wait_seconds is not None:
+                # An explicit deadline that expires here means nothing ran at
+                # all, read or write alike: forget the entry outright instead
+                # of leaving a "failed" read behind with an empty run dir
+                # (codex review of PR #239). A write's entry was already
+                # forgotten this way (it names its own lineage); this makes
+                # a read's the same.
+                shutil.rmtree(entry.run_dir, ignore_errors=True)
+                registry.forget(entry.run_id)
+            else:
+                _refused(registry, entry)
+            if request.wait_seconds is None:
+                if unconfined:
+                    raise UsageError(
+                        "runs and writes still running after the bound: an unconfined write "
+                        "waits for none of them; nothing ran"
+                    ) from None
                 raise UsageError(
-                    "runs and writes still running after the bound: an unconfined write "
-                    "waits for none of them; nothing ran"
+                    "an unconfined write is running: nothing ran; retry once it has ended"
                 ) from None
+            if unconfined:
+                holder = "active runs"
+            elif "admission gate" in str(exc):
+                holder = "a waiting unconfined writer"
+            else:
+                holder = "an unconfined write"
+            lock_name = str(exc).split(":", 1)[0]
             raise UsageError(
-                "an unconfined write is running: nothing ran; retry once it has ended"
+                f"--wait {request.wait_seconds:g} s expired: {lock_name}, held by "
+                f"{holder}; nothing ran"
             ) from None
 
         try:
@@ -1381,6 +1430,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 report=report,
                 started=started,
                 say=say,
+                admission_wait=admission_wait,
             )
         step_name = step_dir_name(1, slot, role.name)
         step_dir = run_dir / "steps" / step_name
@@ -1400,6 +1450,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 started=started,
                 say=say,
                 findings_head=findings.head if findings is not None else None,
+                admission_wait=admission_wait,
             )
         say(f"step 1 run {role.name}: started")
         final = _run_links(
@@ -1487,16 +1538,18 @@ def clean(
         except LockTimeout:
             raise UsageError(f"{run_id} is active: nothing cleaned") from None
         try:
+            # Through the same admission gate as every other run (codex review
+            # of PR #239): taking ``unconfined.lock`` directly here let a clean
+            # slip past a queued unconfined writer whenever the global lock
+            # itself happened to be free.
             held_locks.enter_context(
-                held(
-                    state / "unconfined.lock",
-                    rank=Rank.UNCONFINED,
-                    exclusive=False,
-                    wait=locks.LOCK_WAIT_SECONDS,
-                    what="the unconfined lock",
-                )
+                locks.admit_global(state, exclusive=False, wait=locks.AdmissionWait(None))
             )
-        except LockTimeout:
+        except LockTimeout as exc:
+            if "admission gate" in str(exc):
+                raise UsageError(
+                    "the admission gate is held by a waiting unconfined writer: nothing cleaned"
+                ) from None
             raise UsageError("an unconfined write is running: nothing cleaned") from None
         if entry.lineage is not None:
             try:

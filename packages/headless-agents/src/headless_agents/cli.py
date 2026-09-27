@@ -163,6 +163,12 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("-m", "--model", help="the model of every link that names none")
     run.add_argument("--effort", help="reasoning effort, where the rail takes one")
     run.add_argument("--timeout", type=float, help="seconds for this run")
+    run.add_argument(
+        "--wait",
+        type=float,
+        metavar="SECONDS",
+        help="wait up to SECONDS for admission locks; requires an explicit positive bound",
+    )
     run.add_argument("--context", choices=("full", "global", "none"), help="context bundle level")
     _store_true_or_none(
         run, "--context-parents", help="add the parent directories' instruction files"
@@ -428,6 +434,7 @@ def _run(args: argparse.Namespace, io: Io) -> int:
         head=args.head,
         review_run=args.review_run,
         findings_run=args.findings_run,
+        wait_seconds=args.wait,
     )
     outcome = execute(plan(request), say=io.say)
     report = outcome.report
