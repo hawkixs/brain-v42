@@ -162,14 +162,16 @@ default under `./.secrets/`, a directory this host does not have, so the `up`
 fails on the first service that needs one. Always name the service and pass
 `--no-deps`.
 
-A second trap no longer applies to a bare `up`: since 2026-09-26
+A second trap depends on the configuration: since 2026-09-26
 `embedding-llama` sits behind the `qodo` Compose profile
-(docs/ARCHITECTURE.md), so a plain `docker compose up -d` never starts it —
-brain itself has embedded through the Mistral codestral endpoint since
-2026-09-22 instead (`EMBEDDING_BACKEND`, `config.py`). Without `QODO_GGUF_DIR`
-set, Compose still mounts an empty model directory and puts `embedding-llama`
-into a crash-loop (incident 2026-08-21) whenever the profile IS included:
-`docker compose --profile qodo up -d`.
+(docs/ARCHITECTURE.md), so a plain `docker compose up -d` never starts it.
+The production deployment embeds through the OpenAI-compatible backend
+(Mistral codestral) and does not need it; the shipped configuration
+(`BRAIN_EMBEDDING_BACKEND=shim`, `BRAIN_EMBEDDING_MODEL=qodo`, `config.py` and
+`.env.example`) does, and must run with `--profile qodo`. Without
+`QODO_GGUF_DIR` set, Compose then mounts an empty model directory and puts
+`embedding-llama` into a crash-loop (incident 2026-08-21) whenever the profile
+is included: `docker compose --profile qodo up -d`.
 
 The override variables are documented in `deploy/compose-secrets.env.example`
 and belong in the repository's `.env`, which Compose reads on its own — no
