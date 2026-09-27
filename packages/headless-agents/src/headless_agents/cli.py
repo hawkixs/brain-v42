@@ -11,6 +11,7 @@
     ha show RUN_ID [--json]
     ha show --dir PATH [--json]               display only
     ha clean RUN_ID
+    ha prove [RAIL...] [--isolation] [--confinement] [--stale] [--keep] [--json]
     ha --version
 
 A thin adapter: it parses arguments and prints. Every rule lives in
@@ -23,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import sys
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
@@ -32,9 +34,9 @@ from pathlib import Path
 from typing import IO, Final
 
 from . import lineage as lineages
-from . import quarantine, show
+from . import prove, quarantine, show
 from .capability import INVALID_USAGE_EXIT_CODE
-from .cli_models import load_models
+from .cli_models import MODEL_OPTIONAL, MODELS_FILE_NAME, default_models_path, load_models
 from .config_paths import config_dir, config_file, state_dir
 from .engine import (
     Outcome,
@@ -54,7 +56,7 @@ from .engine import (
 from .model_catalog import load_catalogue
 from .model_live import live_models
 from .model_report import build_model_report
-from .proof_state import rail_state
+from .proof_state import UNPROVABLE_CONFINEMENT, proof_status, rail_state
 from .proofs import CLI_RAILS
 from .registry import PROVIDER_NAMES, Probe, UnknownProvider, max_prompt_bytes, probe
 from .report import RUN_JSON
@@ -240,6 +242,35 @@ def _parser() -> argparse.ArgumentParser:
 
     clean_parser = commands.add_parser("clean", help="remove one run's directory")
     clean_parser.add_argument("run_id", help="the run id, as ha run printed it")
+
+    prove_parser = commands.add_parser(
+        "prove",
+        help="record CLI rails' isolation and confinement proofs from the installed ha; "
+        "spends provider tokens",
+    )
+    prove_parser.add_argument(
+        "rails",
+        nargs="*",
+        metavar="RAIL",
+        help=f"a CLI rail: {', '.join(CLI_RAILS)} (default: every one of them)",
+    )
+    prove_parser.add_argument(
+        "--isolation", action="store_true", help="prove isolation (default: both kinds)"
+    )
+    prove_parser.add_argument(
+        "--confinement", action="store_true", help="prove confinement (default: both kinds)"
+    )
+    prove_parser.add_argument(
+        "--stale",
+        action="store_true",
+        help="only the proofs that have not passed on the version installed now",
+    )
+    prove_parser.add_argument(
+        "--keep", action="store_true", help="keep the proof directory under ~/.cache/ha/proofs/"
+    )
+    prove_parser.add_argument(
+        "--json", action="store_true", help="print the verdicts and the modes as JSON"
+    )
     return parser
 
 
@@ -316,6 +347,173 @@ def _providers(args: argparse.Namespace, io: Io) -> int:
         "opencode or agy is always serialised\n"
     )
     return 0
+
+
+# ── ha prove ────────────────────────────────────────────────────────────────
+
+
+def _prove_rails(names: Sequence[str]) -> list[str]:
+    """The rails asked for, in the order given; every CLI rail when none is named."""
+    for name in names:
+        if name not in CLI_RAILS:
+            raise UsageError(
+                f"{name}: not a CLI rail; ha prove proves {', '.join(CLI_RAILS)}; nothing ran"
+            )
+    return list(dict.fromkeys(names)) if names else list(CLI_RAILS)
+
+
+def _prove_models(rails: Sequence[str], io: Io) -> dict[str, str]:
+    """Each rail's model, from ``models.toml``: the package names none (cli_models)."""
+    found = config_file(MODELS_FILE_NAME, io.environ, home=io.home)
+    declared = load_models(found) if found is not None else {}
+    for rail in rails:
+        if not declared.get(rail) and rail not in MODEL_OPTIONAL:
+            path = default_models_path(io.environ, home=io.home)
+            raise UsageError(
+                f'{rail} needs a model to be proven with: declare it in {path} ({rail} = "MODEL"); '
+                "nothing ran"
+            )
+    return {rail: declared.get(rail, "") for rail in rails}
+
+
+def _needs_proving(state: Path, rail: str, kind: prove.Kind, found: Probe) -> bool:
+    """``--stale``: an installed rail's proof that has not passed on its version now.
+
+    A confinement that cannot be proven is never selected: running it would spend
+    tokens on a probe that stays inconclusive (``proof_state.rail_state`` offers no
+    re-prove for it either).
+    """
+    if not found.available or (kind == "confinement" and rail in UNPROVABLE_CONFINEMENT):
+        return False
+    return proof_status(state, rail, kind, found.version).status != "passed"
+
+
+def _verdict_line(verdict: prove.Verdict) -> str:
+    if verdict.outcome == "skipped":
+        return f"{verdict.rail} {verdict.kind}: skipped ({verdict.reason})"
+    recorded = "recorded" if verdict.recorded else "not recorded"
+    return f"{verdict.rail} {verdict.kind}: {verdict.outcome}, {recorded} ({verdict.reason})"
+
+
+def _prove(args: argparse.Namespace, io: Io) -> int:
+    """``ha prove``: record CLI rails' proofs from the installed package (spec 0.5.2 §3.4).
+
+    Everything that can refuse does so before the first provider run: a name that is
+    not a CLI rail, claude's unprovable confinement asked for by name, a named rail not
+    installed, isolation from a development install, a rail without a model. The runs
+    are then announced on stderr before they spend anything -- no question asked,
+    sessions run ``ha`` headless. :func:`headless_agents.prove.prove` makes the runs and
+    alone records; this command selects, announces and reports.
+    """
+    rails = _prove_rails(args.rails)
+    kinds = [kind for kind in prove.KINDS if getattr(args, kind)] or list(prove.KINDS)
+    if args.confinement:
+        for rail in args.rails:
+            if rail in UNPROVABLE_CONFINEMENT:
+                raise UsageError(
+                    f"{rail} confinement cannot be proven: {UNPROVABLE_CONFINEMENT[rail]}; "
+                    "nothing ran"
+                )
+    state = state_dir(io.environ, home=io.home)
+
+    def probed(rail: str) -> Probe:
+        return probe(rail, executable=executable_for(rail, io.home), environ=io.environ)
+
+    found = {rail: probed(rail) for rail in rails}
+    for rail in args.rails:
+        if not found[rail].available:
+            raise UsageError(f"{rail} is not available: {found[rail].detail}; nothing ran")
+
+    selected = [
+        (rail, kind)
+        for rail in rails
+        for kind in kinds
+        if not args.stale or _needs_proving(state, rail, kind, found[rail])
+    ]
+
+    def skipped(rail: str, kind: prove.Kind) -> str | None:
+        if kind == "confinement" and rail in UNPROVABLE_CONFINEMENT:
+            return f"unprovable: {UNPROVABLE_CONFINEMENT[rail]}"
+        return None if found[rail].available else found[rail].detail
+
+    runnable = [(rail, kind) for rail, kind in selected if skipped(rail, kind) is None]
+    if any(kind == "isolation" for _, kind in runnable):
+        refusal = prove.checkout_refusal(io.environ)
+        if refusal is not None:
+            raise UsageError(f"{refusal}; nothing ran")
+    models = _prove_models(list(dict.fromkeys(rail for rail, _ in runnable)), io)
+
+    for rail, kind in runnable:
+        model = f"model {models[rail]}" if models[rail] else f"the model {rail} chooses"
+        io.say(
+            f"prove {rail} {kind}: {prove.planned_runs(rail, kind)} provider runs on "
+            f"{found[rail].version or '(version unknown)'} ({model})"
+        )
+    if runnable:
+        total = sum(prove.planned_runs(rail, kind) for rail, kind in runnable)
+        io.say(f"{total} provider runs in total; this spends provider tokens")
+    if not selected and not args.json:
+        io.stdout.write(
+            "nothing to prove: every provable proof of the installed rails passed on their "
+            "versions\n"
+        )
+
+    root = prove.proof_root(io.home)
+    verdicts: list[prove.Verdict] = []
+    try:
+        for rail, kind in selected:
+            reason = skipped(rail, kind)
+            if reason is not None:
+                verdict = prove.Verdict(
+                    rail, kind, found[rail].version, "skipped", reason, False, 0
+                )
+            else:
+                verdict = prove.prove(
+                    rail,
+                    kind,
+                    model=models[rail],
+                    state=state,
+                    home=io.home,
+                    environ=io.environ,
+                    root=root,
+                )
+            verdicts.append(verdict)
+            if not args.json:
+                io.stdout.write(_verdict_line(verdict) + "\n")
+                io.stdout.flush()
+    finally:
+        kept = args.keep and root.is_dir()
+        if not args.keep:
+            shutil.rmtree(root, ignore_errors=True)
+
+    # The mode on the version installed NOW -- the one the engine will probe -- not the
+    # one probed before the runs: a CLI that updated itself mid-proof recorded nothing.
+    proven = {rail for rail, _ in runnable}
+    now = {rail: probed(rail) if rail in proven else found[rail] for rail in rails}
+    modes = {
+        rail: rail_state(state, rail, now[rail].version).mode
+        for rail in rails
+        if now[rail].available
+    }
+    if args.json:
+        report = {
+            "schema": 1,
+            "verdicts": [verdict.to_dict() for verdict in verdicts],
+            "modes": modes,
+            "kept": str(root) if kept else None,
+        }
+        io.stdout.write(json.dumps(report, indent=2) + "\n")
+    else:
+        for rail, mode in modes.items():
+            io.stdout.write(f"{rail} {now[rail].version or '(version unknown)'}: mode {mode}\n")
+        if kept:
+            io.stdout.write(f"kept: {root}\n")
+    settled = all(
+        verdict.outcome == "passed" and verdict.recorded
+        for verdict in verdicts
+        if verdict.outcome != "skipped"
+    )
+    return 0 if settled else 1
 
 
 # ── ha models ───────────────────────────────────────────────────────────────
@@ -737,8 +935,11 @@ def main(
             return _show(args, io)
         if args.command == "clean":
             return _clean(args, io)
+        if args.command == "prove":
+            return _prove(args, io)
         raise UsageError(
-            "a command is required: run, roles, workflows, providers, models, runs, show or clean"
+            "a command is required: run, roles, workflows, providers, models, runs, show, "
+            "clean or prove"
         )
     except UsageError as exc:
         io.say(str(exc))

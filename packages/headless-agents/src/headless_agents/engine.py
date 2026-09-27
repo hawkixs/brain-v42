@@ -832,7 +832,8 @@ def _check_isolation(plan: Plan) -> None:
         raise UsageError(
             f"{provider} {version or '(version unknown)'} has no passing isolation proof "
             f"({label}): a rail that may load the operator's configuration is refused. "
-            f"Record a proof with: {proof_state.reprove_command(provider, ('isolation',))}"
+            f"Record a proof with: {proof_state.reprove_command(provider, ('isolation',))}; "
+            "after a CLI update: ha prove --stale"
         )
 
 
