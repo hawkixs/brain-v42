@@ -522,6 +522,26 @@ def _read_rollout_safely(run_dir: Path) -> list[dict[str, object]]:
     return _parse_jsonl(raw.decode("utf-8", errors="replace"))
 
 
+def _is_absolute_and_normalised(path: Path) -> bool:
+    """Is ``path`` absolute AND already in normal form -- no ``..``, no
+    ``.`` component, no doubled slash, no trailing slash?
+
+    A plain ``Path`` ``==``/``in .parents`` comparison is LEXICAL: it does
+    not see that ``/base/other/../workspace`` designates the same location
+    as ``/base/workspace`` (review round, codex major). ``os.path.normpath``
+    collapses ``..``/``.``/most doubled slashes, but -- a POSIX quirk --
+    leaves EXACTLY two leading slashes untouched, so a bare ``"//" not in
+    text`` check is still needed for that one case.
+
+    Deliberately never resolves a symlink (``Path.resolve()``): the path a
+    rollout names may no longer exist by the time this proof is read -- an
+    outside target is frequently gone by then -- so there is nothing on
+    disk to resolve against, and guessing would be worse than refusing.
+    """
+    text = str(path)
+    return path.is_absolute() and "//" not in text and os.path.normpath(text) == text
+
+
 def _matches_write_policy(
     policy: object, *, workspace: Path | None, wanted: Mapping[str, Path]
 ) -> bool:
@@ -535,8 +555,16 @@ def _matches_write_policy(
     accepted: an unexplained addition is not this policy.
 
     ``writable_roots`` must be a non-empty list of strings, and every entry
-    must be structurally safe: an ABSOLUTE path (never relative -- resolved
-    against an unstated cwd, it could name anything), never equal to, an
+    -- and ``workspace``, and every ``wanted`` target -- must be an ABSOLUTE,
+    ALREADY-NORMALISED path (:func:`_is_absolute_and_normalised`): a lexical
+    comparison (``==``, ``in .parents``) does not see through a `..`
+    traversal, a `.` component, a doubled slash or a trailing slash --
+    `/base/other/../workspace` designates the workspace but is not equal to
+    it as ``Path`` components, so an entry shaped that way could slip past
+    the checks below undetected. Anything not already in that normal form
+    fails closed here, before any comparison is attempted at all.
+
+    Once past that, an entry must be structurally safe: never equal to, an
     ANCESTOR of, or a DESCENDANT of ``workspace`` (already writable through
     the primary permission profile; an ancestor would make the whole
     worktree, and everything under it, writable through this root too; a
@@ -557,6 +585,10 @@ def _matches_write_policy(
     for key, value in _WRITE_SANDBOX_POLICY.items():
         if policy.get(key) != value:
             return False
+    if workspace is not None and not _is_absolute_and_normalised(workspace):
+        return False
+    if any(not _is_absolute_and_normalised(target) for target in wanted.values()):
+        return False
     writable_roots = policy.get("writable_roots")
     if not isinstance(writable_roots, list) or not writable_roots:
         return False
@@ -564,7 +596,7 @@ def _matches_write_policy(
         if not isinstance(entry, str):
             return False
         root = Path(entry)
-        if not root.is_absolute():
+        if not _is_absolute_and_normalised(root):
             return False
         if workspace is not None and (
             root == workspace or root in workspace.parents or workspace in root.parents

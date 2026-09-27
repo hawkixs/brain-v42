@@ -1093,6 +1093,67 @@ class TestWritableRootsPolicyShape:
             == set()
         )
 
+    #: Each renders a shape that, once normalised (``os.path.normpath``), IS
+    #: the given path -- but as raw ``Path`` components (what ``==``/
+    #: ``in .parents`` actually compare), it is NOT: review round 4, codex
+    #: major. ``/base/other/../workspace`` designates the workspace but is
+    #: not equal to it lexically; the lexical checks alone would credit a
+    #: target under such an entry.
+    NON_NORMALISED_SHAPES: dict[str, Callable[[Path], str]] = {
+        "dotdot_traversal": lambda p: f"{p.parent}/other/../{p.name}",
+        "dot_component": lambda p: f"{p.parent}/./{p.name}",
+        "double_slash": lambda p: f"{p.parent}//{p.name}",
+        "trailing_slash": lambda p: f"{p}/",
+    }
+
+    #: The SUBJECT a malformed entry is built to designate: the workspace or
+    #: a target, each in its equal/ancestor/descendant relation.
+    NON_NORMALISED_SUBJECTS: dict[str, Callable[[Path, Path], Path]] = {
+        "workspace_equal": lambda workspace, target: workspace,
+        "workspace_ancestor": lambda workspace, target: workspace.parent,
+        "workspace_descendant": lambda workspace, target: workspace / "sub",
+        "target_equal": lambda workspace, target: target,
+        "target_ancestor": lambda workspace, target: target.parent,
+        "target_descendant": lambda workspace, target: target / "sub",
+    }
+
+    @pytest.mark.parametrize("subject", sorted(NON_NORMALISED_SUBJECTS))
+    @pytest.mark.parametrize("shape", sorted(NON_NORMALISED_SHAPES))
+    def test_a_non_normalised_writable_roots_entry_credits_nothing(
+        self, tmp_path: Path, shape: str, subject: str
+    ) -> None:
+        # A dedicated, disjoint workspace nesting (as in the ancestor test
+        # above): the workspace's parent must not coincide with an ancestor
+        # of the target, or the pre-existing lexical checks alone would
+        # already reject the entry for the wrong reason.
+        workspace = tmp_path / "nested" / "workspace"
+        control = workspace / "ha-confinement-control.txt"
+        target = tmp_path / "outside" / "target.txt"
+        subject_path = self.NON_NORMALISED_SUBJECTS[subject](workspace, target)
+        entry = self.NON_NORMALISED_SHAPES[shape](subject_path)
+
+        def forge_writable_roots(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = [entry]
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=forge_writable_roots,
+        )
+        assert (
+            proofs.refused_attempts(
+                "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+            )
+            == set()
+        )
+
     def test_a_non_list_writable_roots_credits_nothing(self, tmp_path: Path) -> None:
         workspace, control, target = _paths(tmp_path)
 

@@ -161,6 +161,17 @@ Review round 2, before merge:
   `_rollout_candidate_descriptors`/`_keep_rollout` against a real `sessions/YYYY/MM/DD`
   tree and checks the kept file's bytes.
 
+Review round 3, before merge:
+- **The `writable_roots` checks now compare NORMALISED paths, not raw lexical ones.**
+  `/base/other/../workspace` designates the workspace but is not equal to it as `Path`
+  components, so it slipped past the equal/ancestor/descendant checks undetected. Every
+  writable_roots entry, the workspace and every probed target must now be an absolute,
+  already-normalised path (`_is_absolute_and_normalised`: no `..`, no `.`, no doubled
+  slash, no trailing slash) before any comparison runs at all — never resolved through a
+  symlink, since the path a rollout names may no longer exist by the time the proof is
+  read. 24 new parametrized tests cover four non-normalised shapes across six
+  equal/ancestor/descendant relations to the workspace and a target.
+
 No contract surface change; production argv unchanged; the proof record format is
 unchanged (`confinement: {passed, date}`).
 
