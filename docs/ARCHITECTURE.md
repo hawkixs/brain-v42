@@ -132,6 +132,55 @@ through an SSH tunnel. The loopback publish is code-ready but not live proof: un
 rollout verifies the effective bind and listeners, treat `:8003` as LAN-exposed. Do not expose it
 to the Internet; independently verify the router/network boundary.
 
+### Reranker: GPU with CPU fallback
+
+`OnnxRerankBackend` (`services/embedding_shim/shim_backends.py`) prefers
+`CUDAExecutionProvider` (env `RERANK_DEVICE=auto|cuda|cpu`, default `auto`), falling back to
+`CPUExecutionProvider` when CUDA is unavailable or a CUDA run raises (retried once on CPU for
+that request). Candidates are sorted by real token length and scored in micro-batches (env
+`RERANK_BATCH_SIZE`, default 32), so each batch pads to its own local max instead of the whole
+request's. Measured 2026-09-26 (85/128 real knowledge-base candidates, same model + tokenizer):
+CPU single batch ~3.4 s; CPU sorted micro-batches of 32 ~1.9 s; CUDA sorted micro-batches of 32
+~0.3 s (85 candidates) / ~0.4 s (128) — a single CUDA batch of 128x512 OOMs the shared 6 GB GPU.
+CPU vs CUDA scores: max |diff| 0.00012, identical top-10.
+
+### Qodo retired from the default stack (2026-09-26)
+
+brain-v42 embeds through the Mistral codestral endpoint since 2026-09-22; the local
+Qodo-Embed-1-1.5B GGUF served by `embedding-llama` (llama.cpp) is no longer a brain
+dependency. `auto-discord`, the last `/embed` client, is migrating off it in its own
+change. Consequently `embedding-llama` sits behind the `qodo` Compose profile: a plain
+`docker compose up` never starts it, and `embedding-shim` carries no `depends_on` on it
+— the shim starts on its own and serves `/rerank` (used by brain's hybrid search and
+ClusterGuard) regardless of whether qodo is running.
+
+`POST /embed`, `/embed/query` and `/embed/single` on the shim depend on
+`embedding-llama` and answer with an upstream error while it is stopped — this is
+expected, not a regression, for any caller that has not migrated off `/embed` yet.
+
+**The `qodo` Compose profile change alone does not stop a container already running
+from the old default stack.** `docker compose up` only skips starting
+`embedding-llama` on a fresh bring-up; it does not touch a container that a previous
+`docker compose up` (before this change) already started and left running. Stop it
+explicitly on any host that ran the old default stack:
+
+```bash
+docker stop brain_v42_embedding_llama
+```
+
+Verify with `docker ps -a`: the container should show as `Exited`, not `Up`, once
+stopped (it stays present, just not running, unless also `docker rm`d). This was done
+by the operator on the production host on 2026-09-26, alongside this change.
+
+To bring qodo back deliberately (e.g. to serve a caller that still needs `/embed`):
+
+```bash
+docker compose --profile qodo up -d embedding-llama
+```
+
+This does not change the reranker: `/rerank` is served locally by the ONNX
+cross-encoder (see above) and never depended on `embedding-llama`.
+
 ## Storage layout
 
 | Store | Port | Role | Source files |

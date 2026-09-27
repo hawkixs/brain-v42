@@ -24,6 +24,7 @@ comparison, never the token in a log.
 from __future__ import annotations
 
 import logging
+import math
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -289,7 +290,7 @@ class TestLoopbackExemption:
     route_localnet=0), and connections published by Docker arrive with the bridge
     gateway's address, never 127.0.0.1. Anyone who can already execute inside the
     container owns the process: asking them for a bearer protects nothing. The
-    compose healthcheck (POST /embed with no Authorization, run inside the
+    compose healthcheck (POST /rerank with no Authorization, run inside the
     container) lives exactly there.
     """
 
@@ -315,25 +316,35 @@ class TestLoopbackExemption:
 class TestComposeHealthcheckContract:
     """The ONLY production prober is the compose healthcheck — pinned from the YAML.
 
-    The PR 43 review reproduced the failure mode: in armed mode, this POST /embed
-    with no Authorization returned 401 → a container unhealthy for life, while the
-    /healthz canary stayed green. The test replays the REAL request (URL, body and
-    absence of Authorization extracted from the compose, never retyped) against the
-    app in armed mode AND in no-secret mode.
+    The PR 43 review reproduced the failure mode: in armed mode, this POST with no
+    Authorization returned 401 → a container unhealthy for life, while the /healthz
+    canary stayed green. The test replays the REAL request (URL, body and absence of
+    Authorization extracted from the compose, never retyped) against the app in
+    armed mode AND in no-secret mode.
+
+    The probed endpoint moved from /embed to /rerank on 2026-09-26, when qodo was
+    retired from the default stack (docs/ARCHITECTURE.md): with embedding-llama
+    stopped, an /embed probe would report the shim unhealthy for a reason unrelated
+    to the shim itself, while /rerank — served locally by the ONNX cross-encoder —
+    still works.
     """
 
     @staticmethod
-    def _healthcheck_request() -> tuple[str, dict[str, Any]]:
-        import ast
-        import re
-
+    def _healthcheck_script() -> str:
         import yaml
 
         compose = yaml.safe_load(
             (Path(__file__).resolve().parents[2] / "docker-compose.yml").read_text()
         )
         command = compose["services"]["embedding-shim"]["healthcheck"]["test"]
-        script = command[-1]
+        return command[-1]
+
+    @staticmethod
+    def _healthcheck_request() -> tuple[str, dict[str, Any]]:
+        import ast
+        import re
+
+        script = TestComposeHealthcheckContract._healthcheck_script()
 
         assert "Authorization" not in script, (
             "le healthcheck présente désormais un bearer : ce contrat d'exemption "
@@ -344,6 +355,18 @@ class TestComposeHealthcheckContract:
         assert url_match and body_match, "healthcheck compose illisible — contrat à réviser"
         return url_match.group(1), ast.literal_eval(body_match.group(1))
 
+    def test_the_pinned_script_asserts_a_single_finite_score(self) -> None:
+        """MINOR review finding (PR #231): the healthcheck used to accept ANY
+        JSON with a 'scores' key — a wedged rerank returning e.g.
+        {"scores": null} or {"scores": []} would still report the container
+        healthy. For the single-candidate probe body it must assert scores is
+        a list of exactly one finite number.
+        """
+        script = self._healthcheck_script()
+
+        assert "math.isfinite(scores[0])" in script
+        assert "len(scores) == 1" in script
+
     @pytest.mark.asyncio
     async def test_the_real_healthcheck_stays_green_in_required_mode(self) -> None:
         path, body = self._healthcheck_request()
@@ -352,8 +375,13 @@ class TestComposeHealthcheckContract:
             response = await client.post(path, json=body)
 
         assert response.status_code == 200
-        # The compose's script literally checks r.read(2) == b'[['.
-        assert response.content[:2] == b"[["
+        # Mirrors the compose script's own stricter check (see
+        # test_the_pinned_script_asserts_a_single_finite_score): a single
+        # finite score, not merely a "scores" key.
+        scores = response.json()["scores"]
+        assert isinstance(scores, list)
+        assert len(scores) == 1
+        assert math.isfinite(scores[0])
 
     @pytest.mark.asyncio
     async def test_the_real_healthcheck_stays_green_without_any_secret(self) -> None:

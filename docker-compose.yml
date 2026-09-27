@@ -100,6 +100,12 @@ services:
   embedding-llama:
     image: ghcr.io/ggml-org/llama.cpp:server-cuda@sha256:c1ddeb6d30932ddd9ddff962cb62dbc5450cd99d8e82c8c20de2fd1f99fde85b
     container_name: brain_v42_embedding_llama
+    # Qodo retired from the default stack (2026-09-26, docs/ARCHITECTURE.md):
+    # brain embeds through Mistral codestral since 2026-09-22, and the last
+    # /embed client (auto-discord) is migrating off it. `docker compose up`
+    # (no profile) never starts this service. Bring it back deliberately with
+    # `docker compose --profile qodo up -d embedding-llama`.
+    profiles: ["qodo"]
     restart: unless-stopped
     # --pooling last: the model's own sentence-transformers config (lasttoken).
     # -ub 1024: VRAM lever no.1 (2.9 GiB vs 4.7 at ub=4096, latencies
@@ -174,14 +180,33 @@ services:
       - SHIM_BEARER_MODE=optional
     secrets:
       - embedding_shim_bearer
-    depends_on:
-      embedding-llama:
-        condition: service_healthy
+    # GPU reranking (2026-09-26): OnnxRerankBackend prefers CUDAExecutionProvider
+    # when available, falls back to CPU otherwise — same device reservation as
+    # the other two GPU services above.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # No depends_on on embedding-llama: qodo is retired from the default
+    # stack (2026-09-26, docs/ARCHITECTURE.md) and sits behind `--profile
+    # qodo`, so the shim must start without it. /embed then fails fast
+    # (embedding-llama unreachable) instead of blocking startup.
     healthcheck:
-      # A real end-to-end healthcheck: POST /embed crosses the shim AND the
-      # llama server (the same philosophy as the legacy healthcheck after
-      # incident 410eb227 — never a /healthz-only false green).
-      test: ["CMD", "python3", "-c", "import urllib.request,json; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/embed',data=json.dumps({'texts':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=15); assert r.read(2)==b'[['"]
+      # A real healthcheck: POST /rerank crosses the shim AND its ONNX
+      # cross-encoder model (the same philosophy as the legacy healthcheck
+      # after incident 410eb227 — never a /healthz-only false green). /embed
+      # crossed llama.cpp/qodo instead, until qodo was retired from the
+      # default stack (2026-09-26, docs/ARCHITECTURE.md): with
+      # embedding-llama stopped, a /embed probe would report the shim
+      # unhealthy even though /rerank — the endpoint brain actually calls —
+      # works. Asserts scores is a list of exactly one finite number for the
+      # single-candidate probe body, not merely that a "scores" key exists
+      # (MINOR review finding, PR #231): a wedged rerank returning
+      # {"scores": null} or {"scores": []} used to still report healthy.
+      test: ["CMD", "python3", "-c", "import urllib.request,json,math; r=urllib.request.urlopen(urllib.request.Request('http://127.0.0.1:8003/rerank',data=json.dumps({'query':'healthcheck','candidates':['healthcheck']}).encode(),headers={'Content-Type':'application/json'}),timeout=20); scores=json.loads(r.read())['scores']; assert isinstance(scores, list) and len(scores) == 1 and math.isfinite(scores[0])"]
       interval: 60s
       timeout: 20s
       retries: 5
