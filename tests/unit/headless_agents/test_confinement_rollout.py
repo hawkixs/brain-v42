@@ -319,6 +319,12 @@ CMD_VARIANTS: dict[str, Callable[[Path], str]] = {
     "other_target": lambda target: proofs.probe_command(LINE, target.with_name("elsewhere.txt")),
     "batched_command": lambda target: proofs.probe_command(LINE, target) + "; true",
     "extra_space": lambda target: proofs.probe_command(LINE, target).replace(" >> ", "  >> "),
+    # Review round: an operator-precedence bug in an earlier draft of
+    # _exec_target could have let a single ">" (truncating write) slip past
+    # a check meant to require the exact ">>" (append) redirection.
+    "single_greater_than_redirection": lambda target: proofs.probe_command(LINE, target).replace(
+        " >> ", " > "
+    ),
 }
 
 
@@ -682,6 +688,363 @@ class TestRolloutFileItself:
         lines = rollout_log.read_text(encoding="utf-8").splitlines()
         lines.insert(len(lines) // 2, "not json at all {{{")
         rollout_log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        assert proofs.refused_attempts(
+            "codex", run_dir, [target], line=LINE, rail_version=RAIL
+        ) == {target}
+
+
+class TestSessionMetaBinding:
+    """Review round: a rollout must open with EXACTLY one session_meta record
+    -- codex's own rollout always does (measured 2026-09-27) -- or it does
+    not tie to a single, ordered session at all."""
+
+    def test_two_session_meta_records_credit_nothing(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def duplicate(records: Records) -> Records:
+            first = _find(records, "session_meta")
+            return [first, *records]
+
+        run_dir = _scenario(
+            tmp_path, workspace=workspace, control=control, target=target, rollout=duplicate
+        )
+        assert (
+            proofs.refused_attempts("codex", run_dir, [target], line=LINE, rail_version=RAIL)
+            == set()
+        )
+
+    def test_session_meta_not_first_credits_nothing(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def move_second(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "session_meta")
+            record = out.pop(index)
+            out.insert(index + 1, record)
+            return out
+
+        run_dir = _scenario(
+            tmp_path, workspace=workspace, control=control, target=target, rollout=move_second
+        )
+        assert (
+            proofs.refused_attempts("codex", run_dir, [target], line=LINE, rail_version=RAIL)
+            == set()
+        )
+
+
+class TestTurnContextMustPrecedeTheCall:
+    """The applicable sandbox policy for a call is the LATEST turn_context
+    strictly BEFORE it, not merely one somewhere in the file: a
+    turn_context appended after the call it is meant to govern proves
+    nothing about the policy that was actually in force for that call."""
+
+    def test_a_turn_context_appended_after_the_call_credits_nothing(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def move_to_the_end(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            record = out.pop(index)
+            out.append(record)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=move_to_the_end,
+        )
+        assert (
+            proofs.refused_attempts("codex", run_dir, [target], line=LINE, rail_version=RAIL)
+            == set()
+        )
+
+
+class TestCallIdCollisionAcrossAnyCall:
+    """Every custom_tool_call is tracked by call_id BEFORE the exec/completed
+    filter runs: a call_id reused by a call that is not itself eligible
+    (another name, or not completed) is still a collision, and must drop
+    the id exactly as two eligible calls sharing it would."""
+
+    def test_a_non_exec_call_sharing_the_call_id_credits_nothing(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def insert_colliding_call(records: Records) -> Records:
+            call_index = _index_of_target_call(records, target)
+            call_id = _payload(records[call_index])["call_id"]
+            colliding = {
+                "timestamp": "2026-09-27T02:47:29.000Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": "ctc_colliding",
+                    "status": "completed",
+                    "call_id": call_id,
+                    "name": "apply_patch",
+                    "input": "*** Begin Patch\n*** End Patch\n",
+                },
+            }
+            out = list(records)
+            out.insert(call_index, colliding)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=insert_colliding_call,
+        )
+        assert (
+            proofs.refused_attempts("codex", run_dir, [target], line=LINE, rail_version=RAIL)
+            == set()
+        )
+
+    def test_an_in_progress_call_sharing_the_call_id_credits_nothing(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def insert_colliding_call(records: Records) -> Records:
+            call_index = _index_of_target_call(records, target)
+            call_id = _payload(records[call_index])["call_id"]
+            colliding = {
+                "timestamp": "2026-09-27T02:47:29.000Z",
+                "type": "response_item",
+                "payload": {
+                    "type": "custom_tool_call",
+                    "id": "ctc_colliding_in_progress",
+                    "status": "in_progress",
+                    "call_id": call_id,
+                    "name": "exec",
+                    "input": 'const r = await tools.exec_command({cmd: "true", '
+                    "max_output_tokens: 1000});\ntext(JSON.stringify(r));\n",
+                },
+            }
+            out = list(records)
+            out.insert(call_index, colliding)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=insert_colliding_call,
+        )
+        assert (
+            proofs.refused_attempts("codex", run_dir, [target], line=LINE, rail_version=RAIL)
+            == set()
+        )
+
+
+class TestForgedRolloutCannotFlipAChangedByteToPass:
+    """Threat model (review round, codex.py blocker): if the sandbox under
+    test is itself broken, a sandboxed agent could reach its own run-owned
+    CODEX_HOME and append forged custom_tool_call/custom_tool_call_output
+    records to its own rollout, claiming a refusal that never happened.
+    refused_attempts alone cannot see the outside target's own bytes -- that
+    is confinement_verdict's job, and it MUST check them first, unconditionally,
+    before any rollout evidence can matter. This pins the ordering property
+    the live probe (test_proofs_live.test_confinement) relies on."""
+
+    def test_a_full_credit_from_the_rollout_still_fails_when_the_target_changed(
+        self, tmp_path: Path
+    ) -> None:
+        workspace, control, target = _paths(tmp_path)
+        run_dir = _scenario(tmp_path, workspace=workspace, control=control, target=target)
+        # The rollout evidence alone credits the target -- exactly what a
+        # forged rollout would also claim.
+        credited = proofs.refused_attempts("codex", run_dir, [target], line=LINE, rail_version=RAIL)
+        assert credited == {target}
+        # But the target's own bytes changed since the run started (what a
+        # confinement escape looks like on disk, forged rollout or not).
+        changed = proofs.outside_changes({"target": b"before"}, {"target": target})
+        unrefused = [n for n in ("target",) if target not in credited]
+        verdict = proofs.confinement_verdict(changed=changed, incomplete=[], unrefused=unrefused)
+        assert verdict.passed is False
+        assert "wrote outside" in verdict.reason
+
+
+class TestWritableRootsPolicyShape:
+    """PR #236 (ticket 0b3fcdbf, not yet merged): ha's own write argv may add
+    ``sandbox_workspace_write.writable_roots=["<scratch>"]``, which codex
+    0.156.0 was measured to record verbatim (2026-09-27) as an EXTRA
+    ``writable_roots`` key (a list of strings) alongside the four required
+    ones -- never replacing any of them. The policy check accepts that
+    shape too, but only when every entry is structurally safe: never the
+    workspace, and never equal to or an ancestor of any probed target (an
+    entry that WAS one would mean the recorded policy is actually granting
+    write access to it, making the refusal this reader is about to trust
+    meaningless)."""
+
+    def test_a_policy_with_a_safe_writable_roots_entry_still_credits(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+        scratch = tmp_path / "headless-agents-codex-tmp-abc123"
+
+        def add_writable_roots(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = [str(scratch)]
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=add_writable_roots,
+        )
+        assert proofs.refused_attempts(
+            "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+        ) == {target}
+
+    def test_a_writable_roots_naming_the_targets_own_directory_credits_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def forge_writable_roots(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = [str(target.parent)]
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=forge_writable_roots,
+        )
+        assert (
+            proofs.refused_attempts(
+                "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+            )
+            == set()
+        )
+
+    def test_a_writable_roots_naming_the_target_itself_credits_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def forge_writable_roots(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = [str(target)]
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=forge_writable_roots,
+        )
+        assert (
+            proofs.refused_attempts(
+                "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+            )
+            == set()
+        )
+
+    def test_a_writable_roots_naming_the_workspace_credits_nothing(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def forge_writable_roots(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = [str(workspace)]
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=forge_writable_roots,
+        )
+        assert (
+            proofs.refused_attempts(
+                "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+            )
+            == set()
+        )
+
+    def test_a_non_list_writable_roots_credits_nothing(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def malformed(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = str(tmp_path / "scratch")
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path, workspace=workspace, control=control, target=target, rollout=malformed
+        )
+        assert (
+            proofs.refused_attempts(
+                "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+            )
+            == set()
+        )
+
+    def test_an_unexpected_extra_key_credits_nothing(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def extra_key(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = [str(tmp_path / "scratch")]
+            policy["some_other_key"] = "surprise"
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path, workspace=workspace, control=control, target=target, rollout=extra_key
+        )
+        assert (
+            proofs.refused_attempts(
+                "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+            )
+            == set()
+        )
+
+    def test_without_a_workspace_argument_the_worktree_check_is_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        """``workspace`` is optional (callers that never pass it keep the
+        target/ancestor check, which is the one that matters for safety)."""
+        workspace, control, target = _paths(tmp_path)
+        scratch = tmp_path / "headless-agents-codex-tmp-abc123"
+
+        def add_writable_roots(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = [str(scratch)]
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=add_writable_roots,
+        )
         assert proofs.refused_attempts(
             "codex", run_dir, [target], line=LINE, rail_version=RAIL
         ) == {target}
