@@ -1,0 +1,3 @@
+gemini-3.1-pro-high      reasoning, tools
+gemini-3.1-pro-medium    reasoning, tools
+gemini-3.1-flash         fast, tools
