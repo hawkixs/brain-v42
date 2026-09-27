@@ -17,10 +17,20 @@ other departure from the schema (a missing required field, a wrong type, a
 value outside a closed list, an effort outside its provider's rule, a
 duplicate task kind, an unknown provider, a model value that is not a table,
 or ``schema != 1``) raises :class:`CatalogueError` naming the offending key.
+
+``tasks`` is frozen as an inline array of inline tables (``tasks = [{kind =
+"..."}]``) and ``cost`` as an inline table (``cost = {kind = "..."}``);
+:mod:`tomllib` yields the same ``list[dict]`` / ``dict`` for the non-inline
+spellings TOML also allows (``[[provider."model".tasks]]``,
+``[provider."model".cost]``), so the syntax is checked against the raw text
+before the parsed document is walked: those spellings raise
+:class:`CatalogueError` naming ``tasks``/``cost`` even though the parsed
+values would otherwise validate.
 """
 
 from __future__ import annotations
 
+import re
 import tomllib
 from dataclasses import dataclass
 from datetime import date
@@ -51,6 +61,11 @@ WINDOWS = frozenset({"5h", "daily", "weekly", "monthly"})
 _MODEL_FIELDS = frozenset({"purpose", "tasks", "cost", "pitfalls", "verified_at", "source"})
 _TASK_FIELDS = frozenset({"kind", "effort"})
 _COST_FIELDS = frozenset({"kind", "windows", "note"})
+
+#: A TOML array-of-tables header, ``[[ path ]]``, always alone on its line.
+_ARRAY_TABLE_HEADER = re.compile(r"^\[\[(?P<path>[^\[\]]+)\]\]\s*(#.*)?$")
+#: A TOML standalone table header, ``[ path ]`` -- excludes the ``[[`` above.
+_TABLE_HEADER = re.compile(r"^\[(?!\[)(?P<path>[^\[\]]+)\]\s*(#.*)?$")
 
 
 class CatalogueError(ValueError):
@@ -100,16 +115,91 @@ def _unknown(table: dict[str, object], known: frozenset[str], prefix: str) -> li
     return [f"{prefix}.{key}" if prefix else key for key in sorted(table.keys() - known)]
 
 
-def _load_document(path: Path) -> dict[str, object]:
+def _load_document(path: Path) -> tuple[dict[str, object], str]:
+    """The parsed document, plus the raw text -- needed to tell an inline
+    array/table from the non-inline spelling tomllib parses identically."""
     try:
-        with path.open("rb") as stream:
-            return tomllib.load(stream)
+        raw = path.read_bytes()
     except FileNotFoundError:
         raise CatalogueError(f"{path}: missing") from None
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except OSError as exc:
+        raise CatalogueError(f"{path}: {exc}") from None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CatalogueError(f"{path}: {exc}") from None
+    try:
+        return tomllib.loads(text), text
+    except tomllib.TOMLDecodeError as exc:
         raise CatalogueError(f"{path}: {exc}") from None
     except RecursionError:
         raise CatalogueError(f"{path}: nested too deeply to be a catalogue") from None
+
+
+def _split_key_path(path: str) -> list[str]:
+    """Split a TOML dotted key path into raw segments, respecting quotes: a
+    dot inside a quoted segment (``a."b.c"``) is not a separator."""
+    segments: list[str] = []
+    current = ""
+    quote: str | None = None
+    for char in path:
+        if quote is not None:
+            current += char
+            if char == quote:
+                quote = None
+            continue
+        if char in ('"', "'"):
+            quote = char
+            current += char
+            continue
+        if char == ".":
+            segments.append(current.strip())
+            current = ""
+            continue
+        current += char
+    segments.append(current.strip())
+    return segments
+
+
+def _unquote_key(segment: str) -> str:
+    if len(segment) >= 2 and segment[0] == segment[-1] and segment[0] in ('"', "'"):
+        inner = segment[1:-1]
+        return inner.replace('\\"', '"') if segment[0] == '"' else inner
+    return segment
+
+
+def _normalized_key_path(path: str) -> str:
+    return ".".join(_unquote_key(segment) for segment in _split_key_path(path))
+
+
+def _reject_non_inline_tasks_and_cost(text: str) -> None:
+    """``tasks`` is frozen as an inline array of inline tables and ``cost`` as
+    an inline table; tomllib yields the identical ``list[dict]`` / ``dict``
+    for the non-inline spellings TOML also allows (``[[provider."model".
+    tasks]]``, ``[provider."model".cost]``), so the raw source is checked
+    line by line, before the parsed document is walked, for a header whose
+    last key is ``tasks`` or ``cost``."""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        array_header = _ARRAY_TABLE_HEADER.match(stripped)
+        if array_header is not None:
+            normalized = _normalized_key_path(array_header.group("path"))
+            if normalized == "tasks" or normalized.endswith(".tasks"):
+                raise CatalogueError(
+                    f"{normalized}: must be an inline array of inline tables "
+                    "(tasks = [{...}]), not a [[...]] array of tables"
+                )
+            continue
+        table_header = _TABLE_HEADER.match(stripped)
+        if table_header is not None:
+            normalized = _normalized_key_path(table_header.group("path"))
+            if normalized == "cost" or normalized.endswith(".cost"):
+                raise CatalogueError(
+                    f"{normalized}: must be an inline table (cost = {{...}}), "
+                    "not a standalone [...] table"
+                )
 
 
 def _schema(document: dict[str, object]) -> None:
@@ -225,8 +315,9 @@ def _model_entry(provider: str, model: str, table: object, warnings: list[str]) 
 
 def load_catalogue(path: Path) -> Catalogue:
     """Read and validate ``path`` against the frozen schema v1; never rewrites it."""
-    document = _load_document(path)
+    document, text = _load_document(path)
     _schema(document)
+    _reject_non_inline_tasks_and_cost(text)
 
     warnings: list[str] = []
     entries: list[ModelEntry] = []

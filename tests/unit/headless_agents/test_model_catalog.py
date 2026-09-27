@@ -186,6 +186,21 @@ def test_non_string_effort_names_its_key(tmp_path: Path) -> None:
             id="task-must-be-table",
         ),
         pytest.param(
+            'schema = 1\n[codex."gpt-6-sol"]\n'
+            'purpose = "Review and build."\n'
+            'cost = {kind = "subscription", windows = ["5h", "weekly"]}\n'
+            'pitfalls = ["Check findings."]\n'
+            "verified_at = 2026-09-27\n"
+            'source = "Brain decision ea4e57a1"\n'
+            '\n[[codex."gpt-6-sol".tasks]]\n'
+            'kind = "design-review"\n'
+            'effort = "high"\n'
+            '\n[[codex."gpt-6-sol".tasks]]\n'
+            'kind = "build"\n',
+            "codex.gpt-6-sol.tasks",
+            id="tasks-must-be-inline-array-not-array-of-tables",
+        ),
+        pytest.param(
             GOOD.replace('{kind = "build"}', "{}"),
             "codex.gpt-6-sol.tasks[1].kind",
             id="kind-required",
@@ -217,6 +232,19 @@ def test_non_string_effort_names_its_key(tmp_path: Path) -> None:
             ),
             "codex.gpt-6-sol.cost",
             id="cost-table",
+        ),
+        pytest.param(
+            'schema = 1\n[codex."gpt-6-sol"]\n'
+            'purpose = "Review and build."\n'
+            'tasks = [{kind = "design-review", effort = "high"}, {kind = "build"}]\n'
+            'pitfalls = ["Check findings."]\n'
+            "verified_at = 2026-09-27\n"
+            'source = "Brain decision ea4e57a1"\n'
+            '\n[codex."gpt-6-sol".cost]\n'
+            'kind = "subscription"\n'
+            'windows = ["5h", "weekly"]\n',
+            "codex.gpt-6-sol.cost",
+            id="cost-must-be-inline-table-not-standalone-table",
         ),
         pytest.param(
             GOOD.replace('kind = "subscription"', 'kind = "future"'),
