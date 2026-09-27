@@ -34,7 +34,7 @@ under 0.5.2 (lot 1b operator decision 1).
 
 ### Added
 
-- `--wait SECONDS` (`ha run`, `ha clean`): a bounded, explicit admission wait, with a
+- `--wait SECONDS` (`ha run`; `ha clean` is admitted through the same gate with the default bound): a bounded, explicit admission wait, with a
   best-effort writer preference (a writer-intent lock, an admission gate).
 - `ha providers`' per-rail proof state (`passed`/`failed`/`missing`/`stale`/`unreadable`)
   and the resulting mode (`refused`/`writes serialised`/`parallel`), visible before any

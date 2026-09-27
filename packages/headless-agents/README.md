@@ -413,8 +413,9 @@ provider step and every `git worktree add` at a barrier, and asserts all three a
 at once -- the global lock reads shared, both lineage locks read exclusive, the registry lock
 reads free, and the two `git worktree add` calls measurably overlap -- before releasing them.
 
-- **`--wait SECONDS`** (spec §3.3): a bounded admission wait, for `ha run` and `ha clean`
-  alike (`ha clean` is admitted through this very same gate, not a lock of its own). Ordinary
+- **`--wait SECONDS`** (spec §3.3): a bounded admission wait for `ha run`. `ha clean` takes
+  no `--wait`: it is admitted through this very same gate with the default ten-second bound,
+  never a lock of its own. Ordinary
   reads and confined writes share the global lock; an unconfined write holds it exclusively,
   serialising every other run while it is in flight. `--wait` gives one explicit, positive
   number of seconds, spent as a single absolute deadline across the global lock and, for a
@@ -595,9 +596,10 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   `tasks` entry or in `cost` is likewise a warning naming the key; every other departure
   (a missing field, a wrong type, a value outside a closed list, a duplicate task kind, a
   model value that is not a table) is an error naming the key. `tasks[].effort` follows a
-  per-provider rule: optional for `codex` (one of `none`, `minimal`, `low`, `medium`,
-  `high`, `xhigh`, `max`, `ultra`); optional and passed through as-is for `opencode`'s own
-  `--variant` (ha performs no model-specific variant check); forbidden for `agy`, `claude`,
+  per-provider rule: optional for `codex` and for `opencode` (whose value becomes its own
+  `--variant`), and in both cases one of `none`, `minimal`, `low`, `medium`, `high`,
+  `xhigh`, `max`, `ultra` -- ha performs no model-specific check beyond that closed list;
+  forbidden for `agy`, `claude`,
   `openrouter`, `mistral`, `nvidia` and `openai-compat`, an error even when the value would
   otherwise be valid.
 
