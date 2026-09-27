@@ -142,10 +142,14 @@ VERSIONS = {
 }
 
 #: A fake CLI. ``--version`` prints ``<name>.version``; anything else is its updater,
-#: which records what it saw in ``<name>.updated`` (JSON), then behaves as
-#: ``<name>.behaviour`` says: ``bump`` (default), ``keep``, ``fail``, ``fail-bump``
-#: or ``sleep``. ``FAKE_STATE`` names the state whose global lock it probes;
-#: ``FAKE_WATCH`` a path whose existence it records.
+#: which records what it saw in ``<name>.updated`` (JSON) -- its argv, its own
+#: ``os.environ`` (to pin what the updater actually receives), whether the global
+#: lock is held by someone else, and, for ``agy``, whether its rollback copy already
+#: exists. The state directory and, for agy, the rollback copy are found relative to
+#: the script's own directory (``tmp_path/bin``'s sibling ``tmp_path/state``) -- never
+#: through an environment variable, since the sanitised updater environment carries
+#: none of the package's own names. Then behaves as ``<name>.behaviour`` says:
+#: ``bump`` (default), ``keep``, ``fail``, ``fail-bump`` or ``sleep``.
 _FAKE = """#!{python}
 import fcntl, json, os, pathlib, subprocess, sys, time
 here = pathlib.Path(__file__).resolve().parent
@@ -154,19 +158,18 @@ version = here / (name + ".version")
 if sys.argv[1:] == ["--version"]:
     print(version.read_text().strip())
     sys.exit(0)
-seen = {{"args": sys.argv[1:]}}
-state = os.environ.get("FAKE_STATE")
-if state:
-    lock = os.open(os.path.join(state, "unconfined.lock"), os.O_RDWR | os.O_CREAT, 0o600)
-    try:
-        fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
-    except BlockingIOError:
-        seen["lock"] = "blocked"
-    else:
-        seen["lock"] = "free"
-watch = os.environ.get("FAKE_WATCH")
-if watch:
-    seen["watched"] = os.path.exists(watch)
+old_version = version.read_text().strip()
+seen = {{"args": sys.argv[1:], "environ": dict(os.environ)}}
+state = here.parent / "state"
+lock = os.open(str(state / "unconfined.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+try:
+    fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+except BlockingIOError:
+    seen["lock"] = "blocked"
+else:
+    seen["lock"] = "free"
+if name == "agy":
+    seen["watched"] = (state / "rollback" / "agy" / old_version / "agy").exists()
 (here / (name + ".updated")).write_text(json.dumps(seen))
 behaviour_file = here / (name + ".behaviour")
 behaviour = behaviour_file.read_text().strip() if behaviour_file.exists() else "bump"
@@ -353,8 +356,7 @@ def test_check_runs_no_updater_takes_no_lock_and_reports_unknown(
 def test_updaters_run_while_the_global_lock_is_held_exclusively(
     tmp_path: Path, fake_bin: _Bin, proved: _Proofs
 ) -> None:
-    environ = {"PATH": os.environ["PATH"], "FAKE_STATE": str(tmp_path / "state")}
-    rows = _update(tmp_path, proved, environ=environ)
+    rows = _update(tmp_path, proved)
     for rail in VERSIONS:
         seen = fake_bin.updated(rail)
         assert seen is not None and seen["lock"] == "blocked", rail
@@ -513,16 +515,40 @@ def test_the_updater_is_the_exact_probed_path(
     assert _row(rows, "codex").updater[0] == str(fake_bin.directory / "codex")
 
 
+def test_the_updater_environment_is_sanitised_never_the_raw_operator_environ(
+    tmp_path: Path, fake_bin: _Bin, proved: _Proofs
+) -> None:
+    """The updater subprocess gets the package's shared child-environment
+    allowlist (``capability.scoped_environment``), not the raw parent environ:
+    a Claude Code session marker or an unrelated credential must never reach a
+    vendor's update binary, which this package neither audits nor sandboxes."""
+    environ = {
+        "PATH": os.environ["PATH"],
+        "HOME": "/should-not-be-used",
+        "CLAUDECODE": "1",
+        "CLAUDE_CODE_ENTRYPOINT": "cli",
+        "SOME_SERVICE_API_KEY": "super-secret-value",
+    }
+    _update(tmp_path, proved, ("agy",), environ=environ)
+    seen = fake_bin.updated("agy")
+    assert seen is not None
+    child_environ = seen["environ"]
+    assert "CLAUDECODE" not in child_environ
+    assert "CLAUDE_CODE_ENTRYPOINT" not in child_environ
+    assert "SOME_SERVICE_API_KEY" not in child_environ
+    assert child_environ["PATH"] == os.environ["PATH"]
+    assert child_environ["HOME"] == str(tmp_path / "home")
+
+
 def test_agy_is_copied_aside_before_its_update(
     tmp_path: Path, fake_bin: _Bin, proved: _Proofs
 ) -> None:
     copy = updaters.agy_copy(tmp_path / "state", "1.0.0")
-    environ = {"PATH": os.environ["PATH"], "FAKE_WATCH": str(copy)}
     old = tmp_path / "state/rollback/agy/0.9.0/agy"
     old.parent.mkdir(parents=True)
     old.write_text("an older copy")
     proved.outcomes[("agy", "isolation")] = ("failed", True)
-    rows = _update(tmp_path, proved, ("agy",), environ=environ)
+    rows = _update(tmp_path, proved, ("agy",))
     seen = fake_bin.updated("agy")
     assert seen is not None and seen["watched"] is True, "the copy must exist before agy update"
     assert copy.read_bytes() == (fake_bin.directory / "agy").read_bytes()
