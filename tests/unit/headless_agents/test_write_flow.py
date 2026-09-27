@@ -488,6 +488,7 @@ def _instrument(world: World, monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     monkeypatch.setattr(engine, "held", held)
     monkeypatch.setattr(write_flow, "held", held)
+    monkeypatch.setattr(locks, "held", held)
     monkeypatch.setattr(quarantine, "check", check)
     monkeypatch.setattr(lineage, "create", create)
     monkeypatch.setattr(write_flow, "git", git)
@@ -525,6 +526,7 @@ def test_admission_takes_every_lock_before_reading_state_and_runs_no_git(
     locks_taken = [e for e in events if e.startswith("lock")]
     assert [e.split()[1] for e in locks_taken] == [
         "LIFECYCLE",
+        "ADMISSION_GATE",
         "UNCONFINED",
         "LINEAGE_REGISTRY",
         "LINEAGE",
