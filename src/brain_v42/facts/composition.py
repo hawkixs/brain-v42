@@ -37,6 +37,8 @@ from brain_v42.facts.sources import HostSourceFactory, PostgresSourceFactory, Re
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+    from brain_v42.config import Settings
+
 logger = structlog.get_logger(__name__)
 
 
@@ -114,6 +116,39 @@ def build_fact_registry(
     registry.freeze()
     logger.info("facts.registry_frozen", facts=list(registry.names()))
     return registry
+
+
+def build_fact_registry_from_settings(
+    settings: Settings,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> FactRegistry:
+    """The one call site: read what the operator declared, then build the registry.
+
+    Moved verbatim from `mcp/server.py::build_services` (spec ADR 27 lot C, T1.1) so
+    the maintenance CLI can compose the exact same registry the server does, without
+    duplicating the three identity reads.
+    """
+    declared_identity: object = None
+    try:
+        declared_identity = settings.facts_production_identity()
+    except Exception as exc:  # a settings double without the method, or a refused value
+        logger.warning("facts.production_identity_unreadable", error=str(exc))
+    declared_live_release_identity: object = None
+    try:
+        declared_live_release_identity = settings.facts_live_release_identity()
+    except Exception as exc:
+        logger.warning("facts.live_release_identity_unreadable", error=str(exc))
+    declared_host_identity: object = None
+    try:
+        declared_host_identity = settings.facts_host_identity()
+    except Exception as exc:
+        logger.warning("facts.host_identity_unreadable", error=str(exc))
+    return build_fact_registry(
+        declared_identity,
+        session_factory=session_factory,
+        declared_live_release_identity=declared_live_release_identity,
+        declared_host_identity=declared_host_identity,
+    )
 
 
 def _declare_identity(
