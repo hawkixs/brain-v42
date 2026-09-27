@@ -535,13 +535,18 @@ def _matches_write_policy(
     accepted: an unexplained addition is not this policy.
 
     ``writable_roots`` must be a non-empty list of strings, and every entry
-    must be structurally safe: never equal to ``workspace`` (already
-    writable through the primary permission profile; a SECOND entry naming
-    it again is not what ha's own argv produces), and never equal to, an
-    ancestor of, or a descendant of any ``wanted`` target. An entry that WAS
-    one of those would mean the recorded policy is actually granting write
-    access to that target, making the refusal this reader is about to trust
-    meaningless -- credits nothing rather than trust it.
+    must be structurally safe: an ABSOLUTE path (never relative -- resolved
+    against an unstated cwd, it could name anything), never equal to, an
+    ANCESTOR of, or a DESCENDANT of ``workspace`` (already writable through
+    the primary permission profile; an ancestor would make the whole
+    worktree, and everything under it, writable through this root too; a
+    descendant is redundant with it, never what ha's own argv produces
+    either way), and -- symmetrically -- never equal to, an ancestor of, or
+    a descendant of any ``wanted`` target. An entry that WAS one of those
+    would mean the recorded policy is actually granting write access to
+    that target (or to the workspace it did not need to, a sign of
+    forgery), making the refusal this reader is about to trust meaningless
+    -- credits nothing rather than trust it.
     """
     if not isinstance(policy, dict):
         return False
@@ -559,7 +564,11 @@ def _matches_write_policy(
         if not isinstance(entry, str):
             return False
         root = Path(entry)
-        if workspace is not None and root == workspace:
+        if not root.is_absolute():
+            return False
+        if workspace is not None and (
+            root == workspace or root in workspace.parents or workspace in root.parents
+        ):
             return False
         for target in wanted.values():
             if root == target or root in target.parents or target in root.parents:

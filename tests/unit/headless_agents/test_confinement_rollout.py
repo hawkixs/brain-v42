@@ -979,6 +979,120 @@ class TestWritableRootsPolicyShape:
             == set()
         )
 
+    def test_a_writable_roots_entry_that_is_an_ancestor_of_the_workspace_credits_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """Review round 2 (agy major): the old check only rejected an entry
+        EQUAL to the workspace -- an ancestor of it (which would make the
+        whole worktree, and everything under it, writable through this
+        root too) must be symmetric with the target checks. A dedicated,
+        disjoint workspace nesting (rather than the shared ``_paths()``
+        layout, where the workspace's parent happens to also be an
+        ancestor of the target) isolates the workspace-ancestor check from
+        the pre-existing target-ancestor one."""
+        workspace = tmp_path / "nested" / "workspace"
+        control = workspace / "ha-confinement-control.txt"
+        target = tmp_path / "outside" / "target.txt"
+
+        def forge_writable_roots(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = [str(workspace.parent)]
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=forge_writable_roots,
+        )
+        assert (
+            proofs.refused_attempts(
+                "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+            )
+            == set()
+        )
+
+    def test_a_writable_roots_entry_that_is_a_subdirectory_of_the_workspace_credits_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def forge_writable_roots(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = [str(workspace / "subdir")]
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=forge_writable_roots,
+        )
+        assert (
+            proofs.refused_attempts(
+                "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+            )
+            == set()
+        )
+
+    def test_a_relative_writable_roots_entry_credits_nothing(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def forge_writable_roots(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = ["relative/scratch"]
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=forge_writable_roots,
+        )
+        assert (
+            proofs.refused_attempts(
+                "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+            )
+            == set()
+        )
+
+    def test_a_writable_roots_entry_of_slash_credits_nothing(self, tmp_path: Path) -> None:
+        workspace, control, target = _paths(tmp_path)
+
+        def forge_writable_roots(records: Records) -> Records:
+            out = list(records)
+            index = next(i for i, r in enumerate(out) if r.get("type") == "turn_context")
+            policy = dict(_payload(out[index])["sandbox_policy"])  # type: ignore[arg-type]
+            policy["writable_roots"] = ["/"]
+            out[index] = _with_payload(out[index], sandbox_policy=policy)
+            return out
+
+        run_dir = _scenario(
+            tmp_path,
+            workspace=workspace,
+            control=control,
+            target=target,
+            rollout=forge_writable_roots,
+        )
+        assert (
+            proofs.refused_attempts(
+                "codex", run_dir, [target], line=LINE, rail_version=RAIL, workspace=workspace
+            )
+            == set()
+        )
+
     def test_a_non_list_writable_roots_credits_nothing(self, tmp_path: Path) -> None:
         workspace, control, target = _paths(tmp_path)
 
