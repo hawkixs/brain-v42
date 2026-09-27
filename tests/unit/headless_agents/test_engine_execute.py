@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from headless_agents import engine, locks
+from headless_agents import engine, locks, proof_state
 from headless_agents.engine import Overrides, Request, UsageError, execute, plan
 from headless_agents.proofs import CLI_RAILS, proof_path, record_proof
 from headless_agents.registry import Probe
@@ -244,6 +244,75 @@ def test_an_unconfined_write_in_progress_refuses_the_run(
     assert "codex" not in world.fakes, "no provider may start"
 
 
+def test_expired_wait_exits_2_and_runs_no_provider(world: World, tmp_path: Path) -> None:
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        request = world.request("codex", wait_seconds=0.15)
+        with pytest.raises(UsageError, match=r"--wait 0\.15 s.*unconfined lock"):
+            execute(plan(request), say=world.said.append)
+        assert "codex" not in world.fakes
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_expired_wait_forgets_the_unstarted_read(world: World, tmp_path: Path) -> None:
+    """An explicit ``--wait`` timeout used to mark a read's entry ``failed``
+    and keep its (empty) run dir, as if a run that never started had left
+    something behind (codex review of PR #239). Nothing ran: forget it."""
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        request = world.request("codex", wait_seconds=0.15)
+        with pytest.raises(UsageError, match=r"--wait 0\.15 s.*unconfined lock"):
+            execute(plan(request), say=world.said.append)
+        assert "codex" not in world.fakes
+        assert list((world.state / "runs").glob("*.json")) == []
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_without_wait_keeps_the_ten_second_default(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.20)
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        started = time.monotonic()
+        with pytest.raises(UsageError, match="an unconfined write is running"):
+            world.run("codex")
+        assert 0.18 <= time.monotonic() - started < 0.8
+        assert "codex" not in world.fakes
+        # No-flag behaviour is unchanged (codex review of PR #239): the read's
+        # entry stays, marked "failed", instead of being forgotten.
+        (entry,) = (world.state / "runs").glob("*.json")
+        assert world.registry().resolve(entry.stem).status == "failed"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
 def test_an_interrupted_run_releases_its_locks_and_reads_incomplete(world: World) -> None:
     """Review Focus 5, in the engine: locks released, status left non-final."""
     world.fakes["codex"] = _Fake("codex", raises=KeyboardInterrupt())
@@ -289,7 +358,22 @@ def test_a_rail_without_an_isolation_proof_is_refused(world: World) -> None:
 
 def test_the_refusal_names_the_command_that_records_a_proof(world: World) -> None:
     proof_path(world.state, "codex").unlink()
-    with pytest.raises(UsageError, match="test_proofs_live.py"):
+    with pytest.raises(UsageError, match="ha prove codex --isolation"):
+        world.run("codex")
+    with pytest.raises(UsageError, match="after a CLI update: ha prove --stale"):
+        world.run("codex")
+
+
+def test_the_refusal_names_the_reprove_command_of_proof_state(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One source: the engine's own refusal names whatever proof_state.reprove_command
+    says, so it and ``ha providers`` can never disagree (spec 0.5.2 lot 2, Task 3)."""
+    monkeypatch.setattr(
+        proof_state, "reprove_command", lambda rail, kinds: f"SENTINEL {rail} {list(kinds)}"
+    )
+    proof_path(world.state, "codex").unlink()
+    with pytest.raises(UsageError, match=r"SENTINEL codex \['isolation'\]"):
         world.run("codex")
 
 

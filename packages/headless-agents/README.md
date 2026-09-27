@@ -366,7 +366,7 @@ uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@
 ```
 
 ```text
-ha run TARGET [PROMPT | -] [-m MODEL] [--effort E] [--timeout SECONDS]
+ha run TARGET [PROMPT | -] [-m MODEL] [--effort E] [--timeout SECONDS] [--wait SECONDS]
        [--context full|global|none] [--context-parents] [--mcp PROFILE]
        [--base-url URL --key-env VAR] [--repo PATH] [--json] [--run-dir DIR]
        [--write [--shell] [--base REF]]
@@ -380,6 +380,30 @@ ha show --dir PATH [--json]
 ha clean RUN_ID
 ha --version
 ```
+
+- **`--wait SECONDS`** (spec §3.3): a bounded admission wait. Ordinary reads and confined
+  writes share the global lock; an unconfined write holds it exclusively, serialising every
+  other run while it is in flight. `ha clean` is admitted through this same gate, not a lock
+  of its own. `--wait` gives one explicit, positive number of seconds, spent as a single
+  absolute deadline across the global lock and, for a write or a review, the lineage
+  registry and lineage locks it admits under -- time spent on one does not extend the
+  budget for the next, and a lock granted past the deadline is refused, never accepted
+  late. Without `--wait`, each of those locks keeps its own existing ten-second bound. A
+  deadline that expires exits `2` before any provider step runs and leaves nothing behind
+  (an unstarted run's entry is forgotten), naming the contested lock and the wait
+  requested. An invalid `--wait` -- zero, negative, `nan`, `inf`, or a missing value -- is
+  rejected before any admission is even attempted, so nothing is named but the flag
+  itself: `--wait needs a finite number of seconds greater than zero`. `--timeout` is
+  unrelated in both cases, and always the provider run's own timeout. Example:
+  `ha run codex --wait 30 "Summarise the change"`.
+
+  An unconfined writer that already holds the short-lived admission gate excludes every
+  later run -- shared or not -- until it releases it; a reader that arrives after a writer
+  has already won that gate queues behind it too. This is a **best-effort** mitigation, not
+  a fairness guarantee: `flock` does not order waiters, so a writer still *polling* for
+  admission (not yet holding it) can in principle be overtaken by a continuous, overlapping
+  stream of readers, and a continuous stream of writers can likewise make a waiting reader
+  time out. A fair FIFO admission queue is planned for 0.5.3.
 
 `TARGET` is a provider (`ha run codex "..."`), a role declared in
 `~/.config/ha/roles.toml` -- an executor: one provider, or a `chain` of them, with optional

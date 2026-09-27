@@ -22,7 +22,7 @@ from pathlib import Path
 import pytest
 
 from headless_agents import cli, engine, locks, quarantine
-from headless_agents.proofs import CLI_RAILS, record_proof
+from headless_agents.proofs import CLI_RAILS, proof_path, record_proof
 from headless_agents.registry import Probe
 from headless_agents.report import RUN_KEYS
 from headless_agents.result import RunResult
@@ -161,13 +161,136 @@ def test_providers_json_lists_every_registry_name(world: _World, monkeypatch) ->
     rows = json.loads(out)
     assert [row["name"] for row in rows] == list(cli.PROVIDER_NAMES)
     codex = next(row for row in rows if row["name"] == "codex")
+    # Spec change (0.5.2 lot 2), written before the code: the probed version is
+    # None (this fixture's fake probe passes none) against the world fixture's
+    # own "codex 1.0" isolation record -- a version mismatch, hence stale, not
+    # passed; confinement was never recorded at all, hence missing; and a rail
+    # not proven for the version installed now is refused, never parallel.
     assert codex == {
         "name": "codex",
         "available": True,
         "detail": "d-codex",
         "version": None,
         "max_prompt_bytes": None,
+        "isolation": {
+            "status": "stale",
+            "date": "2026-09-25",
+            "recorded_version": "codex 1.0",
+            "reason": "recorded for codex 1.0",
+        },
+        "confinement": {
+            "status": "missing",
+            "date": None,
+            "recorded_version": None,
+            "reason": "no proof recorded",
+        },
+        "mode": "refused",
+        "reprove": "ha prove codex",
     }
+
+
+def test_providers_json_gives_http_providers_null_proof_fields(world: _World, monkeypatch) -> None:
+    monkeypatch.setattr(cli, "probe", lambda name, **_: cli.Probe(available=True, detail="d"))
+    code, out, _ = world.run("providers", "--json")
+    assert code == 0
+    rows = json.loads(out)
+    openrouter = next(row for row in rows if row["name"] == "openrouter")
+    assert openrouter["isolation"] is None
+    assert openrouter["confinement"] is None
+    assert openrouter["mode"] is None
+    assert openrouter["reprove"] is None
+
+
+def _codex_row(rows: list[dict]) -> dict:
+    return next(row for row in rows if row["name"] == "codex")
+
+
+@pytest.mark.parametrize(
+    ("configure", "expected_mode", "expected_isolation", "expected_confinement"),
+    [
+        pytest.param(
+            lambda world: record_proof(
+                world.state, "codex", version="codex 1.0", confinement=True, today="2026-09-25"
+            ),
+            "parallel",
+            "passed",
+            "passed",
+            id="isolation-and-confinement-passed",
+        ),
+        pytest.param(
+            lambda world: None,
+            "writes serialised",
+            "passed",
+            "missing",
+            id="confinement-absent",
+        ),
+        pytest.param(
+            lambda world: record_proof(
+                world.state, "codex", version="codex 1.0", isolation=False, today="2026-09-26"
+            ),
+            "refused",
+            "failed",
+            "missing",
+            id="isolation-failed",
+        ),
+        pytest.param(
+            lambda world: proof_path(world.state, "codex").write_text("{"),
+            "refused",
+            "unreadable",
+            "unreadable",
+            id="codex-json-unparsable",
+        ),
+    ],
+)
+def test_providers_json_mode_per_status(
+    world: _World,
+    monkeypatch,
+    configure,
+    expected_mode: str,
+    expected_isolation: str,
+    expected_confinement: str,
+) -> None:
+    monkeypatch.setattr(
+        cli, "probe", lambda name, **_: cli.Probe(available=True, detail="d", version="codex 1.0")
+    )
+    configure(world)
+    code, out, _ = world.run("providers", "--json")
+    assert code == 0
+    codex = _codex_row(json.loads(out))
+    assert codex["mode"] == expected_mode
+    assert codex["isolation"]["status"] == expected_isolation
+    assert codex["confinement"]["status"] == expected_confinement
+
+
+def test_providers_text_names_a_stale_version_and_the_reprove_command(
+    world: _World, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "probe",
+        lambda name, **_: cli.Probe(
+            available=True, detail="d", version="claude 1.1" if name == "claude" else None
+        ),
+    )
+    code, out, _ = world.run("providers")
+    assert code == 0
+    assert "isolation stale (recorded for claude 1.0" in out
+    assert "mode refused" in out
+    assert "re-prove: ha prove claude --isolation" in out
+
+
+def test_providers_text_shows_no_reprove_line_for_a_parallel_rail(
+    world: _World, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        cli, "probe", lambda name, **_: cli.Probe(available=True, detail="d", version=f"{name} 1.0")
+    )
+    for rail in CLI_RAILS:
+        record_proof(world.state, rail, version=f"{rail} 1.0", confinement=True, today="2026-09-25")
+    code, out, _ = world.run("providers")
+    assert code == 0
+    assert "mode parallel" in out
+    assert "re-prove:" not in out
 
 
 def test_providers_text_names_each_provider(world: _World, monkeypatch) -> None:
@@ -263,6 +386,26 @@ def test_the_parent_claude_session_markers_never_reach_the_child(world: _World) 
     assert env is not None
     assert "CLAUDE_CODE_ENTRYPOINT" not in env and "CLAUDECODE" not in env
     assert env["KEEP_ME"] == "yes"
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "nan", "inf", "-inf"])
+def test_invalid_wait_refuses_before_a_provider_runs(world: _World, value: str) -> None:
+    code, _, err = world.run("run", "codex", "--wait", value, "go")
+    assert code == 2
+    assert "--wait" in err
+    assert not any(fake.specs for fake in world.fakes.values())
+
+
+def test_wait_needs_an_explicit_number(world: _World) -> None:
+    code, _, err = world.run("run", "codex", "--wait")
+    assert code == 2 and "argument" in err
+    assert not world.fakes
+
+
+def test_wait_does_not_change_the_provider_timeout(world: _World) -> None:
+    code, _, _ = world.run("run", "codex", "--wait", "1.5", "--timeout", "42", "go")
+    assert code == 0
+    assert world.spec("codex").timeout_seconds == 42.0
 
 
 def test_run_dir_can_be_named(world: _World, tmp_path: Path) -> None:
