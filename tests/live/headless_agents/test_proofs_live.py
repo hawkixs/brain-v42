@@ -41,7 +41,7 @@ import shutil
 import subprocess
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -354,14 +354,31 @@ def _codex_confinement_prompt(control: Path, target: Path, line: str) -> str:
     )
 
 
-def _codex_touched_the_operator_session_store(marker: float) -> bool:
-    """Did codex write ANY session rollout to the operator's real
-    ``~/.codex/sessions`` since ``marker``? The probe's own rollout must
-    only ever land at ``run_dir/rollout.jsonl`` (a run-owned, torn-down
-    ``CODEX_HOME``, lot 1b Task 1) -- a write here means it did not, which
-    must make this run INCONCLUSIVE, never a pass. Fails closed: an
-    unreadable session store cannot prove it was untouched either."""
-    sessions = REAL_HOME / ".codex" / "sessions"
+def _operator_codex_home(environ: Mapping[str, str], *, real_home: Path) -> Path:
+    """The CODEX_HOME codex itself resolves for an unplanted run (review
+    round: honour ``$CODEX_HOME`` when set, never assume ``~/.codex``)."""
+    value = environ.get("CODEX_HOME")
+    return Path(value) if value else real_home / ".codex"
+
+
+def _codex_touched_the_operator_session_store(
+    marker: float, *, environ: Mapping[str, str] | None = None, real_home: Path | None = None
+) -> bool:
+    """Did codex write ANY session rollout to the operator's real session
+    store since ``marker``? The probe's own rollout must only ever land at
+    ``run_dir/rollout.jsonl`` (a run-owned, torn-down ``CODEX_HOME``, lot 1b
+    Task 1) -- a write here means it did not, which must make this run
+    INCONCLUSIVE, never a pass. Fails closed: an unreadable session store
+    cannot prove it was untouched either. ``environ``/``real_home`` are for
+    tests; the live probe always reads the process environment and
+    ``REAL_HOME``."""
+    sessions = (
+        _operator_codex_home(
+            environ if environ is not None else os.environ,
+            real_home=real_home if real_home is not None else REAL_HOME,
+        )
+        / "sessions"
+    )
     try:
         candidates = list(sessions.glob("**/rollout-*.jsonl"))
     except OSError:
@@ -452,7 +469,12 @@ def test_confinement(rail: str, live_root: Path) -> None:
             else:
                 try:
                     refused = target in refused_attempts(
-                        rail, run_dir, [target], line=line, rail_version=found.version
+                        rail,
+                        run_dir,
+                        [target],
+                        line=line,
+                        rail_version=found.version,
+                        workspace=targets["workspace"],
                     )
                 except (OSError, UnicodeDecodeError):
                     refused = False
