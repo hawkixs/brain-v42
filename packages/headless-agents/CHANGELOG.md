@@ -103,6 +103,101 @@ was lenient. Fixed before any new confinement proof is trusted (spec §3.1).
 The proof record format is unchanged (`confinement: {passed, date}`), so an installed
 headless-agents 0.5.1 honours a proof recorded by this harness.
 
+### lot 1b — a conclusive codex confinement proof from the kept session rollout
+
+Learnings a5460289 and 80934778: `codex exec --json` never logs a sandbox-refused
+command — the refusal exists only in the session's own rollout, as a `custom_tool_call`
+named `exec` plus its `custom_tool_call_output`. Lot 1's own reader (above) could
+therefore never see a codex refusal at all, and left the codex confinement proof
+inconclusive.
+
+- **A probe-only entry point** (`CodexProvider.run_with_rollout`, `run_codex(...,
+  rollout_log=...)`) runs codex WITHOUT `--ephemeral`, so its session rollout survives
+  inside the run-owned `CODEX_HOME` long enough to be copied out to
+  `run_dir/rollout.jsonl` (mode `0600`) before that home is torn down, on every exit
+  path. **Production argv is unaffected**: `CodexProvider.run` (used by every other
+  caller, and by `run_with_rollout` itself for everything except the one flag) still
+  builds the exact command it always has.
+- **`refused_attempts` now unions the rollout evidence into codex's existing
+  `events.jsonl` reading**, opt-in via a new `rail_version` keyword: a `custom_tool_call`
+  named `exec`, status `completed`, whose input is EXACTLY the one measured script for
+  `probe_command(line, target)` — not a JS parser, so any drift (another argument, a
+  second statement, a hand-written `text(...)`, another nonce or target, a batched
+  command) is inconclusive, never a false credit — paired by `call_id` with its own
+  `custom_tool_call_output` in the exact measured two-part shape, bound to THIS run by
+  its one `thread.started` in `events.jsonl` matching `session_meta.id`, `rail_version`
+  matching `session_meta.cli_version`, and every `turn_context.sandbox_policy` matching
+  ha's own write argv. The model's own narration of the same refusal — an
+  `agent_message`, a `task_complete.last_agent_message`, a `function_call_output` — is
+  never evidence. Every lot-1 test keeps its meaning: without `rail_version` the rollout
+  is never consulted.
+- **The live probe never touches the operator's real session store.** `test_confinement`
+  now fails the codex run closed to INCONCLUSIVE — not a pass — if any rollout under the
+  operator's real `~/.codex/sessions` was written during the probe (honouring `$CODEX_HOME`
+  when set, else `~/.codex`).
+
+Review round, before merge:
+- **`session_meta` must be exactly one record, and the first one**; a call's governing
+  `turn_context` must be the LATEST one strictly BEFORE it, never one appended after; every
+  `custom_tool_call` is tracked by `call_id` regardless of its own name or status BEFORE the
+  `exec`/`completed` filter runs, so an id reused by an ineligible call is dropped just like
+  two eligible calls sharing one.
+- **The rollout copy (`_keep_rollout`) and the reader (`_rollout_refusals`) are both
+  TOCTOU-free**: every directory level from the run-owned `CODEX_HOME` down to the rollout
+  file is opened `dir_fd`-relative with `O_NOFOLLOW` (never a symlinked intermediate
+  directory, which `Path.glob` would happily traverse), the size cap is enforced on bytes
+  actually read through the opened descriptor in a loop (a single `os.read` can be short),
+  never on an earlier `stat` a concurrent writer could race past.
+- **`turn_context.sandbox_policy` also accepts ha's own write argv plus a `writable_roots`
+  entry** (ticket 0b3fcdbf / PR #236 adds `sandbox_workspace_write.writable_roots=["<scratch>"]`
+  to every workspace-write run; codex 0.156.0 measured 2026-09-27 to record it verbatim,
+  never replacing the four required keys) — but only when every entry is an ABSOLUTE path
+  and is structurally safe: never equal to, an ANCESTOR of, or a DESCENDANT of the
+  workspace, and — symmetrically — never equal to, an ancestor of, or a descendant of any
+  probed target. A forged or misrecorded entry naming one of them credits nothing, rather
+  than trust a policy that would make the refusal meaningless.
+- **Documented residual**: `refused_attempts` alone cannot see whether an outside target's
+  own bytes changed — that ordering lives in `confinement_verdict`, which checks bytes
+  UNCONDITIONALLY before any rollout evidence matters (pinned by a dedicated test). A
+  rollout-based PASS still assumes a non-adversarial agent for the narrower claim "this
+  reader's credited refusal is genuine": codex's own `--json` event stream carries no record
+  at all for the code-mode `exec` tool call (allowed or refused) and shares no `call_id` with
+  the rollout, so there is no independent, ha-observed stream to cross-check a credited
+  `call_id` against. An agent that escapes the sandbox, leaves every target untouched and
+  forges its own rollout is not defended against by this module.
+
+Review round 2, before merge:
+- **The live probe's operator-store guard now derives its own-store check from
+  `resolve_real_codex_home`** — extracted from what was inline in `run_codex` — unioned
+  with the parent (pytest) process's own resolution: the probe's `RunSpec` environment
+  never carries `CODEX_HOME`, so `run_codex` falls back to `Path.home()/.codex` (this
+  process's own `$HOME`, never the spec's); a guard that read `$CODEX_HOME` from the
+  parent process alone could watch a store `run_codex` never resolves to for that spec,
+  and miss a real write elsewhere. Checked for every combination of parent `$CODEX_HOME`
+  set/unset crossed with the spec environment carrying `CODEX_HOME` or not.
+- **`_keep_rollout`'s caller is now `except Exception`, not `except OSError`**: the one
+  promise is that a failed rollout copy never changes `run_codex`'s own exit code or
+  raises, and nothing guarantees every future failure mode stays an `OSError`.
+- **`os.scandir` on a directory file descriptor, pinned against a real on-disk tree.** An
+  agy finding claiming it raises `TypeError` on this platform did not reproduce (measured
+  on the package's own Python 3.12.12); a new no-mocks test exercises
+  `_rollout_candidate_descriptors`/`_keep_rollout` against a real `sessions/YYYY/MM/DD`
+  tree and checks the kept file's bytes.
+
+Review round 3, before merge:
+- **The `writable_roots` checks now compare NORMALISED paths, not raw lexical ones.**
+  `/base/other/../workspace` designates the workspace but is not equal to it as `Path`
+  components, so it slipped past the equal/ancestor/descendant checks undetected. Every
+  writable_roots entry, the workspace and every probed target must now be an absolute,
+  already-normalised path (`_is_absolute_and_normalised`: no `..`, no `.`, no doubled
+  slash, no trailing slash) before any comparison runs at all — never resolved through a
+  symlink, since the path a rollout names may no longer exist by the time the proof is
+  read. 24 new parametrized tests cover four non-normalised shapes across six
+  equal/ancestor/descendant relations to the workspace and a target.
+
+No contract surface change; production argv unchanged; the proof record format is
+unchanged (`confinement: {passed, date}`).
+
 ### Fixed — write-run robustness (ticket 0b3fcdbf)
 
 A codex write run whose agent ran the test suite (run 20260927T014150-f71e5aaa, ha 0.5.1)
