@@ -12,7 +12,7 @@ worktree.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .runs import RUN_ID_PATTERN, STORED_STATUSES
@@ -39,7 +39,11 @@ class LineageState:
     base: str | None
     members: Mapping[str, str]
     pending: PendingWrite | None
+    #: Why the lineage is compromised: the FIRST reason, the root cause.
     compromised: str | None
+    #: Every later reason, in order, never replacing the first (0.5.3 lot 4a,
+    #: ticket e5b93270 item 1); empty for a lineage written before the key.
+    compromised_history: tuple[str, ...] = ()
 
 
 def lineage_path(state: Path, owner: str) -> Path:
@@ -74,7 +78,23 @@ def _document(lineage: LineageState) -> dict[str, object]:
             "start_reflog": pending.start_reflog,
         },
         "compromised": lineage.compromised,
+        "compromised_history": list(lineage.compromised_history),
     }
+
+
+def compromise(lineage: LineageState, reason: str) -> LineageState:
+    """``lineage`` compromised for ``reason``, keeping the reason it already has.
+
+    The first reason is the root cause, and later ones are often its
+    consequences: an agent that moved ``HEAD`` leaves a pending write that a
+    later run finds stale. Overwriting the first lost the cause (ticket e5b93270
+    item 1). A later reason is appended to ``compromised_history`` once.
+    """
+    if lineage.compromised is None:
+        return replace(lineage, compromised=reason)
+    if reason == lineage.compromised or reason in lineage.compromised_history:
+        return lineage
+    return replace(lineage, compromised_history=(*lineage.compromised_history, reason))
 
 
 def _str(document: Mapping[str, object], key: str, path: Path) -> str:
@@ -131,6 +151,9 @@ def load(state: Path, owner: str) -> LineageState:
     ):
         raise Unknown(f"{path}: members are malformed")
     compromised = _optional_str(document.get("compromised"), "compromised", path)
+    history = document.get("compromised_history", [])
+    if not isinstance(history, list) or not all(isinstance(h, str) and h for h in history):
+        raise Unknown(f"{path}: compromised_history is malformed")
     return LineageState(
         owner=owner,
         repository=Path(_str(document, "repository", path)),
@@ -141,6 +164,7 @@ def load(state: Path, owner: str) -> LineageState:
         members=dict(members),
         pending=_pending(document.get("pending"), path),
         compromised=compromised,
+        compromised_history=tuple(history),
     )
 
 
@@ -193,6 +217,7 @@ def of_repository(state: Path, common_dir: Path) -> list[str]:
 __all__ = [
     "LineageState",
     "PendingWrite",
+    "compromise",
     "create",
     "lineage_lock",
     "lineage_path",

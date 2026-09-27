@@ -744,6 +744,25 @@ def test_a_lineage_withdrawn_during_admission_is_never_unknown(
             child.wait()
 
 
+def test_a_stale_pending_write_keeps_the_first_compromised_reason(tmp_path: Path) -> None:
+    """unfinalized() on a lineage already compromised: the root cause stays, the
+    new reason is recorded after it (ticket e5b93270 item 1)."""
+    state = tmp_path / "state"
+    common = tmp_path / "repo" / ".git"
+    current = replace(
+        _bare_lineage(tmp_path, _OWNER_A, common),
+        compromised="agent_moved_head",
+        pending=lineage.PendingWrite(
+            run_id=_OWNER_A, providers=("codex",), unconfined=False, start_tip=None, start_reflog=None
+        ),
+    )
+    lineage.create(state, current)
+    write_flow.unfinalized(state, current, common)
+    reloaded = lineage.load(state, _OWNER_A)
+    assert reloaded.compromised == "agent_moved_head"
+    assert reloaded.compromised_history == ("unfinalized_write",)
+
+
 def test_a_stale_unconfined_intent_quarantines_the_operator(world: World) -> None:
     (world.state / write_flow.UNCONFINED_INTENT).write_text(json.dumps({"run_id": "dead"}))
     with pytest.raises(UsageError, match="stale unconfined intent"):

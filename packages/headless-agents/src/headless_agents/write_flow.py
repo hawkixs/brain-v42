@@ -240,7 +240,7 @@ def unfinalized(state: Path, lineage: LineageState, common: Path) -> WriteRefuse
     the same (§3.8.5)."""
     pending = lineage.pending
     assert pending is not None, "only a pending write can be stale"
-    lineages.save(state, replace(lineage, compromised="unfinalized_write"))
+    lineages.save(state, lineages.compromise(lineage, "unfinalized_write"))
     quarantine.publish(
         state,
         "repository",
@@ -868,15 +868,10 @@ def _publish(
             )
         except FileExistsError:
             pass
-    current = write.current
-    write.save(
-        replace(
-            current,
-            members={**current.members, write.run_id: status},
-            pending=None,
-            compromised=compromised or current.compromised,
-        )
+    current = replace(
+        write.current, members={**write.current.members, write.run_id: status}, pending=None
     )
+    write.save(lineages.compromise(current, compromised) if compromised else current)
     _crash_after("lineage_published")
     if write.unconfined:
         (write.state / UNCONFINED_INTENT).unlink(missing_ok=True)
@@ -886,7 +881,10 @@ def _compromise(write: _Write, reason: str) -> None:
     """The lineage compromised, its pending write LEFT in place (steps 3 and 6)."""
     current = write.current
     write.save(
-        replace(current, compromised=reason, members={**current.members, write.run_id: "failed"})
+        replace(
+            lineages.compromise(current, reason),
+            members={**current.members, write.run_id: "failed"},
+        )
     )
 
 
