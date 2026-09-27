@@ -1047,6 +1047,46 @@ class TestWorkspace:
         assert list(root.iterdir()) == []
 
 
+_DEADLINE_STREAMS = {
+    "empty": "",
+    "step_start_only": _events({"type": "step_start", "part": {}}),
+    "call_on_server": _events(_tool_use(tool=f"{SERVER}_search")),
+    "write_step": _events(_tool_use(tool="bash")),
+    "unreadable_line": "not json\n",
+}
+
+
+@pytest.mark.parametrize("workspace_mode", ["none", "read", "write"])
+@pytest.mark.parametrize("server", [None, SERVER])
+@pytest.mark.parametrize("stream_name", sorted(_DEADLINE_STREAMS))
+def test_the_deadline_and_the_predicate_agree(
+    tmp_path: Path, stream_name: str, server: str | None, workspace_mode: str
+) -> None:
+    """``_deadline_exit_code``'s own choice between 124 and 4
+    (``TIMEOUT_REPLAYABLE_EXIT_CODE``) must always agree with
+    ``_nothing_could_have_been_written`` -- the predicate this refactor names
+    once, so an early exit added elsewhere in the runner can ask the
+    identical question and never drift from the deadline's own answer."""
+    events_log = tmp_path / "events.jsonl"
+    events_log.write_text(_DEADLINE_STREAMS[stream_name], encoding="utf-8")
+    stderr_log = tmp_path / "stderr.log"
+    stderr_log.write_text("", encoding="utf-8")
+    workspace = {
+        "none": None,
+        "read": Workspace(path=tmp_path, write=False),
+        "write": Workspace(path=tmp_path, write=True),
+    }[workspace_mode]
+
+    predicate = opencode._nothing_could_have_been_written(
+        events_log, server, workspace=workspace, mcp=None
+    )
+    code = opencode._deadline_exit_code(
+        events_log, stderr_log, server, 30.0, workspace=workspace, mcp=None
+    )
+
+    assert (code == TIMEOUT_REPLAYABLE_EXIT_CODE) == predicate
+
+
 class TestWorkspaceProvider:
     def test_preamble_over_argv_limit_exits_2_without_spawn(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -720,6 +720,30 @@ def _failure_exit_code(
     return PROVIDER_FALLBACK_EXIT_CODE
 
 
+def _nothing_could_have_been_written(
+    events_log: Path,
+    server: str | None,
+    *,
+    workspace: Workspace | None = None,
+    mcp: McpServer | None = None,
+) -> bool:
+    """Does the event stream prove nothing could have been written yet?
+
+    Named once so a caller elsewhere in the runner can ask this exact
+    question -- an early exit before the deadline, say -- without a second
+    definition that could drift from :func:`_deadline_exit_code`'s own:
+    without a server and without a writable workspace there is nothing a run
+    could have written through, so this holds whatever the stream says.
+    """
+    if server is not None and tool_call_started(events_log, server=server):
+        return False
+    return not (
+        workspace is not None
+        and workspace.write
+        and _writable_workspace_may_have_written(events_log, mcp)
+    )
+
+
 def _deadline_exit_code(
     events_log: Path,
     stderr_log: Path,
@@ -730,22 +754,10 @@ def _deadline_exit_code(
     mcp: McpServer | None = None,
 ) -> int:
     """The code of the runner's OWN deadline: 124, or 4 when the stream proves
-    nothing could have started. Without a server and without a writable
-    workspace there is nothing a run could have written through, so a hang is
-    replayable whatever the stream says. The reading is written to stderr:
-    the deadline itself is not the news, the reason it was read as empty is.
-
-    In a WRITABLE workspace this uses :func:`_writable_workspace_may_have_written`,
-    the same taint :func:`_failure_exit_code` uses for a process that died
-    instead of hanging.
+    nothing could have started. The reading is written to stderr: the
+    deadline itself is not the news, the reason it was read as empty is.
     """
-    if server is not None and tool_call_started(events_log, server=server):
-        return TIMEOUT_EXIT_CODE
-    if (
-        workspace is not None
-        and workspace.write
-        and _writable_workspace_may_have_written(events_log, mcp)
-    ):
+    if not _nothing_could_have_been_written(events_log, server, workspace=workspace, mcp=mcp):
         return TIMEOUT_EXIT_CODE
     with stderr_log.open("a", encoding="utf-8") as stderr_stream:
         stderr_stream.write(
