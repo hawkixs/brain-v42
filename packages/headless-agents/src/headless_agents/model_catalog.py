@@ -22,10 +22,15 @@ or ``schema != 1``) raises :class:`CatalogueError` naming the offending key.
 "..."}]``) and ``cost`` as an inline table (``cost = {kind = "..."}``);
 :mod:`tomllib` yields the same ``list[dict]`` / ``dict`` for the non-inline
 spellings TOML also allows (``[[provider."model".tasks]]``,
-``[provider."model".cost]``), so the syntax is checked against the raw text
-before the parsed document is walked: those spellings raise
-:class:`CatalogueError` naming ``tasks``/``cost`` even though the parsed
-values would otherwise validate.
+``[provider."model".cost]``), so every header line is checked against the
+raw text before the parsed document is walked: a ``[[...]]``/``[...]``
+header whose key path, decoded through :mod:`tomllib` itself (never a
+hand-rolled unquoter -- an escaped key is otherwise a bypass), is exactly
+three segments deep (``provider.model.field``) and ends in ``tasks``/
+``cost`` raises :class:`CatalogueError`, even though the parsed values
+would otherwise validate. A model whose own (quoted) name merely contains
+the text ``.cost`` or ``.tasks`` is two segments deep, not three, and is
+not a field header.
 """
 
 from __future__ import annotations
@@ -136,40 +141,26 @@ def _load_document(path: Path) -> tuple[dict[str, object], str]:
         raise CatalogueError(f"{path}: nested too deeply to be a catalogue") from None
 
 
-def _split_key_path(path: str) -> list[str]:
-    """Split a TOML dotted key path into raw segments, respecting quotes: a
-    dot inside a quoted segment (``a."b.c"``) is not a separator."""
+def _header_key_segments(path: str) -> list[str] | None:
+    """Decode a TOML header's dotted key path into its literal segments,
+    through :mod:`tomllib` itself rather than a hand-rolled unquoter: a
+    quoted key can carry any string escape (``\\"``, ``\\u0063``, ...), and
+    only the real TOML decoder resolves it exactly as the document itself
+    would. ``f"{path} = 0"`` is valid TOML whenever ``path`` is a valid
+    header path (the caller already matched it with a header regex), and
+    parses to a chain of single-key tables ending in the leaf ``0``; walking
+    that chain recovers the segments in order. Returns ``None`` if ``path``
+    somehow fails to parse standalone -- defensive, should not happen for a
+    path lifted from a document that already parsed as a whole."""
+    try:
+        parsed: object = tomllib.loads(f"{path} = 0")
+    except tomllib.TOMLDecodeError:
+        return None
     segments: list[str] = []
-    current = ""
-    quote: str | None = None
-    for char in path:
-        if quote is not None:
-            current += char
-            if char == quote:
-                quote = None
-            continue
-        if char in ('"', "'"):
-            quote = char
-            current += char
-            continue
-        if char == ".":
-            segments.append(current.strip())
-            current = ""
-            continue
-        current += char
-    segments.append(current.strip())
+    while isinstance(parsed, dict) and len(parsed) == 1:
+        key, parsed = next(iter(parsed.items()))
+        segments.append(key)
     return segments
-
-
-def _unquote_key(segment: str) -> str:
-    if len(segment) >= 2 and segment[0] == segment[-1] and segment[0] in ('"', "'"):
-        inner = segment[1:-1]
-        return inner.replace('\\"', '"') if segment[0] == '"' else inner
-    return segment
-
-
-def _normalized_key_path(path: str) -> str:
-    return ".".join(_unquote_key(segment) for segment in _split_key_path(path))
 
 
 def _reject_non_inline_tasks_and_cost(text: str) -> None:
@@ -177,27 +168,29 @@ def _reject_non_inline_tasks_and_cost(text: str) -> None:
     an inline table; tomllib yields the identical ``list[dict]`` / ``dict``
     for the non-inline spellings TOML also allows (``[[provider."model".
     tasks]]``, ``[provider."model".cost]``), so the raw source is checked
-    line by line, before the parsed document is walked, for a header whose
-    last key is ``tasks`` or ``cost``."""
+    line by line, before the parsed document is walked, for a header at
+    model-field depth (``provider.model.field``, exactly three segments)
+    whose last key is ``tasks`` or ``cost``. A model whose own name merely
+    contains that text (``[codex."gpt.cost"]``, two segments) is not one."""
     for line in text.splitlines():
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
         array_header = _ARRAY_TABLE_HEADER.match(stripped)
         if array_header is not None:
-            normalized = _normalized_key_path(array_header.group("path"))
-            if normalized == "tasks" or normalized.endswith(".tasks"):
+            segments = _header_key_segments(array_header.group("path"))
+            if segments is not None and len(segments) == 3 and segments[-1] == "tasks":
                 raise CatalogueError(
-                    f"{normalized}: must be an inline array of inline tables "
+                    f"{'.'.join(segments)}: must be an inline array of inline tables "
                     "(tasks = [{...}]), not a [[...]] array of tables"
                 )
             continue
         table_header = _TABLE_HEADER.match(stripped)
         if table_header is not None:
-            normalized = _normalized_key_path(table_header.group("path"))
-            if normalized == "cost" or normalized.endswith(".cost"):
+            segments = _header_key_segments(table_header.group("path"))
+            if segments is not None and len(segments) == 3 and segments[-1] == "cost":
                 raise CatalogueError(
-                    f"{normalized}: must be an inline table (cost = {{...}}), "
+                    f"{'.'.join(segments)}: must be an inline table (cost = {{...}}), "
                     "not a standalone [...] table"
                 )
 

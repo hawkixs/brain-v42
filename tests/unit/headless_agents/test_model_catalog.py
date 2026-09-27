@@ -75,6 +75,24 @@ def test_valid_schema_keeps_exact_model_and_local_date(tmp_path: Path) -> None:
     assert result.entries[0].verified_at == date(2026, 9, 27)
 
 
+def test_a_model_name_containing_dot_cost_is_not_a_cost_header(tmp_path: Path) -> None:
+    """A quoted model table name whose own text ends in ``.cost`` (review
+    finding #2, round 2) is one key, the model's name -- not a field header
+    naming ``cost`` -- and must load like any other model, cost included."""
+    result = _load(
+        tmp_path,
+        'schema = 1\n[codex."gpt.cost"]\n'
+        'purpose = "Build."\n'
+        'tasks = [{kind = "build"}]\n'
+        'cost = {kind = "subscription"}\n'
+        "verified_at = 2026-09-27\n"
+        'source = "bench"\n',
+    )
+    assert result.warnings == ()
+    assert result.entries[0].model == "gpt.cost"
+    assert result.entries[0].cost_kind == "subscription"
+
+
 @pytest.mark.parametrize("provider", PROVIDERS)
 def test_every_provider_accepts_a_model_table_without_effort(
     tmp_path: Path,
@@ -245,6 +263,31 @@ def test_non_string_effort_names_its_key(tmp_path: Path) -> None:
             'windows = ["5h", "weekly"]\n',
             "codex.gpt-6-sol.cost",
             id="cost-must-be-inline-table-not-standalone-table",
+        ),
+        pytest.param(
+            'schema = 1\n[codex."gpt-6-sol"]\n'
+            'purpose = "Review and build."\n'
+            'tasks = [{kind = "design-review", effort = "high"}, {kind = "build"}]\n'
+            'pitfalls = ["Check findings."]\n'
+            "verified_at = 2026-09-27\n"
+            'source = "Brain decision ea4e57a1"\n'
+            '\n[codex."gpt-6-sol"."\\u0063ost"]\n'
+            'kind = "subscription"\n'
+            'windows = ["5h", "weekly"]\n',
+            "codex.gpt-6-sol.cost",
+            id="cost-standalone-table-with-an-escaped-key-is-still-rejected",
+        ),
+        pytest.param(
+            'schema = 1\n[codex."gpt-6-sol"]\n'
+            'purpose = "Review and build."\n'
+            'cost = {kind = "subscription", windows = ["5h", "weekly"]}\n'
+            'pitfalls = ["Check findings."]\n'
+            "verified_at = 2026-09-27\n"
+            'source = "Brain decision ea4e57a1"\n'
+            '\n[[codex."gpt-6-sol"."\\u0074asks"]]\n'
+            'kind = "build"\n',
+            "codex.gpt-6-sol.tasks",
+            id="tasks-array-of-tables-with-an-escaped-key-is-still-rejected",
         ),
         pytest.param(
             GOOD.replace('kind = "subscription"', 'kind = "future"'),
