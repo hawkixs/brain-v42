@@ -122,3 +122,134 @@ def test_parse_json_is_strict_and_never_crashes_on_depth() -> None:
     for text in ("Infinity", "{", "[" * 100_000 + "]" * 100_000):
         with pytest.raises(ValueError):
             parse_json(text)
+
+
+# ── codex's strict mode (0.5.3 lot 1 Task 3, measured by Task 0) ────────────
+
+
+@pytest.mark.parametrize(
+    ("schema", "where"),
+    [
+        (
+            {
+                "type": "object",
+                "properties": {"ok": {"type": "boolean"}},
+                "additionalProperties": False,
+            },
+            "'required' misses 'ok'",
+        ),
+        (
+            {"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
+            "'additionalProperties' must be false",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "inner": {
+                        "type": "object",
+                        "properties": {"x": {"type": "string"}},
+                        "additionalProperties": False,
+                    }
+                },
+                "required": ["inner"],
+                "additionalProperties": False,
+            },
+            "$.properties.inner: 'required' misses 'x'",
+        ),
+        (
+            {
+                "type": "object",
+                "properties": {
+                    "list": {"type": "array", "items": {"type": "object", "properties": {}}}
+                },
+                "required": ["list"],
+                "additionalProperties": False,
+            },
+            "$.properties.list.items: 'additionalProperties' must be false",
+        ),
+    ],
+    ids=["missing-required", "open-object", "nested", "array-items"],
+)
+def test_codex_refuses_a_schema_its_strict_mode_rejects(
+    schema: dict[str, object], where: str
+) -> None:
+    """Measured (codex-cli 0.156.0): a property missing from ``required`` fails the
+    run with an API 400 (``invalid_json_schema``) that reaches only the event
+    stream. Refused before anything starts, with ha's own words, instead."""
+    with pytest.raises(SchemaError, match=rf"^codex cannot constrain .*{re.escape(where)}"):
+        refuse_unsupported("codex", schema)
+    with pytest.raises(SchemaError, match=r"^codex cannot constrain"):
+        check_chain(["claude", "codex"], schema)
+    refuse_unsupported("claude", schema)
+    check_chain(["claude"], schema)
+
+
+def test_a_strict_nested_schema_is_taken_by_codex() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "items": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                    "additionalProperties": False,
+                },
+            },
+            "note": {"type": ["string", "null"]},
+        },
+        "required": ["items", "note"],
+        "additionalProperties": False,
+    }
+    refuse_unsupported("codex", schema)
+    check_chain(["codex", "claude"], schema)
+
+
+def test_codex_judges_the_json_it_is_sent() -> None:
+    """A tuple is sent as a JSON array and any mapping as an object: the strict check
+    reads the schema as codex receives it, not as Python holds it."""
+    sent_as_arrays = {
+        "type": "object",
+        "properties": MappingProxyType({"ok": {"type": "boolean"}}),
+        "required": ("ok",),
+        "additionalProperties": False,
+    }
+    refuse_unsupported("codex", sent_as_arrays)
+    hidden_in_a_tuple = {
+        "type": "object",
+        "properties": {"v": {"anyOf": ({"type": "object", "properties": {}},)}},
+        "required": ["v"],
+        "additionalProperties": False,
+    }
+    with pytest.raises(
+        SchemaError, match=re.escape("$.properties.v.anyOf[0]: 'additionalProperties' must be")
+    ):
+        refuse_unsupported("codex", hidden_in_a_tuple)
+
+
+def _deep(depth: int, leaf: dict[str, object]) -> dict[str, object]:
+    node: dict[str, object] = leaf
+    for _ in range(depth):
+        node = {"items": node}
+    return {
+        "type": "object",
+        "properties": {"a": node},
+        "required": ["a"],
+        "additionalProperties": False,
+    }
+
+
+def test_the_strict_check_holds_past_python_s_recursion_limit() -> None:
+    """``json`` serialises deeper than Python recurses (measured on 3.12.11: 9994
+    levels, against a default limit of 1000): a schema ``schema_text`` sends is
+    judged at any depth, never a ``RecursionError``."""
+    depth = 2_000
+    assert len(schema_text(_deep(depth, {"type": "string"}))) < structured.MAX_SCHEMA_BYTES
+    refuse_unsupported("codex", _deep(depth, {"type": "string"}))
+    check_chain(["codex"], _deep(depth, {"type": "string"}))
+    with pytest.raises(
+        SchemaError, match=r"^codex cannot constrain .*'additionalProperties' must be false"
+    ):
+        refuse_unsupported("codex", _deep(depth, {"type": "object", "properties": {}}))

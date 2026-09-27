@@ -28,6 +28,11 @@ SCHEMA_RAILS: Final = frozenset({"claude", "codex"})
 #: The largest serialised schema, in UTF-8 bytes: well under the 131072-byte
 #: per-argument kernel limit claude's inline ``--json-schema`` is bound by.
 MAX_SCHEMA_BYTES: Final = 65_536
+#: The rails whose mechanism takes a "strict" schema only. Measured on codex-cli
+#: 0.156.0: a property missing from ``required`` failed the run with an API 400
+#: (``invalid_json_schema``) that reached neither stderr nor the last message,
+#: only the ``--json`` event stream. Refused up front instead, in ha's words.
+STRICT_RAILS: Final = frozenset({"codex"})
 
 
 class SchemaError(ValueError):
@@ -69,6 +74,65 @@ def schema_text(schema: Mapping[str, object]) -> str:
     return text
 
 
+def _strict_problem(schema: object) -> str | None:
+    """Where ``schema`` breaks the strict-mode rules codex's API enforces, or ``None``.
+
+    Every object lists all its properties in ``required`` and sets
+    ``additionalProperties`` to ``false``, at any depth (properties, array items,
+    combinators, definitions). ``required`` is checked first: it is the rule
+    codex's API named when it refused Task 0's schema. Only these two rules are
+    checked here; any other rejection stays the rail's, and reaches the run's
+    stderr.
+
+    ``schema`` is the parsed JSON the rail is sent. The walk keeps its own stack,
+    depth first: ``json`` serialises deeper than Python recurses.
+    """
+    pending: list[tuple[str, object]] = [("$", schema)]
+    while pending:
+        where, node = pending.pop()
+        if not isinstance(node, dict):
+            continue
+        children: list[tuple[str, object]] = []
+        kind = node.get("type")
+        if (
+            kind == "object"
+            or (isinstance(kind, list) and "object" in kind)
+            or "properties" in node
+        ):
+            properties = node.get("properties")
+            named = properties if isinstance(properties, dict) else {}
+            required = node.get("required")
+            missing = [key for key in named if not (isinstance(required, list) and key in required)]
+            if missing:
+                return f"{where}: 'required' misses {', '.join(repr(key) for key in missing)}"
+            if node.get("additionalProperties") is not False:
+                return f"{where}: 'additionalProperties' must be false"
+            children.extend((f"{where}.properties.{key}", sub) for key, sub in named.items())
+        items = node.get("items")
+        if isinstance(items, dict):
+            children.append((f"{where}.items", items))
+        elif isinstance(items, list):
+            children.extend((f"{where}.items[{i}]", member) for i, member in enumerate(items))
+        for keyword in ("anyOf", "allOf", "oneOf", "prefixItems"):
+            members = node.get(keyword)
+            if isinstance(members, list):
+                children.extend((f"{where}.{keyword}[{i}]", sub) for i, sub in enumerate(members))
+        for keyword in ("$defs", "definitions"):
+            members = node.get(keyword)
+            if isinstance(members, dict):
+                children.extend((f"{where}.{keyword}.{name}", sub) for name, sub in members.items())
+        pending.extend(reversed(children))
+    return None
+
+
+def _strict_refusal(rail: str, problem: str) -> SchemaError:
+    return SchemaError(
+        f"{rail} cannot constrain an answer to this output schema, which its strict mode "
+        f"rejects ({problem}): every object must list all its properties in 'required' and "
+        "set 'additionalProperties' to false; nothing ran"
+    )
+
+
 def _refusal(rails: Sequence[str]) -> SchemaError:
     return SchemaError(
         f"{', '.join(rails)} cannot constrain an answer to an output schema "
@@ -81,9 +145,19 @@ def refuse_unsupported(rail: str, schema: Mapping[str, object] | None) -> None:
 
     Each such rail calls it first in ``run()`` and ``build_command()``: a library
     caller running a provider directly is refused before any file or process exists.
+    A rail of :data:`STRICT_RAILS` also refuses a schema its strict mode rejects,
+    judged on the JSON it would be sent (:func:`schema_text`, whose own refusal
+    comes first): a tuple is an array there, any mapping an object.
     """
-    if schema is not None and rail not in SCHEMA_RAILS:
+    if schema is None:
+        return
+    if rail not in SCHEMA_RAILS:
         raise _refusal([rail])
+    if rail in STRICT_RAILS:
+        # The text schema_text just wrote parses back: json reads as deep as it writes.
+        problem = _strict_problem(json.loads(schema_text(schema)))
+        if problem is not None:
+            raise _strict_refusal(rail, problem)
 
 
 def check_chain(rails: Sequence[str], schema: Mapping[str, object] | None) -> None:
@@ -97,6 +171,8 @@ def check_chain(rails: Sequence[str], schema: Mapping[str, object] | None) -> No
     refused = [rail for rail in rails if rail not in SCHEMA_RAILS]
     if refused:
         raise _refusal(refused)
+    for rail in dict.fromkeys(rails):
+        refuse_unsupported(rail, schema)
 
 
 def _not_a_json_constant(name: str) -> object:
@@ -130,6 +206,7 @@ def is_json_answer(text: str | None) -> bool:
 __all__ = [
     "MAX_SCHEMA_BYTES",
     "SCHEMA_RAILS",
+    "STRICT_RAILS",
     "SchemaError",
     "check_chain",
     "is_json_answer",

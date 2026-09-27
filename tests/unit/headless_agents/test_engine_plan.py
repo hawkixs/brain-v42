@@ -491,7 +491,14 @@ def test_continue_names_the_run_and_the_lineage_it_joins(
 
 # ── output schema (0.5.3 lot 1) ─────────────────────────────────────────────
 
-SCHEMA: dict[str, object] = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+    "additionalProperties": False,
+}
+#: 0.5.3 Task 0's (f): a property absent from ``required``, which codex's API refuses.
+NON_STRICT: dict[str, object] = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
 
 @pytest.mark.parametrize("target", ["openrouter", "openai-compat"])
@@ -518,3 +525,17 @@ def test_a_schema_on_claude_or_codex_is_planned(env: Env, no_subprocess: list[ob
     env.roles('[pair]\nchain = ["codex", "claude"]\n')
     planned = plan(env.request("pair", "task", output_schema=SCHEMA))
     assert planned.request.output_schema == SCHEMA
+
+
+def test_a_schema_codex_strict_mode_rejects_is_refused_before_any_run(
+    env: Env, no_subprocess: list[object]
+) -> None:
+    """Measured (codex-cli 0.156.0): codex's API refuses such a schema only once the
+    run started, in its event stream. A chain holding codex refuses it at plan time;
+    claude, which is not strict, still takes it."""
+    env.roles('[pair]\nchain = ["claude", "codex"]\n')
+    with pytest.raises(UsageError, match=r"^codex cannot constrain .*'required' misses 'ok'"):
+        plan(env.request("pair", "task", output_schema=NON_STRICT))
+    with pytest.raises(UsageError, match=r"^codex cannot constrain"):
+        plan(env.request("codex", "task", output_schema=NON_STRICT))
+    assert plan(env.request("claude", "task", output_schema=NON_STRICT)).request.output_schema
