@@ -625,12 +625,19 @@ def _providers_update(args: argparse.Namespace, io: Io) -> int:
     else:
         for row in rows:
             io.stdout.write(_update_line(row) + "\n")
-    failed = any(
-        row.status in ("failed", "timed out", "not updated")
-        or any(not (v.outcome == "passed" and v.recorded) for v in row.verdicts)
-        for row in rows
-    )
-    return 1 if failed else 0
+
+    def _unsettled(row: updaters.UpdateRow) -> bool:
+        if row.status in ("failed", "timed out", "not updated"):
+            return True
+        changed = row.new_version is not None and row.new_version != row.old_version
+        if prove_after and changed and not row.verdicts:
+            # Proving was requested and the version moved, but nothing was
+            # recorded for it (a dev-install refusal, say: the note explains
+            # why). The command must not read a skipped proof as success.
+            return True
+        return any(not (v.outcome == "passed" and v.recorded) for v in row.verdicts)
+
+    return 1 if any(_unsettled(row) for row in rows) else 0
 
 
 # ── ha models ───────────────────────────────────────────────────────────────

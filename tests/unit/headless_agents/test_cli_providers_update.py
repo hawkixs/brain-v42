@@ -238,15 +238,29 @@ def test_update_json_report_shape(world: _World) -> None:
     ("fields", "expected"),
     [
         ({}, 0),
-        ({"verdicts": ()}, 0),  # --no-prove, or nothing changed
         ({"status": "unchanged", "new_version": "1.0.0", "verdicts": ()}, 0),
-        ({"status": "not installed", "exit_code": None, "log": None, "verdicts": ()}, 0),
+        (
+            {
+                "status": "not installed",
+                "new_version": None,
+                "exit_code": None,
+                "log": None,
+                "verdicts": (),
+            },
+            0,
+        ),
         ({"verdicts": (_verdict("claude", "isolation", "failed", True),)}, 1),
         ({"verdicts": (_verdict("claude", "isolation", "inconclusive", False),)}, 1),
         ({"verdicts": (_verdict("claude", "isolation", "passed", False),)}, 1),
         ({"status": "failed", "exit_code": 1}, 1),
         ({"status": "timed out", "exit_code": None}, 1),
         ({"status": "not updated", "exit_code": None, "log": None, "verdicts": ()}, 1),
+        # A changed version reported with no verdict at all -- a dev-install
+        # refusal, say -- must not read as success: the note explains the skip,
+        # the exit code must not hide it. See
+        # test_update_exit_code_is_1_when_a_changed_rail_was_never_proven below
+        # for the named, single-purpose version of this case.
+        ({"verdicts": ()}, 1),
     ],
 )
 def test_update_exit_code_is_1_on_a_failed_proof_or_updater(
@@ -255,6 +269,35 @@ def test_update_exit_code_is_1_on_a_failed_proof_or_updater(
     world.rows = [_row("claude", **fields)]
     code, _, _ = world.run("providers", "--update")
     assert code == expected
+
+
+def test_update_exit_code_is_1_when_a_changed_rail_was_never_proven(world: _World) -> None:
+    """A dev-install refusal (or any other reason proving never ran) leaves a
+    changed rail with no verdict at all; the note explains why, but the exit
+    code must still say 1, not 0 -- the note is not read by a caller checking
+    only ``$?``."""
+    world.rows = [
+        _row(
+            "claude",
+            verdicts=(),
+            note="not proven: development install (...)",
+        )
+    ]
+    code, _, err = world.run("providers", "--update")
+    assert code == 1, err
+
+
+def test_update_exit_code_is_0_when_every_required_proof_passed(world: _World) -> None:
+    world.rows = [_row("claude")]  # default: updated, one passed+recorded verdict
+    code, _, err = world.run("providers", "--update")
+    assert code == 0, err
+
+
+def test_update_no_prove_exits_0_without_proving(world: _World) -> None:
+    """``--no-prove``: no verdict is produced BY DESIGN, not by a skip -- exit 0."""
+    world.rows = [_row("claude", verdicts=())]
+    code, _, err = world.run("providers", "--update", "--no-prove")
+    assert code == 0, err
 
 
 # ── plain ha providers: byte for byte what lot 2 printed ─────────────────────
