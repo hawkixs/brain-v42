@@ -1007,3 +1007,35 @@ class TestMetricsSlowBlockCacheSettings:
         )
         assert settings.metrics_slow_block_cache_ttl_seconds == 60.0
         assert settings.metrics_slow_block_cache_error_ttl_seconds == 2.0
+
+
+# --- ADR 27 lot C: nightly claim verification cap (T1.3) ---
+
+
+class TestBrainDreamVerifyMaxClaims:
+    def _settings(self, **overrides: object) -> object:
+        from brain_v42.config import Settings
+
+        return Settings(
+            postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+            _env_file=None,  # type: ignore[call-arg]
+            **overrides,
+        )
+
+    def test_default_is_200(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("BRAIN_DREAM_VERIFY_MAX_CLAIMS", raising=False)
+        assert self._settings().brain_dream_verify_max_claims == 200
+
+    def test_5000_is_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BRAIN_DREAM_VERIFY_MAX_CLAIMS", "5000")
+        assert self._settings().brain_dream_verify_max_claims == 5000
+
+    def test_zero_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BRAIN_DREAM_VERIFY_MAX_CLAIMS", "0")
+        with pytest.raises(ValidationError):
+            self._settings()
+
+    def test_5001_is_refused(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("BRAIN_DREAM_VERIFY_MAX_CLAIMS", "5001")
+        with pytest.raises(ValidationError):
+            self._settings()
