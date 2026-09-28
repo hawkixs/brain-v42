@@ -11,7 +11,9 @@ read discipline:
   second write raises :class:`FileExistsError` and changes nothing.
 - :func:`read` treats a document that is missing when it should exist, does
   not parse, is not a JSON object, or names another id than its own as
-  :class:`Unknown` -- and unknown is compromised, never empty.
+  :class:`Unknown` -- and unknown is compromised, never empty. A document that is
+  absent raises :class:`Missing`, an :class:`Unknown` a caller may read as
+  "absent" where absence is the truth (0.5.3 lot 4a, ticket 9ec19a4e).
 """
 
 from __future__ import annotations
@@ -25,6 +27,20 @@ from pathlib import Path
 
 class Unknown(Exception):  # noqa: N818 - the spec's word for this state
     """A state document that cannot be trusted: missing, unparsable, or naming another id."""
+
+
+class Missing(Unknown):
+    """The document does not exist: absent, not doubtful.
+
+    Raised by :func:`read` for a ``FileNotFoundError`` on a path that is not a
+    link -- a missing file, or a missing parent directory -- and only then.
+    Everything else stays a plain :class:`Unknown`: a directory or garbage in
+    its place, a path component that is a file, and a link to nothing (a
+    dangling link is something someone put there, not an absence). Every
+    caller that catches :class:`Unknown` still catches this; a caller that
+    enumerates documents and then reads them may read this one as "gone in
+    between" (ticket 9ec19a4e: a lineage withdrawn by its own write).
+    """
 
 
 def ensure_dir(path: Path) -> Path:
@@ -84,7 +100,9 @@ def read(path: Path, *, expect_id: tuple[str, str] | None = None) -> dict[str, o
     try:
         raw = path.read_bytes()
     except FileNotFoundError:
-        raise Unknown(f"{path}: missing") from None
+        if path.is_symlink():
+            raise Unknown(f"{path}: a link to nothing") from None
+        raise Missing(f"{path}: missing") from None
     except OSError as exc:
         raise Unknown(f"{path}: unreadable ({type(exc).__name__})") from None
     try:
@@ -123,4 +141,4 @@ def read_optional(
     return read(path, expect_id=expect_id)
 
 
-__all__ = ["Unknown", "create_once", "ensure_dir", "publish", "read", "read_optional"]
+__all__ = ["Missing", "Unknown", "create_once", "ensure_dir", "publish", "read", "read_optional"]

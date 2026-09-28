@@ -48,7 +48,7 @@ from .profile import Workspace
 from .provenance import MadeBy
 from .repo import RepoIdentity
 from .result import RunResult
-from .state import Unknown, publish, read_optional
+from .state import Missing, Unknown, publish, read_optional
 
 if TYPE_CHECKING:
     from .engine import Plan
@@ -220,6 +220,11 @@ def check_repository(state: Path, common: Path, *, own: str) -> None:
             continue
         try:
             other = lineages.load(state, owner)
+        except Missing:
+            # Withdrawn by its own refused write after it was listed (ticket
+            # 9ec19a4e): that write holds its lineage lock, not the registry lock,
+            # when it withdraws -- absent, never unknown.
+            continue
         except Unknown as exc:
             raise WriteRefused(f"lineage {owner} is unknown ({exc}); nothing ran") from None
         if other.pending is not None and is_free(lineages.lineage_lock(state, owner)):
@@ -235,7 +240,7 @@ def unfinalized(state: Path, lineage: LineageState, common: Path) -> WriteRefuse
     the same (§3.8.5)."""
     pending = lineage.pending
     assert pending is not None, "only a pending write can be stale"
-    lineages.save(state, replace(lineage, compromised="unfinalized_write"))
+    lineages.save(state, lineages.compromise(lineage, "unfinalized_write"))
     quarantine.publish(
         state,
         "repository",
@@ -863,15 +868,10 @@ def _publish(
             )
         except FileExistsError:
             pass
-    current = write.current
-    write.save(
-        replace(
-            current,
-            members={**current.members, write.run_id: status},
-            pending=None,
-            compromised=compromised or current.compromised,
-        )
+    current = replace(
+        write.current, members={**write.current.members, write.run_id: status}, pending=None
     )
+    write.save(lineages.compromise(current, compromised) if compromised else current)
     _crash_after("lineage_published")
     if write.unconfined:
         (write.state / UNCONFINED_INTENT).unlink(missing_ok=True)
@@ -881,7 +881,10 @@ def _compromise(write: _Write, reason: str) -> None:
     """The lineage compromised, its pending write LEFT in place (steps 3 and 6)."""
     current = write.current
     write.save(
-        replace(current, compromised=reason, members={**current.members, write.run_id: "failed"})
+        replace(
+            lineages.compromise(current, reason),
+            members={**current.members, write.run_id: "failed"},
+        )
     )
 
 
@@ -1139,8 +1142,18 @@ def run_write_step(
             # is left to rebuild (§3.8.3 step 9), and change.patch cannot be rebuilt from
             # it. Bytes: a file that is not UTF-8 is diffed raw, and replacing its bytes
             # would record a patch that no longer rebuilds the commit (ticket 0b3fcdbf).
-            code, patch, _ = write.git_bytes(write.worktree, ["diff", "--binary", base, "HEAD"])
-            (run_dir / PATCH_FILE).write_bytes(patch)
+            code, patch, err = write.git_bytes(write.worktree, ["diff", "--binary", base, "HEAD"])
+            if code == 0:
+                (run_dir / PATCH_FILE).write_bytes(patch)
+            else:
+                # No patch rather than an empty one (ticket e5b93270 item 2): an empty
+                # change.patch reads as "no change", and it would not rebuild the commit.
+                first = err.decode("utf-8", "replace").strip().splitlines()
+                with (step_dir / COMMIT_LOG).open("ab") as log:
+                    log.write(
+                        f"change.patch not written: git diff exited {code}: "
+                        f"{first[0] if first else '(no message)'}\n".encode()
+                    )
             status = "failed" if failed_step else "committed"
             _publish(write, status=status, commits=commits, compromised=None)
         except GitTampered:

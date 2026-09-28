@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import subprocess
 import sys
@@ -17,7 +18,7 @@ from headless_agents.proofs import CLI_RAILS, proof_path, record_proof
 from headless_agents.registry import Probe
 from headless_agents.result import RunResult
 from headless_agents.run_record import record, run_id_of
-from headless_agents.runs import Registry
+from headless_agents.runs import Entry, Registry
 from headless_agents.spec import RunSpec
 
 
@@ -31,6 +32,8 @@ class _Fake:
     raises: BaseException | None = None
     #: The event log this provider writes, as its rail would (plan Task 5).
     events: str | None = None
+    #: The text of a failed run: codex keeps an answer that is not JSON (0.5.3 lot 1).
+    failure_text: str | None = None
     specs: list[RunSpec] = field(default_factory=list)
 
     def run(self, spec: RunSpec) -> RunResult:
@@ -53,7 +56,7 @@ class _Fake:
                 tokens=None,
                 duration_seconds=0.1,
                 tool_call_completed=False,
-                text=self.answer if self.code == 0 else None,
+                text=self.answer if self.code == 0 else self.failure_text,
                 run_id=run_id_of(spec),
                 cost_usd=0.5,
             ),
@@ -255,7 +258,10 @@ def test_expired_wait_exits_2_and_runs_no_provider(world: World, tmp_path: Path)
             assert time.monotonic() < limit
             time.sleep(0.01)
         request = world.request("codex", wait_seconds=0.15)
-        with pytest.raises(UsageError, match=r"--wait 0\.15 s.*unconfined lock"):
+        with pytest.raises(
+            UsageError,
+            match=r"^--wait 0\.15 s expired: an unconfined write holds the global lock; nothing ran$",
+        ):
             execute(plan(request), say=world.said.append)
         assert "codex" not in world.fakes
     finally:
@@ -277,7 +283,10 @@ def test_expired_wait_forgets_the_unstarted_read(world: World, tmp_path: Path) -
             assert time.monotonic() < limit
             time.sleep(0.01)
         request = world.request("codex", wait_seconds=0.15)
-        with pytest.raises(UsageError, match=r"--wait 0\.15 s.*unconfined lock"):
+        with pytest.raises(
+            UsageError,
+            match=r"^--wait 0\.15 s expired: an unconfined write holds the global lock; nothing ran$",
+        ):
             execute(plan(request), say=world.said.append)
         assert "codex" not in world.fakes
         assert list((world.state / "runs").glob("*.json")) == []
@@ -513,3 +522,257 @@ def test_a_chain_records_the_counts_of_the_link_that_answered(world: World) -> N
     world.fakes["codex"] = _Fake("codex", events=(TOOL_FIXTURES / "codex.events.jsonl").read_text())
     (step,) = _steps(world.run("pair"))
     assert step["provider"] == "codex" and step["tools"] == {"command_execution": 4}
+
+
+# ── started_at, and ha clean deciding from it (0.5.3 lot 4a, ticket fbcda7d5) ─
+
+
+def _only_entry(world: World) -> Entry:
+    (run_id,) = world.registry().run_ids()
+    return world.registry().resolve(run_id)
+
+
+def test_a_run_records_started_at_when_its_step_starts(world: World) -> None:
+    world.run("codex")
+    entry = _only_entry(world)
+    assert entry.started_at is not None
+    assert (entry.run_dir / "run.json").is_file()
+
+
+def test_a_run_refused_before_its_step_records_no_started_at(world: World) -> None:
+    (world.state / "proofs" / "codex.json").unlink()
+    with pytest.raises(UsageError):
+        world.run("codex")
+    entry = _only_entry(world)
+    assert entry.started_at is None
+
+
+def _clean(world: World, run_id: str) -> int:
+    return engine.clean(
+        run_id,
+        environ={"PATH": "/usr/bin:/bin", "HOME": str(world.home)},
+        home=world.home,
+        say=world.said.append,
+    )
+
+
+def test_clean_ignores_a_forged_report_on_a_run_that_never_started(world: World) -> None:
+    (world.state / "proofs" / "codex.json").unlink()
+    with pytest.raises(UsageError):
+        world.run("codex")
+    entry = _only_entry(world)
+    entry.run_dir.mkdir(parents=True, exist_ok=True)
+    (entry.run_dir / "run.json").write_text('{"schema": 1, "kind": "run"}')
+    assert _clean(world, entry.run_id) == 0
+    assert world.said[-1] == f"{entry.run_id} never started: forgotten"
+    assert world.registry().run_ids() == []
+
+
+def test_clean_ignores_a_deleted_report_on_a_run_that_started(world: World) -> None:
+    world.run("codex")
+    entry = _only_entry(world)
+    (entry.run_dir / "run.json").unlink()
+    assert _clean(world, entry.run_id) == 0
+    assert world.said[-1].startswith(f"{entry.run_id} cleaned:")
+    assert world.registry().resolve(entry.run_id).cleaned_at is not None
+
+
+def test_clean_of_a_legacy_entry_keeps_the_report_rule(world: World) -> None:
+    """An entry made before started_at existed: the report is all there is."""
+    world.run("codex")
+    entry = _only_entry(world)
+    path = world.state / "runs" / f"{entry.run_id}.json"
+    document = json.loads(path.read_text())
+    del document["started_at"]
+    path.write_text(json.dumps(document))
+    assert _clean(world, entry.run_id) == 0
+    assert world.said[-1].startswith(f"{entry.run_id} cleaned:")
+
+
+# ── admission refusals read the timeout's fields, never its text (0.5.3 lot 4b) ─
+
+
+def test_no_exception_text_is_parsed() -> None:
+    """A refusal that matched words in an exception's message broke silently the day
+    the message changed: the admission gate's own did, when the queue replaced it.
+    The engine reads ``AdmissionTimeout.phase`` and ``.ahead`` instead."""
+    tree = ast.parse(Path(engine.__file__).read_text(encoding="utf-8"))
+    offending = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare):
+            continue
+        if not any(isinstance(op, (ast.In, ast.NotIn)) for op in node.ops):
+            continue
+        for operand in (node.left, *node.comparators):
+            if (
+                isinstance(operand, ast.Constant)
+                and isinstance(operand.value, str)
+                and ("admission gate" in operand.value or "queue" in operand.value)
+            ):
+                offending.append(f"line {node.lineno}: {operand.value!r}")
+    # Nor cut up: str(exc).split(...), .partition(...), .startswith(...) and the like.
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"split", "rsplit", "partition", "startswith", "endswith", "find"}
+            and isinstance(node.func.value, ast.Call)
+            and isinstance(node.func.value.func, ast.Name)
+            and node.func.value.func.id == "str"
+            and len(node.func.value.args) == 1
+            and isinstance(node.func.value.args[0], ast.Name)
+            and node.func.value.args[0].id == "exc"
+        ):
+            offending.append(f"line {node.lineno}: str(exc).{node.func.attr}(...)")
+    assert offending == []
+
+
+_WAITING_WRITER = """
+import sys, time
+from pathlib import Path
+from headless_agents.locks import AdmissionWait, admit_global
+with admit_global(Path(sys.argv[1]), exclusive=True, wait=AdmissionWait(30), label="W1"):
+    time.sleep(30)
+"""
+
+
+def test_an_expired_wait_behind_a_queued_writer_names_it(world: World, tmp_path: Path) -> None:
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    writer = None
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        writer = subprocess.Popen([sys.executable, "-c", _WAITING_WRITER, str(world.state)])
+        limit = time.monotonic() + 10
+        while not any(w.alive and w.label == "W1" for w in locks.waiters(world.state)):
+            assert time.monotonic() < limit and writer.poll() is None
+            time.sleep(0.01)
+        request = world.request("codex", wait_seconds=0.3)
+        with pytest.raises(
+            UsageError,
+            match=r"^--wait 0\.3 s expired: waiting behind 1 earlier admission\(s\) \(W1\); "
+            r"nothing ran$",
+        ):
+            execute(plan(request), say=world.said.append)
+        assert "codex" not in world.fakes
+    finally:
+        for process in (holder, writer):
+            if process is not None:
+                process.kill()
+                process.wait()
+
+
+def test_the_default_refusal_of_a_read_is_unchanged(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.3)
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    try:
+        while not ready.exists():
+            time.sleep(0.02)
+        with pytest.raises(UsageError) as refused:
+            world.run("codex")
+        assert str(refused.value) == (
+            "an unconfined write is running: nothing ran; retry once it has ended"
+        )
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_each_admission_is_labelled_with_its_run_id(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    labels: list[str] = []
+    real = locks.admit_global
+
+    def recording(state: Path, *, exclusive: bool, wait: locks.AdmissionWait, label: str = ""):  # type: ignore[no-untyped-def]
+        labels.append(label)
+        return real(state, exclusive=exclusive, wait=wait, label=label)
+
+    monkeypatch.setattr(locks, "admit_global", recording)
+    world.run("codex")
+    assert labels == world.registry().run_ids()
+    assert labels and labels[0]
+
+
+# ── output schema (0.5.3 lot 1) ─────────────────────────────────────────────
+
+SCHEMA = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+    "additionalProperties": False,
+}
+
+
+def test_output_schema_reaches_every_link_spec(world: World) -> None:
+    world.roles('[r]\nchain = ["codex", "claude"]\n')
+    world.fakes["codex"] = _Fake("codex", code=3)
+    world.fakes["claude"] = _Fake("claude", answer='{"ok":true}')
+    outcome = world.run("r", output_schema=SCHEMA)
+    assert outcome.exit_code == 0, world.said
+    assert [fake.specs[0].output_schema for fake in world.fakes.values()] == [SCHEMA, SCHEMA]
+
+
+def test_output_schema_is_refused_for_a_workflow_target(world: World) -> None:
+    world.roles('[implementer]\nprovider = "codex"\nwrite = true\n')
+    (world.home / ".config" / "ha" / "workflows.toml").write_text(
+        '[build]\nshape = "implement"\nimplement = "implementer"\n'
+    )
+    with pytest.raises(UsageError, match="--output-schema needs a provider or a role"):
+        world.run("build", output_schema=SCHEMA)
+    assert world.registry().run_ids() == []
+
+
+def test_output_schema_is_refused_when_any_link_cannot_honour_it(world: World) -> None:
+    world.roles('[r]\nchain = ["codex", "opencode"]\n')
+    with pytest.raises(UsageError, match="opencode cannot constrain"):
+        world.run("r", output_schema=SCHEMA)
+    assert world.registry().run_ids() == []
+    assert world.fakes == {}
+
+
+def test_a_non_json_answer_is_reported_as_output_not_json(world: World) -> None:
+    world.fakes["codex"] = _Fake("codex", code=1, failure_text="nope")
+    outcome = world.run("codex", output_schema=SCHEMA)
+    assert outcome.exit_code == 1
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["status"] == "failed" and report["failure_reason"] == "output_not_json"
+
+
+def test_a_json_answer_is_answered_verbatim(world: World) -> None:
+    world.fakes["codex"] = _Fake("codex", answer='{"ok":true}')
+    outcome = world.run("codex", output_schema=SCHEMA)
+    assert outcome.exit_code == 0
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["text"] == '{"ok":true}' and report["status"] == "answered"
+    assert report["failure_reason"] is None
+
+
+def test_an_answer_outside_the_schema_never_exits_0(world: World) -> None:
+    """Fail-closed at the engine too: a rail that answered text that is not JSON under
+    a schema -- whatever it returned -- fails the run, and the text is kept."""
+    world.fakes["codex"] = _Fake("codex", answer="I think ok is true")
+    outcome = world.run("codex", output_schema=SCHEMA)
+    assert outcome.exit_code == 1
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["status"] == "failed" and report["failure_reason"] == "output_not_json"
+    assert report["exit_code"] == 1 and report["text"] == "I think ok is true"
+    assert report["steps"][0]["exit_code"] == 0
+    assert world.registry().resolve(outcome.run_id).status == "failed"
+
+
+def test_without_a_schema_a_text_answer_is_answered(world: World) -> None:
+    outcome = world.run("codex")
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert outcome.exit_code == 0 and report["status"] == "answered"
+    assert report["failure_reason"] is None

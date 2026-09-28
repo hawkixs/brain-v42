@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from . import locks, procgroup, proof_state, review_flow, reviews, write_flow
+from . import locks, procgroup, proof_state, review_flow, reviews, structured, write_flow
 from .capability import scoped_environment
 from .chain import run_chain
 from .cli_models import ModelsError, models_for
@@ -135,6 +135,9 @@ class Request:
     #: shared by the global lock and, for a write or a review, lineage admission.
     #: ``None`` keeps every lock's own :data:`locks.LOCK_WAIT_SECONDS` bound.
     wait_seconds: float | None = None
+    #: ``--output-schema FILE``, parsed: the JSON Schema the answer is constrained by
+    #: (0.5.3 lot 1); a provider or role target only, every link able to honour it.
+    output_schema: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -497,6 +500,22 @@ def _refuse_options_of_other_shapes(request: Request, shape: str | None) -> None
                 raise UsageError(f"{flag} needs an implement workflow as the target")
 
 
+def _check_output_schema(request: Request, role: Role) -> None:
+    """0.5.3 lot 1: every link of ``role`` honours the schema, and a rail can take it.
+
+    A chain is refused as a whole, before any run is registered: a fallback must
+    never carry a constrained request onto a rail that would ignore the constraint.
+    """
+    schema = request.output_schema
+    if schema is None:
+        return
+    try:
+        structured.check_chain(role.providers, schema)
+        structured.schema_text(schema)
+    except structured.SchemaError as exc:
+        raise UsageError(str(exc)) from None
+
+
 def _findings_review(run_id: str, *, state: Path, home: Path) -> str:
     """The review ``--findings`` names, from the registry only (§3.8.2): a review run."""
     registry = Registry(state, runs_root=runs_root(home))
@@ -589,6 +608,11 @@ def _plan_review(request: Request, workflow: Workflow, config: Config) -> Plan:
 
 def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan:
     """A workflow target: its roles run as declared (§3.3), its prompt is a template (§3.7)."""
+    if request.output_schema is not None:
+        raise UsageError(
+            "--output-schema needs a provider or a role target: a workflow's steps shape "
+            "their own answers"
+        )
     given = [
         flag
         for field, flag in _OVERRIDE_FLAGS.items()
@@ -672,6 +696,7 @@ def plan(request: Request) -> Plan:
     rule = capability_rule(role, profiles)
     if rule is not None:
         raise UsageError(f"{request.target}: {rule}")
+    _check_output_schema(request, role)
     if request.base is not None and not role.write:
         raise UsageError("--base needs a write run: the role's write, or --write")
 
@@ -768,6 +793,7 @@ def _spec_for(
         environment=plan.environment,
         context=bundle,
         extra=extra,
+        output_schema=plan.request.output_schema,
     )
 
 
@@ -819,6 +845,24 @@ def _installed_version(provider: str, home: Path, environ: Mapping[str, str]) ->
         executable=executable_for(provider, home),
         environ=probe_environment(provider, home, environ),
     ).version
+
+
+def _expired_admission(seconds: float, exc: LockTimeout, *, exclusive: bool) -> str:
+    """The refusal of an explicit ``--wait`` that expired at the global admission,
+    built from the timeout's fields (0.5.3 lot 4b): the admissions queued ahead that
+    it waited behind, or who holds the global lock."""
+    expired = f"--wait {seconds:g} s expired"
+    if isinstance(exc, locks.AdmissionTimeout) and exc.phase == "queue":
+        if not exc.ahead:
+            return f"{expired}: the admission queue stayed busy; nothing ran"
+        names = ", ".join(waiter.label or f"pid {waiter.pid}" for waiter in exc.ahead[:3])
+        return (
+            f"{expired}: waiting behind {len(exc.ahead)} earlier admission(s) ({names}); "
+            "nothing ran"
+        )
+    if exclusive:
+        return f"{expired}: runs still hold the global lock; nothing ran"
+    return f"{expired}: an unconfined write holds the global lock; nothing ran"
 
 
 def _check_isolation(plan: Plan) -> None:
@@ -964,6 +1008,7 @@ def _execute_write(
     step_dir = run_dir / "steps" / step_name
 
     def run_links(workspace: Workspace, directory: Path) -> RunResult:
+        registry.set_started(entry.run_id, _utc_now())
         say(f"step 1 {slot} {role.name}: started")
         final = _run_links(
             plan, bundle, run_id=entry.run_id, step_dir=directory, workspace=workspace, say=say
@@ -1003,6 +1048,10 @@ def _execute_write(
                 tools=tool_counts(outcome.final),
             ),
         )
+    failure_reason = outcome.failure_reason
+    if outcome.final is not None and failure_reason == "step_failed":
+        _, schema_reason = _schema_outcome(plan.request, outcome.final, say)
+        failure_reason = schema_reason or failure_reason
     report.update(
         status=outcome.status,
         exit_code=outcome.exit_code,
@@ -1015,7 +1064,7 @@ def _execute_write(
         findings_from=entry.findings_from,
         implement_providers=list(entry.providers),
         commits=[{"sha": sha, "made_by": made_by} for sha, made_by in outcome.commits],
-        failure_reason=outcome.failure_reason,
+        failure_reason=failure_reason,
         duration_seconds=round(time.monotonic() - started, 3),
     )
     write_report(run_dir, report)
@@ -1182,6 +1231,8 @@ def _execute_review(
             _refused(registry, entry)
         raise UsageError(str(exc)) from None
     task = plan.task or REVIEW_DEFAULT_TASK
+    # The change is pinned and its worktree added: the review has started.
+    registry.set_started(entry.run_id, _utc_now())
     try:
         report.update(
             head=prepared.head,
@@ -1361,7 +1412,9 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
         unconfined = role.write and write_is_unconfined(plan)
         try:
             held_locks.enter_context(
-                locks.admit_global(plan.state, exclusive=unconfined, wait=admission_wait)
+                locks.admit_global(
+                    plan.state, exclusive=unconfined, wait=admission_wait, label=entry.run_id
+                )
             )
         except LockTimeout as exc:
             if request.wait_seconds is not None:
@@ -1384,16 +1437,8 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 raise UsageError(
                     "an unconfined write is running: nothing ran; retry once it has ended"
                 ) from None
-            if unconfined:
-                holder = "active runs"
-            elif "admission gate" in str(exc):
-                holder = "a waiting unconfined writer"
-            else:
-                holder = "an unconfined write"
-            lock_name = str(exc).split(":", 1)[0]
             raise UsageError(
-                f"--wait {request.wait_seconds:g} s expired: {lock_name}, held by "
-                f"{holder}; nothing ran"
+                _expired_admission(request.wait_seconds, exc, exclusive=unconfined)
             ) from None
 
         try:
@@ -1458,6 +1503,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 findings_head=findings.head if findings is not None else None,
                 admission_wait=admission_wait,
             )
+        registry.set_started(entry.run_id, _utc_now())
         say(f"step 1 run {role.name}: started")
         final = _run_links(
             plan,
@@ -1479,22 +1525,45 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 tools=tool_counts(final),
             ),
         )
-        status = "answered" if final.exit_code == 0 else "failed"
+        exit_code, failure_reason = _schema_outcome(request, final, say)
+        status = "answered" if exit_code == 0 else "failed"
         report.update(
             status=status,
-            exit_code=final.exit_code,
+            exit_code=exit_code,
             text=final.text,
+            failure_reason=failure_reason,
             duration_seconds=round(time.monotonic() - started, 3),
         )
         write_report(run_dir, report)
         registry.set_status(entry.run_id, status)
         return Outcome(
-            exit_code=final.exit_code,
+            exit_code=exit_code,
             run_id=entry.run_id,
             run_dir=run_dir,
             report=report,
             final=final,
         )
+
+
+def _schema_outcome(
+    request: Request, final: RunResult, say: Callable[[str], None]
+) -> tuple[int, str | None]:
+    """``(exit_code, failure_reason)`` of an answer under its output schema if any.
+
+    0.5.3 lot 1: an answer that is not JSON under a schema is ``output_not_json``,
+    and never exit ``0`` -- even from a rail that returned 0 for it: the rails
+    enforce the schema, and the engine does not trust that they did. A failure
+    with no answer at all keeps its own code and reason.
+    """
+    code = final.exit_code
+    if request.output_schema is None or structured.is_json_answer(final.text):
+        return code, None
+    if code == 0:
+        say("the answer is not JSON although an output schema was set: the run failed")
+        return 1, "output_not_json"
+    if code == 1 and final.text is not None:
+        return 1, "output_not_json"
+    return code, None
 
 
 def _remove_review_worktree(
@@ -1518,8 +1587,10 @@ def clean(
     Resolved through the registry; the run's lifecycle lock taken without
     waiting (an active run is refused), then the unconfined lock shared. A run
     that never started is forgotten; any other has its directory removed and
-    ``cleaned_at`` set -- its entry stays. A write run follows the lineage
-    rules of :func:`headless_agents.write_flow.clean_write`.
+    ``cleaned_at`` set -- its entry stays. Whether it started is the registry's
+    ``started_at``, never ``run.json`` (an entry older than that key keeps the
+    report rule). A write run follows the lineage rules of
+    :func:`headless_agents.write_flow.clean_write`.
     """
     state = state_dir(environ, home=home)
     registry = Registry(state, runs_root=runs_root(home))
@@ -1544,17 +1615,19 @@ def clean(
         except LockTimeout:
             raise UsageError(f"{run_id} is active: nothing cleaned") from None
         try:
-            # Through the same admission gate as every other run (codex review
+            # Through the same admission queue as every other run (codex review
             # of PR #239): taking ``unconfined.lock`` directly here let a clean
             # slip past a queued unconfined writer whenever the global lock
             # itself happened to be free.
             held_locks.enter_context(
-                locks.admit_global(state, exclusive=False, wait=locks.AdmissionWait(None))
+                locks.admit_global(
+                    state, exclusive=False, wait=locks.AdmissionWait(None), label="clean"
+                )
             )
         except LockTimeout as exc:
-            if "admission gate" in str(exc):
+            if isinstance(exc, locks.AdmissionTimeout) and exc.phase == "queue":
                 raise UsageError(
-                    "the admission gate is held by a waiting unconfined writer: nothing cleaned"
+                    "a waiting unconfined writer is ahead in the admission queue: nothing cleaned"
                 ) from None
             raise UsageError("an unconfined write is running: nothing cleaned") from None
         if entry.lineage is not None:
@@ -1571,7 +1644,14 @@ def clean(
                 )
             except LockTimeout as exc:
                 raise UsageError(f"{exc}: the lineage is in use; nothing cleaned") from None
-        started = (entry.run_dir / RUN_JSON).is_file()
+        # The registry decides (ticket fbcda7d5): a report is never an authority, and
+        # a forged or deleted run.json must not turn a never-started run into a
+        # cleaned one, or the reverse. Only an entry older than started_at falls
+        # back to the report, the one witness it has.
+        if entry.start_recorded:
+            started = entry.started_at is not None
+        else:
+            started = (entry.run_dir / RUN_JSON).is_file()
         worktree = entry.run_dir / review_flow.WORKTREE
         if worktree.is_dir() and entry.repository is not None:
             # A review whose cleanup failed kept its detached worktree: removed through

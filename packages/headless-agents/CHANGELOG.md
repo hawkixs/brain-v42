@@ -24,6 +24,183 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.3, lot 1: schema-constrained output
+
+A caller that needed a machine-readable answer could only ask for JSON in the prompt and
+hope (red-arena G1, ticket a48dc8eb). A run can now ask for an answer constrained by a
+JSON Schema, and only a rail that enforces one natively takes it; no rail imitates one
+with a prompt instruction.
+
+### Added
+- **`RunSpec.output_schema`** (default `None`) and **`ha run TARGET --output-schema
+  FILE`**. The schema is an object-rooted JSON object of at most 65536 bytes serialised
+  (`structured.MAX_SCHEMA_BYTES`), checked when the `RunSpec` is built. `ha run` reads
+  `FILE`, relative to the current directory, before anything runs, and refuses it
+  (exit `2`, naming `FILE`) when it cannot be read, is larger than the bound, is not
+  JSON, or holds a JSON value that is not an object. The answer is `RunResult.text`.
+- **Two measured native mechanisms:**
+  - **claude** (2.1.283): `--output-format json --json-schema <schema>`, inline, right
+    after `--max-turns`. The text is the result envelope's `structured_output`,
+    serialised by `ha`; the envelope is kept as `claude-result.json` next to the report,
+    so a schema run needs a `report_log` (a `run_dir` gives one). A run that exits `0`
+    without a successful envelope is exit `1`, and so is a readable envelope behind a
+    failure (`error_max_turns`, measured with exit 1; `error_max_structured_output_retries`)
+    -- never the replayable `3`; the refusal is appended to `raw_log` as `structured
+    output refused: <why>`. Measured: `--max-turns 1` is enough, and a read workspace keeps
+    the schema. A write workspace is unmeasured; the envelope check fails closed there.
+  - **codex** (codex-cli 0.156.0): `exec --output-schema <file>`, right before
+    `--output-last-message`. The file, `output-schema.json` (`0600`), lives in the run's
+    own throwaway `CODEX_HOME`, outside the workspace, the run directory and the writable
+    scratch, and goes with it on every exit path. codex reports a failed turn only in its
+    `--json` stream, so under a schema a failed run gets that reason appended to stderr as
+    `codex turn failed: <message>`.
+- **Refusals before any file or process exists:**
+  - agy, opencode and the HTTP rail (`openrouter`, `mistral`, `nvidia`, `openai-compat`)
+    have no measured mechanism: their `run()` and `build_command()` raise
+    `structured.SchemaError`, a `ValueError`.
+  - codex refuses a schema its strict mode would reject, naming the first breach
+    (`$: 'required' misses 'ok'`): every object must list all its properties in
+    `required` and set `additionalProperties` to `false`, at any depth. Measured: codex
+    itself only failed mid-run, with an API 400 (`invalid_json_schema`) that reached
+    neither its stderr nor its last message.
+  - `ha run` refuses, before any registration (exit `2`), a workflow target -- a
+    workflow's steps shape their own answers -- and a role whose chain holds any link
+    that cannot honour the schema, naming every such link.
+- **The JSON check.** Under a schema, an answer that is not JSON is exit `1`, never `0`.
+  `ha` checks that the answer is JSON; it does not validate it against the schema, which
+  the rail enforces -- a caller that needs a validated shape validates the object it
+  parses. codex keeps the non-JSON text and appends `output is not JSON: an output schema
+  was set` to stderr. `ha run` reports such an answer as `failure_reason:
+  "output_not_json"` for plain runs (even when a rail returned `0`) and for
+  failed write steps.
+- **`structured.check_chain(rails, schema)`** for library chains. `chain.run_chain` does
+  not look at the schema: a library caller refuses the chain as a whole before its first
+  link, so a fallback never carries a constrained request onto a rail that would ignore
+  it. `ha run` calls it when it plans the run.
+
+Without a schema nothing changes: every rail's command line is byte-identical (pinned
+per rail and per mode), and `RunResult`, `result.json` (schema 1), the run directory's
+file names and the meaning of every exit code stay as they were. The isolation
+fingerprints of claude, codex, agy and opencode move: `ha prove --stale` after
+installing.
+
+## Unreleased — 0.5.3, lot 2: the agy and opencode rails fail fast and precisely
+
+Tickets 5921850d and a93cc8f2.
+
+### Fixed
+- **agy's ephemeral-HOME root chooser skips a workspace-overlapping candidate**
+  instead of failing the run while another candidate is fine: a workspace
+  overlap is now a reason to try the next candidate, exactly like a `.git`
+  ancestor, and the run is refused only when every candidate is blocked --
+  naming each kind of reason that occurred.
+- **An exhausted opencode provider quota falls through at once** instead of
+  waiting out the whole deadline for a plain timeout: opencode now runs with
+  `--print-logs --log-level ERROR` (Task 0 measured that the alternative --
+  its own log file under the ephemeral HOME -- silently drops exactly the
+  ERROR lines a quota exhaustion needs, when the process exits shortly after
+  writing them; `--print-logs`/stderr does not, and changes nothing in the
+  stdout JSON event stream). The wait polls stderr for `AI_APICallError` or
+  `AI_RetryError` with `usage limit exceeded` on the same line every 0.5 s;
+  a signature ends the run with exit 3 (replayable elsewhere) only when the event
+  stream also proves nothing could have been written yet -- the exact
+  `_nothing_could_have_been_written` predicate the deadline itself uses, so
+  the two paths can never disagree. A signature seen after a write step or a
+  tool call keeps the run waiting for the ordinary deadline, exactly as
+  before.
+
+### Changed
+- **opencode's replayability test is named once**
+  (`_nothing_could_have_been_written`), extracted verbatim from
+  `_deadline_exit_code`: the early quota exit above and the deadline share it
+  rather than risking a second definition that drifts from the other's.
+- **opencode's wait is now a bounded poll** (`process.wait(timeout=...)` in a
+  loop) instead of one blocking `communicate(timeout=remaining)` call, so the
+  quota check above can run between polls. Interruption handling (Ctrl-C
+  kills the provider's group before propagating) and the deadline's own
+  reasoning are otherwise unchanged.
+
+The isolation fingerprints of `agy` and `opencode` move with this branch's
+changes to `providers/agy.py` and `providers/opencode.py`
+(`proofs._ISOLATION_SOURCE_FILES`): re-record them with `ha prove agy opencode
+--isolation` after installing (0.5.2 lot 4a, below).
+
+## Unreleased — 0.5.3, lot 4a: write and state robustness
+
+The state stays coherent under races, forged reports and failed git commands. No lock,
+gate, proof, exit-code meaning, `RunSpec`, `RunResult` or `result.json` changes; the new
+state keys are additive (an older ha ignores them).
+
+### Fixed
+- **A lineage withdrawn between listing and reading is absent, never "unknown"** (ticket
+  9ec19a4e). A refused new write withdraws its lineage after the registry lock is released
+  -- the lock order forbids retaking it there -- so another run's admission check could
+  list that lineage, fail to read it, and refuse with "lineage X is unknown (... missing)".
+  `state.read` now raises `Missing`, a subclass of `Unknown`, for an absent document and
+  only then (a directory or garbage in its place, a file as a path component, and a link to
+  nothing stay a plain `Unknown`); `lineage.of_repository`, `write_flow.check_repository`
+  and `review_flow._admitted` read a `Missing` lineage as absent. A corrupt lineage still
+  refuses. Pinned with two real processes, ordered around the registry lock.
+- **`ha clean` decides whether a run started from the registry, never from `run.json`**
+  (ticket fbcda7d5). A forged report turned a never-started run into a "cleaned" one, a
+  deleted report forgot a started run. The registry entry records `started_at` (null at
+  creation, set once by the engine when the run's first step starts); `ha clean` decides
+  from it. An entry older than the key has none and keeps the report rule, the one
+  witness it has.
+- **A lineage keeps its first compromised reason** (ticket e5b93270 item 1): a later
+  reason is appended to a new `compromised_history` instead of replacing the root cause.
+- **No `change.patch` from a failed `git diff`** (ticket e5b93270 item 2): an empty patch
+  read as "no change". The step's `commit.log` says why, and the write header prints
+  `patch: not written` instead of a path to nothing.
+- **A registry entry naming a provider ha does not know is `Unknown`** (ticket e5b93270
+  item 6): those names are the authors the vendor rule reads.
+
+## Unreleased — 0.5.3, lot 4b: first come, first served admission
+
+0.5.2 gave an unconfined writer only a best-effort preference at admission (lot 3's
+writer-intent lock and admission gate), because `flock` orders no waiters:
+- a continuous, overlapping stream of readers could keep a writer still polling for
+  admission out until its deadline;
+- a stream of writers could make a waiting reader time out.
+
+Global admission is now first come, first served (decision 7ef98bc4).
+
+### Changed
+- **A ticketed admission queue replaces the writer-intent lock and the admission gate.**
+  Every admission takes a ticket in `<state>/admission/` and waits its turn:
+  - shared admissions queued together are admitted together;
+  - an unconfined write waits for every admission queued before it, and every admission
+    queued after it waits for it;
+  - `--wait` covers the queue and the global lock with its one deadline.
+
+  `ha clean` queues like any run.
+- **A crashed waiter never blocks.** A waiter's file becomes visible only once it is
+  locked, and it is removed before its lock is released. A visible file nobody holds
+  therefore means exactly "a dead waiter", skipped and removed at the next poll: no pid
+  probing, no heartbeat.
+- **An explicit `--wait` that expires at the global admission says what the run waited
+  for:** `waiting behind N earlier admission(s) (run ids)`, or that runs, or an unconfined
+  write, still hold the global lock. It used to name a lock cut out of an exception's
+  text. The engine now reads the timeout's own fields: `locks.AdmissionTimeout` carries
+  the phase (`queue` or `global`) and the waiters it waited for, and a test forbids
+  parsing exception text in `engine.py`.
+- Lock order: the admission ticket (an instant) and the admission waiter (while queued)
+  take ranks 2 and 3, in place of the writer-intent lock and the gate. The global lock,
+  the lineage registry and the lineages keep theirs.
+
+### Unchanged
+- **Exclusion.** The global lock is still the `flock` of `unconfined.lock`, shared or
+  exclusive, taken exactly as before. The queue only decides who may try it, and when:
+  a queue bug can cost fairness or time, never let an unconfined write run beside
+  another run. The exclusion invariants are pinned by process tests written against
+  0.5.2's gate, and they pass unchanged on the queue.
+- The two refusals without `--wait`, word for word, and every exit code.
+
+Leftover `writer-intent.lock` and `admission-gate.lock` files in a state directory are
+no longer used and are harmless. **Upgrade window:** an `ha` 0.5.2 process still running
+admits through its gate while 0.5.3 processes queue. Exclusion holds between the two, but
+fairness across the two populations does not.
+
 ## 0.5.2 — 2026-09-27 (tag `headless-agents-v0.5.2` after merge)
 
 Parallel runs across sessions, and one operator command to update the provider CLIs

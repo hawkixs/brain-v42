@@ -149,7 +149,7 @@ def test_releasing_the_registry_lock_before_a_lineage_lock_keeps_the_order_true(
         pass
 
 
-# ── admission gate: writer preference, one deadline (plan lot 3, Task 1) ────
+# ── admission queue: writer order, one deadline (plan lot 3, Task 1; 0.5.3 lot 4b) ─
 
 _ADMISSION_CHILD = """
 import sys
@@ -203,77 +203,19 @@ def _admission_child(
     return process, ready
 
 
-def _gate_is_exclusive(state: Path) -> None:
+def _writer_is_queued(state: Path) -> None:
     limit = time.monotonic() + 5
     while time.monotonic() < limit:
-        try:
-            with held(
-                state / "admission-gate.lock",
-                rank=Rank.ADMISSION_GATE,
-                exclusive=False,
-                wait=None,
-                what="the admission gate",
-            ):
-                pass
-        except LockTimeout:
+        if any(waiter.alive and waiter.exclusive for waiter in locks.waiters(state)):
             return
         time.sleep(0.01)
-    pytest.fail("the waiting writer never took the admission gate")
-
-
-def _intent_is_exclusive(state: Path) -> None:
-    limit = time.monotonic() + 5
-    while time.monotonic() < limit:
-        try:
-            with held(
-                state / "writer-intent.lock",
-                rank=Rank.WRITER_INTENT,
-                exclusive=False,
-                wait=None,
-                what="a pending write",
-            ):
-                pass
-        except LockTimeout:
-            return
-        time.sleep(0.01)
-    pytest.fail("the waiting writer never took writer-intent")
-
-
-def test_a_reader_arriving_after_the_writer_holds_intent_queues_behind_it(
-    tmp_path: Path,
-) -> None:
-    """The one guarantee the writer-intent lock actually gives, pinned on
-    its own, apart from anything about the gate: once a writer holds
-    writer-intent exclusively, a reader that arrives afterward blocks on its
-    own (shared) attempt to check intent until the writer releases it --
-    ordinary ``flock`` mutual exclusion against a single exclusive holder,
-    true regardless of the fairness caveats in the module docstring (those
-    are about who *wins* intent under contention, not about what a lock
-    already held exclusively does to a later arrival)."""
-    state = tmp_path / "state"
-    state.mkdir()
-    events = tmp_path / "events"
-    holder, _ = _admission_child(state, "holder", events)
-    writer = reader = None
-    try:
-        writer, _ = _admission_child(state, "writer", events)
-        _intent_is_exclusive(state)
-        reader, _ = _admission_child(state, "reader", events)
-        time.sleep(0.12)
-        assert not events.exists(), "a later reader bypassed the writer holding intent"
-        holder.kill()
-        assert writer.wait(timeout=5) == 0
-        assert reader.wait(timeout=5) == 0
-        assert events.read_text().splitlines() == ["writer", "reader"]
-    finally:
-        for process in (holder, writer, reader):
-            if process is not None and process.poll() is None:
-                process.kill()
-            if process is not None:
-                process.wait()
+    pytest.fail("the waiting writer never entered the admission queue")
 
 
 def test_waiting_writer_precedes_a_later_shared_admission(tmp_path: Path) -> None:
+    """Once a writer holds its ticket, a reader arriving afterward waits behind it:
+    ticket order, true whatever the timing. (0.5.2 pinned this twice, once for its
+    writer-intent lock and once for its gate; the queue replaced both.)"""
     state = tmp_path / "state"
     state.mkdir()
     events = tmp_path / "events"
@@ -281,7 +223,7 @@ def test_waiting_writer_precedes_a_later_shared_admission(tmp_path: Path) -> Non
     writer = reader = None
     try:
         writer, _ = _admission_child(state, "writer", events)
-        _gate_is_exclusive(state)
+        _writer_is_queued(state)
         reader, _ = _admission_child(state, "reader", events)
         time.sleep(0.12)
         assert not events.exists(), "a later reader bypassed the waiting writer"
@@ -297,7 +239,7 @@ def test_waiting_writer_precedes_a_later_shared_admission(tmp_path: Path) -> Non
                 process.wait()
 
 
-def test_gate_is_released_after_writer_timeout(tmp_path: Path) -> None:
+def test_a_writer_that_times_out_leaves_the_queue(tmp_path: Path) -> None:
     state = tmp_path / "state"
     state.mkdir()
     events = tmp_path / "events"
@@ -306,6 +248,7 @@ def test_gate_is_released_after_writer_timeout(tmp_path: Path) -> None:
     try:
         writer, _ = _admission_child(state, "writer", events, 0.15)
         assert writer.wait(timeout=5) == 2
+        assert locks.waiters(state) == []
         reader, _ = _admission_child(state, "reader", events)
         assert reader.wait(timeout=5) == 0
         assert events.read_text().splitlines() == ["writer-timeout", "reader"]
@@ -343,34 +286,19 @@ def test_one_deadline_covers_two_contested_locks(tmp_path: Path) -> None:
             assert time.monotonic() - started < 0.16
 
 
-def test_a_writer_that_has_won_intent_blocks_late_readers_through_gate_contention(
+def test_a_queued_writer_goes_before_readers_arriving_while_it_waits(
     tmp_path: Path,
 ) -> None:
-    """What the writer-intent lock actually guarantees, pinned precisely:
-    once a writer *holds* writer-intent (which it wins uncontested here --
-    nothing else holds it when the writer arrives, the ordinary case), it
-    keeps blocking every reader that arrives afterward for as long as it
-    holds intent, including the whole time it is separately stuck contending
-    for a busy gate. ``test_waiting_writer_precedes_a_later_shared_admission``
-    only checks this once the writer already holds the *gate*; this test
-    checks it while the writer is still only polling for the gate, holding
-    intent the whole time.
+    """A writer queued behind earlier readers that are themselves still waiting
+    goes before every reader arriving after it. 0.5.2's gate could only narrow this
+    window -- ``flock`` orders no waiters, and a stream of readers could starve a
+    writer still polling for the gate (codex review of PR #239). The queue orders
+    them by ticket, so this now holds whatever the timing.
 
-    This is NOT a demonstration that a writer always wins the race for
-    writer-intent itself under contention -- codex review of PR #239 found
-    that a continuous, overlapping stream of readers taking intent shared
-    could in principle starve a writer still *polling* for intent, and
-    ``flock`` gives no fairness to make that deterministic either way, so it
-    is not something a process test can pin. See the module docstring:
-    best-effort mitigation, not a fairness guarantee; a real fix (a fair
-    FIFO admission queue) is planned for 0.5.3.
-
-    An exclusive holder on the global lock (not the ``_ADMISSION_CHILD``
-    "holder" mode, which only takes it shared and would let ordinary shared
-    readers straight through) forces two seed readers to stay stuck holding
-    the gate shared, so the gate is already unavailable the moment the
-    writer starts polling for it; a further stream of readers keeps arriving
-    while the writer is still polling, not once it already holds the gate.
+    An exclusive holder on the global lock (not the ``_ADMISSION_CHILD`` "holder"
+    mode, which only takes it shared and would let ordinary shared readers straight
+    through) keeps two seed readers waiting ahead of the writer; a further stream of
+    readers keeps arriving while the writer waits.
     """
     state = tmp_path / "state"
     state.mkdir()
@@ -386,10 +314,7 @@ def test_a_writer_that_has_won_intent_blocks_late_readers_through_gate_contentio
             time.sleep(0.1)
 
             writer, _ = _admission_child(state, "writer", events, seconds=3.0)
-            # Deliberately not waiting for the writer to hold the gate (unlike
-            # test_waiting_writer_precedes_a_later_shared_admission): the
-            # readers below arrive while it is still polling for the gate,
-            # not after.
+            _writer_is_queued(state)
             deadline = time.monotonic() + 0.4
             while time.monotonic() < deadline:
                 process, _ = _admission_child(state, "late", events)
@@ -407,9 +332,7 @@ def test_a_writer_that_has_won_intent_blocks_late_readers_through_gate_contentio
         writer_index = lines.index("writer")
         for index, line in enumerate(lines):
             if line == "late":
-                assert index > writer_index, (
-                    "a reader arriving while the writer was still polling for the gate overtook it"
-                )
+                assert index > writer_index, "a reader arriving while the writer waited overtook it"
         assert lines.count("late") == len(late_readers)
         assert lines.count("seed") == len(seed_readers)
     finally:

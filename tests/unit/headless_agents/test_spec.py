@@ -62,3 +62,18 @@ class TestRunDirValidation:
 
     def test_without_run_dir_nothing_is_validated(self) -> None:
         RunSpec(prompt="P")
+
+
+class TestOutputSchema:
+    """0.5.3 lot 1: an optional schema, validated where the spec is built."""
+
+    def test_output_schema_defaults_to_none(self) -> None:
+        assert RunSpec(prompt="p").output_schema is None
+
+    def test_a_valid_schema_is_kept_as_given(self) -> None:
+        schema = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+        assert RunSpec(prompt="p", output_schema=schema).output_schema is schema
+
+    def test_a_run_spec_with_an_invalid_schema_is_refused_at_construction(self) -> None:
+        with pytest.raises(ValueError, match="object-rooted"):
+            RunSpec(prompt="p", output_schema={"type": "array"})

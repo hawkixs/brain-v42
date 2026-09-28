@@ -26,6 +26,13 @@ that names its logs runs exactly as before.
 
 ``context`` is the resolved context bundle (:mod:`headless_agents.context`);
 each rail delivers it through its preamble channel.
+
+``output_schema`` asks for an answer constrained by a JSON Schema (0.5.3 lot 1).
+``None``, the default, changes nothing. When set, it must be object-rooted JSON of
+at most :data:`headless_agents.structured.MAX_SCHEMA_BYTES` bytes -- checked here, at
+construction -- and only a rail with a native mechanism honours it (claude and
+codex); every other rail refuses the run before anything starts. The answer is
+``RunResult.text``, which ``ha`` checks is JSON (:mod:`headless_agents.structured`).
 """
 
 from __future__ import annotations
@@ -39,6 +46,7 @@ from typing import Final
 
 from .context import ContextBundle
 from .profile import CapabilityProfile
+from .structured import schema_text
 
 #: The name each log takes inside ``RunSpec.run_dir`` when the caller names
 #: none. A reader of a run directory relies on them: they are part of the
@@ -90,6 +98,7 @@ class RunSpec:
     environment: Mapping[str, str] | None = None
     context: ContextBundle | None = None
     extra: dict[str, object] = field(default_factory=dict)
+    output_schema: Mapping[str, object] | None = None
 
     def __post_init__(self) -> None:
         """A run is named by its directory (:func:`run_dir_name`): refuse one with none.
@@ -100,9 +109,14 @@ class RunSpec:
         root has no name to give: refused here, at construction, rather than
         left to surface as an empty run id or an empty ``result.json``
         directory name downstream.
+
+        An ``output_schema`` no rail could take is refused here too, with
+        :class:`headless_agents.structured.SchemaError` (a :class:`ValueError`).
         """
         if self.run_dir is not None and not run_dir_name(self.run_dir):
             raise ValueError(f"run_dir has no name, cannot name a run: {self.run_dir!r}")
+        if self.output_schema is not None:
+            schema_text(self.output_schema)
 
     def effective_timeout_seconds(self, *, now: float | None = None) -> float:
         """``timeout_seconds`` capped by the time left until ``deadline``."""

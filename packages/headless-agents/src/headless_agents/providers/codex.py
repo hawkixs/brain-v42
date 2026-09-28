@@ -40,6 +40,7 @@ from ..result import RunResult
 from ..run_record import answer_text, record, run_id_of
 from ..sandbox import ephemeral_root
 from ..spec import RunSpec
+from ..structured import is_json_answer, refuse_unsupported, schema_text
 from ..workspace import (
     armed_run,
     prepend,
@@ -57,6 +58,10 @@ REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhig
 # Codex resolves its own state directory from CODEX_HOME; no other rail needs
 # it, so it extends the shared base allowlist rather than widening it.
 CHILD_ENV_PASSTHROUGH = frozenset({"CODEX_HOME"})
+
+#: The file a schema-constrained run hands ``--output-schema``, inside its own
+#: run-owned ``CODEX_HOME`` (see :func:`run_codex`).
+OUTPUT_SCHEMA_NAME: Final = "output-schema.json"
 
 _DISABLED_FEATURES = (
     "apps",
@@ -138,6 +143,7 @@ def build_codex_command(
     workspace_mode: Workspace | None = None,
     ephemeral: bool = True,
     writable_tmp: Path | None = None,
+    output_schema: Path | None = None,
 ) -> list[str]:
     """Build the hardened non-interactive Codex command for one run.
 
@@ -162,6 +168,11 @@ def build_codex_command(
     codex's recorded ``turn_context.sandbox_policy`` carries the same
     ``writable_roots`` entry a production write run would (see
     :func:`headless_agents.proofs._matches_write_policy`, which accepts it).
+
+    ``output_schema`` is the file ``--output-schema`` reads, placed right before
+    ``--output-last-message`` (0.5.3 lot 1). Measured on codex-cli 0.156.0: the
+    final message, still written to ``report_log``, is constrained to that JSON
+    Schema. ``None`` leaves every argument exactly as it was.
     """
     if not model.strip():
         raise ValueError("Codex model must not be empty")
@@ -235,6 +246,8 @@ def build_codex_command(
     ]
     for key, value in overrides:
         command.extend(("-c", f"{key}={_toml(value)}"))
+    if output_schema is not None:
+        command.extend(("--output-schema", str(output_schema)))
     command.extend(("--output-last-message", str(report_log), "-"))
     return command
 
@@ -1011,6 +1024,61 @@ def _keep_rollout(home: Path, rollout_log: Path) -> str | None:
     return None
 
 
+#: The longest turn-failure message :func:`run_codex` appends to stderr: an API
+#: error is a few hundred characters; the bound keeps a runaway stream out.
+_TURN_FAILURE_MAX_CHARS: Final = 2000
+
+
+def _turn_failure_message(events_log: Path) -> str | None:
+    """The last ``turn.failed`` message of a stream -- else its last ``error`` -- on one line.
+
+    Measured on codex-cli 0.156.0 (0.5.3 Task 0): a schema codex's API refuses
+    fails the run with exit 1, an empty last message and an EMPTY stderr; the
+    API's ``invalid_json_schema`` 400 reaches only the ``--json`` stream, as a
+    ``turn.failed`` event. This reads a failed run's stream for its words, it
+    does not validate it: a line that is not a JSON object is skipped, and the
+    stream is split on newlines only (JSON escapes every one inside a string).
+    """
+    try:
+        stream = events_log.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    failed: str | None = None
+    error: str | None = None
+    for line in stream.split("\n"):
+        try:
+            event = json.loads(line)
+        except (ValueError, RecursionError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if event.get("type") == "turn.failed":
+            detail = event.get("error")
+            message = detail.get("message") if isinstance(detail, dict) else None
+            if isinstance(message, str) and message.strip():
+                failed = message
+        elif event.get("type") == "error":
+            message = event.get("message")
+            if isinstance(message, str) and message.strip():
+                error = message
+    chosen = failed if failed is not None else error
+    if chosen is None:
+        return None
+    return " ".join(chosen.split())[:_TURN_FAILURE_MAX_CHARS]
+
+
+def _write_output_schema(home: Path, text: str) -> Path:
+    """``text`` into a new ``0600`` :data:`OUTPUT_SCHEMA_NAME` file in ``home``; its path.
+
+    ``O_EXCL``: never over an existing file, never through a link.
+    """
+    path = home / OUTPUT_SCHEMA_NAME
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(text)
+    return path
+
+
 def run_codex(
     *,
     prompt: str,
@@ -1029,6 +1097,7 @@ def run_codex(
     temp_prefix: str = "headless-agents-codex-",
     missing_call_message: str | None = None,
     rollout_log: Path | None = None,
+    output_schema: str | None = None,
 ) -> int:
     """Run one Codex invocation and return its exit code (``124`` on timeout).
 
@@ -1058,6 +1127,19 @@ def run_codex(
     rollout is only ever a ``rollout not kept: <reason>`` line appended to
     ``stderr_log``. ``None`` (the default, and every production call) is
     byte-identical to before this parameter existed.
+
+    ``output_schema`` is the compact JSON of a schema codex's strict mode takes
+    (:func:`headless_agents.structured.schema_text`, refused up front otherwise
+    by :func:`headless_agents.structured.refuse_unsupported`). It is written to
+    :data:`OUTPUT_SCHEMA_NAME` (mode ``0600``) inside the run-owned
+    ``CODEX_HOME`` -- outside the workspace, the run directory and the writable
+    scratch, and removed with that home on every exit path -- and handed to
+    ``--output-schema``. codex's API enforces it; a run that fails under it
+    gets the stream's own failure appended to ``stderr_log`` as ``codex turn
+    failed: <message>`` (see :func:`_turn_failure_message`), since codex writes
+    none there. Whether the final message is JSON is not checked here: the
+    provider holds the answer to that (:class:`CodexProvider`). ``None`` leaves
+    the run exactly as it was.
     """
     if timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
@@ -1106,7 +1188,10 @@ def run_codex(
         return PROVIDER_FALLBACK_EXIT_CODE
 
     def _run(
-        runtime_dir: Path, run_environment: dict[str, str] | None, writable_tmp: Path | None
+        runtime_dir: Path,
+        run_environment: dict[str, str] | None,
+        writable_tmp: Path | None,
+        schema_file: Path | None,
     ) -> int:
         runtime_dir.mkdir(parents=True, exist_ok=True)
         command = build_codex_command(
@@ -1119,6 +1204,7 @@ def run_codex(
             workspace_mode=workspace_capability,
             ephemeral=rollout_log is None,
             writable_tmp=writable_tmp,
+            output_schema=schema_file,
         )
         # A caller's deadline that has already passed is a TIMEOUT, not a dead
         # link: launching would kill the child at once on an empty stream and
@@ -1183,6 +1269,10 @@ def run_codex(
             )
 
         if process.returncode != 0:
+            failure = _turn_failure_message(events_log) if schema_file is not None else None
+            if failure is not None:
+                with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+                    stderr_stream.write(f"codex turn failed: {failure}\n")
             child_code = int(process.returncode or 1)
             if child_code == TIMEOUT_EXIT_CODE:
                 return TIMEOUT_EXIT_CODE
@@ -1262,6 +1352,11 @@ def run_codex(
             dict(child_environment) if child_environment is not None else dict(os.environ)
         )
         run_environment["CODEX_HOME"] = str(ephemeral_home)
+        schema_file = (
+            _write_output_schema(ephemeral_home, output_schema)
+            if output_schema is not None
+            else None
+        )
         writable_tmp: Path | None = None
         if workspace_write:
             # Spec 0.5.0 §3.8.0: never the operator's TMPDIR, which may
@@ -1273,7 +1368,7 @@ def run_codex(
             for name in ("TMPDIR", "TEMP", "TMP"):
                 run_environment[name] = scratch
         try:
-            return _run(runtime_dir, run_environment, writable_tmp)
+            return _run(runtime_dir, run_environment, writable_tmp, schema_file)
         finally:
             # Every exit path -- success, failure, timeout -- must still
             # rescue a rotated token before the ephemeral home is removed.
@@ -1332,12 +1427,27 @@ def _preamble_for(spec: RunSpec, workspace: Workspace | None) -> str:
     return rail_preamble(spec, tools_note=tools_note)
 
 
+#: What :meth:`CodexProvider.build_command` shows for the schema file: it exists
+#: only inside a run's own ``CODEX_HOME``, so a preview names it and writes nothing.
+_OUTPUT_SCHEMA_PREVIEW: Final = Path("<run-owned>") / OUTPUT_SCHEMA_NAME
+
+
 class CodexProvider:
-    """:class:`~headless_agents.protocol.AgentProvider` adapter over Codex."""
+    """:class:`~headless_agents.protocol.AgentProvider` adapter over Codex.
+
+    An output schema (0.5.3 lot 1) goes to ``exec --output-schema``, measured on
+    codex-cli 0.156.0. One its strict mode rejects is refused before anything
+    exists (:func:`headless_agents.structured.refuse_unsupported`): codex's API
+    would refuse it only once the run started. A final message that is not JSON
+    under a schema is exit ``1``, never ``0`` -- its text is kept, for a caller
+    to see what came back -- and ``output is not JSON: an output schema was
+    set`` is appended to the run's stderr.
+    """
 
     name = "codex"
 
     def build_command(self, spec: RunSpec) -> list[str]:
+        refuse_unsupported(self.name, spec.output_schema)
         assert spec.report_log is not None, "RunSpec.report_log is required for Codex"
         workspace = workspace_of(spec)
         return build_codex_command(
@@ -1348,6 +1458,7 @@ class CodexProvider:
             mcp=spec.profile.mcp,
             executable=spec.executable or "codex",
             workspace_mode=workspace,
+            output_schema=_OUTPUT_SCHEMA_PREVIEW if spec.output_schema is not None else None,
         )
 
     def child_environment(self, spec: RunSpec, environ: Mapping[str, str]) -> dict[str, str] | None:
@@ -1379,6 +1490,7 @@ class CodexProvider:
         return self._run_spec(spec, rollout_log=spec.events_log.parent / "rollout.jsonl")
 
     def _run_spec(self, spec: RunSpec, *, rollout_log: Path | None) -> RunResult:
+        refuse_unsupported(self.name, spec.output_schema)
         spec = spec.with_run_dir_defaults()
         assert spec.report_log is not None
         assert spec.events_log is not None
@@ -1402,9 +1514,19 @@ class CodexProvider:
             workspace_capability=workspace,
             deadline=spec.deadline,
             rollout_log=rollout_log,
+            output_schema=(
+                schema_text(spec.output_schema) if spec.output_schema is not None else None
+            ),
         )
         duration = time.monotonic() - start
         exit_code, git_tampered = settle_run(tripwire, exit_code, spec.stderr_log)
+        # --output-last-message: the report holds the final agent message.
+        text = answer_text(spec.report_log, exit_code=exit_code)
+        if spec.output_schema is not None and exit_code == 0 and not is_json_answer(text):
+            # codex's API enforces the schema; ha does not trust that it did.
+            with spec.stderr_log.open("a", encoding="utf-8") as stream:
+                stream.write("output is not JSON: an output schema was set\n")
+            exit_code = 1
         server = spec.profile.mcp.name if spec.profile.mcp is not None else None
         return record(
             spec,
@@ -1422,8 +1544,7 @@ class CodexProvider:
                 tool_call_completed=(
                     server is not None and tool_call_completed(spec.events_log, server=server)
                 ),
-                # --output-last-message: the report holds the final agent message.
-                text=answer_text(spec.report_log, exit_code=exit_code),
+                text=text,
                 run_id=run_id_of(spec),
                 stderr_log=spec.stderr_log,
                 workspace=workspace_summary(workspace, git_tampered),

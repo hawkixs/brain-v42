@@ -90,9 +90,11 @@ from ..sandbox import (
     build_ephemeral_home,
     refuse_caller_guard_with_workspace,
     refuse_home_under_workspace,
+    within,
 )
 from ..sandbox import ephemeral_root as default_ephemeral_root
 from ..spec import RunSpec
+from ..structured import refuse_unsupported
 from ..workspace import (
     argv_prompt_or_refusal,
     armed_run,
@@ -526,28 +528,43 @@ def _agy_ephemeral_root_candidates(environ: Mapping[str, str]) -> list[Path]:
 
 def _choose_agy_ephemeral_root(
     environ: Mapping[str, str], workspace: Workspace | None = None
-) -> tuple[Path | None, Path | None]:
-    """The first candidate of :func:`_agy_ephemeral_root_candidates` with no
-    ``.git`` ancestor, created (``0700``) if it does not exist yet.
+) -> tuple[Path | None, str | None]:
+    """The first candidate of :func:`_agy_ephemeral_root_candidates` that is
+    neither under a ``.git`` ancestor nor inside the workspace, created
+    (``0700``) if it does not exist yet.
 
-    Returns ``(root, None)`` on success. When every candidate is blocked,
-    returns ``(None, blocking_git)`` -- the ``.git`` entry of the FIRST
-    blocked candidate, named in the caller's refusal message -- rather than
-    build a HOME agy's native upward walk could still escape from.
+    Returns ``(root, None)`` on success. A workspace overlap is a reason to
+    SKIP that candidate, exactly like a ``.git`` ancestor (ticket 5921850d):
+    checked first, and before anything is created in it, since one candidate
+    overlapping is not a reason to fail a run another candidate would serve.
+    Only when every candidate is blocked does this return ``(None, reason)``,
+    naming the first ``.git`` blocker and/or the first overlap encountered --
+    rather than build a HOME agy's native upward walk could escape from, or
+    one the agent could use to rewrite its own guard.
     """
-    first_block: Path | None = None
+    first_git_block: tuple[Path, Path] | None = None
+    first_overlap: tuple[Path, Path] | None = None
     for candidate in _agy_ephemeral_root_candidates(environ):
-        if workspace is not None:
-            # Refused before anything is created, whatever its git ancestry.
-            refuse_home_under_workspace(candidate, workspace)
+        if workspace is not None and within(candidate, workspace.path):
+            if first_overlap is None:
+                first_overlap = (candidate, workspace.path)
+            continue
         blocker = _nearest_git_ancestor(candidate)
         if blocker is None:
             candidate.mkdir(parents=True, exist_ok=True)
             candidate.chmod(0o700)
             return candidate, None
-        if first_block is None:
-            first_block = blocker
-    return None, first_block
+        if first_git_block is None:
+            first_git_block = (candidate, blocker)
+
+    clauses = []
+    if first_git_block is not None:
+        blocked, git = first_git_block
+        clauses.append(f"{blocked} has a .git ancestor ({git})")
+    if first_overlap is not None:
+        blocked, ws_path = first_overlap
+        clauses.append(f"{blocked} overlaps the workspace {ws_path}")
+    return None, "every ephemeral-HOME root candidate is blocked: " + "; ".join(clauses)
 
 
 def _child_environment(
@@ -606,25 +623,26 @@ def run_agy(
         raise ValueError("timeout_seconds must be positive")
     ambient = dict(environment) if environment is not None else dict(os.environ)
 
-    # Every HOME of this run is created under this root. A root inside the
-    # workspace is refused as ValueError, like the caller-guard refusal,
-    # BEFORE any file exists (the chooser checks each candidate the same way).
-    blocking_git: Path | None = None
+    # Every HOME of this run is created under this root. An EXPLICIT root
+    # inside the workspace is refused as ValueError, like the caller-guard
+    # refusal, BEFORE any file exists: it is the caller's own choice, unlike a
+    # candidate the chooser itself may simply skip in favour of the next one.
+    refusal: str | None = None
     root: Path | None
     if ephemeral_root is not None:
         root = ephemeral_root
         if workspace is not None:
             refuse_home_under_workspace(root, workspace)
     else:
-        root, blocking_git = _choose_agy_ephemeral_root(ambient, workspace)
+        root, refusal = _choose_agy_ephemeral_root(ambient, workspace)
 
     for path in (events_log, report_log, stderr_log):
         path.parent.mkdir(parents=True, exist_ok=True)
     if root is None:
         stderr_log.write_text(
-            "agy refused: every ephemeral-HOME root candidate has a .git ancestor"
-            f" ({blocking_git}); agy's own native upward walk (see the module"
-            " docstring) would load its instruction files from there\n",
+            f"agy refused: {refusal}; agy's own native upward walk (see the module"
+            " docstring) would load its instruction files from a .git ancestor, and"
+            " a HOME inside the workspace would let the agent rewrite its own guard\n",
             encoding="utf-8",
         )
         return PROVIDER_FALLBACK_EXIT_CODE
@@ -852,6 +870,7 @@ class AgyProvider:
         return default_ephemeral_root(environ) or Path(tempfile.gettempdir())
 
     def build_command(self, spec: RunSpec) -> list[str]:
+        refuse_unsupported(self.name, spec.output_schema)
         workspace = _confined_workspace(spec.profile, workspace_of(spec))
         return build_agy_command(
             model=spec.model,
@@ -866,6 +885,7 @@ class AgyProvider:
         return None
 
     def prepare_home(self, spec: RunSpec) -> Path | None:
+        refuse_unsupported(self.name, spec.output_schema)
         environ = spec.environment if spec.environment is not None else os.environ
         return build_ephemeral_home(
             root=self._root(environ),
@@ -881,6 +901,9 @@ class AgyProvider:
         return tool_call_completed(spec.events_log)
 
     def run(self, spec: RunSpec) -> RunResult:
+        # 0.5.3 lot 1: agy has no measured schema mechanism, and a prompt-level
+        # imitation would only look constrained -- refused before any file exists.
+        refuse_unsupported(self.name, spec.output_schema)
         workspace = _confined_workspace(spec.profile, workspace_of(spec))
         spec = spec.with_run_dir_defaults()
         assert spec.events_log is not None

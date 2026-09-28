@@ -70,6 +70,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -94,6 +95,7 @@ from ..run_record import answer_text, record, run_id_of
 from ..sandbox import ephemeral_root as default_ephemeral_root
 from ..sandbox import materialize_credentials, refuse_home_under_workspace
 from ..spec import RunSpec
+from ..structured import refuse_unsupported
 from ..workspace import (
     argv_prompt_or_refusal,
     armed_run,
@@ -106,6 +108,8 @@ from ..workspace import (
 
 # Kernel limit on a SINGLE argument (MAX_ARG_STRLEN = 32 pages). Beyond it,
 # execve returns E2BIG. We keep a margin for the rest of the command line.
+# `opencode run -f/--file` attaches files (measured on 1.18.30, `run --help`);
+# the argv cap may move there (ticket 60d914a2, 0.5.4).
 MAX_PROMPT_BYTES = 120_000
 
 # What a fresh HOME would otherwise fetch from npm. Symlinked from the real
@@ -229,6 +233,18 @@ def opencode_config(mcp: McpServer | None, workspace: Workspace | None = None) -
     }
 
 
+#: Route B (Task 0, ticket a93cc8f2, measured on opencode 1.18.30): the log
+#: FILE ($HOME/.local/share/opencode/log/opencode.log) silently drops its
+#: tail -- exactly the ERROR lines a quota exhaustion needs -- when the
+#: process exits shortly after writing them (reproduced twice: a background
+#: poll of the file's size confirms the bytes are lost, not merely delayed).
+#: --print-logs to stderr does not lose them. ERROR is the least verbose
+#: --log-level that still surfaces an AI_APICallError/AI_RetryError line
+#: (Task 0 step 3); neither flag changes the stdout JSON event-type sequence
+#: (Task 0 steps 2 and 5: the STOP rule did not fire).
+_QUOTA_LOG_LEVEL: Final = "ERROR"
+
+
 def build_opencode_command(
     *,
     model: str,
@@ -258,7 +274,19 @@ def build_opencode_command(
         # OSError, where this names the cause and its size.
         raise ValueError(f"prompt too long for argv: {prompt_bytes} bytes > {MAX_PROMPT_BYTES}")
     dir_path = directory if directory is not None else home
-    command = [executable, "run", "--dir", str(dir_path), "--auto", "--pure", "--format", "json"]
+    command = [
+        executable,
+        "run",
+        "--dir",
+        str(dir_path),
+        "--auto",
+        "--pure",
+        "--format",
+        "json",
+        "--print-logs",
+        "--log-level",
+        _QUOTA_LOG_LEVEL,
+    ]
     command.extend(("-m", model))
     if variant and variant.strip():
         command.extend(("--variant", variant))
@@ -720,6 +748,88 @@ def _failure_exit_code(
     return PROVIDER_FALLBACK_EXIT_CODE
 
 
+def _nothing_could_have_been_written(
+    events_log: Path,
+    server: str | None,
+    *,
+    workspace: Workspace | None = None,
+    mcp: McpServer | None = None,
+) -> bool:
+    """Does the event stream prove nothing could have been written yet?
+
+    Named once so a caller elsewhere in the runner can ask this exact
+    question -- an early exit before the deadline, say -- without a second
+    definition that could drift from :func:`_deadline_exit_code`'s own:
+    without a server and without a writable workspace there is nothing a run
+    could have written through, so this holds whatever the stream says.
+    """
+    if server is not None and tool_call_started(events_log, server=server):
+        return False
+    return not (
+        workspace is not None
+        and workspace.write
+        and _writable_workspace_may_have_written(events_log, mcp)
+    )
+
+
+#: A quota message on either API error kind, matched as a plain substring
+#: search anywhere in a stderr line, never a logfmt parse: Task 0
+#: measured two different key names carrying an AI_*Error string
+#: (``error.error="AI_APICallError: ..."`` in a "stream error" line,
+#: ``stack="AI_APICallError: ...\n at ..."`` in a "process" line), and a
+#: substring search matches either shape without caring which key it was
+#: under. An unknown model name fails pre-flight with a generic
+#: ``UnknownError`` and no ERROR line at all (Task 0 step 3): never mistaken
+#: for the signature below. A retry error alone could also follow an outage.
+QUOTA_SIGNATURES: Final = (
+    re.compile(r"\b(?:AI_APICallError|AI_RetryError)\b.*\busage limit exceeded", re.IGNORECASE),
+)
+
+#: Read at most this many bytes of new stderr per poll (Task 3): bounded, so
+#: one giant unbroken line can never make a poll block on an unbounded read.
+_QUOTA_READ_CHUNK: Final = 256 * 1024
+
+
+def _quota_exhausted(log_path: Path, offset: int) -> tuple[bool, int]:
+    """Scan the COMPLETE lines ``log_path`` gained since ``offset`` for a
+    :data:`QUOTA_SIGNATURES` match.
+
+    Returns ``(found, new_offset)``: ``new_offset`` advances past every
+    complete line examined, matched or not, so a caller polling in a loop
+    never rescans the same bytes twice. A line still growing when this is
+    called -- no trailing newline yet in the chunk read -- is left whole for
+    the next poll, offset unchanged, rather than matched against half of
+    itself. A missing file, an unreadable one, a symlink (``O_NOFOLLOW``) or
+    a directory proves nothing: ``(False, offset)``, never raised -- the
+    caller keeps waiting exactly as it would on an absent log.
+    """
+    try:
+        fd = os.open(log_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return False, offset
+    try:
+        try:
+            os.lseek(fd, offset, os.SEEK_SET)
+            chunk = os.read(fd, _QUOTA_READ_CHUNK)
+        except OSError:
+            return False, offset
+    finally:
+        os.close(fd)
+    last_newline = chunk.rfind(b"\n")
+    if last_newline == -1:
+        return False, offset
+    complete = chunk[: last_newline + 1]
+    text = complete.decode("utf-8", errors="replace")
+    found = any(pattern.search(text) for pattern in QUOTA_SIGNATURES)
+    return found, offset + len(complete)
+
+
+#: How often the wait for opencode polls stderr for a quota signature before
+#: re-checking the deadline (Task 3): short enough that an exhausted quota
+#: falls through within a couple of polls, long enough not to spin.
+QUOTA_POLL_SECONDS: Final = 0.5
+
+
 def _deadline_exit_code(
     events_log: Path,
     stderr_log: Path,
@@ -730,22 +840,10 @@ def _deadline_exit_code(
     mcp: McpServer | None = None,
 ) -> int:
     """The code of the runner's OWN deadline: 124, or 4 when the stream proves
-    nothing could have started. Without a server and without a writable
-    workspace there is nothing a run could have written through, so a hang is
-    replayable whatever the stream says. The reading is written to stderr:
-    the deadline itself is not the news, the reason it was read as empty is.
-
-    In a WRITABLE workspace this uses :func:`_writable_workspace_may_have_written`,
-    the same taint :func:`_failure_exit_code` uses for a process that died
-    instead of hanging.
+    nothing could have started. The reading is written to stderr: the
+    deadline itself is not the news, the reason it was read as empty is.
     """
-    if server is not None and tool_call_started(events_log, server=server):
-        return TIMEOUT_EXIT_CODE
-    if (
-        workspace is not None
-        and workspace.write
-        and _writable_workspace_may_have_written(events_log, mcp)
-    ):
+    if not _nothing_could_have_been_written(events_log, server, workspace=workspace, mcp=mcp):
         return TIMEOUT_EXIT_CODE
     with stderr_log.open("a", encoding="utf-8") as stderr_stream:
         stderr_stream.write(
@@ -934,14 +1032,33 @@ def run_opencode(
             except OSError as exc:
                 stderr_stream.write(f"unable to start opencode: {exc}\n")
                 return PROVIDER_FALLBACK_EXIT_CODE
+            timed_out = False
+            quota_hit = False
             try:
-                process.communicate(timeout=remaining)
-            except subprocess.TimeoutExpired:
-                terminate_process_group(process)
-                # A timeout proves nothing BY ITSELF: the run may have written
-                # and then hung. The stream decides, after the kill, whether a
-                # call could even have started -- see _deadline_exit_code.
-                timed_out = True
+                started = time.monotonic()
+                quota_offset = 0
+                while True:
+                    left = remaining - (time.monotonic() - started)
+                    if left <= 0:
+                        terminate_process_group(process)
+                        # A timeout proves nothing BY ITSELF: the run may have
+                        # written and then hung. The stream decides, after the
+                        # kill, whether a call could even have started -- see
+                        # _deadline_exit_code.
+                        timed_out = True
+                        break
+                    try:
+                        process.wait(timeout=min(QUOTA_POLL_SECONDS, left))
+                    except subprocess.TimeoutExpired:
+                        exhausted, quota_offset = _quota_exhausted(stderr_log, quota_offset)
+                        if exhausted and _nothing_could_have_been_written(
+                            events_log, server, workspace=workspace, mcp=profile.mcp
+                        ):
+                            terminate_process_group(process)
+                            quota_hit = True
+                            break
+                        continue
+                    break
             except BaseException:
                 # Ctrl-C reaches ha only (the provider has its own session):
                 # kill the provider's group before the interruption propagates,
@@ -949,11 +1066,17 @@ def run_opencode(
                 # §3.8.2).
                 terminate_process_group(process)
                 raise
-            else:
-                timed_out = False
             finally:
                 # Normal end: the watcher leaves without killing (Q75 = a).
                 lifeline.release()
+
+        if quota_hit:
+            with stderr_log.open("a", encoding="utf-8") as stderr_stream:
+                stderr_stream.write(
+                    "opencode: provider quota exhausted before anything could be written;"
+                    " the run is replayable elsewhere\n"
+                )
+            return PROVIDER_FALLBACK_EXIT_CODE
 
         if timed_out:
             return _deadline_exit_code(
@@ -1044,6 +1167,7 @@ class OpenCodeProvider:
         return self._root(environ) / spec.name
 
     def build_command(self, spec: RunSpec) -> list[str]:
+        refuse_unsupported(self.name, spec.output_schema)
         workspace = workspace_of(spec)
         prompt = prepend(_preamble_for(spec, workspace), spec.prompt)
         return build_opencode_command(
@@ -1062,6 +1186,7 @@ class OpenCodeProvider:
         return None
 
     def prepare_home(self, spec: RunSpec) -> Path | None:
+        refuse_unsupported(self.name, spec.output_schema)
         environ = spec.environment if spec.environment is not None else os.environ
         return build_opencode_home(
             root=self._root(environ),
@@ -1076,6 +1201,10 @@ class OpenCodeProvider:
         return tool_call_completed(spec.events_log, server=spec.profile.mcp.name)
 
     def run(self, spec: RunSpec) -> RunResult:
+        # 0.5.3 lot 1: opencode's ``run`` has no schema option (measured on
+        # 1.18.30), and a prompt-level imitation would only look constrained --
+        # refused before any file exists.
+        refuse_unsupported(self.name, spec.output_schema)
         spec = spec.with_run_dir_defaults()
         assert spec.events_log is not None
         assert spec.report_log is not None

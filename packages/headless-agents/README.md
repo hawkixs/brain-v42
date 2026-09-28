@@ -145,6 +145,69 @@ real HOME has none. `spec.reasoning_effort` becomes `--variant`; `spec.name`
 becomes the session title. The subscription credential to declare is
 `.local/share/opencode/auth.json`.
 
+### Structured output
+
+`RunSpec.output_schema` asks for an answer constrained by a JSON Schema: an object-rooted
+JSON object of at most 65536 bytes serialised, checked when the `RunSpec` is built. Only a
+rail that enforces a schema natively takes one, never through a prompt instruction:
+
+- **claude** (measured on 2.1.283) runs with `--output-format json --json-schema <schema>`.
+  The text is the result envelope's `structured_output`, serialised by ha; the envelope is
+  kept as `claude-result.json` next to the report, so a schema run needs a `report_log` (a
+  `run_dir` gives one). An envelope without a successful `structured_output` --
+  `error_max_turns`, `error_max_structured_output_retries` -- is exit `1`.
+- **codex** (measured on codex-cli 0.156.0) runs with `exec --output-schema <file>`, the
+  file written `0600` into the run's own throwaway `CODEX_HOME` and removed with it. Its
+  API takes a *strict* schema only: every object lists all its properties in `required`
+  and sets `additionalProperties` to `false`, at any depth. When a run fails under a
+  schema, codex's own reason -- which it prints only in its `--json` stream -- is appended
+  to stderr as `codex turn failed: <message>`.
+
+```python
+import json
+
+from headless_agents.providers.codex import CodexProvider
+from headless_agents.structured import check_chain
+
+schema = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+    "additionalProperties": False,
+}
+check_chain(["codex", "claude"], schema)  # before a chain's first link: see below
+result = CodexProvider().run(
+    RunSpec(
+        prompt="Answer with ok = true.",
+        model="<model>",
+        run_dir=Path("runs/r-002"),
+        output_schema=schema,
+    )
+)
+if result.exit_code == 0:
+    answer = json.loads(result.text)  # JSON, checked by ha; the rail enforced the schema
+```
+
+Refused before any file or process exists, with `headless_agents.structured.SchemaError`
+(a `ValueError`):
+
+- a schema that is not object-rooted, not JSON, or larger than 65536 bytes, when the
+  `RunSpec` is built;
+- any schema, by agy, opencode and the HTTP rail (`openrouter`, `mistral`, `nvidia`,
+  `openai-compat`): their `run()` and `build_command()` raise it first;
+- a schema codex's strict mode would reject, by codex, naming the first breach (`$:
+  'required' misses 'ok'`) -- codex itself would fail only mid-run, with an API 400;
+- a chain holding any link that cannot honour the schema, by `check_chain(rails, schema)`,
+  naming every such link. `chain.run_chain` does not look at the schema, so call it
+  first: a fallback must never carry a constrained request onto a rail that would ignore
+  it.
+
+ha checks that the answer is JSON; it does not validate it against the schema, which the
+rail enforces -- validate the parsed object when you need its shape guaranteed. Under a
+schema, an answer that is not JSON is exit `1`, never `0`: codex keeps its text for you to
+see what came back, and appends `output is not JSON: an output schema was set` to stderr.
+Without a schema nothing changes: every rail's command line is byte-identical.
+
 ## Workspace and context
 
 A `Workspace` gives an agent a directory to read, or read and edit, and nothing outside
@@ -369,6 +432,7 @@ uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@
 ha run TARGET [PROMPT | -] [-m|--model MODEL] [--effort E] [--timeout SECONDS] [--wait SECONDS]
        [--context full|global|none] [--context-parents] [--mcp PROFILE]
        [--base-url URL --key-env VAR] [--repo PATH] [--json] [--run-dir DIR]
+       [--output-schema FILE]
        [--write [--shell] [--base REF]]
        [--continue RUN_ID] [--findings RUN_ID] [--head REF] [--run RUN_ID]
 ha roles [--json]
@@ -387,7 +451,7 @@ ha --version
 
 All locks live in the state directory (`ha providers`/`ha prove` read it from
 `~/.local/state/ha`, or `$XDG_STATE_HOME/ha` when that variable is absolute), are taken in
-one fixed order (lifecycle, writer intent, the admission gate, the global lock, the lineage
+one fixed order (lifecycle, the admission queue, the global lock, the lineage
 registry, lineage locks ascending), are `flock` with `O_CLOEXEC` -- so no provider or git
 child ever inherits one -- and die with the `ha` process that took them.
 
@@ -413,18 +477,36 @@ provider step and every `git worktree add` at a barrier, and asserts all three a
 at once -- the global lock reads shared, both lineage locks read exclusive, the registry lock
 reads free, and the two `git worktree add` calls measurably overlap -- before releasing them.
 
+- **`--output-schema FILE`** (0.5.3): constrain the answer to the JSON Schema in `FILE`, a
+  JSON object read before anything runs, relative to the current directory, at most 65536
+  bytes. Only claude and codex honour one (see [Structured output](#structured-output)):
+  a workflow target, a role whose chain holds any other provider -- every such link is
+  named -- and a schema codex's strict mode would reject are refused before anything runs
+  (exit `2`). The answer is the run's text; one that is not JSON exits `1` with
+  `failure_reason: "output_not_json"`, never `0`. Example: `ha run codex --output-schema
+  ok.json "Answer with ok = true."`.
+
+`TARGET` is a provider (`ha run codex "..."`), a role declared in
+`~/.config/ha/roles.toml` -- an executor: one provider, or a `chain` of them, with optional
+instructions -- or a workflow declared in `~/.config/ha/workflows.toml`. `-p` and `--chain`
+were removed in 0.5.0: the provider is the target, and a chain is declared in a role.
+
 - **`--wait SECONDS`** (spec §3.3): a bounded admission wait for `ha run`. `ha clean` takes
-  no `--wait`: it is admitted through this very same gate with the default ten-second bound,
+  no `--wait`: it is admitted through this very same queue with the default ten-second bound,
   never a lock of its own. Ordinary
   reads and confined writes share the global lock; an unconfined write holds it exclusively,
   serialising every other run while it is in flight. `--wait` gives one explicit, positive
-  number of seconds, spent as a single absolute deadline across the global lock and, for a
-  write or a review, the lineage registry and lineage locks it admits under -- time spent on
-  one does not extend the budget for the next, and a lock granted past the deadline is
+  number of seconds, spent as a single absolute deadline across the admission queue, the
+  global lock and, for a write or a review, the lineage registry and lineage locks it admits
+  under -- time spent on one does not extend the budget for the next, and a lock granted past
+  the deadline is
   refused, never accepted late. Without `--wait`, each of those locks keeps its own existing
   ten-second bound. A deadline that expires exits `2` before any provider step runs and
-  leaves nothing behind (an unstarted run's entry is forgotten), naming the contested lock
-  and the wait requested. `--timeout` is unrelated in both cases, and always the provider
+  leaves nothing behind (an unstarted run's entry is forgotten). At the global admission it
+  names what the run waited for: the admissions queued ahead of it, by run id, or the runs
+  holding the lock, as in
+  `--wait 30 s expired: waiting behind 2 earlier admission(s) (…); nothing ran`.
+  `--timeout` is unrelated in both cases, and always the provider
   run's own timeout. Example: `ha run codex --wait 30 "Summarise the change"`.
 
   An invalid **value** -- zero, negative, `nan` or `inf` -- is refused by `ha` itself, before
@@ -433,18 +515,17 @@ reads free, and the two `git worktree add` calls measurably overlap -- before re
   nothing after it, or as the last argument) is refused earlier still, by argparse's own
   parsing, before that message ever runs: `argument --wait: expected one argument`. Both exit
   `2`; only the first names `ha`'s own rule, the second is argparse's.
+  **Admission is first come, first served** (0.5.3). Every run takes a ticket in
+  `<state>/admission/` and waits its turn:
+  - shared runs queued together are admitted together;
+  - an unconfined write waits for every run queued before it, and every run queued after it
+    waits for it -- a stream of readers cannot keep a writer out, and a stream of writers
+    cannot time a reader out;
+  - a waiter that crashed never blocks anyone: its ticket is dropped at the next poll;
+  - `--wait` covers the queue and the global lock alike.
 
-  An unconfined writer that already holds the short-lived admission gate excludes every
-  later run -- shared or not -- until it releases it; a reader that arrives after a writer
-  has already won that gate queues behind it too. A **writer-intent lock**, taken exclusively
-  by an unconfined writer before it ever polls the gate, narrows -- but does not close -- the
-  window where a continuous stream of readers could otherwise starve it out: once a writer
-  holds writer-intent, a reader arriving afterward blocks on that same lock, plain mutual
-  exclusion, true regardless of timing. This is a **best-effort** mitigation, not a fairness
-  guarantee: `flock` orders no waiter, so a writer still *polling* for writer-intent (not yet
-  holding it) can in principle be overtaken by a continuous, overlapping stream of readers,
-  and a continuous stream of writers can likewise make a waiting reader time out. A fair FIFO
-  admission queue is planned for 0.5.3.
+  The queue only orders who may try the global lock: exclusion is still that lock's alone,
+  so an unconfined write never runs beside another run, whatever the queue holds.
 
 ### Proof state before a run fails
 
@@ -498,7 +579,6 @@ shows what an update would do (`unknown` for a vendor with no dry-run support of
 and is refused together with `--wait` (nothing to wait for when nothing runs). The exit code
 is `0` only when every rail settled: updated (or checked) with nothing failed, timed out, or
 left with an unrecorded proof after its version changed.
-
 `TARGET` is a provider (`ha run codex "..."`), a role declared in
 `~/.config/ha/roles.toml` -- an executor: one provider, or a `chain` of them, with optional
 instructions -- or a workflow declared in `~/.config/ha/workflows.toml`. `-p` and `--chain`

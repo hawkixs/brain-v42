@@ -32,6 +32,7 @@ from headless_agents.profile import (
 from headless_agents.providers import agy
 from headless_agents.result import RunResult
 from headless_agents.spec import RunSpec
+from headless_agents.structured import SchemaError
 
 URL = "http://127.0.0.1:8765/mcp"
 DENYING_GUARD = """#!/usr/bin/env bash
@@ -41,6 +42,9 @@ case "$payload" in
   *) printf '{"decision":"deny"}' ;;
 esac
 """
+
+
+SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
 
 def _guard(tmp_path: Path, body: str = DENYING_GUARD) -> ToolGuard:
@@ -623,6 +627,120 @@ class TestAgyEphemeralRootGitAncestry:
         assert xdg.resolve() in home.parents
 
 
+class TestAgyEphemeralRootWorkspaceOverlap:
+    """ticket 5921850d: a candidate the workspace happens to overlap is one
+    reason to skip it, exactly like a .git ancestor -- not a reason to fail
+    the run while another candidate is fine."""
+
+    def _fake_operator_pwd(self, monkeypatch: pytest.MonkeyPatch, home: Path) -> None:
+        monkeypatch.setattr(
+            agy.pwd, "getpwuid", lambda uid: types.SimpleNamespace(pw_dir=str(home))
+        )
+
+    def test_a_candidate_inside_the_workspace_is_skipped(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        xdg = ws / "xdg"
+        xdg.mkdir()
+        operator_home = tmp_path / "operator-home"
+        operator_home.mkdir()
+        self._fake_operator_pwd(monkeypatch, operator_home)
+        monkeypatch.setattr(agy.tempfile, "gettempdir", lambda: str(tmp_path / "systemtmp"))
+
+        root, reason = agy._choose_agy_ephemeral_root(
+            {"XDG_RUNTIME_DIR": str(xdg)}, Workspace(path=ws)
+        )
+
+        assert reason is None
+        assert root is not None
+        cache_root = operator_home / ".cache" / "headless-agents" / "agy-homes"
+        assert root.resolve() == cache_root.resolve()
+        assert list(xdg.iterdir()) == []
+
+    def test_every_candidate_blocked_names_each_kind_of_reason(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        xdg = ws / "xdg"
+        xdg.mkdir()
+        repo = tmp_path / "repo"
+        (repo / ".git").mkdir(parents=True)
+        operator_home = repo / "operator-home"
+        operator_home.mkdir()
+        self._fake_operator_pwd(monkeypatch, operator_home)
+        monkeypatch.setattr(agy.tempfile, "gettempdir", lambda: str(repo / "systemtmp"))
+
+        root, reason = agy._choose_agy_ephemeral_root(
+            {"XDG_RUNTIME_DIR": str(xdg)}, Workspace(path=ws)
+        )
+
+        assert root is None
+        assert reason is not None
+        assert str((repo / ".git").resolve()) in reason
+        assert str(xdg.resolve()) in reason
+        assert str(ws.resolve()) in reason
+
+    def test_only_overlaps_name_only_the_overlap(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        xdg = ws / "xdg"
+        xdg.mkdir()
+        operator_home = ws / "operator-home"
+        operator_home.mkdir()
+        self._fake_operator_pwd(monkeypatch, operator_home)
+        monkeypatch.setattr(agy.tempfile, "gettempdir", lambda: str(ws / "systemtmp"))
+
+        root, reason = agy._choose_agy_ephemeral_root(
+            {"XDG_RUNTIME_DIR": str(xdg)}, Workspace(path=ws)
+        )
+
+        assert root is None
+        assert reason is not None
+        assert ".git" not in reason
+        assert str(ws.resolve()) in reason
+
+    def test_a_workspace_run_uses_the_next_candidate(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A real fake ``agy`` and the real copied guard (as :func:`_workspace_run`
+        uses): ``_install``'s Python-level Popen fake does not account for the
+        workspace guard's own probe subprocess, which this run also makes."""
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        (ws / "a.txt").write_text("x", encoding="utf-8")
+        xdg = ws / "xdg"
+        xdg.mkdir()
+        operator_home = tmp_path / "operator-home"
+        operator_home.mkdir()
+        self._fake_operator_pwd(monkeypatch, operator_home)
+        monkeypatch.setattr(agy.tempfile, "gettempdir", lambda: str(tmp_path / "systemtmp"))
+        fake = tmp_path / "agy"
+        fake.write_text(f"#!/usr/bin/env bash\npwd > {tmp_path}/cwd\n", encoding="utf-8")
+        fake.chmod(0o755)
+
+        provider = agy.AgyProvider(real_home=tmp_path, ephemeral_root=None)
+        spec = RunSpec(
+            prompt="TASK",
+            executable=str(fake),
+            profile=CapabilityProfile(workspace=Workspace(path=ws)),
+            run_dir=tmp_path / "run",
+            environment={"PATH": "/usr/bin", "LANG": "C", "XDG_RUNTIME_DIR": str(xdg)},
+        )
+
+        result = provider.run(spec)
+
+        assert result.exit_code == 0
+        cwd = Path((tmp_path / "cwd").read_text().strip()).resolve()
+        cache_root = (operator_home / ".cache" / "headless-agents" / "agy-homes").resolve()
+        assert cache_root in cwd.parents
+        assert xdg.resolve() not in (cwd, *cwd.parents)
+
+
 class TestAgyProvider:
     def test_prepare_home_and_run(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         real_home = tmp_path / "rh"
@@ -1053,3 +1171,39 @@ class TestTheGroupIsWatched:
         with pytest.raises(KeyboardInterrupt):
             _run(tmp_path)
         assert log == ["start", "child_attach", "release"]
+
+
+class TestOutputSchema:
+    """0.5.3 lot 1: agy has no measured schema mechanism, so it refuses one."""
+
+    def test_a_schema_is_refused_before_anything_starts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def trap(*args: object, **kwargs: object) -> None:
+            pytest.fail("agy was started for a run carrying an output schema")
+
+        monkeypatch.setattr(agy, "guard_denies_machine_tools", lambda path: True)
+        monkeypatch.setattr(agy.subprocess, "Popen", trap)
+        real_home = tmp_path / "real-home"
+        (real_home / ".x").mkdir(parents=True)
+        (real_home / ".x" / "token").write_text("t", encoding="utf-8")
+        root = tmp_path / "root"
+        root.mkdir()
+        provider = agy.AgyProvider(real_home=real_home, ephemeral_root=root)
+        run_dir = tmp_path / "runs" / "r1"
+        spec = RunSpec(
+            prompt="P",
+            name="seat-1",
+            model="m",
+            profile=_profile(tmp_path),
+            run_dir=run_dir,
+            output_schema=SCHEMA,
+        )
+        with pytest.raises(SchemaError, match="cannot constrain"):
+            provider.run(spec)
+        with pytest.raises(SchemaError, match="cannot constrain"):
+            provider.build_command(spec)
+        with pytest.raises(SchemaError, match="cannot constrain"):
+            provider.prepare_home(spec)
+        assert not run_dir.exists()
+        assert list(root.iterdir()) == []

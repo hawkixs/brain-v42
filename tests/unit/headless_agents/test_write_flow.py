@@ -55,6 +55,7 @@ class _Agent:
     after: Callable[[], None] | None = None
     #: The event log this provider writes, as its rail would (plan Task 5).
     events: str | None = None
+    failure_text: str | None = None
 
     def run(self, spec: RunSpec) -> RunResult:
         self.specs.append(spec)
@@ -81,7 +82,7 @@ class _Agent:
                 tokens=None,
                 duration_seconds=0.1,
                 tool_call_completed=False,
-                text="I changed things" if self.code == 0 else None,
+                text="I changed things" if self.code == 0 else self.failure_text,
                 run_id=run_id_of(spec),
             ),
         )
@@ -102,7 +103,13 @@ class World:
     def registry(self) -> Registry:
         return Registry(self.state, runs_root=self.home / ".cache" / "ha" / "runs")
 
-    def write_plan(self, *, repo: Path | None = None, base: str | None = None) -> engine.Plan:
+    def write_plan(
+        self,
+        *,
+        repo: Path | None = None,
+        base: str | None = None,
+        output_schema: dict[str, object] | None = None,
+    ) -> engine.Plan:
         request = Request(
             target="codex",
             prompt="improve app",
@@ -114,6 +121,7 @@ class World:
             cwd=self.repo,
             environ={"PATH": os.environ["PATH"], "HOME": str(self.home)},
             home=self.home,
+            output_schema=output_schema,
         )
         planned = plan(request)
         return replace(
@@ -210,6 +218,45 @@ def test_a_committed_write(world: World) -> None:
     assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
 
 
+def test_a_failed_diff_writes_no_patch_and_says_why(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket e5b93270 item 2: an empty change.patch written from a failed git diff
+    reads as "no change" -- no patch at all, and the step's commit.log says why."""
+    world.agent.edit = _edit_app
+    real = write_flow._Write.git_bytes
+
+    def failing_diff(
+        self: write_flow._Write, root: Path, args: list[str], **kwargs: object
+    ) -> tuple[int, bytes, bytes]:
+        if args and args[0] == "diff":
+            return 128, b"", b"fatal: bad object HEAD\n"
+        return real(self, root, args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(write_flow._Write, "git_bytes", failing_diff)
+    outcome = world.write()
+    assert outcome.report["status"] == "committed"
+    assert not (outcome.run_dir / write_flow.PATCH_FILE).exists()
+    (step,) = outcome.report["steps"]  # type: ignore[misc]
+    commit_log = (outcome.run_dir / step["dir"] / write_flow.COMMIT_LOG).read_text()
+    assert "change.patch not written: git diff exited 128: fatal: bad object HEAD" in commit_log
+
+
+def test_the_write_header_says_a_missing_patch_was_not_written(world: World) -> None:
+    from headless_agents import cli
+
+    outcome = engine.Outcome(
+        exit_code=0,
+        run_id="20260927T000000-aaaaaaaa",
+        run_dir=world.home / "no-patch-run",
+        report={},
+        final=None,
+    )
+    header = cli._write_header(outcome, "ha/20260927T000000-aaaaaaaa")
+    assert "patch: not written (git diff failed: see the step's commit.log)" in header
+    assert "diffstat: -" in header
+
+
 def test_a_write_run_records_its_roles_providers(world: World) -> None:
     """Lot 3, §3.10: implement_providers copies the entry's providers, every link of the role."""
     world.agent.edit = _edit_app
@@ -264,6 +311,25 @@ def test_a_failed_step_without_changes_commits_nothing(world: World) -> None:
     outcome = world.write()
     assert outcome.exit_code == 1
     assert _subjects(world, f"ha/{outcome.run_id}") == []
+
+
+def test_a_write_answer_that_is_not_json_reports_output_not_json(world: World) -> None:
+    world.agent.code = 1
+    world.agent.failure_text = "The requested change is complete"
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+    outcome = world.write(output_schema=schema)
+
+    assert outcome.exit_code == 1
+    assert world.agent.specs[0].output_schema == schema
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "output_not_json"
+    assert report["text"] == world.agent.failure_text
 
 
 #: Text to git (no NUL byte), so ``git diff --binary`` prints it raw; not UTF-8.
@@ -616,6 +682,157 @@ def test_an_unknown_lineage_of_the_repository_refuses(world: World) -> None:
         world.write()
 
 
+# ── A lineage withdrawn during another admission is absent (9ec19a4e) ────────
+
+_OWNER_A = "20260925T000000-aaaaaaaa"
+_OWNER_B = "20260925T000000-bbbbbbbb"
+
+
+def _bare_lineage(tmp_path: Path, owner: str, common: Path) -> lineage.LineageState:
+    return lineage.LineageState(
+        owner=owner,
+        repository=common.parent,
+        common_dir=common,
+        worktree=tmp_path / "wt" / owner,
+        branch=f"ha/{owner}",
+        base="0" * 40,
+        members={owner: "running"},
+        pending=None,
+        compromised=None,
+    )
+
+
+def test_check_repository_skips_a_lineage_that_vanishes_before_its_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Listed by of_repository, then withdrawn by its own write before this run's
+    load: absent, never "unknown" (a withdrawn new lineage had no worktree, branch
+    or commit)."""
+    state = tmp_path / "state"
+    common = tmp_path / "repo" / ".git"
+    lineage.create(state, _bare_lineage(tmp_path, _OWNER_A, common))
+    real_load = lineage.load
+
+    def vanishing(state_: Path, owner: str) -> lineage.LineageState:
+        lineage.lineage_path(state_, owner).unlink(missing_ok=True)
+        return real_load(state_, owner)
+
+    monkeypatch.setattr(lineage, "load", vanishing)
+    write_flow.check_repository(state, common, own=_OWNER_B)
+
+
+def test_check_repository_still_refuses_a_corrupt_lineage(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    common = tmp_path / "repo" / ".git"
+    lineage.create(state, _bare_lineage(tmp_path, _OWNER_A, common))
+    lineage.lineage_path(state, _OWNER_A).write_text("{broken")
+    with pytest.raises(write_flow.WriteRefused, match="is unknown"):
+        write_flow.check_repository(state, common, own=_OWNER_B)
+
+
+_WITHDRAWING_CHILD = """
+import sys
+import time
+from pathlib import Path
+from headless_agents import lineage
+from headless_agents.locks import Rank, held
+
+state, common, root = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+owner = "20260925T000000-aaaaaaaa"
+document = lineage.LineageState(
+    owner=owner, repository=common.parent, common_dir=common,
+    worktree=root / "wt" / owner, branch="ha/" + owner, base="0" * 40,
+    members={owner: "running"}, pending=None, compromised=None,
+)
+# As a new write does: its lineage is created under the registry lock (_admit,
+# _intent), which is released before _prepare ...
+with held(lineage.registry_lock(state), rank=Rank.LINEAGE_REGISTRY, exclusive=True,
+          wait=10.0, what="the lineage registry lock"):
+    lineage.create(state, document)
+(root / "created").write_text("created")
+limit = time.monotonic() + 10
+while not (root / "listed").exists():
+    if time.monotonic() > limit:
+        sys.exit(3)
+    time.sleep(0.01)
+# ... and a refused preparation withdraws it WITHOUT that lock (_withdraw).
+lineage.lineage_path(state, owner).unlink()
+(root / "unlinked").write_text("unlinked")
+"""
+
+
+def _wait_for(path: Path, child: subprocess.Popen[bytes]) -> None:
+    limit = time.monotonic() + 10
+    while not path.exists():
+        assert child.poll() is None, f"the withdrawing process exited {child.returncode}"
+        assert time.monotonic() < limit, f"{path.name} never appeared"
+        time.sleep(0.01)
+
+
+def test_a_lineage_withdrawn_during_admission_is_never_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real race, ordered (9ec19a4e). Another process creates a lineage of the same
+    repository under the registry lock, then -- once this process's admission check,
+    run under the registry lock as every admission does, has listed it -- withdraws
+    it without that lock, as a refused new write's _withdraw does. The check must
+    read the withdrawn lineage as absent, never as unknown."""
+    state = tmp_path / "state"
+    common = tmp_path / "repo" / ".git"
+    child = subprocess.Popen(
+        [sys.executable, "-c", _WITHDRAWING_CHILD, str(state), str(common), str(tmp_path)],
+        start_new_session=True,
+    )
+    try:
+        _wait_for(tmp_path / "created", child)
+        real_load = lineage.load
+
+        def load_after_the_withdrawal(state_: Path, owner: str) -> lineage.LineageState:
+            if owner == _OWNER_A:
+                (tmp_path / "listed").write_text("listed")
+                _wait_for(tmp_path / "unlinked", child)
+            return real_load(state_, owner)
+
+        monkeypatch.setattr(lineage, "load", load_after_the_withdrawal)
+        with locks.held(
+            lineage.registry_lock(state),
+            rank=locks.Rank.LINEAGE_REGISTRY,
+            exclusive=False,
+            wait=10.0,
+            what="the lineage registry lock",
+        ):
+            write_flow.check_repository(state, common, own=_OWNER_B)
+        assert (tmp_path / "unlinked").exists(), "the lineage was never withdrawn"
+        assert child.wait(timeout=10) == 0
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+
+
+def test_a_stale_pending_write_keeps_the_first_compromised_reason(tmp_path: Path) -> None:
+    """unfinalized() on a lineage already compromised: the root cause stays, the
+    new reason is recorded after it (ticket e5b93270 item 1)."""
+    state = tmp_path / "state"
+    common = tmp_path / "repo" / ".git"
+    current = replace(
+        _bare_lineage(tmp_path, _OWNER_A, common),
+        compromised="agent_moved_head",
+        pending=lineage.PendingWrite(
+            run_id=_OWNER_A,
+            providers=("codex",),
+            unconfined=False,
+            start_tip=None,
+            start_reflog=None,
+        ),
+    )
+    lineage.create(state, current)
+    write_flow.unfinalized(state, current, common)
+    reloaded = lineage.load(state, _OWNER_A)
+    assert reloaded.compromised == "agent_moved_head"
+    assert reloaded.compromised_history == ("unfinalized_write",)
+
+
 def test_a_stale_unconfined_intent_quarantines_the_operator(world: World) -> None:
     (world.state / write_flow.UNCONFINED_INTENT).write_text(json.dumps({"run_id": "dead"}))
     with pytest.raises(UsageError, match="stale unconfined intent"):
@@ -661,9 +878,19 @@ def _instrument(world: World, monkeypatch: pytest.MonkeyPatch) -> list[str]:
         events.append("git")
         return real_git(*args, **kwargs)  # type: ignore[arg-type]
 
+    real_issue = locks._issue_ticket  # noqa: SLF001
+
+    def issue(state: Path, *, exclusive: bool, label: str, wait: locks.AdmissionWait):  # type: ignore[no-untyped-def]
+        # A waiter is registered by the queue itself, not through held(): recorded
+        # here, in the admission's own mode.
+        queued = real_issue(state, exclusive=exclusive, label=label, wait=wait)
+        events.append(f"lock ADMISSION_WAITER {'ex' if exclusive else 'sh'}")
+        return queued
+
     monkeypatch.setattr(engine, "held", held)
     monkeypatch.setattr(write_flow, "held", held)
     monkeypatch.setattr(locks, "held", held)
+    monkeypatch.setattr(locks, "_issue_ticket", issue)
     monkeypatch.setattr(quarantine, "check", check)
     monkeypatch.setattr(lineage, "create", create)
     monkeypatch.setattr(write_flow, "git", git)
@@ -701,8 +928,8 @@ def test_admission_takes_every_lock_before_reading_state_and_runs_no_git(
     locks_taken = [e for e in events if e.startswith("lock")]
     assert [e.split()[1] for e in locks_taken] == [
         "LIFECYCLE",
-        "WRITER_INTENT",
-        "ADMISSION_GATE",
+        "ADMISSION_TICKET",
+        "ADMISSION_WAITER",
         "UNCONFINED",
         "LINEAGE_REGISTRY",
         "LINEAGE",
@@ -1410,14 +1637,25 @@ def test_clean_of_a_write_that_never_started_forgets_it(
     assert world.git_calls == []
 
 
+_QUEUED_WRITER = """
+import sys, time
+from pathlib import Path
+from headless_agents import locks
+queued = locks._issue_ticket(Path(sys.argv[1]), exclusive=True, label="W",
+                             wait=locks.AdmissionWait(10))
+Path(sys.argv[2]).write_text("queued")
+time.sleep(60)
+"""
+
+
 def test_clean_queues_behind_a_waiting_unconfined_writer(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``ha clean`` took ``unconfined.lock`` directly, bypassing the
-    admission gate entirely (codex review of PR #239): with the global lock
-    itself free, a clean slipped straight through even while an unconfined
-    writer was already queued on the gate, waiting its turn for that same
-    lock. Route ``clean`` through the same gate so it queues too."""
+    """``ha clean`` took ``unconfined.lock`` directly, bypassing admission
+    entirely (codex review of PR #239): with the global lock itself free, a
+    clean slipped straight through even while an unconfined writer was
+    already waiting its turn for that same lock. ``clean`` is admitted like
+    every other run, so it queues behind that writer too."""
     run_id = "20260925T000000-ffffffff"
     world.registry().create(
         run_id,
@@ -1427,21 +1665,13 @@ def test_clean_queues_behind_a_waiting_unconfined_writer(
         lineage=None,
     )
     monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.2)
-    ready = world.home / "gate-held"
-    holder = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            _HOLD,
-            str(world.state / "admission-gate.lock"),
-            "ex",
-            str(ready),
-        ]
-    )
+    ready = world.home / "writer-queued"
+    holder = subprocess.Popen([sys.executable, "-c", _QUEUED_WRITER, str(world.state), str(ready)])
     try:
         while not ready.exists():
+            assert holder.poll() is None
             time.sleep(0.02)
-        with pytest.raises(UsageError, match="admission gate"):
+        with pytest.raises(UsageError, match="admission queue"):
             _clean(world, run_id)
     finally:
         holder.kill()
@@ -1459,8 +1689,8 @@ def test_clean_takes_its_locks_in_order_and_releases_the_registry_before_git(
     taken = [e for e in events if e.startswith("lock")]
     assert [(e.split()[1], e.split()[-1]) for e in taken] == [
         ("LIFECYCLE", "ex"),
-        ("WRITER_INTENT", "sh"),
-        ("ADMISSION_GATE", "sh"),
+        ("ADMISSION_TICKET", "ex"),
+        ("ADMISSION_WAITER", "sh"),
         ("UNCONFINED", "sh"),
         ("LINEAGE_REGISTRY", "sh"),
         ("LINEAGE", "ex"),
@@ -1574,3 +1804,81 @@ def test_a_committed_write_records_its_tool_counts(world: World) -> None:
     outcome = world.write()
     report = json.loads((outcome.run_dir / "run.json").read_text())
     assert report["steps"][0]["tools"] == {"command_execution": 4}
+
+
+# ── admission refusals of an unconfined write (0.5.3 lot 4b, Task 4) ─────────
+
+
+def _unconfined_codex(world: World) -> None:
+    record_proof(
+        world.state,
+        "codex",
+        version="codex 1.0",
+        isolation=True,
+        confinement=False,
+        today="2026-09-25",
+    )
+
+
+def _hold_shared(world: World, tmp_path: Path) -> subprocess.Popen[bytes]:
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held-shared"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), "sh", str(ready)])
+    limit = time.monotonic() + 5
+    while not ready.exists():
+        assert time.monotonic() < limit
+        time.sleep(0.01)
+    return holder
+
+
+def test_the_default_refusal_of_an_unconfined_write_is_unchanged(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _unconfined_codex(world)
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.2)
+    holder = _hold_shared(world, tmp_path)
+    try:
+        with pytest.raises(UsageError) as refused:
+            world.write()
+        assert str(refused.value) == (
+            "runs and writes still running after the bound: an unconfined write waits for "
+            "none of them; nothing ran"
+        )
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_an_expired_wait_of_an_unconfined_write_names_the_runs_holding_the_lock(
+    world: World, tmp_path: Path
+) -> None:
+    _unconfined_codex(world)
+    holder = _hold_shared(world, tmp_path)
+    try:
+        planned = world.write_plan()
+        planned = replace(planned, request=replace(planned.request, wait_seconds=0.2))
+        with pytest.raises(UsageError) as refused:
+            execute(planned, say=world.said.append)
+        assert str(refused.value) == (
+            "--wait 0.2 s expired: runs still hold the global lock; nothing ran"
+        )
+        assert world.agent.specs == []
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_clean_is_labelled_in_the_queue(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    labels: list[str] = []
+    real = locks.admit_global
+
+    def recording(state: Path, *, exclusive: bool, wait: locks.AdmissionWait, label: str = ""):  # type: ignore[no-untyped-def]
+        labels.append(label)
+        return real(state, exclusive=exclusive, wait=wait, label=label)
+
+    monkeypatch.setattr(locks, "admit_global", recording)
+    assert _clean(world, outcome.run_id) == 0
+    assert labels == ["clean"]

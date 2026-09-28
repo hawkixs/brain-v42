@@ -10,7 +10,7 @@ import pytest
 
 from headless_agents import lineage, provenance
 from headless_agents.lineage import LineageState, PendingWrite
-from headless_agents.state import Unknown
+from headless_agents.state import Missing, Unknown
 
 _OWNER = "20260925T000000-aaaaaaaa"
 
@@ -128,6 +128,31 @@ def test_of_repository_includes_an_unreadable_lineage(tmp_path: Path) -> None:
     assert lineage.of_repository(state, tmp_path / "repo/.git") == [_OWNER, broken]
 
 
+def test_of_repository_skips_a_lineage_that_vanished(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Listed, then gone before it was read: a withdrawn new lineage (9ec19a4e) --
+    absent, not unknown. An unreadable one is still included (the test above)."""
+    state = tmp_path / "state"
+    gone, kept = "20260925T000000-aaaaaaaa", "20260925T000000-bbbbbbbb"
+    lineage.create(state, _lineage(tmp_path, gone))
+    lineage.create(state, _lineage(tmp_path, kept))
+    real_read = lineage.read
+
+    def vanishing(path: Path, **kwargs: object) -> dict[str, object]:
+        if path == lineage.lineage_path(state, gone):
+            path.unlink()
+        return real_read(path, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(lineage, "read", vanishing)
+    assert lineage.of_repository(state, tmp_path / "repo/.git") == [kept]
+
+
+def test_a_vanished_lineage_loads_as_missing(tmp_path: Path) -> None:
+    with pytest.raises(Missing):
+        lineage.load(tmp_path, _OWNER)
+
+
 def test_of_repository_without_lineages_is_empty(tmp_path: Path) -> None:
     assert lineage.of_repository(tmp_path, tmp_path / "repo/.git") == []
 
@@ -156,3 +181,52 @@ def test_provenance_refuses_what_is_not_a_sha(tmp_path: Path) -> None:
         provenance.record(
             tmp_path, "../x", run_id=_OWNER, lineage=_OWNER, made_by="engine", providers=[]
         )
+
+
+# ── The first compromised reason is kept (0.5.3 lot 4a, ticket e5b93270 item 1) ─
+
+
+def test_compromise_keeps_the_first_reason_and_appends_the_rest(tmp_path: Path) -> None:
+    first = lineage.compromise(_lineage(tmp_path), "agent_moved_head")
+    second = lineage.compromise(first, "unfinalized_write")
+    assert second.compromised == "agent_moved_head"
+    assert second.compromised_history == ("unfinalized_write",)
+    third = lineage.compromise(second, "engine_error")
+    assert third.compromised == "agent_moved_head"
+    assert third.compromised_history == ("unfinalized_write", "engine_error")
+
+
+def test_the_same_reason_twice_is_recorded_once(tmp_path: Path) -> None:
+    once = lineage.compromise(lineage.compromise(_lineage(tmp_path), "a"), "b")
+    assert lineage.compromise(once, "a") == once
+    assert lineage.compromise(once, "b") == once
+
+
+def test_a_compromised_history_round_trips(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    current = lineage.compromise(lineage.compromise(_lineage(tmp_path), "a"), "b")
+    lineage.create(state, current)
+    assert lineage.load(state, _OWNER).compromised_history == ("b",)
+
+
+def test_a_lineage_without_a_history_loads(tmp_path: Path) -> None:
+    """Written before the key existed: no history."""
+    state = tmp_path / "state"
+    lineage.create(state, _lineage(tmp_path))
+    path = lineage.lineage_path(state, _OWNER)
+    document = json.loads(path.read_text())
+    document.pop("compromised_history", None)
+    path.write_text(json.dumps(document))
+    assert lineage.load(state, _OWNER).compromised_history == ()
+
+
+@pytest.mark.parametrize("history", ["a", [""], [1], {"a": 1}])
+def test_a_history_ha_never_writes_is_unknown(tmp_path: Path, history: object) -> None:
+    state = tmp_path / "state"
+    lineage.create(state, _lineage(tmp_path))
+    path = lineage.lineage_path(state, _OWNER)
+    document = json.loads(path.read_text())
+    document["compromised_history"] = history
+    path.write_text(json.dumps(document))
+    with pytest.raises(Unknown, match="compromised_history"):
+        lineage.load(state, _OWNER)
