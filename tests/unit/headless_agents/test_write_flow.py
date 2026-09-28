@@ -55,6 +55,7 @@ class _Agent:
     after: Callable[[], None] | None = None
     #: The event log this provider writes, as its rail would (plan Task 5).
     events: str | None = None
+    failure_text: str | None = None
 
     def run(self, spec: RunSpec) -> RunResult:
         self.specs.append(spec)
@@ -81,7 +82,7 @@ class _Agent:
                 tokens=None,
                 duration_seconds=0.1,
                 tool_call_completed=False,
-                text="I changed things" if self.code == 0 else None,
+                text="I changed things" if self.code == 0 else self.failure_text,
                 run_id=run_id_of(spec),
             ),
         )
@@ -102,7 +103,13 @@ class World:
     def registry(self) -> Registry:
         return Registry(self.state, runs_root=self.home / ".cache" / "ha" / "runs")
 
-    def write_plan(self, *, repo: Path | None = None, base: str | None = None) -> engine.Plan:
+    def write_plan(
+        self,
+        *,
+        repo: Path | None = None,
+        base: str | None = None,
+        output_schema: dict[str, object] | None = None,
+    ) -> engine.Plan:
         request = Request(
             target="codex",
             prompt="improve app",
@@ -114,6 +121,7 @@ class World:
             cwd=self.repo,
             environ={"PATH": os.environ["PATH"], "HOME": str(self.home)},
             home=self.home,
+            output_schema=output_schema,
         )
         planned = plan(request)
         return replace(
@@ -303,6 +311,25 @@ def test_a_failed_step_without_changes_commits_nothing(world: World) -> None:
     outcome = world.write()
     assert outcome.exit_code == 1
     assert _subjects(world, f"ha/{outcome.run_id}") == []
+
+
+def test_a_write_answer_that_is_not_json_reports_output_not_json(world: World) -> None:
+    world.agent.code = 1
+    world.agent.failure_text = "The requested change is complete"
+    schema: dict[str, object] = {
+        "type": "object",
+        "properties": {"ok": {"type": "boolean"}},
+        "required": ["ok"],
+        "additionalProperties": False,
+    }
+    outcome = world.write(output_schema=schema)
+
+    assert outcome.exit_code == 1
+    assert world.agent.specs[0].output_schema == schema
+    report = json.loads((outcome.run_dir / "run.json").read_text())
+    assert report["status"] == "failed"
+    assert report["failure_reason"] == "output_not_json"
+    assert report["text"] == world.agent.failure_text
 
 
 #: Text to git (no NUL byte), so ``git diff --binary`` prints it raw; not UTF-8.

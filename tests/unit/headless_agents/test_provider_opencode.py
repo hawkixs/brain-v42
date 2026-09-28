@@ -1267,11 +1267,12 @@ class TestQuotaExhausted:
 
     def test_a_partial_line_is_read_on_the_next_poll(self, tmp_path: Path) -> None:
         log = tmp_path / "stderr.log"
-        log.write_bytes(b"timestamp=1 level=ERROR message=partial, no newline yet")
+        log.write_bytes(b'level=ERROR error.error="AI_APICallError: Go usage limit ex')
         found, offset = opencode._quota_exhausted(log, 0)
         assert (found, offset) == (False, 0)
 
-        log.write_bytes(b' error.error="AI_APICallError: Go usage limit exceeded"\n')
+        with log.open("ab") as stream:
+            stream.write(b'ceeded"\n')
         found, offset = opencode._quota_exhausted(log, offset)
         assert found is True
         assert offset == len(log.read_bytes())
@@ -1279,6 +1280,12 @@ class TestQuotaExhausted:
     def test_an_unrelated_line_is_not_a_signature(self, tmp_path: Path) -> None:
         log = tmp_path / "stderr.log"
         log.write_bytes(API_ERROR_LOG.read_bytes())
+        found, offset = opencode._quota_exhausted(log, 0)
+        assert (found, offset) == (False, len(log.read_bytes()))
+
+    def test_a_retry_error_without_a_quota_message_is_not_a_signature(self, tmp_path: Path) -> None:
+        log = tmp_path / "stderr.log"
+        log.write_bytes(b'level=ERROR error.error="AI_RetryError: Failed after 3 attempts"\n')
         found, offset = opencode._quota_exhausted(log, 0)
         assert (found, offset) == (False, len(log.read_bytes()))
 
@@ -1378,6 +1385,17 @@ class TestQuotaFallThrough:
         )
         code = _run(tmp_path, executable=str(script), timeout_seconds=5.0)
         assert code == 0
+
+    def test_a_retry_error_without_quota_waits_for_the_deadline(self, tmp_path: Path) -> None:
+        stderr = tmp_path / "retry.log"
+        stderr.write_text(
+            'level=ERROR error.error="AI_RetryError: Failed after 3 attempts"\n',
+            encoding="utf-8",
+        )
+        script = _fake_opencode_script(tmp_path, stderr_fixture=stderr, sleep_seconds=10.0)
+        code = _run(tmp_path, executable=str(script), timeout_seconds=1.0)
+        assert code == TIMEOUT_REPLAYABLE_EXIT_CODE
+        assert "quota exhausted" not in (tmp_path / "out" / "stderr.log").read_text()
 
 
 class TestOutputSchema:

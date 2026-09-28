@@ -772,18 +772,17 @@ def _nothing_could_have_been_written(
     )
 
 
-#: a93cc8f2's two quoted quota-exhaustion signatures, matched as a plain
-#: substring search anywhere in a stderr line, never a logfmt parse: Task 0
+#: A quota message on either API error kind, matched as a plain substring
+#: search anywhere in a stderr line, never a logfmt parse: Task 0
 #: measured two different key names carrying an AI_*Error string
 #: (``error.error="AI_APICallError: ..."`` in a "stream error" line,
 #: ``stack="AI_APICallError: ...\n at ..."`` in a "process" line), and a
 #: substring search matches either shape without caring which key it was
 #: under. An unknown model name fails pre-flight with a generic
 #: ``UnknownError`` and no ERROR line at all (Task 0 step 3): never mistaken
-#: for either signature below.
+#: for the signature below. A retry error alone could also follow an outage.
 QUOTA_SIGNATURES: Final = (
-    re.compile(r"AI_APICallError\b.*\busage limit exceeded", re.IGNORECASE),
-    re.compile(r"\bAI_RetryError\b"),
+    re.compile(r"\b(?:AI_APICallError|AI_RetryError)\b.*\busage limit exceeded", re.IGNORECASE),
 )
 
 #: Read at most this many bytes of new stderr per poll (Task 3): bounded, so

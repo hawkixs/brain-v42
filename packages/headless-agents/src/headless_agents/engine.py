@@ -1048,6 +1048,10 @@ def _execute_write(
                 tools=tool_counts(outcome.final),
             ),
         )
+    failure_reason = outcome.failure_reason
+    if outcome.final is not None and failure_reason == "step_failed":
+        _, schema_reason = _schema_outcome(plan.request, outcome.final, say)
+        failure_reason = schema_reason or failure_reason
     report.update(
         status=outcome.status,
         exit_code=outcome.exit_code,
@@ -1060,7 +1064,7 @@ def _execute_write(
         findings_from=entry.findings_from,
         implement_providers=list(entry.providers),
         commits=[{"sha": sha, "made_by": made_by} for sha, made_by in outcome.commits],
-        failure_reason=outcome.failure_reason,
+        failure_reason=failure_reason,
         duration_seconds=round(time.monotonic() - started, 3),
     )
     write_report(run_dir, report)
@@ -1544,7 +1548,7 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
 def _schema_outcome(
     request: Request, final: RunResult, say: Callable[[str], None]
 ) -> tuple[int, str | None]:
-    """``(exit_code, failure_reason)`` of a plain run, under its output schema if any.
+    """``(exit_code, failure_reason)`` of an answer under its output schema if any.
 
     0.5.3 lot 1: an answer that is not JSON under a schema is ``output_not_json``,
     and never exit ``0`` -- even from a rail that returned 0 for it: the rails

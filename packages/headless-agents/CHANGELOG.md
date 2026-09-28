@@ -70,8 +70,9 @@ with a prompt instruction.
   `ha` checks that the answer is JSON; it does not validate it against the schema, which
   the rail enforces -- a caller that needs a validated shape validates the object it
   parses. codex keeps the non-JSON text and appends `output is not JSON: an output schema
-  was set` to stderr. A plain `ha run` reports such an answer as `failure_reason:
-  "output_not_json"`, even when a rail returned `0` for it.
+  was set` to stderr. `ha run` reports such an answer as `failure_reason:
+  "output_not_json"` for plain runs (even when a rail returned `0`) and for
+  failed write steps.
 - **`structured.check_chain(rails, schema)`** for library chains. `chain.run_chain` does
   not look at the schema: a library caller refuses the chain as a whole before its first
   link, so a fallback never carries a constrained request onto a rail that would ignore
@@ -99,10 +100,10 @@ Tickets 5921850d and a93cc8f2.
   its own log file under the ephemeral HOME -- silently drops exactly the
   ERROR lines a quota exhaustion needs, when the process exits shortly after
   writing them; `--print-logs`/stderr does not, and changes nothing in the
-  stdout JSON event stream). The wait polls stderr for `AI_APICallError:
-  ... usage limit exceeded` or `AI_RetryError` every 0.5 s; a signature ends
-  the run with exit 3 (replayable elsewhere) only when the event stream also
-  proves nothing could have been written yet -- the exact
+  stdout JSON event stream). The wait polls stderr for `AI_APICallError` or
+  `AI_RetryError` with `usage limit exceeded` on the same line every 0.5 s;
+  a signature ends the run with exit 3 (replayable elsewhere) only when the event
+  stream also proves nothing could have been written yet -- the exact
   `_nothing_could_have_been_written` predicate the deadline itself uses, so
   the two paths can never disagree. A signature seen after a write step or a
   tool call keeps the run waiting for the ordinary deadline, exactly as
