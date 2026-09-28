@@ -32,6 +32,7 @@ from headless_agents.profile import (
 from headless_agents.providers import agy
 from headless_agents.result import RunResult
 from headless_agents.spec import RunSpec
+from headless_agents.structured import SchemaError
 
 URL = "http://127.0.0.1:8765/mcp"
 DENYING_GUARD = """#!/usr/bin/env bash
@@ -41,6 +42,9 @@ case "$payload" in
   *) printf '{"decision":"deny"}' ;;
 esac
 """
+
+
+SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
 
 def _guard(tmp_path: Path, body: str = DENYING_GUARD) -> ToolGuard:
@@ -1167,3 +1171,39 @@ class TestTheGroupIsWatched:
         with pytest.raises(KeyboardInterrupt):
             _run(tmp_path)
         assert log == ["start", "child_attach", "release"]
+
+
+class TestOutputSchema:
+    """0.5.3 lot 1: agy has no measured schema mechanism, so it refuses one."""
+
+    def test_a_schema_is_refused_before_anything_starts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def trap(*args: object, **kwargs: object) -> None:
+            pytest.fail("agy was started for a run carrying an output schema")
+
+        monkeypatch.setattr(agy, "guard_denies_machine_tools", lambda path: True)
+        monkeypatch.setattr(agy.subprocess, "Popen", trap)
+        real_home = tmp_path / "real-home"
+        (real_home / ".x").mkdir(parents=True)
+        (real_home / ".x" / "token").write_text("t", encoding="utf-8")
+        root = tmp_path / "root"
+        root.mkdir()
+        provider = agy.AgyProvider(real_home=real_home, ephemeral_root=root)
+        run_dir = tmp_path / "runs" / "r1"
+        spec = RunSpec(
+            prompt="P",
+            name="seat-1",
+            model="m",
+            profile=_profile(tmp_path),
+            run_dir=run_dir,
+            output_schema=SCHEMA,
+        )
+        with pytest.raises(SchemaError, match="cannot constrain"):
+            provider.run(spec)
+        with pytest.raises(SchemaError, match="cannot constrain"):
+            provider.build_command(spec)
+        with pytest.raises(SchemaError, match="cannot constrain"):
+            provider.prepare_home(spec)
+        assert not run_dir.exists()
+        assert list(root.iterdir()) == []

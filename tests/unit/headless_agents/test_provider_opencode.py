@@ -30,10 +30,12 @@ from headless_agents.capability import (
 from headless_agents.profile import CapabilityProfile, Credentials, McpServer, Workspace
 from headless_agents.providers import opencode
 from headless_agents.spec import RunSpec
+from headless_agents.structured import SchemaError
 
 URL = "http://127.0.0.1:8765/mcp"
 SERVER = "example"
 AUTH = ".local/share/opencode/auth.json"
+SCHEMA = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
 
 
 def _profile(**overrides: object) -> CapabilityProfile:
@@ -1376,3 +1378,36 @@ class TestQuotaFallThrough:
         )
         code = _run(tmp_path, executable=str(script), timeout_seconds=5.0)
         assert code == 0
+
+
+class TestOutputSchema:
+    """0.5.3 lot 1: opencode's ``run`` has no schema option, so it refuses one."""
+
+    def test_a_schema_is_refused_before_anything_starts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def trap(*args: object, **kwargs: object) -> None:
+            pytest.fail("opencode was started for a run carrying an output schema")
+
+        monkeypatch.setattr(opencode.subprocess, "Popen", trap)
+        root = tmp_path / "root"
+        root.mkdir()
+        provider = opencode.OpenCodeProvider(real_home=_real_home(tmp_path), ephemeral_root=root)
+        run_dir = tmp_path / "runs" / "r1"
+        spec = RunSpec(
+            prompt="P",
+            name="seat-1",
+            model="opencode-go/m",
+            profile=_profile(),
+            environment={"PATH": "/usr/bin", "EXAMPLE_TOKEN": "scoped-token"},
+            run_dir=run_dir,
+            output_schema=SCHEMA,
+        )
+        with pytest.raises(SchemaError, match="cannot constrain"):
+            provider.run(spec)
+        with pytest.raises(SchemaError, match="cannot constrain"):
+            provider.build_command(spec)
+        with pytest.raises(SchemaError, match="cannot constrain"):
+            provider.prepare_home(spec)
+        assert not run_dir.exists()
+        assert list(root.iterdir()) == []

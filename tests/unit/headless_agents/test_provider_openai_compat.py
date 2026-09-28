@@ -31,6 +31,7 @@ from headless_agents.profile import CapabilityProfile, McpServer, Workspace
 from headless_agents.providers import openai_compat
 from headless_agents.providers.openai_compat import PRESETS, OpenAICompatProvider
 from headless_agents.spec import RunSpec
+from headless_agents.structured import SchemaError
 
 # A fresh marker per test session: a fake key must not look like a committed
 # secret to the scanner, and a random one proves nothing reused it by chance.
@@ -484,3 +485,35 @@ def test_the_worker_group_is_watched_and_released(tmp_path, monkeypatch) -> None
     with pytest.raises(KeyboardInterrupt):
         OpenAICompatProvider().run(_spec(tmp_path, "http://127.0.0.1:9/v1"))
     assert log == ["start", "child_attach", "release"]
+
+
+# ── Output schema (0.5.3 lot 1) ────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("name", [*PRESETS, "openai-compat"])
+def test_a_schema_is_refused_before_anything_starts(tmp_path, monkeypatch, name: str) -> None:
+    """An HTTP preset's support for a response format varies and cannot be checked
+    before the call: the rail refuses a schema rather than guess."""
+
+    def trap(*args: object, **kwargs: object) -> None:
+        pytest.fail("the worker was started for a run carrying an output schema")
+
+    monkeypatch.setattr(openai_compat.subprocess, "Popen", trap)
+    extra = {} if name in PRESETS else {"base_url": "http://127.0.0.1:9/v1", "key_env": KEY_ENV}
+    spec = _spec(
+        tmp_path,
+        "http://127.0.0.1:9/v1",
+        extra=extra,
+        environment={
+            "PATH": "/usr/bin:/bin",
+            KEY_ENV: SECRET,
+            **{preset.key_env: SECRET for preset in PRESETS.values()},
+        },
+        output_schema={"type": "object", "properties": {"ok": {"type": "boolean"}}},
+    )
+    provider = OpenAICompatProvider(name)
+    with pytest.raises(SchemaError, match="cannot constrain"):
+        provider.run(spec)
+    with pytest.raises(SchemaError, match="cannot constrain"):
+        provider.build_command(spec)
+    assert not (tmp_path / "run-1").exists()

@@ -27,7 +27,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final
 
-from . import locks, procgroup, proof_state, review_flow, reviews, write_flow
+from . import locks, procgroup, proof_state, review_flow, reviews, structured, write_flow
 from .capability import scoped_environment
 from .chain import run_chain
 from .cli_models import ModelsError, models_for
@@ -135,6 +135,9 @@ class Request:
     #: shared by the global lock and, for a write or a review, lineage admission.
     #: ``None`` keeps every lock's own :data:`locks.LOCK_WAIT_SECONDS` bound.
     wait_seconds: float | None = None
+    #: ``--output-schema FILE``, parsed: the JSON Schema the answer is constrained by
+    #: (0.5.3 lot 1); a provider or role target only, every link able to honour it.
+    output_schema: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True)
@@ -497,6 +500,22 @@ def _refuse_options_of_other_shapes(request: Request, shape: str | None) -> None
                 raise UsageError(f"{flag} needs an implement workflow as the target")
 
 
+def _check_output_schema(request: Request, role: Role) -> None:
+    """0.5.3 lot 1: every link of ``role`` honours the schema, and a rail can take it.
+
+    A chain is refused as a whole, before any run is registered: a fallback must
+    never carry a constrained request onto a rail that would ignore the constraint.
+    """
+    schema = request.output_schema
+    if schema is None:
+        return
+    try:
+        structured.check_chain(role.providers, schema)
+        structured.schema_text(schema)
+    except structured.SchemaError as exc:
+        raise UsageError(str(exc)) from None
+
+
 def _findings_review(run_id: str, *, state: Path, home: Path) -> str:
     """The review ``--findings`` names, from the registry only (§3.8.2): a review run."""
     registry = Registry(state, runs_root=runs_root(home))
@@ -589,6 +608,11 @@ def _plan_review(request: Request, workflow: Workflow, config: Config) -> Plan:
 
 def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan:
     """A workflow target: its roles run as declared (§3.3), its prompt is a template (§3.7)."""
+    if request.output_schema is not None:
+        raise UsageError(
+            "--output-schema needs a provider or a role target: a workflow's steps shape "
+            "their own answers"
+        )
     given = [
         flag
         for field, flag in _OVERRIDE_FLAGS.items()
@@ -672,6 +696,7 @@ def plan(request: Request) -> Plan:
     rule = capability_rule(role, profiles)
     if rule is not None:
         raise UsageError(f"{request.target}: {rule}")
+    _check_output_schema(request, role)
     if request.base is not None and not role.write:
         raise UsageError("--base needs a write run: the role's write, or --write")
 
@@ -768,6 +793,7 @@ def _spec_for(
         environment=plan.environment,
         context=bundle,
         extra=extra,
+        output_schema=plan.request.output_schema,
     )
 
 
@@ -1495,22 +1521,45 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 tools=tool_counts(final),
             ),
         )
-        status = "answered" if final.exit_code == 0 else "failed"
+        exit_code, failure_reason = _schema_outcome(request, final, say)
+        status = "answered" if exit_code == 0 else "failed"
         report.update(
             status=status,
-            exit_code=final.exit_code,
+            exit_code=exit_code,
             text=final.text,
+            failure_reason=failure_reason,
             duration_seconds=round(time.monotonic() - started, 3),
         )
         write_report(run_dir, report)
         registry.set_status(entry.run_id, status)
         return Outcome(
-            exit_code=final.exit_code,
+            exit_code=exit_code,
             run_id=entry.run_id,
             run_dir=run_dir,
             report=report,
             final=final,
         )
+
+
+def _schema_outcome(
+    request: Request, final: RunResult, say: Callable[[str], None]
+) -> tuple[int, str | None]:
+    """``(exit_code, failure_reason)`` of a plain run, under its output schema if any.
+
+    0.5.3 lot 1: an answer that is not JSON under a schema is ``output_not_json``,
+    and never exit ``0`` -- even from a rail that returned 0 for it: the rails
+    enforce the schema, and the engine does not trust that they did. A failure
+    with no answer at all keeps its own code and reason.
+    """
+    code = final.exit_code
+    if request.output_schema is None or structured.is_json_answer(final.text):
+        return code, None
+    if code == 0:
+        say("the answer is not JSON although an output schema was set: the run failed")
+        return 1, "output_not_json"
+    if code == 1 and final.text is not None:
+        return 1, "output_not_json"
+    return code, None
 
 
 def _remove_review_worktree(

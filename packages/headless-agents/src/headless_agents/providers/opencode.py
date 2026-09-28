@@ -95,6 +95,7 @@ from ..run_record import answer_text, record, run_id_of
 from ..sandbox import ephemeral_root as default_ephemeral_root
 from ..sandbox import materialize_credentials, refuse_home_under_workspace
 from ..spec import RunSpec
+from ..structured import refuse_unsupported
 from ..workspace import (
     argv_prompt_or_refusal,
     armed_run,
@@ -1167,6 +1168,7 @@ class OpenCodeProvider:
         return self._root(environ) / spec.name
 
     def build_command(self, spec: RunSpec) -> list[str]:
+        refuse_unsupported(self.name, spec.output_schema)
         workspace = workspace_of(spec)
         prompt = prepend(_preamble_for(spec, workspace), spec.prompt)
         return build_opencode_command(
@@ -1185,6 +1187,7 @@ class OpenCodeProvider:
         return None
 
     def prepare_home(self, spec: RunSpec) -> Path | None:
+        refuse_unsupported(self.name, spec.output_schema)
         environ = spec.environment if spec.environment is not None else os.environ
         return build_opencode_home(
             root=self._root(environ),
@@ -1199,6 +1202,10 @@ class OpenCodeProvider:
         return tool_call_completed(spec.events_log, server=spec.profile.mcp.name)
 
     def run(self, spec: RunSpec) -> RunResult:
+        # 0.5.3 lot 1: opencode's ``run`` has no schema option (measured on
+        # 1.18.30), and a prompt-level imitation would only look constrained --
+        # refused before any file exists.
+        refuse_unsupported(self.name, spec.output_schema)
         spec = spec.with_run_dir_defaults()
         assert spec.events_log is not None
         assert spec.report_log is not None

@@ -997,3 +997,254 @@ time.sleep(float(sys.argv[3]))
             )
         assert json.loads(real.read_text())["claudeAiOauth"]["accessToken"] == "a1"
         assert "changed meanwhile" in (tmp_path / "raw.log").read_text()
+
+
+# ── schema-constrained output (0.5.3 lot 1, Task 5) ─────────────────────────
+
+FIXTURES = Path(__file__).parent / "fixtures" / "structured"
+SCHEMA = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+    "additionalProperties": False,
+}
+SCHEMA_TEXT = (
+    '{"type":"object","properties":{"ok":{"type":"boolean"}},'
+    '"required":["ok"],"additionalProperties":false}'
+)
+
+
+def _envelope_fake(tmp_path: Path, stdout: Path, *, code: int = 0) -> str:
+    """A fake claude printing ``stdout`` as its ``--output-format json`` does, then
+    exiting ``code`` (Task 0 measured exit 1 with an error subtype)."""
+    return _fake(tmp_path, f'cat "{stdout}"\nexit {code}')
+
+
+def _schema_spec(tmp_path: Path, executable: str, **overrides: object) -> RunSpec:
+    fields: dict[str, object] = {
+        "prompt": "Answer with ok = true.",
+        "model": "m",
+        "max_turns": 1,
+        "executable": executable,
+        "run_dir": tmp_path / "runs" / "r1",
+        "environment": {"PATH": "/usr/bin:/bin"},
+        "output_schema": SCHEMA,
+    }
+    fields.update(overrides)
+    return RunSpec(**fields)  # type: ignore[arg-type]
+
+
+def _measured(name: str) -> dict[str, object]:
+    document = json.loads((FIXTURES / f"claude-2.1.283.{name}.json").read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    return document
+
+
+class TestStructuredOutput:
+    """claude constrains its answer with ``--json-schema`` (measured on 2.1.283): the
+    answer is the result envelope's ``structured_output``, and every other shape
+    exits 1 -- the envelope's ``result`` text never stands in for it."""
+
+    def test_argv_without_a_schema_is_unchanged(self, tmp_path: Path) -> None:
+        config = tmp_path / "m.json"
+        assert claude.build_claude_command(
+            model="m", max_turns=3, mcp_config_path=config, mcp=None
+        ) == [
+            "claude",
+            "-p",
+            "-",
+            "--model",
+            "m",
+            "--max-turns",
+            "3",
+            "--permission-mode",
+            "bypassPermissions",
+            "--tools",
+            "",
+            "--mcp-config",
+            str(config),
+            "--strict-mcp-config",
+        ]
+        for workspace in (None, Workspace(path=tmp_path), Workspace(path=tmp_path, write=True)):
+            base = claude.build_claude_command(
+                model="m", max_turns=3, mcp_config_path=config, mcp=None, workspace=workspace
+            )
+            none = claude.build_claude_command(
+                model="m",
+                max_turns=3,
+                mcp_config_path=config,
+                mcp=None,
+                workspace=workspace,
+                json_schema=None,
+            )
+            assert none == base
+
+    def test_argv_with_a_schema_adds_the_json_output_and_the_inline_schema(
+        self, tmp_path: Path
+    ) -> None:
+        config = tmp_path / "m.json"
+        for workspace in (None, Workspace(path=tmp_path), Workspace(path=tmp_path, write=True)):
+            base = claude.build_claude_command(
+                model="m", max_turns=3, mcp_config_path=config, mcp=None, workspace=workspace
+            )
+            with_schema = claude.build_claude_command(
+                model="m",
+                max_turns=3,
+                mcp_config_path=config,
+                mcp=None,
+                workspace=workspace,
+                json_schema=SCHEMA_TEXT,
+            )
+            i = base.index("--max-turns") + 2
+            flags = ["--output-format", "json", "--json-schema", SCHEMA_TEXT]
+            assert with_schema == base[:i] + flags + base[i:]
+
+    def test_a_measured_success_envelope_gives_the_structured_output_as_text(
+        self, tmp_path: Path
+    ) -> None:
+        fixture = FIXTURES / "claude-2.1.283.success.json"
+        run_dir = tmp_path / "runs" / "r1"
+        result = claude.ClaudeProvider().run(
+            _schema_spec(tmp_path, _envelope_fake(tmp_path, fixture))
+        )
+        expected = json.dumps(_measured("success")["structured_output"], ensure_ascii=False)
+        assert result.exit_code == 0
+        assert result.text == expected
+        assert (run_dir / "report.log").read_text(encoding="utf-8") == expected
+        assert (run_dir / "claude-result.json").read_bytes() == fixture.read_bytes()
+        assert result.tokens is None and result.cost_usd is None
+
+    @pytest.mark.parametrize("subtype", ["error_max_turns", "error_max_structured_output_retries"])
+    def test_an_error_subtype_exits_1_and_names_it(self, tmp_path: Path, subtype: str) -> None:
+        """Measured: error_max_turns, exit 1. error_max_structured_output_retries is
+        derived from it, changing ``subtype`` and ``errors`` only. The envelope proves
+        claude ran and failed the schema: 1, never the replayable 3."""
+        envelope = _measured("max-turns")
+        if subtype != envelope["subtype"]:
+            envelope.update(subtype=subtype, errors=["Failed to provide valid structured output"])
+        errors = envelope["errors"]
+        assert isinstance(errors, list)
+        stdout = tmp_path / "envelope.json"
+        stdout.write_text(json.dumps(envelope), encoding="utf-8")
+        run_dir = tmp_path / "runs" / "r1"
+        result = claude.ClaudeProvider().run(
+            _schema_spec(tmp_path, _envelope_fake(tmp_path, stdout, code=1))
+        )
+        assert result.exit_code == 1
+        assert result.text is None
+        raw = (run_dir / "raw.log").read_text(encoding="utf-8")
+        assert f"{subtype}: {errors[0]}" in raw
+        assert (run_dir / "report.log").read_text(encoding="utf-8") == ""
+
+    @pytest.mark.parametrize(
+        "variant",
+        [
+            "no-structured-output",
+            "list",
+            "is-error",
+            "no-subtype",
+            "two-documents",
+            "garbage",
+            "not-utf8",
+            "empty",
+        ],
+    )
+    def test_a_malformed_envelope_exits_1(self, tmp_path: Path, variant: str) -> None:
+        envelope = _measured("success")
+        if variant == "no-structured-output":
+            del envelope["structured_output"]  # its "result" text must not stand in
+            body, refusal = json.dumps(envelope), "no structured_output"
+        elif variant == "list":
+            envelope["structured_output"] = [True]
+            body, refusal = json.dumps(envelope), "no structured_output"
+        elif variant == "is-error":
+            envelope["is_error"] = True
+            body, refusal = json.dumps(envelope), "success with is_error true"
+        elif variant == "no-subtype":
+            del envelope["subtype"]
+            body, refusal = json.dumps(envelope), "refused: no subtype"
+        elif variant == "two-documents":
+            body, refusal = json.dumps(envelope) + "\n" + json.dumps(envelope), "more than one"
+        elif variant == "garbage":
+            body, refusal = "Error: something went wrong\n", "envelope unreadable"
+        elif variant == "not-utf8":
+            body, refusal = "\udcff", "envelope unreadable"
+        else:
+            body, refusal = "", "envelope unreadable"
+        stdout = tmp_path / "stdout.txt"
+        stdout.write_bytes(body.encode("utf-8", "surrogateescape"))
+        run_dir = tmp_path / "runs" / "r1"
+        result = claude.ClaudeProvider().run(
+            _schema_spec(tmp_path, _envelope_fake(tmp_path, stdout))
+        )
+        assert result.exit_code == 1
+        assert result.text is None
+        assert refusal in (run_dir / "raw.log").read_text(encoding="utf-8")
+        assert (run_dir / "report.log").read_text(encoding="utf-8") == ""
+
+    def test_a_stale_envelope_is_never_read_as_this_runs(self, tmp_path: Path) -> None:
+        """A run that never started (here: no credentials, the replayable 3) must not
+        read the envelope an earlier run left beside a reused report_log."""
+        run_dir = tmp_path / "runs" / "r1"
+        run_dir.mkdir(parents=True)
+        (run_dir / "claude-result.json").write_bytes(
+            (FIXTURES / "claude-2.1.283.success.json").read_bytes()
+        )
+        spec = _schema_spec(
+            tmp_path,
+            _envelope_fake(tmp_path, FIXTURES / "claude-2.1.283.success.json"),
+            environment={"PATH": "/usr/bin:/bin", "HOME": str(tmp_path / "no-login")},
+        )
+        result = claude.ClaudeProvider().run(spec)
+        assert result.exit_code == PROVIDER_FALLBACK_EXIT_CODE
+        assert result.text is None
+        assert not (run_dir / "claude-result.json").exists()
+
+    def test_a_process_failure_keeps_its_exit_code(self, tmp_path: Path) -> None:
+        result = claude.ClaudeProvider().run(_schema_spec(tmp_path, _fake(tmp_path, "exit 124")))
+        assert result.exit_code == TIMEOUT_EXIT_CODE
+        assert result.text is None
+
+    def test_a_schema_without_a_report_log_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Without a report_log, stdout and stderr land mixed in raw_log, where no
+        envelope can be read."""
+
+        def trap(*args: object, **kwargs: object) -> None:
+            pytest.fail("claude was started for a schema run with no report_log")
+
+        monkeypatch.setattr(claude, "spawn_watched", trap)
+        spec = RunSpec(prompt="P", model="m", raw_log=tmp_path / "raw.log", output_schema=SCHEMA)
+        with pytest.raises(ValueError, match="report_log"):
+            claude.ClaudeProvider().run(spec)
+        assert not (tmp_path / "raw.log").exists()
+
+    def test_a_report_log_named_like_the_envelope_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def trap(*args: object, **kwargs: object) -> None:
+            pytest.fail("claude was started with the envelope and the answer in one file")
+
+        monkeypatch.setattr(claude, "spawn_watched", trap)
+        spec = RunSpec(
+            prompt="P",
+            model="m",
+            raw_log=tmp_path / "raw.log",
+            report_log=tmp_path / "claude-result.json",
+            output_schema=SCHEMA,
+        )
+        with pytest.raises(ValueError, match="claude-result.json"):
+            claude.ClaudeProvider().run(spec)
+
+    def test_build_command_previews_the_schema_flags(self, tmp_path: Path) -> None:
+        spec = RunSpec(
+            prompt="p",
+            model="m",
+            max_turns=2,
+            output_schema=SCHEMA,
+            extra={"mcp_config_path": tmp_path / "m.json"},
+        )
+        command = claude.ClaudeProvider().build_command(spec)
+        assert command[command.index("--output-format") + 1] == "json"
+        assert command[command.index("--json-schema") + 1] == SCHEMA_TEXT

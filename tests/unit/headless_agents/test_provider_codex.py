@@ -24,6 +24,7 @@ from headless_agents.capability import (
 from headless_agents.profile import CapabilityProfile, McpServer, Workspace
 from headless_agents.providers import codex
 from headless_agents.spec import RunSpec
+from headless_agents.structured import SchemaError, schema_text
 
 URL = "http://127.0.0.1:8765/mcp"
 
@@ -2733,3 +2734,218 @@ class TestCodexConfinementProbeRollout:
         spec = RunSpec(prompt="P", model="m", run_dir=run_dir)
         codex.CodexProvider().run_with_rollout(spec)
         assert calls[0]["rollout_log"] == run_dir / "rollout.jsonl"
+
+
+# ── schema-constrained output (0.5.3 lot 1, Task 3) ─────────────────────────
+
+FIXTURES = Path(__file__).parent / "fixtures" / "structured"
+SCHEMA = {
+    "type": "object",
+    "properties": {"ok": {"type": "boolean"}},
+    "required": ["ok"],
+    "additionalProperties": False,
+}
+#: Task 0's (f): a property absent from ``required``, which codex's API refuses.
+NON_STRICT = {"type": "object", "properties": {"ok": {"type": "boolean"}}}
+
+
+def _schema_popen(
+    monkeypatch: pytest.MonkeyPatch, *, report: str, code: int = 0, events: str | None = None
+) -> dict[str, object]:
+    """A fake codex that records, at spawn, the file after ``--output-schema``."""
+    seen: dict[str, object] = {}
+
+    def popen(command: list[str], **kwargs: object) -> _FakeProcess:
+        seen["command"] = command
+        seen["env"] = kwargs.get("env")
+        if "--output-schema" in command:
+            path = Path(command[command.index("--output-schema") + 1])
+            seen["schema_path"] = path
+            seen["schema_bytes"] = path.read_bytes()
+            seen["schema_mode"] = path.stat().st_mode & 0o777
+        report_log = Path(command[command.index("--output-last-message") + 1])
+        fake = _FakeProcess(
+            returncode=code,
+            events=_events(_turn_completed()) if events is None else events,
+            report=report,
+        )
+        fake.bind(events_stream=kwargs["stdout"], report_log=report_log)
+        return fake
+
+    monkeypatch.setattr(codex.subprocess, "Popen", popen)
+    monkeypatch.setattr(codex, "terminate_process_group", lambda process: process.kill())
+    return seen
+
+
+def _codex_spec(tmp_path: Path, **overrides: object) -> RunSpec:
+    ws = tmp_path / "ws"
+    ws.mkdir(exist_ok=True)
+    fields: dict[str, object] = {
+        "prompt": "Answer with ok = true.",
+        "model": "m",
+        "run_dir": tmp_path / "runs" / "r1",
+        "profile": CapabilityProfile(workspace=Workspace(path=ws)),
+        "environment": {"PATH": "/usr/bin"},
+        "output_schema": SCHEMA,
+    }
+    fields.update(overrides)
+    return RunSpec(**fields)  # type: ignore[arg-type]
+
+
+class TestOutputSchema:
+    """codex constrains its final message with ``exec --output-schema FILE``
+    (measured on codex-cli 0.156.0): the schema file lives in the run-owned home,
+    and an answer that is not JSON under a schema is never exit 0."""
+
+    @pytest.mark.parametrize("mode", ["none", "read", "write"])
+    def test_argv_without_a_schema_is_unchanged(self, tmp_path: Path, mode: str) -> None:
+        workspace = None if mode == "none" else Workspace(path=tmp_path, write=mode == "write")
+        kwargs: dict[str, Any] = {
+            "model": "m",
+            "reasoning_effort": "low",
+            "report_log": tmp_path / "r",
+            "workspace": tmp_path,
+            "mcp": None,
+            "workspace_mode": workspace,
+        }
+        assert codex.build_codex_command(**kwargs, output_schema=None) == (
+            codex.build_codex_command(**kwargs)
+        )
+
+    @pytest.mark.parametrize("mode", ["none", "read", "write"])
+    def test_argv_with_a_schema_inserts_the_flag_before_the_last_message(
+        self, tmp_path: Path, mode: str
+    ) -> None:
+        workspace = None if mode == "none" else Workspace(path=tmp_path, write=mode == "write")
+        kwargs: dict[str, Any] = {
+            "model": "m",
+            "reasoning_effort": "low",
+            "report_log": tmp_path / "r",
+            "workspace": tmp_path,
+            "mcp": None,
+            "workspace_mode": workspace,
+        }
+        schema = tmp_path / "home" / "output-schema.json"
+        default = codex.build_codex_command(**kwargs)
+        with_schema = codex.build_codex_command(**kwargs, output_schema=schema)
+        i = default.index("--output-last-message")
+        assert with_schema == default[:i] + ["--output-schema", str(schema)] + default[i:]
+
+    @pytest.mark.parametrize("write", [False, True])
+    def test_the_schema_file_exists_only_during_the_run_outside_the_workspace(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, write: bool
+    ) -> None:
+        seen = _schema_popen(monkeypatch, report='{"ok":true}')
+        run_dir = tmp_path / "runs" / "r1"
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        spec = _codex_spec(
+            tmp_path, profile=CapabilityProfile(workspace=Workspace(path=ws, write=write))
+        )
+        result = codex.CodexProvider().run(spec)
+        assert result.exit_code == 0
+        path = seen["schema_path"]
+        assert isinstance(path, Path)
+        assert seen["schema_bytes"] == schema_text(SCHEMA).encode("utf-8")
+        assert seen["schema_mode"] == 0o600
+        assert not path.is_relative_to(ws) and not path.is_relative_to(run_dir)
+        env = seen["env"]
+        assert isinstance(env, dict)
+        if write:
+            assert not path.is_relative_to(env["TMPDIR"]), "outside the writable scratch too"
+        assert not path.exists(), "removed with the run-owned home"
+
+    def test_a_json_answer_under_a_schema_exits_0_with_the_text_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _schema_popen(monkeypatch, report=' {"ok": true}\n')
+        result = codex.CodexProvider().run(_codex_spec(tmp_path))
+        assert result.exit_code == 0
+        assert result.text == ' {"ok": true}\n'
+
+    def test_the_measured_strict_answer_exits_0(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        measured = (FIXTURES / "codex-0.156.0.strict.last-message.txt").read_text(encoding="utf-8")
+        _schema_popen(monkeypatch, report=measured)
+        result = codex.CodexProvider().run(_codex_spec(tmp_path))
+        assert result.exit_code == 0 and result.text == measured == '{"ok":true}'
+
+    def test_a_non_json_answer_under_a_schema_exits_1_and_keeps_the_text(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _schema_popen(monkeypatch, report="I think ok is true")
+        result = codex.CodexProvider().run(_codex_spec(tmp_path))
+        assert result.exit_code == 1
+        assert result.text == "I think ok is true"
+        stderr = (tmp_path / "runs" / "r1" / "stderr.log").read_text(encoding="utf-8")
+        assert "output is not JSON: an output schema was set" in stderr
+
+    def test_a_non_json_answer_without_a_schema_still_exits_0(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        seen = _schema_popen(monkeypatch, report="I think ok is true")
+        result = codex.CodexProvider().run(_codex_spec(tmp_path, output_schema=None))
+        assert result.exit_code == 0 and result.text == "I think ok is true"
+        command = seen["command"]
+        assert isinstance(command, list) and "--output-schema" not in command
+
+    def test_a_timeout_under_a_schema_stays_124(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        _schema_popen(monkeypatch, report="", code=124, events="")
+        result = codex.CodexProvider().run(_codex_spec(tmp_path))
+        assert result.exit_code == TIMEOUT_EXIT_CODE
+
+    def test_a_turn_failure_under_a_schema_reaches_stderr(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Measured (Task 0, (f)): the API's 400 reaches only the ``--json`` stream,
+        as ``turn.failed``, with an empty last message and an empty stderr."""
+        assert (FIXTURES / "codex-0.156.0.non-strict.stderr.txt").read_bytes() == b""
+        message = (
+            "invalid_json_schema: 'required' is required to be supplied and to be an array "
+            "including every key in properties. Missing 'ok'."
+        )
+        events = _events(
+            {"type": "turn.started"}, {"type": "turn.failed", "error": {"message": message}}
+        )
+        _schema_popen(monkeypatch, report="", code=1, events=events)
+        result = codex.CodexProvider().run(_codex_spec(tmp_path))
+        assert result.exit_code == PROVIDER_FALLBACK_EXIT_CODE
+        assert result.text is None
+        stderr = (tmp_path / "runs" / "r1" / "stderr.log").read_text(encoding="utf-8")
+        assert f"codex turn failed: {message}" in stderr
+
+    def test_without_a_schema_a_turn_failure_leaves_stderr_as_it_was(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        events = _events({"type": "turn.failed", "error": {"message": "boom"}})
+        _schema_popen(monkeypatch, report="", code=1, events=events)
+        codex.CodexProvider().run(_codex_spec(tmp_path, output_schema=None))
+        stderr = (tmp_path / "runs" / "r1" / "stderr.log").read_text(encoding="utf-8")
+        assert "codex turn failed" not in stderr
+
+    def test_a_non_strict_schema_is_refused_before_anything_starts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        def trap(*args: object, **kwargs: object) -> None:
+            pytest.fail("codex was started for a schema its strict mode rejects")
+
+        monkeypatch.setattr(codex.subprocess, "Popen", trap)
+        spec = _codex_spec(tmp_path, output_schema=NON_STRICT)
+        provider = codex.CodexProvider()
+        with pytest.raises(SchemaError, match="^codex cannot constrain"):
+            provider.run(spec)
+        with pytest.raises(SchemaError, match="^codex cannot constrain"):
+            provider.build_command(spec)
+        with pytest.raises(SchemaError, match="^codex cannot constrain"):
+            provider.run_with_rollout(spec)
+        assert not (tmp_path / "runs" / "r1").exists()
+
+    def test_build_command_previews_the_flag_with_a_placeholder(self, tmp_path: Path) -> None:
+        spec = _codex_spec(tmp_path, report_log=tmp_path / "out" / "report.log")
+        command = codex.CodexProvider().build_command(spec)
+        i = command.index("--output-last-message")
+        assert command[i - 2 : i] == ["--output-schema", "<run-owned>/output-schema.json"]
+        assert not list(tmp_path.rglob("output-schema.json")), "a preview writes no file"
