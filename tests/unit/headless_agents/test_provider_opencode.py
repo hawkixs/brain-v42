@@ -11,7 +11,10 @@ HOME triggers.
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -62,6 +65,9 @@ class TestBuildOpenCodeCommand:
             "--pure",
             "--format",
             "json",
+            "--print-logs",
+            "--log-level",
+            "ERROR",
             "-m",
             "opencode-go/m",
             "--variant",
@@ -527,33 +533,41 @@ class TestWriteToolStarted:
 
 
 class _FakeProcess:
+    """``run_opencode`` now waits in a poll loop (Task 3, ticket a93cc8f2)
+    instead of one ``communicate(timeout=remaining)`` call: ``wait`` is what
+    it calls, repeatedly, so this fake answers there. ``clock`` is a virtual
+    clock this fake alone advances (by exactly the ``timeout`` asked of it),
+    read back through a fixture-installed ``time.monotonic`` stub: a hang
+    then resolves after its full budget with no real wall-clock delay,
+    however many polls that takes."""
+
     def __init__(self, *, returncode: int, events: str = "", hang: bool = False) -> None:
         self._returncode = returncode
         self._events = events
         self._hang = hang
+        self._written = False
         self.returncode: int | None = None
         self.pid = 4242
+        self.clock = 0.0
 
     def bind(self, stream: object) -> None:
         self._stream = stream
 
-    def communicate(
-        self, input: str | None = None, timeout: float | None = None
-    ) -> tuple[None, None]:
-        # A hang writes what it had produced so far, THEN stalls: that is
-        # what the runner sees on disk when its own deadline fires.
-        self._stream.write(self._events)  # type: ignore[attr-defined]
-        self._stream.flush()  # type: ignore[attr-defined]
+    def wait(self, timeout: float | None = None) -> int:
+        if not self._written:
+            # A hang writes what it had produced so far, THEN stalls: that is
+            # what the runner sees on disk when its own deadline fires.
+            self._stream.write(self._events)  # type: ignore[attr-defined]
+            self._stream.flush()  # type: ignore[attr-defined]
+            self._written = True
+        self.clock += timeout or 0
         if self._hang:
             raise subprocess.TimeoutExpired(cmd="opencode", timeout=timeout or 0)
         self.returncode = self._returncode
-        return None, None
+        return self.returncode
 
     def poll(self) -> int | None:
         return self.returncode
-
-    def wait(self, timeout: float | None = None) -> int:
-        return self.returncode or 0
 
     def kill(self) -> None:
         self.returncode = -9
@@ -581,6 +595,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, fake: _FakeProcess) -> dict[str, o
 
     monkeypatch.setattr(opencode.subprocess, "Popen", popen)
     monkeypatch.setattr(opencode, "terminate_process_group", lambda process: process.kill())
+    monkeypatch.setattr(opencode.time, "monotonic", lambda: fake.clock)
     return captured
 
 
@@ -1047,6 +1062,46 @@ class TestWorkspace:
         assert list(root.iterdir()) == []
 
 
+_DEADLINE_STREAMS = {
+    "empty": "",
+    "step_start_only": _events({"type": "step_start", "part": {}}),
+    "call_on_server": _events(_tool_use(tool=f"{SERVER}_search")),
+    "write_step": _events(_tool_use(tool="bash")),
+    "unreadable_line": "not json\n",
+}
+
+
+@pytest.mark.parametrize("workspace_mode", ["none", "read", "write"])
+@pytest.mark.parametrize("server", [None, SERVER])
+@pytest.mark.parametrize("stream_name", sorted(_DEADLINE_STREAMS))
+def test_the_deadline_and_the_predicate_agree(
+    tmp_path: Path, stream_name: str, server: str | None, workspace_mode: str
+) -> None:
+    """``_deadline_exit_code``'s own choice between 124 and 4
+    (``TIMEOUT_REPLAYABLE_EXIT_CODE``) must always agree with
+    ``_nothing_could_have_been_written`` -- the predicate this refactor names
+    once, so an early exit added elsewhere in the runner can ask the
+    identical question and never drift from the deadline's own answer."""
+    events_log = tmp_path / "events.jsonl"
+    events_log.write_text(_DEADLINE_STREAMS[stream_name], encoding="utf-8")
+    stderr_log = tmp_path / "stderr.log"
+    stderr_log.write_text("", encoding="utf-8")
+    workspace = {
+        "none": None,
+        "read": Workspace(path=tmp_path, write=False),
+        "write": Workspace(path=tmp_path, write=True),
+    }[workspace_mode]
+
+    predicate = opencode._nothing_could_have_been_written(
+        events_log, server, workspace=workspace, mcp=None
+    )
+    code = opencode._deadline_exit_code(
+        events_log, stderr_log, server, 30.0, workspace=workspace, mcp=None
+    )
+
+    assert (code == TIMEOUT_REPLAYABLE_EXIT_CODE) == predicate
+
+
 class TestWorkspaceProvider:
     def test_preamble_over_argv_limit_exits_2_without_spawn(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1121,7 +1176,7 @@ class TestTheProviderDiesWithHa:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         class _Interrupted(_FakeProcess):
-            def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 raise KeyboardInterrupt
 
         fake = _Interrupted(returncode=0)
@@ -1163,7 +1218,7 @@ class TestTheGroupIsWatched:
         monkeypatch.setattr(procgroup, "start_watcher", lambda: _RecordedLifeline(log))
 
         class _Interrupted(_FakeProcess):
-            def communicate(self, input=None, timeout=None):  # type: ignore[no-untyped-def]
+            def wait(self, timeout=None):  # type: ignore[no-untyped-def]
                 raise KeyboardInterrupt
 
         fake = _Interrupted(returncode=0)
@@ -1171,3 +1226,153 @@ class TestTheGroupIsWatched:
         with pytest.raises(KeyboardInterrupt):
             _run(tmp_path)
         assert log == ["start", "child_attach", "release"]
+
+
+# ── quota fall-through (Task 3, ticket a93cc8f2): Route B, measured on
+# opencode 1.18.30 (Task 0) -- the log FILE silently drops exactly the ERROR
+# lines a quota exhaustion needs when the process exits shortly after
+# writing them; --print-logs/stderr does not. ──────────────────────────────
+
+_FIXTURES = Path(__file__).resolve().parent / "fixtures" / "opencode"
+API_ERROR_LOG = _FIXTURES / "1.18.30-api-error.log"
+QUOTA_ASSUMED_LOG = _FIXTURES / "1.18.30-quota-assumed.log"
+
+
+def test_argv_carries_print_logs_at_the_measured_level() -> None:
+    command = opencode.build_opencode_command(model="m", prompt="p", home=Path("/home"))
+    assert command == [
+        "opencode",
+        "run",
+        "--dir",
+        "/home",
+        "--auto",
+        "--pure",
+        "--format",
+        "json",
+        "--print-logs",
+        "--log-level",
+        "ERROR",
+        "-m",
+        "m",
+        "p",
+    ]
+
+
+class TestQuotaExhausted:
+    """``_quota_exhausted`` reads only what a poll has not seen, one complete
+    logfmt line at a time -- the same reader :func:`run_opencode` polls
+    stderr with while opencode is genuinely still running."""
+
+    def test_a_partial_line_is_read_on_the_next_poll(self, tmp_path: Path) -> None:
+        log = tmp_path / "stderr.log"
+        log.write_bytes(b"timestamp=1 level=ERROR message=partial, no newline yet")
+        found, offset = opencode._quota_exhausted(log, 0)
+        assert (found, offset) == (False, 0)
+
+        log.write_bytes(b' error.error="AI_APICallError: Go usage limit exceeded"\n')
+        found, offset = opencode._quota_exhausted(log, offset)
+        assert found is True
+        assert offset == len(log.read_bytes())
+
+    def test_an_unrelated_line_is_not_a_signature(self, tmp_path: Path) -> None:
+        log = tmp_path / "stderr.log"
+        log.write_bytes(API_ERROR_LOG.read_bytes())
+        found, offset = opencode._quota_exhausted(log, 0)
+        assert (found, offset) == (False, len(log.read_bytes()))
+
+    def test_the_log_reader_never_raises(self, tmp_path: Path) -> None:
+        assert opencode._quota_exhausted(tmp_path / "absent.log", 0) == (False, 0)
+
+        directory = tmp_path / "adir"
+        directory.mkdir()
+        assert opencode._quota_exhausted(directory, 0) == (False, 0)
+
+        target = tmp_path / "target.log"
+        target.write_text("x", encoding="utf-8")
+        link = tmp_path / "link.log"
+        link.symlink_to(target)
+        assert opencode._quota_exhausted(link, 0) == (False, 0)
+
+
+def _fake_opencode_script(
+    tmp_path: Path,
+    *,
+    stdout_events: str = "",
+    stderr_fixture: Path | None = None,
+    sleep_seconds: float = 30.0,
+    pid_file: Path | None = None,
+) -> Path:
+    """A REAL executable, not the Python-level ``_FakeProcess``: Task 3's
+    poll loop must read newly-appended bytes from a real stderr file while a
+    real child is genuinely still running, which a Popen-level fake that
+    writes everything inside one ``wait()`` call cannot simulate."""
+    script = tmp_path / "opencode"
+    lines = ["#!/usr/bin/env bash"]
+    if pid_file is not None:
+        lines.append(f"echo $$ > {shlex.quote(str(pid_file))}")
+    if stdout_events:
+        lines.append(f"printf '%s' {shlex.quote(stdout_events)}")
+    if stderr_fixture is not None:
+        lines.append(f"cat {shlex.quote(str(stderr_fixture))} >&2")
+    lines.append(f"sleep {sleep_seconds}")
+    script.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+class TestQuotaFallThrough:
+    """``run_opencode`` itself, over a REAL fake executable: no Popen mock,
+    so the poll loop genuinely reads the growing stderr file of a genuinely
+    running child (Task 3, ticket a93cc8f2)."""
+
+    def test_a_quota_signature_before_any_step_exits_3_at_once(self, tmp_path: Path) -> None:
+        pid_file = tmp_path / "pid"
+        script = _fake_opencode_script(
+            tmp_path, stderr_fixture=QUOTA_ASSUMED_LOG, sleep_seconds=30.0, pid_file=pid_file
+        )
+        started = time.monotonic()
+        code = _run(tmp_path, executable=str(script), timeout_seconds=30.0)
+        elapsed = time.monotonic() - started
+
+        assert code == PROVIDER_FALLBACK_EXIT_CODE
+        assert elapsed < 3.0, f"took {elapsed}s -- did not fall through before the deadline"
+        stderr = (tmp_path / "out" / "stderr.log").read_text(encoding="utf-8")
+        assert "quota" in stderr.lower() and "replayable" in stderr.lower()
+        pid = int(pid_file.read_text().strip())
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+
+    def test_a_quota_signature_after_a_write_step_keeps_waiting(self, tmp_path: Path) -> None:
+        ws = tmp_path / "ws"
+        ws.mkdir()
+        script = _fake_opencode_script(
+            tmp_path,
+            stdout_events=_events(_tool_use(tool="edit")),
+            stderr_fixture=QUOTA_ASSUMED_LOG,
+            sleep_seconds=10.0,
+        )
+        code = _run(
+            tmp_path,
+            executable=str(script),
+            timeout_seconds=2.0,
+            workspace=Workspace(path=ws, write=True),
+            profile=_profile(mcp=None),
+        )
+        assert code == TIMEOUT_EXIT_CODE
+
+    def test_a_quota_signature_after_an_mcp_call_keeps_waiting(self, tmp_path: Path) -> None:
+        script = _fake_opencode_script(
+            tmp_path,
+            stdout_events=_events(_tool_use()),
+            stderr_fixture=QUOTA_ASSUMED_LOG,
+            sleep_seconds=10.0,
+        )
+        code = _run(tmp_path, executable=str(script), timeout_seconds=2.0)
+        assert code == TIMEOUT_EXIT_CODE
+
+    def test_an_unrelated_error_line_changes_nothing(self, tmp_path: Path) -> None:
+        script = _fake_opencode_script(
+            tmp_path, stdout_events=GOOD_EVENTS, stderr_fixture=API_ERROR_LOG, sleep_seconds=0.0
+        )
+        code = _run(tmp_path, executable=str(script), timeout_seconds=5.0)
+        assert code == 0
