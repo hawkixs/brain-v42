@@ -361,6 +361,10 @@ def _bundle(role: Role, request: Request, repository: Path | None) -> ContextBun
         instructions = (instructions or "") + "\n\n" + language_line
     if instructions:
         bundle = bundle.with_role(role_instructions(role.name, instructions))
+    if role.write:
+        from .templates import _NO_GIT
+
+        bundle = bundle.with_role(role_instructions("ha", _NO_GIT))
     return bundle
 
 

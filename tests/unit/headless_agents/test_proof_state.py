@@ -19,7 +19,7 @@ from headless_agents.proof_state import (
     reprove_command,
 )
 from headless_agents.proofs import confinement, isolation_ok, proof_path, record_proof
-from headless_agents.state import publish
+from headless_agents.state import Unknown, publish
 
 # ── proof_status: the five statuses ─────────────────────────────────────────
 
@@ -27,6 +27,18 @@ from headless_agents.state import publish
 def test_no_file_is_missing_for_both_kinds(tmp_path: Path) -> None:
     assert proof_status(tmp_path, "codex", "isolation", "codex 1.0").status == "missing"
     assert proof_status(tmp_path, "codex", "confinement", "codex 1.0").status == "missing"
+
+
+def test_unreadable_proof_preserves_the_filesystem_reason(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from headless_agents import proof_state
+
+    def denied(*args: object, **kwargs: object) -> None:
+        raise Unknown("permission denied")
+
+    monkeypatch.setattr(proof_state, "read_optional", denied)
+    assert "permission denied" in proof_status(tmp_path, "codex", "isolation", "1").reason
 
 
 def test_a_passing_isolation_for_the_installed_version_is_passed(tmp_path: Path) -> None:

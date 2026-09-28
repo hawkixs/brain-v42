@@ -59,6 +59,20 @@ time the member rode a brain-v42 tag.
 - Admission refusals retain their prefixes and append holder details for global-lock
   contention.
 
+## Unreleased — 0.5.3, lot 7a: small fixes
+
+### Fixed
+- Failed runs retain and display the agent's final report; plain write runs carry the shared
+  instruction that ha handles git commits.
+- `ha workflows` names the configuration file when no workflows are declared, and `ha models`
+  points to the catalog template installed by the ha-delegate skill when its catalog is absent.
+- `ha providers` reports the underlying reason when a proof cannot be read, and `ha roles`
+  displays whether write role links are confined or have serialised writes.
+
+### Documentation
+- Documented that socket-opening or event-loop test clients can hang in codex's write sandbox;
+  run those tests on the host after the run.
+
 ## Unreleased — 0.5.3, lot 1: schema-constrained output
 
 A caller that needed a machine-readable answer could only ask for JSON in the prompt and

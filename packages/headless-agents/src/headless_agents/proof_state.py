@@ -95,8 +95,8 @@ def proof_status(
     """The status of ``rail``'s ``kind`` proof against the installed ``version``."""
     try:
         document = read_optional(proofs.proof_path(state, rail), expect_id=("rail", rail))
-    except Unknown:
-        return _unreadable(f"{rail}.json does not name {rail!r} or does not parse")
+    except Unknown as exc:
+        return _unreadable(str(exc))
     if document is None:
         return _missing(_no_record_reason(rail, kind))
     raw = document.get(kind)

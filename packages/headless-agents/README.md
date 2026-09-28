@@ -282,6 +282,9 @@ What a workspace run sees of the operator's HOME, rail by rail:
   `~/.claude/CLAUDE.md` still loads under `--restricted` is UNMEASURED.
 
 **Residuals, measured and accepted, not fixed:**
+- A web framework test client that opens sockets or waits on an event loop (for example,
+  Starlette/FastAPI `TestClient`) can hang inside the codex write sandbox. Run those tests
+  on the host after the run.
 - **codex reads outside the workspace by design.** Its sandbox stops writes and network,
   not reads: a codex agent can read anything the operator can, in both modes.
 - **opencode's `read` follows an inside symlink to an outside target.** The tool confines

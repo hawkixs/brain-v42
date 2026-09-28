@@ -670,7 +670,10 @@ def _providers_update(args: argparse.Namespace, io: Io) -> int:
 def _models(args: argparse.Namespace, io: Io) -> int:
     path = config_file("catalog.toml", io.environ, home=io.home)
     if path is None:
-        raise UsageError(f"{config_dir(io.environ, home=io.home) / 'catalog.toml'}: missing")
+        catalog_path = config_dir(io.environ, home=io.home) / "catalog.toml"
+        raise UsageError(
+            f"{catalog_path}: missing; the ha-delegate skill (red-skills) installs a template"
+        )
     catalogue = load_catalogue(path)
     roles, _ = declared_roles(io.environ, io.home)
     defaults_path = config_file("models.toml", io.environ, home=io.home)
@@ -836,7 +839,7 @@ def _run(args: argparse.Namespace, io: Io) -> int:
         text = report.get("text")
         if isinstance(text, str) and text:
             io.stdout.write(text if text.endswith("\n") else text + "\n")
-    elif outcome.exit_code == 0 and outcome.final is not None:
+    elif outcome.final is not None:
         if isinstance(branch, str):
             io.stdout.write(_write_header(outcome, branch))
         text = outcome.final.text
@@ -871,6 +874,18 @@ def _roles(args: argparse.Namespace, io: Io) -> int:
             f"context {row['context']}"
             + (f"  mcp {row['mcp']}" if row["mcp"] else "")
             + (f"  {'+'.join(flags)}" if flags else "")
+            + (
+                "  "
+                + " / ".join(
+                    "confined"
+                    if isinstance(link["confinement"], str)
+                    and link["confinement"].startswith("confined")
+                    else "writes serialised"
+                    for link in links
+                )
+                if row["write"]
+                else ""
+            )
             + (f"  instructions {row['instructions_bytes']} B" if row["instructions_bytes"] else "")
             + "\n"
         )
@@ -884,6 +899,12 @@ def _workflows(args: argparse.Namespace, io: Io) -> int:
     rows = describe_workflows(io.environ, io.home)
     if args.json:
         io.stdout.write(json.dumps(rows, indent=2) + "\n")
+        return 0
+    if not rows:
+        path = config_file("workflows.toml", io.environ, home=io.home) or (
+            config_dir(io.environ, home=io.home) / "workflows.toml"
+        )
+        io.stdout.write(f"No workflows declared in {path}.\n")
         return 0
     for row in rows:
         slots = row["slots"]
