@@ -12,8 +12,7 @@ quarantine of the WIDEST scope one of them belongs to:
   ``ha``, everywhere.
 
 Paths are compared lexically (normalised, never resolved): the symbolic links
-of a tampered tree are exactly what cannot be trusted. A forced clean archives
-the quarantine for its lineage after removing that lineage's worktree and branch.
+of a tampered tree are exactly what cannot be trusted.
 """
 
 from __future__ import annotations
@@ -117,6 +116,14 @@ def publish(
         pass
 
 
+def manual_lift(run_id: object, lineage: object) -> str:
+    """Point a refused write to the audited recovery steps without changing state."""
+    return (
+        f"run {run_id}, lineage {lineage}; manual lift procedure: "
+        "README.md#manually-lift-a-lineage-or-quarantine"
+    )
+
+
 def _refusal(path: Path, label: str) -> str | None:
     if not path.exists() and not path.is_symlink():
         return None
@@ -125,7 +132,7 @@ def _refusal(path: Path, label: str) -> str | None:
     except Unknown as exc:
         return (
             f"{label} quarantine ({exc}: unreadable); after inspection rename {path} "
-            f"to {path}.lifted-<UTC timestamp>"
+            f"to {path}.lifted-<UTC timestamp>; {manual_lift('unknown', 'unknown')}"
         )
     run_id = document.get("run_id")
     lineage = run_id
@@ -135,16 +142,13 @@ def _refusal(path: Path, label: str) -> str | None:
             lineage = entry.get("lineage") or run_id
         except Unknown:
             pass
-    return (
-        f"{label} quarantine: {document.get('reason')} in run {run_id}, "
-        f"lineage {lineage} ({path}); after inspection run ha clean --force {run_id}"
-    )
+    return f"{label} quarantine: {document.get('reason')} ({path}); {manual_lift(run_id, lineage)}"
 
 
 def active(state: Path) -> list[dict[str, object]]:
     """Every quarantine in force, the operator's first (spec §3.8.5: at the top of ``ha runs``).
 
-    A file present is a quarantine in force until a forced clean lifts it.
+    A file present is a quarantine in force until the operator lifts it.
     An unreadable file is listed as such: :func:`check` still refuses on it.
     """
     directory = state / "quarantine"
@@ -196,6 +200,7 @@ __all__ = [
     "Scope",
     "active",
     "check",
+    "manual_lift",
     "publish",
     "quarantine_path",
     "repository_id",

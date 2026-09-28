@@ -35,7 +35,6 @@ import stat
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import ExitStack
 from dataclasses import dataclass, field, replace
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -49,8 +48,8 @@ from .profile import Workspace
 from .provenance import MadeBy
 from .repo import RepoIdentity
 from .result import RunResult
-from .runs import Registry, RegistryError
-from .state import Missing, Unknown, publish, read, read_optional
+from .runs import RUN_ID_PATTERN
+from .state import Missing, Unknown, publish, read_optional
 
 if TYPE_CHECKING:
     from .engine import Plan
@@ -196,17 +195,25 @@ def check_unconfined_intent(state: Path, run_id: str) -> None:
         named = document.get("run_id")
     except Unknown:
         named = None
+    refused_run = str(named) if isinstance(named, str) else run_id
+    lineage: object = "unknown"
+    if RUN_ID_PATTERN.fullmatch(refused_run):
+        try:
+            entry = read_optional(state / "runs" / f"{refused_run}.json") or {}
+            lineage = entry.get("lineage") or "unknown"
+        except Unknown:
+            pass
     quarantine.publish(
         state,
         "operator",
         reason="stale_unconfined_intent",
-        run_id=str(named) if isinstance(named, str) else run_id,
+        run_id=refused_run,
         paths=[str(path)],
         common_dir=None,
     )
     raise WriteRefused(
         f"a stale unconfined intent ({path}) names a dead unconfined write: operator "
-        "quarantine published; nothing ran"
+        f"quarantine published; {quarantine.manual_lift(refused_run, lineage)}; nothing ran"
     )
 
 
@@ -263,7 +270,7 @@ def unfinalized(state: Path, lineage: LineageState, common: Path) -> WriteRefuse
     return WriteRefused(
         f"lineage {lineage.owner} holds the unfinished write of run {pending.run_id}: "
         "it is compromised (unfinalized_write) and the repository quarantined; "
-        f"after inspection run ha clean --force {pending.run_id}; nothing ran"
+        f"{quarantine.manual_lift(pending.run_id, lineage.owner)}; nothing ran"
     )
 
 
@@ -277,7 +284,7 @@ def _check_sources(state: Path, sources: Sequence[str]) -> None:
         if source.compromised is not None:
             raise WriteRefused(
                 f"--repo is inside lineage {owner}, compromised ({source.compromised}); "
-                f"after inspection run ha clean --force {owner}; nothing ran"
+                f"{quarantine.manual_lift(owner, owner)}; nothing ran"
             )
         if source.pending is not None:
             raise WriteRefused(
@@ -313,7 +320,7 @@ def _check_continued(write: _Write) -> None:
     if current.compromised is not None:
         raise WriteRefused(
             f"lineage {owner} is compromised ({current.compromised}); "
-            f"after inspection run ha clean --force {owner}; nothing ran"
+            f"{quarantine.manual_lift(owner, owner)}; nothing ran"
         )
     if write.named not in current.members:
         raise WriteRefused(f"{write.named} is not a member of lineage {owner}; nothing ran")
@@ -1249,7 +1256,7 @@ def clean_write(
                 reason = current.compromised or "a pending write"
                 say(
                     f"lineage {owner} is uncertain ({reason}): nothing cleaned, no git command "
-                    f"run; after inspection run ha clean --force {owner}"
+                    f"run; {quarantine.manual_lift(run_id, owner)}"
                 )
                 return 1
         # The registry lock is released: the first git command comes now.
@@ -1266,187 +1273,6 @@ def clean_write(
         shutil.rmtree(run_dir, ignore_errors=True)
         cleaned()
         say(f"{run_id} cleaned: worktree removed; branch {current.branch} kept")
-        return 0
-
-
-def force_clean(
-    *,
-    run_id: str,
-    owner: str,
-    state: Path,
-    environ: Mapping[str, str],
-    say: Callable[[str], None],
-) -> int:
-    """Retire a lineage after inspection while preserving its state as an audit trail.
-
-    The caller holds the run lifecycle and global locks. The registry lock
-    excludes admission while the lineage lock excludes another member's write.
-    The branch tip is pinned before worktree removal so a retry cannot adopt
-    another branch's work. Git removal finishes before any state is lifted, so
-    a failed removal keeps the quarantine in force.
-    """
-    with ExitStack() as locks_held:
-        locks_held.enter_context(
-            held(
-                lineages.registry_lock(state),
-                rank=Rank.LINEAGE_REGISTRY,
-                exclusive=True,
-                wait=None,
-                what="the lineage registry lock",
-            )
-        )
-        locks_held.enter_context(
-            held(
-                lineages.lineage_lock(state, owner),
-                rank=Rank.LINEAGE,
-                exclusive=True,
-                wait=None,
-                what=f"the lineage lock of {owner}",
-                key=owner,
-            )
-        )
-        try:
-            current = lineages.load(state, owner)
-        except Unknown as exc:
-            say(f"{exc}: nothing lifted")
-            return 1
-        if run_id not in current.members or current.branch != f"ha/{owner}":
-            say(f"run {run_id} does not match lineage {owner}: nothing lifted")
-            return 1
-        try:
-            owner_entry = Registry(state, runs_root=state / "runs").resolve(owner)
-        except (RegistryError, Unknown) as exc:
-            say(f"owner run {owner} is not registered ({exc}): nothing lifted")
-            return 1
-        if (
-            owner_entry.lineage != owner
-            or owner_entry.repository != current.repository
-            or current.worktree != owner_entry.run_dir / "wt"
-        ):
-            say(f"lineage {owner} does not match its owner run record: nothing lifted")
-            return 1
-        if current.worktree.is_symlink() or owner_entry.run_dir.is_symlink():
-            say(f"lineage {owner} worktree path is a symbolic link: nothing lifted")
-            return 1
-        listed = git(current.repository, ["worktree", "list", "--porcelain"], environ, state=state)
-        if listed.returncode != 0:
-            say(f"git worktree list failed: {listed.stderr.strip()}; nothing lifted")
-            return 1
-        registered = any(
-            line == f"worktree {current.worktree}" for line in listed.stdout.splitlines()
-        )
-        if current.worktree.exists() and not registered:
-            say(f"lineage {owner} worktree is not registered in its repository: nothing lifted")
-            return 1
-        ref = f"refs/heads/{current.branch}"
-        found = git(
-            current.repository, ["rev-parse", "--verify", "--quiet", ref], environ, state=state
-        )
-        if found.returncode not in (0, 1):
-            say(f"git rev-parse failed: {found.stderr.strip()}; nothing lifted")
-            return 1
-        actual = found.stdout.strip() if found.returncode == 0 else None
-        expected = current.clean_branch_tip
-        if current.clean_branch_deleted:
-            if actual is not None or current.worktree.exists() or registered:
-                say(
-                    f"branch {current.branch}: expected absent after ha deleted {expected}, "
-                    f"actual {actual or '<missing>'}; nothing lifted"
-                )
-                return 1
-        else:
-            if expected is None:
-                if not current.worktree.exists() or not registered or actual is None:
-                    say(
-                        f"branch {current.branch}: expected <missing recorded sha>, "
-                        f"actual {actual or '<missing>'}; nothing lifted"
-                    )
-                    return 1
-                # Save before removing the only registered worktree that links this
-                # branch to the lineage. A retry must never adopt a replacement tip.
-                expected = actual
-                current = replace(current, clean_branch_tip=expected)
-                lineages.save(state, current)
-            if actual != expected:
-                say(
-                    f"branch {current.branch}: expected {expected}, "
-                    f"actual {actual or '<missing>'}; nothing lifted"
-                )
-                return 1
-        if current.worktree.exists() or current.worktree.is_symlink():
-            result = git(
-                current.repository,
-                ["worktree", "remove", "--force", str(current.worktree)],
-                environ,
-                state=state,
-            )
-            if result.returncode != 0:
-                say(f"git worktree remove --force failed: {result.stderr.strip()}; nothing lifted")
-                return 1
-            say(f"{run_id}: removed worktree {current.worktree}")
-        if not current.clean_branch_deleted:
-            assert expected is not None
-            deleted = git(
-                current.repository, ["update-ref", "-d", ref, expected], environ, state=state
-            )
-            if deleted.returncode != 0:
-                found = git(
-                    current.repository,
-                    ["rev-parse", "--verify", "--quiet", ref],
-                    environ,
-                    state=state,
-                )
-                actual = found.stdout.strip() if found.returncode == 0 else "<missing>"
-                say(
-                    f"branch {current.branch}: expected {expected}, actual {actual}; "
-                    f"git update-ref -d failed: {deleted.stderr.strip()}; nothing lifted"
-                )
-                return 1
-            current = replace(current, clean_branch_deleted=True)
-            lineages.save(state, current)
-            say(f"{run_id}: deleted branch {current.branch}")
-        paths = [
-            lineages.lineage_path(state, owner),
-            lineages.lineage_lock(state, owner),
-            *(state / "runs" / f"{member}.json" for member in current.members),
-        ]
-        for path in (
-            quarantine.quarantine_path(state, "repository", current.common_dir),
-            quarantine.quarantine_path(state, "operator", None),
-        ):
-            if path.exists() or path.is_symlink():
-                try:
-                    document = read(path)
-                except Unknown as exc:
-                    say(f"{exc}: quarantine could not be attributed; nothing lifted")
-                    return 1
-                if document.get("run_id") in current.members:
-                    paths.append(path)
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        renamed: list[tuple[Path, Path]] = []
-        try:
-            for path in paths:
-                if path.exists() or path.is_symlink():
-                    lifted = path.with_name(f"{path.name}.lifted-{stamp}")
-                    path.rename(lifted)
-                    renamed.append((path, lifted))
-        except OSError as exc:
-            rollback_errors: list[str] = []
-            for path, lifted in reversed(renamed):
-                try:
-                    lifted.rename(path)
-                except OSError as rollback_exc:
-                    rollback_errors.append(f"{path}: {rollback_exc}")
-            if rollback_errors:
-                say(
-                    f"state archive failed ({exc}); rollback failed for "
-                    f"{', '.join(rollback_errors)}; recover state by hand"
-                )
-            else:
-                say(f"state archive failed ({exc}); all state files restored")
-            return 1
-        for path, lifted in renamed:
-            say(f"{run_id}: lifted {path} to {lifted}")
         return 0
 
 

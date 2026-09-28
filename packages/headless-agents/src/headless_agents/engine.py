@@ -1725,7 +1725,6 @@ def _remove_review_worktree(
 def clean(
     run_id: str,
     *,
-    force: bool = False,
     environ: Mapping[str, str],
     home: Path,
     say: Callable[[str], None],
@@ -1780,14 +1779,6 @@ def clean(
             raise UsageError("an unconfined write is running: nothing cleaned") from None
         if entry.lineage is not None:
             try:
-                if force:
-                    return write_flow.force_clean(
-                        run_id=run_id,
-                        owner=entry.lineage,
-                        state=state,
-                        environ=operator_environment(environ),
-                        say=say,
-                    )
                 return write_flow.clean_write(
                     run_id=run_id,
                     run_dir=entry.run_dir,
@@ -1800,8 +1791,6 @@ def clean(
                 )
             except LockTimeout as exc:
                 raise UsageError(f"{exc}: the lineage is in use; nothing cleaned") from None
-        if force:
-            raise UsageError(f"{run_id} has no lineage to lift; nothing cleaned")
         # The registry decides (ticket fbcda7d5): a report is never an authority, and
         # a forged or deleted run.json must not turn a never-started run into a
         # cleaned one, or the reverse. Only an entry older than started_at falls

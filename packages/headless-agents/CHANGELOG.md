@@ -286,17 +286,9 @@ fairness across the two populations does not.
   for the outside target.
 - The confinement reader rejects non-normalised `writable_roots` strings before
   `Path()` can erase their spelling.
-- `ha clean --force RUN_ID` retires the run's lineage after inspection: it removes its
-  worktree, deletes its `ha/<lineage>` branch, and renames the lineage, lock, member-run
-  and matching quarantine state files to `*.lifted-<UTC timestamp>`. It verifies the
-  owner run record and git worktree registration before deletion, and restores state
-  files if an archive rename fails. A retry finishes branch deletion and archival when
-  the worktree was removed before a branch command failed. It refuses an active run.
-  Quarantine and compromised-lineage refusals name the recovery command.
-- Forced cleanup saves the branch tip before removing its registered worktree and deletes
-  the branch with `git update-ref -d` against that exact commit. A retry refuses a moved
-  branch or a missing saved tip, and reports the expected and actual commits. A saved
-  deletion marker lets an archive retry finish after the branch was already deleted.
+- Quarantine and compromised-lineage refusals name the run id, lineage, and manual
+  lift procedure in the README. `ha clean --force` is deferred to 0.5.4 pending
+  a proper design.
 
 ## 0.5.2 — 2026-09-27 (tag `headless-agents-v0.5.2` after merge)
 

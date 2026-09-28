@@ -290,9 +290,6 @@ def _parser() -> argparse.ArgumentParser:
 
     clean_parser = commands.add_parser("clean", help="remove one run's directory")
     clean_parser.add_argument("run_id", help="the run id, as ha run printed it")
-    clean_parser.add_argument(
-        "--force", action="store_true", help="lift a run's lineage quarantine"
-    )
 
     prove_parser = commands.add_parser(
         "prove",
@@ -1079,7 +1076,7 @@ def _runs(args: argparse.Namespace, io: Io) -> int:
 
 
 def _clean(args: argparse.Namespace, io: Io) -> int:
-    return clean(args.run_id, force=args.force, environ=io.environ, home=io.home, say=io.say)
+    return clean(args.run_id, environ=io.environ, home=io.home, say=io.say)
 
 
 # ── ha show ─────────────────────────────────────────────────────────────────

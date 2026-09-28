@@ -44,10 +44,6 @@ class LineageState:
     #: Every later reason, in order, never replacing the first (0.5.3 lot 4a,
     #: ticket e5b93270 item 1); empty for a lineage written before the key.
     compromised_history: tuple[str, ...] = ()
-    #: Pin force-clean retries to the branch tip seen before worktree removal.
-    clean_branch_tip: str | None = None
-    #: Retain evidence of our own deletion so an archive failure can be retried.
-    clean_branch_deleted: bool = False
 
 
 def lineage_path(state: Path, owner: str) -> Path:
@@ -83,8 +79,6 @@ def _document(lineage: LineageState) -> dict[str, object]:
         },
         "compromised": lineage.compromised,
         "compromised_history": list(lineage.compromised_history),
-        "clean_branch_tip": lineage.clean_branch_tip,
-        "clean_branch_deleted": lineage.clean_branch_deleted,
     }
 
 
@@ -160,12 +154,6 @@ def load(state: Path, owner: str) -> LineageState:
     history = document.get("compromised_history", [])
     if not isinstance(history, list) or not all(isinstance(h, str) and h for h in history):
         raise Unknown(f"{path}: compromised_history is malformed")
-    clean_branch_tip = _optional_str(document.get("clean_branch_tip"), "clean_branch_tip", path)
-    clean_branch_deleted = document.get("clean_branch_deleted", False)
-    if not isinstance(clean_branch_deleted, bool) or (
-        clean_branch_deleted and not clean_branch_tip
-    ):
-        raise Unknown(f"{path}: clean_branch_deleted is malformed")
     return LineageState(
         owner=owner,
         repository=Path(_str(document, "repository", path)),
@@ -177,8 +165,6 @@ def load(state: Path, owner: str) -> LineageState:
         pending=_pending(document.get("pending"), path),
         compromised=compromised,
         compromised_history=tuple(history),
-        clean_branch_tip=clean_branch_tip,
-        clean_branch_deleted=clean_branch_deleted,
     )
 
 

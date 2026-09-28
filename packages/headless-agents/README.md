@@ -454,7 +454,7 @@ ha models [--provider NAME] [--json] [--refresh]
 ha runs [--limit N] [--json]
 ha show RUN_ID [--json]
 ha show --dir PATH [--json]
-ha clean [--force] RUN_ID
+ha clean RUN_ID
 ha --version
 ```
 
@@ -643,9 +643,9 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   patch path and the agent's text are printed; exit `5` when nothing changed. **It never
   merges**: read the diff, integrate, or `ha clean`. If the `.git` tripwire fired, no git
   command runs at all, the lineage is compromised or the repository or operator
-  quarantined, and the worktree is kept for inspection; after inspecting any residue,
-  `ha clean --force RUN_ID` removes the worktree and branch and archives the lineage,
-  run and quarantine state as `*.lifted-<UTC timestamp>`. A write role on a rail without a passing
+  quarantined, and the worktree is kept for inspection. Follow the
+  [manual lift procedure](#manually-lift-a-lineage-or-quarantine) after inspecting
+  any residue. A write role on a rail without a passing
   confinement proof for its installed version is serialised against every other run
   (`ha roles` shows `confined` or `unconfined`). codex needs no `--shell`
   here: it reads files only through its shell, which is always on and stays inside its OS
@@ -784,6 +784,30 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   (nothing ran); `3` provider unavailable, chain exhausted; `4` timeout with no tool call
   started; `5` `--write` finished with no change; `6` a review's CHANGES verdict; `124`
   timeout.
+
+
+### Manually lift a lineage or quarantine
+
+Use the run id and lineage named in the refusal. Inspect the run's worktree, commits,
+and state files first; keep any work you need. For a continuation, use the lineage
+owner's run id in the worktree, branch, and lineage paths, and inspect every member
+run record before lifting it. Set `<run_dir>` to the owner's run directory
+and `<state>` to the state directory (`~/.local/state/ha`, or `$XDG_STATE_HOME/ha`
+when set). Then:
+
+1. Remove the worktree with `git worktree remove --force <run_dir>/wt` from the
+   repository. Check that `ha/<run_id>` holds nothing to keep, then delete it with
+   `git branch -D ha/<run_id>`.
+2. Rename `<state>/lineages/<run_id>.json`,
+   `<state>/lineages/<run_id>.lock`, and `<state>/runs/<run_id>.json` by appending
+   `.lifted-<UTC timestamp>` to each filename. Rename any other member run records
+   involved in the same lineage after inspection.
+3. Rename the matching `<state>/quarantine/repo-*.json` in the same way. Inspect
+   its `run_id` and repository before choosing it. If an operator quarantine is
+   also involved, inspect and rename `<state>/quarantine/operator.json` likewise.
+
+Keep every lifted file for audit; never delete these state files. Use the same UTC
+timestamp for the files lifted together, for example `20260928T212416Z`.
 
 ## Live tests
 

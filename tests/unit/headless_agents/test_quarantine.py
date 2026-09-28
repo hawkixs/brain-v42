@@ -133,6 +133,8 @@ def test_a_corrupt_quarantine_file_refuses(tmp_path: Path, layout: dict[str, Pat
     refusal = quarantine.check(state, layout["common_dir"])
     assert refusal is not None and "unreadable" in refusal
     assert f"rename {path} to {path}.lifted-<UTC timestamp>" in refusal
+    assert "run unknown, lineage unknown" in refusal
+    assert "README.md#manually-lift-a-lineage-or-quarantine" in refusal
 
 
 def test_the_first_quarantine_is_kept(tmp_path: Path, layout: dict[str, Path]) -> None:
