@@ -348,8 +348,11 @@ mistral    = "~/.config/red/mistral.env"
 
 ha reads only the preset's own variable from that file (`KEY=value`, `export KEY=value`,
 quoted or not), and only if the file belongs to you and nobody else can read it (mode
-`0600`). The key goes to the HTTP request only. `keys.toml` is read from the configuration
-directory only, never from a repository. `ha providers` shows where each key came from.
+`0600`). Each key may be defined once; inline comments after whitespace are stripped.
+Neither a link nor a FIFO is accepted as a key file. The key goes to the HTTP request
+only. `keys.toml` is read from the configuration directory only, through one checked
+descriptor, never from a repository. It may be group-writable only when the group is
+private to the user. `ha providers` shows where each key came from.
 `openai-compat` still takes its key from the variable `--key-env` names.
 
 ```python
@@ -385,10 +388,15 @@ streaming -- a profile declaring `mcp` or `workspace` raises `ValueError`. The c
 bundle's preamble becomes a `system` message. `tokens` comes from `usage` (cached and
 reasoning tokens when the API reports them, `None` otherwise); `cost_usd` is filled only
 when the API reports a cost (OpenRouter, which the preset asks for it).
+Every HTTP request sends `max_tokens = 8192` by default, a declared bound rather than
+a measured API default. Set `max_tokens` on a role with an HTTP link or pass
+`ha run --max-tokens N` to override it. An empty answer exits `3` so a chain can try
+the next link; its usage and cost remain recorded.
 
 | Outcome | Exit code | Chain |
 |---|---|---|
-| answer | `0` | |
+| non-empty answer | `0` | |
+| empty answer | `3` | advances -- nothing was written |
 | own deadline | `124` | stops |
 | HTTP 429 or 5xx, host unreachable | `3` | advances -- no tool could have written |
 | HTTP 401/403, a malformed reply, anything else | `1` | stops |
@@ -431,7 +439,7 @@ uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@
 ```text
 ha run TARGET [PROMPT | -] [-m|--model MODEL] [--effort E] [--timeout SECONDS] [--wait SECONDS]
        [--context full|global|none] [--context-parents] [--mcp PROFILE]
-       [--base-url URL --key-env VAR] [--repo PATH] [--json] [--run-dir DIR]
+       [--base-url URL --key-env VAR] [--max-tokens N] [--repo PATH] [--json] [--run-dir DIR]
        [--output-schema FILE]
        [--write [--shell] [--base REF]]
        [--continue RUN_ID] [--findings RUN_ID] [--head REF] [--run RUN_ID]

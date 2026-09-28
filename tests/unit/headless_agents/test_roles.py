@@ -71,6 +71,22 @@ def test_an_openai_compat_role_keeps_its_endpoint(tmp_path: Path) -> None:
     assert (role.base_url, role.key_env) == ("http://x/v1", "K")
 
 
+def test_max_tokens_is_read_for_a_role_with_an_http_link(tmp_path: Path) -> None:
+    role = _load(tmp_path, '[r]\nchain = ["openrouter:m", "codex:m"]\nmax_tokens = 100\n')["r"]
+    assert role.max_tokens == 100
+
+
+def test_max_tokens_on_a_cli_only_role_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(RolesError, match="max_tokens applies to HTTP providers only"):
+        _load(tmp_path, '[r]\nprovider = "codex"\nmax_tokens = 100\n')
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"64"', "1.5"])
+def test_max_tokens_must_be_a_positive_integer(tmp_path: Path, value: str) -> None:
+    with pytest.raises(RolesError, match="max_tokens must be a positive integer"):
+        _load(tmp_path, f'[r]\nprovider = "openrouter"\nmax_tokens = {value}\n')
+
+
 @pytest.mark.parametrize(
     ("text", "rule"),
     [

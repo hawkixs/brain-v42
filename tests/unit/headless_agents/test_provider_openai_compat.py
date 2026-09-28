@@ -26,6 +26,7 @@ from headless_agents.capability import (
     PROVIDER_FALLBACK_EXIT_CODE,
     TIMEOUT_EXIT_CODE,
 )
+from headless_agents.chain import run_chain
 from headless_agents.context import ContextBundle, ContextFile
 from headless_agents.profile import CapabilityProfile, McpServer, Workspace
 from headless_agents.providers import openai_compat
@@ -208,11 +209,118 @@ def test_the_request_carries_prompt_preamble_options_and_bearer(tmp_path, serve)
     assert "stream" not in body and "tools" not in body
 
 
-def test_an_empty_answer_is_no_text(tmp_path, serve) -> None:
-    server = serve(lambda _b: (200, _completion(""), 0))
+def test_an_empty_answer_exits_3_and_keeps_the_usage(tmp_path, serve) -> None:
+    server = serve(lambda _b: (200, _completion("", cost=0.002), 0))
     result = OpenAICompatProvider().run(_spec(tmp_path, server.url))
-    assert result.exit_code == 0
+    assert result.exit_code == PROVIDER_FALLBACK_EXIT_CODE
     assert result.text is None
+    assert result.tokens is not None and (result.tokens.input, result.tokens.output) == (11, 7)
+    assert result.cost_usd == 0.002
+    assert "empty answer" in (tmp_path / "run-1" / "stderr.log").read_text()
+
+
+def test_an_empty_completion_from_the_worker_exits_3_without_a_socket(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = OpenAICompatProvider()
+    monkeypatch.setattr(
+        provider, "_call_worker", lambda *_args: (0, {"ok": True, "response": _completion("")})
+    )
+    result = provider.run(_spec(tmp_path, "https://example.test/v1"))
+    assert result.exit_code == PROVIDER_FALLBACK_EXIT_CODE
+    assert result.tokens is not None and result.tokens.input == 11
+
+
+def test_an_unexpected_finish_reason_is_not_logged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    completion = _completion("")
+    choices = completion["choices"]
+    assert isinstance(choices, list)
+    choices[0]["finish_reason"] = SECRET
+    provider = OpenAICompatProvider()
+    monkeypatch.setattr(
+        provider, "_call_worker", lambda *_args: (0, {"ok": True, "response": completion})
+    )
+    provider.run(_spec(tmp_path, "https://example.test/v1"))
+    stderr = (tmp_path / "run-1" / "stderr.log").read_text()
+    assert "finish_reason=unknown" in stderr
+    assert SECRET not in stderr
+
+
+def test_every_request_carries_a_max_tokens(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = OpenAICompatProvider("openrouter")
+    bodies: list[object] = []
+
+    def call(_spec: RunSpec, _env: object, envelope: dict[str, object], _timeout: float):
+        bodies.append(envelope["body"])
+        return 0, {"ok": True, "response": _completion()}
+
+    monkeypatch.setattr(provider, "_call_worker", call)
+    spec = _spec(
+        tmp_path, "https://example.test", extra={}, environment={"OPENROUTER_API_KEY": SECRET}
+    )
+    provider.run(spec)
+    assert isinstance(bodies[0], dict) and bodies[0]["max_tokens"] == 8192
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "64", 1.5])
+def test_a_bad_max_tokens_is_refused_before_any_request(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, value: object
+) -> None:
+    provider = OpenAICompatProvider()
+    calls: list[object] = []
+    monkeypatch.setattr(provider, "_call_worker", lambda *args: calls.append(args))
+    spec = _spec(
+        tmp_path,
+        "https://example.test",
+        extra={"base_url": "https://example.test", "key_env": KEY_ENV, "max_tokens": value},
+    )
+    result = provider.run(spec)
+    assert result.exit_code == INVALID_USAGE_EXIT_CODE
+    assert not calls
+    assert (
+        "max_tokens must be a positive integer" in (tmp_path / "run-1" / "stderr.log").read_text()
+    )
+
+
+def test_a_whitespace_answer_is_empty(tmp_path, serve) -> None:
+    server = serve(lambda _b: (200, _completion("  \n"), 0))
+    result = OpenAICompatProvider().run(_spec(tmp_path, server.url))
+    assert result.exit_code == PROVIDER_FALLBACK_EXIT_CODE
+
+
+def test_an_empty_answer_cut_by_length_says_to_raise_max_tokens(tmp_path, serve) -> None:
+    completion = _completion("")
+    choices = completion["choices"]
+    assert isinstance(choices, list)
+    choices[0]["finish_reason"] = "length"
+    server = serve(lambda _b: (200, completion, 0))
+    OpenAICompatProvider().run(_spec(tmp_path, server.url))
+    assert "raise max_tokens" in (tmp_path / "run-1" / "stderr.log").read_text()
+
+
+def test_a_chain_falls_through_an_empty_answer(tmp_path, serve) -> None:
+    server = serve(lambda _b: (200, _completion(""), 0))
+    visited: list[str] = []
+
+    def run_one(provider: str) -> int:
+        visited.append(provider)
+        if provider == "openrouter":
+            return OpenAICompatProvider().run(_spec(tmp_path, server.url)).exit_code
+        return 0
+
+    result = run_chain(["openrouter", "mistral"], run_one=run_one)
+    assert visited == ["openrouter", "mistral"]
+    assert result.provider == "mistral" and result.rc == 0
+
+
+def test_a_non_empty_answer_is_unchanged(tmp_path, serve) -> None:
+    server = serve(lambda _b: (200, _completion("hello"), 0))
+    result = OpenAICompatProvider().run(_spec(tmp_path, server.url))
+    assert result.exit_code == 0 and result.text == "hello"
 
 
 # ── Failure classification ────────────────────────────────────────────────

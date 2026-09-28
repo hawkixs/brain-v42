@@ -106,6 +106,7 @@ class Overrides:
     shell: bool | None = None
     base_url: str | None = None
     key_env: str | None = None
+    max_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -325,6 +326,7 @@ def _with_overrides(role: Role, overrides: Overrides) -> Role:
         shell=overrides.shell if overrides.shell is not None else role.shell,  # nosec B604
         base_url=overrides.base_url if overrides.base_url is not None else role.base_url,
         key_env=overrides.key_env if overrides.key_env is not None else role.key_env,
+        max_tokens=overrides.max_tokens if overrides.max_tokens is not None else role.max_tokens,
     )
 
 
@@ -432,6 +434,7 @@ _OVERRIDE_FLAGS: Final[Mapping[str, str]] = {
     "shell": "--shell",
     "base_url": "--base-url",
     "key_env": "--key-env",
+    "max_tokens": "--max-tokens",
 }
 
 
@@ -776,6 +779,8 @@ def _spec_for(
     extra: dict[str, object] = {}
     if provider == GENERIC_NAME:
         extra = {"base_url": role.base_url, "key_env": role.key_env}
+    if http and role.max_tokens is not None:
+        extra["max_tokens"] = role.max_tokens
     return RunSpec(
         prompt=plan.prompt,
         name=f"ha-{run_id}",

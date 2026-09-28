@@ -24,6 +24,24 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
+## Unreleased — 0.5.3, lot 3: HTTP answers bounded, credential files read through one descriptor
+
+### Added
+- Every HTTP request carries `max_tokens` (declared default 8192). A role with an HTTP
+  link may set `max_tokens`; `ha run --max-tokens N` overrides it.
+
+### Changed
+- An empty HTTP answer exits `3` so a chain can try its next link; billed usage and cost
+  are retained (D3).
+- A key defined twice in a `.env` file is refused (D4). Inline comments are removed
+  from values; a `#` inside a quoted value or joined to an unquoted value is retained.
+
+### Fixed
+- `keys.toml` and `.env` files are read through one checked descriptor each. FIFOs are
+  refused without blocking; symbolic links and nonregular files are refused.
+- Group write on `keys.toml` is allowed only for a user-private group named like the
+  user with no supplementary members.
+
 ## Unreleased — 0.5.3, lot 1: schema-constrained output
 
 A caller that needed a machine-readable answer could only ask for JSON in the prompt and

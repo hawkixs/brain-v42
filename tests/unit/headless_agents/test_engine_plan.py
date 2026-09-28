@@ -14,7 +14,15 @@ from pathlib import Path
 
 import pytest
 
-from headless_agents.engine import REVIEW_DEFAULT_TASK, Overrides, Request, UsageError, plan
+from headless_agents.context import ContextBundle
+from headless_agents.engine import (
+    REVIEW_DEFAULT_TASK,
+    Overrides,
+    Request,
+    UsageError,
+    _spec_for,
+    plan,
+)
 from headless_agents.registry import max_prompt_bytes
 from headless_agents.runs import Registry
 from headless_agents.templates import implement_prompt
@@ -125,6 +133,34 @@ def test_the_engine_refuses_what_the_cli_refuses(
     env.mcp('[brain-read]\nurl = "http://127.0.0.1:8765/mcp"\nbearer_env = "T"\n')
     with pytest.raises(UsageError, match=rule):
         plan(env.request(target, "task", overrides=overrides))
+
+
+def test_max_tokens_reaches_http_links_only(env: Env) -> None:
+    env.roles('[r]\nchain = ["openrouter:m", "codex:m"]\nmax_tokens = 100\n')
+    planned = plan(env.request("r", "task"))
+    bundle = ContextBundle(level="none", files=())
+    for provider in ("openrouter", "codex"):
+        spec = _spec_for(
+            provider, planned, bundle, run_id="test", run_dir=env.cwd / provider, workspace=None
+        )
+        if provider == "openrouter":
+            assert spec.extra["max_tokens"] == 100
+        else:
+            assert "max_tokens" not in spec.extra
+
+
+def test_the_flag_overrides_the_role(env: Env) -> None:
+    env.roles('[r]\nprovider = "openrouter"\nmax_tokens = 100\n')
+    planned = plan(env.request("r", "task", overrides=Overrides(max_tokens=64)))
+    spec = _spec_for(
+        "openrouter",
+        planned,
+        ContextBundle(level="none", files=()),
+        run_id="test",
+        run_dir=env.cwd / "openrouter",
+        workspace=None,
+    )
+    assert spec.extra["max_tokens"] == 64
 
 
 def test_base_needs_a_write_run(env: Env) -> None:

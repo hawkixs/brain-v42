@@ -224,6 +224,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--repo", type=Path, help="the repository (default: the one holding cwd)")
     run.add_argument("--base-url", help="the endpoint of openai-compat")
     run.add_argument("--key-env", metavar="VAR", help="the key variable of openai-compat")
+    run.add_argument("--max-tokens", type=int, metavar="N", help="maximum HTTP answer tokens")
     run.add_argument("--json", action="store_true", help="print run.json")
     run.add_argument("--run-dir", type=Path, help="the run's directory (must not exist)")
     run.add_argument(
@@ -808,6 +809,7 @@ def _run(args: argparse.Namespace, io: Io) -> int:
             shell=args.shell,  # nosec B604
             base_url=args.base_url,
             key_env=args.key_env,
+            max_tokens=args.max_tokens,
         ),
         base=args.base,
         repo=args.repo,

@@ -7,9 +7,12 @@ reads that preset's variable only. No message ever carries the value.
 
 from __future__ import annotations
 
+import ast
+import faulthandler
 import os
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -67,6 +70,70 @@ def test_the_env_file_forms_a_shell_sources_are_read(tmp_path: Path, line: str) 
     _declare(home, f'mistral = "{home / "m.env"}"\n')
     found = preset_key("mistral", {"HOME": str(home)})
     assert found is not None and found.value == SECRET
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        ("K=abc # note", "abc"),
+        ('K="abc" # note', "abc"),
+        ("export K = abc   #note", "abc"),
+        ("K=abc#def", "abc#def"),
+        ('K="a # b"', "a # b"),
+    ],
+)
+def test_an_inline_comment_is_not_part_of_the_key(tmp_path: Path, line: str, expected: str) -> None:
+    home = _home(tmp_path)
+    path = _env_file(home / "or.env", f"{line}\n")
+    _declare(home, 'openrouter = "~/or.env"\n')
+    assert keys._read_variable(path, "K") == expected
+
+
+def test_a_key_defined_twice_is_refused_naming_the_file_and_the_variable(
+    tmp_path: Path,
+) -> None:
+    second = f"{SECRET}-second"
+    path = _env_file(tmp_path / "key.env", f'K={SECRET}\nexport K="{second}"\n')
+    with pytest.raises(KeysError) as refused:
+        keys._read_variable(path, "K")
+    message = str(refused.value)
+    assert str(path) in message and "K" in message and "1" in message and "2" in message
+    assert SECRET not in message and second not in message
+
+
+def test_an_empty_first_definition_and_a_second_is_still_twice(tmp_path: Path) -> None:
+    path = _env_file(tmp_path / "key.env", "K=\nK=b\n")
+    with pytest.raises(KeysError, match="defined 2 times"):
+        keys._read_variable(path, "K")
+
+
+def test_a_comment_after_an_empty_value_does_not_define_a_key(tmp_path: Path) -> None:
+    path = _env_file(tmp_path / "key.env", "K= # note\n")
+    with pytest.raises(KeysError, match="does not define K"):
+        keys._read_variable(path, "K")
+
+
+def test_trailing_text_after_a_closing_quote_is_refused(tmp_path: Path) -> None:
+    path = _env_file(tmp_path / "key.env", 'K="abc" junk\n')
+    with pytest.raises(KeysError) as refused:
+        keys._read_variable(path, "K")
+    assert f"{path}:1" in str(refused.value) and "abc" not in str(refused.value)
+
+
+def test_a_fifo_env_file_is_refused_without_blocking(tmp_path: Path) -> None:
+    path = tmp_path / "key.env"
+    os.mkfifo(path)
+    faulthandler.dump_traceback_later(5, exit=True)
+    try:
+        with pytest.raises(KeysError, match="not a regular file"):
+            keys._read_variable(path, "K")
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+
+
+def test_other_variables_are_ignored(tmp_path: Path) -> None:
+    path = _env_file(tmp_path / "key.env", "OTHER=x\nOTHER=y\nK=v\n")
+    assert keys._read_variable(path, "K") == "v"
 
 
 def test_only_the_presets_own_variable_is_read(tmp_path: Path) -> None:
@@ -143,21 +210,100 @@ def test_a_keys_toml_a_foreign_group_can_write_is_refused(
     home = _home(tmp_path)
     _declare(home, 'openrouter = "~/or.env"\n')
     (home / ".config" / "ha" / "keys.toml").chmod(0o620)
-    foreign_group = os.getgid() + 1
-    monkeypatch.setattr(keys.os, "getgid", lambda: foreign_group)
+    monkeypatch.setattr(
+        keys.grp, "getgrgid", lambda _gid: SimpleNamespace(gr_name="staff", gr_mem=["alice"])
+    )
     with pytest.raises(KeysError, match="writable by others"):
         preset_key("openrouter", {"HOME": str(home)})
 
 
-def test_a_keys_toml_writable_by_the_users_own_group_is_accepted(tmp_path: Path) -> None:
+def test_a_keys_toml_writable_by_the_users_own_group_is_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Measured: umask 002 with a user private group creates 0664 files; that group is
     the user alone, so refusing it would refuse the machine's default."""
     home = _home(tmp_path)
     _env_file(home / "or.env", f"OPENROUTER_API_KEY={SECRET}\n")
     _declare(home, 'openrouter = "~/or.env"\n')
     (home / ".config" / "ha" / "keys.toml").chmod(0o664)
+    monkeypatch.setattr(keys.pwd, "getpwuid", lambda _uid: SimpleNamespace(pw_name="u"))
+    monkeypatch.setattr(keys.grp, "getgrgid", lambda _gid: SimpleNamespace(gr_name="u", gr_mem=[]))
     found = preset_key("openrouter", {"HOME": str(home)})
     assert found is not None and found.value == SECRET
+
+
+def test_a_group_named_like_the_user_but_with_members_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    _declare(home, 'openrouter = "~/or.env"\n')
+    (home / ".config" / "ha" / "keys.toml").chmod(0o664)
+    monkeypatch.setattr(keys.pwd, "getpwuid", lambda _uid: SimpleNamespace(pw_name="u"))
+    monkeypatch.setattr(
+        keys.grp, "getgrgid", lambda _gid: SimpleNamespace(gr_name="u", gr_mem=["bob"])
+    )
+    with pytest.raises(KeysError, match="writable by others") as refused:
+        preset_key("openrouter", {"HOME": str(home)})
+    assert SECRET not in str(refused.value)
+
+
+def test_an_unknown_group_is_not_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = _home(tmp_path)
+    _declare(home, 'openrouter = "~/or.env"\n')
+    (home / ".config" / "ha" / "keys.toml").chmod(0o664)
+    monkeypatch.setattr(keys.grp, "getgrgid", lambda _gid: (_ for _ in ()).throw(KeyError()))
+    with pytest.raises(KeysError, match="writable by others"):
+        preset_key("openrouter", {"HOME": str(home)})
+
+
+def test_a_keys_toml_that_is_a_fifo_is_refused_without_blocking(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    os.mkfifo(home / ".config" / "ha" / "keys.toml")
+    faulthandler.dump_traceback_later(5, exit=True)
+    try:
+        with pytest.raises(KeysError, match="not a regular file"):
+            preset_key("openrouter", {"HOME": str(home)})
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+
+
+def test_a_keys_toml_that_is_a_directory_is_refused(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    (home / ".config" / "ha" / "keys.toml").mkdir()
+    with pytest.raises(KeysError, match="not a regular file"):
+        preset_key("openrouter", {"HOME": str(home)})
+
+
+def test_a_keys_toml_swapped_for_a_link_after_resolution_is_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    _declare(home, 'openrouter = "~/or.env"\n')
+    path = home / ".config" / "ha" / "keys.toml"
+    target = home / "copy.toml"
+    target.write_text(path.read_text())
+    original = keys.config_file
+
+    def swap(*args: object, **kwargs: object) -> Path | None:
+        resolved = original(*args, **kwargs)  # type: ignore[arg-type]
+        path.unlink()
+        path.symlink_to(target)
+        return resolved
+
+    monkeypatch.setattr(keys, "config_file", swap)
+    with pytest.raises(KeysError, match="symbolic link"):
+        preset_key("openrouter", {"HOME": str(home)})
+
+
+def test_keys_py_reads_through_descriptors_only() -> None:
+    tree = ast.parse(Path(keys.__file__).read_text())
+    forbidden = {"read_text", "read_bytes", "stat", "lstat", "exists", "is_file"}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        assert node.func.attr not in forbidden
+        if node.func.attr == "open":
+            assert isinstance(node.func.value, ast.Name) and node.func.value.id == "os"
 
 
 def test_a_keys_toml_readable_by_others_is_accepted(tmp_path: Path) -> None:

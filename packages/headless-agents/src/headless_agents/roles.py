@@ -59,6 +59,7 @@ _FIELDS: Final = frozenset(
         "shell",
         "base_url",
         "key_env",
+        "max_tokens",
         "instructions",
     }
 )
@@ -91,6 +92,7 @@ class Role:
     base_url: str | None
     key_env: str | None
     instructions: str | None
+    max_tokens: int | None = None
     implicit: bool = False
 
     @property
@@ -114,6 +116,7 @@ def implicit_role(provider: str) -> Role:
         base_url=None,
         key_env=None,
         instructions=None,
+        max_tokens=None,
         implicit=True,
     )
 
@@ -217,6 +220,11 @@ def _role(path: Path, name: str, table: object, mcp_profiles: Mapping[str, objec
     base_url = entry.string(table, "base_url", "base_url must be a string")
     key_env = entry.string(table, "key_env", "key_env must be a string")
     instructions = entry.string(table, "instructions", "instructions must be a string")
+    max_tokens = table.get("max_tokens")
+    if max_tokens is not None and (
+        isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0
+    ):
+        raise entry.refuse("max_tokens must be a positive integer")
 
     context = table.get("context", "full" if write else "global")
     if context not in CONTEXT_LEVELS:
@@ -237,6 +245,7 @@ def _role(path: Path, name: str, table: object, mcp_profiles: Mapping[str, objec
         base_url=base_url,
         key_env=key_env,
         instructions=instructions,
+        max_tokens=cast("int | None", max_tokens),
     )
     rule = capability_rule(role, mcp_profiles)
     if rule is not None:
@@ -253,6 +262,15 @@ def capability_rule(role: Role, mcp_profiles: Mapping[str, object]) -> str | Non
     if role.shell and not role.write:
         return "shell requires write: a shell can write what read tools cannot"
     http = [link.provider for link in role.links if link.provider in HTTP_PROVIDER_NAMES]
+    if role.max_tokens is not None:
+        if (
+            isinstance(role.max_tokens, bool)
+            or not isinstance(role.max_tokens, int)
+            or role.max_tokens <= 0
+        ):
+            return "max_tokens must be a positive integer"
+        if not http:
+            return "max_tokens applies to HTTP providers only"
     if http and (role.write or role.shell):
         return f"write needs a CLI rail; {', '.join(http)} has no tool to edit with"
     if http and role.mcp is not None:
