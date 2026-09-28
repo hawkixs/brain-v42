@@ -14,7 +14,7 @@ import os
 import re
 import secrets
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -59,6 +59,7 @@ class Entry:
     #: Whether the entry records ``started_at`` at all: an entry made before the key
     #: existed (0.5.2 or earlier) does not, and says nothing about its start.
     start_recorded: bool = False
+    created_at: str = ""
 
 
 def _optional_path(value: object) -> Path | None:
@@ -228,6 +229,7 @@ class Registry:
             findings_from=findings_from,
             started_at=started_at if isinstance(started_at, str) else None,
             start_recorded=start_recorded,
+            created_at=created_at,
         )
 
     def run_ids(self) -> list[str]:
@@ -280,7 +282,13 @@ class Registry:
         """Remove the entry of a run that never started (§3.8.1): nothing to keep."""
         self._path(run_id).unlink(missing_ok=True)
 
-    def effective_status(self, entry: Entry, lineage_status: str | None) -> str:
+    def effective_status(
+        self,
+        entry: Entry,
+        lineage_status: str | None,
+        *,
+        waiting_ids: Collection[str] = frozenset(),
+    ) -> str:
         """The status to show: final as recorded, else ``running`` or ``incomplete``.
 
         A write run's status lives in its lineage state (``lineage_status``),
@@ -289,7 +297,9 @@ class Registry:
         status = lineage_status if entry.lineage is not None else entry.status
         if status in FINAL_STATUSES:
             return str(status)
-        return "incomplete" if is_free(self.lifecycle_lock(entry.run_id)) else "running"
+        if is_free(self.lifecycle_lock(entry.run_id)):
+            return "incomplete"
+        return "waiting" if entry.run_id in waiting_ids else "running"
 
 
 def make_run_dir(run_dir: Path, *, forbidden: Mapping[str, Path]) -> None:

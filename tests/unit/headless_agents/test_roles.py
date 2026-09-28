@@ -28,6 +28,19 @@ def test_a_provider_role_takes_every_default(tmp_path: Path) -> None:
     assert (role.model, role.mcp, role.instructions, role.implicit) == ("", None, None, False)
 
 
+def test_language_is_read_and_validated(tmp_path: Path) -> None:
+    role = _load(tmp_path, '[rev]\nprovider = "codex"\nlanguage = "en"\n')["rev"]
+    assert role.language == "en"
+    with pytest.raises(RolesError, match="en.*fr.*de.*es.*it.*pt.*nl"):
+        _load(tmp_path, '[rev]\nprovider = "codex"\nlanguage = "klingon"\n')
+
+
+def test_a_declared_key_is_recorded_even_when_it_equals_the_default(tmp_path: Path) -> None:
+    role = _load(tmp_path, '[rev]\nprovider = "codex"\neffort = "medium"\ntimeout = 300\n')["rev"]
+    assert {"effort", "timeout"} <= role.declared
+    assert implicit_role("codex").declared == frozenset()
+
+
 def test_a_write_role_defaults_to_the_full_context(tmp_path: Path) -> None:
     role = _load(tmp_path, '[impl]\nprovider = "codex"\nwrite = true\n')["impl"]
     assert role.context == "full"
@@ -69,6 +82,22 @@ def test_an_openai_compat_role_keeps_its_endpoint(tmp_path: Path) -> None:
     text = '[r]\nprovider = "openai-compat"\nbase_url = "http://x/v1"\nkey_env = "K"\n'
     role = _load(tmp_path, text)["r"]
     assert (role.base_url, role.key_env) == ("http://x/v1", "K")
+
+
+def test_max_tokens_is_read_for_a_role_with_an_http_link(tmp_path: Path) -> None:
+    role = _load(tmp_path, '[r]\nchain = ["openrouter:m", "codex:m"]\nmax_tokens = 100\n')["r"]
+    assert role.max_tokens == 100
+
+
+def test_max_tokens_on_a_cli_only_role_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(RolesError, match="max_tokens applies to HTTP providers only"):
+        _load(tmp_path, '[r]\nprovider = "codex"\nmax_tokens = 100\n')
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", '"64"', "1.5"])
+def test_max_tokens_must_be_a_positive_integer(tmp_path: Path, value: str) -> None:
+    with pytest.raises(RolesError, match="max_tokens must be a positive integer"):
+        _load(tmp_path, f'[r]\nprovider = "openrouter"\nmax_tokens = {value}\n')
 
 
 @pytest.mark.parametrize(

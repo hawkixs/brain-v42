@@ -9,7 +9,7 @@ workspace member of the [brain-v42](https://github.com/hawkixs/brain-v42)
 repository and installable on its own:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.2#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.3#subdirectory=packages/headless-agents"
 ```
 
 Versions are tagged `headless-agents-vX.Y.Z` on this repository; `CHANGELOG.md` lists the
@@ -282,6 +282,9 @@ What a workspace run sees of the operator's HOME, rail by rail:
   `~/.claude/CLAUDE.md` still loads under `--restricted` is UNMEASURED.
 
 **Residuals, measured and accepted, not fixed:**
+- A web framework test client that opens sockets or waits on an event loop (for example,
+  Starlette/FastAPI `TestClient`) can hang inside the codex write sandbox. Run those tests
+  on the host after the run.
 - **codex reads outside the workspace by design.** Its sandbox stops writes and network,
   not reads: a codex agent can read anything the operator can, in both modes.
 - **opencode's `read` follows an inside symlink to an outside target.** The tool confines
@@ -348,8 +351,11 @@ mistral    = "~/.config/red/mistral.env"
 
 ha reads only the preset's own variable from that file (`KEY=value`, `export KEY=value`,
 quoted or not), and only if the file belongs to you and nobody else can read it (mode
-`0600`). The key goes to the HTTP request only. `keys.toml` is read from the configuration
-directory only, never from a repository. `ha providers` shows where each key came from.
+`0600`). Each key may be defined once; inline comments after whitespace are stripped.
+Neither a link nor a FIFO is accepted as a key file. The key goes to the HTTP request
+only. `keys.toml` is read from the configuration directory only, through one checked
+descriptor, never from a repository. It may be group-writable only when the group is
+private to the user. `ha providers` shows where each key came from.
 `openai-compat` still takes its key from the variable `--key-env` names.
 
 ```python
@@ -385,10 +391,15 @@ streaming -- a profile declaring `mcp` or `workspace` raises `ValueError`. The c
 bundle's preamble becomes a `system` message. `tokens` comes from `usage` (cached and
 reasoning tokens when the API reports them, `None` otherwise); `cost_usd` is filled only
 when the API reports a cost (OpenRouter, which the preset asks for it).
+Every HTTP request sends `max_tokens = 8192` by default, a declared bound rather than
+a measured API default. Set `max_tokens` on a role with an HTTP link or pass
+`ha run --max-tokens N` to override it. An empty answer exits `3` so a chain can try
+the next link; its usage and cost remain recorded.
 
 | Outcome | Exit code | Chain |
 |---|---|---|
-| answer | `0` | |
+| non-empty answer | `0` | |
+| empty answer | `3` | advances -- nothing was written |
 | own deadline | `124` | stops |
 | HTTP 429 or 5xx, host unreachable | `3` | advances -- no tool could have written |
 | HTTP 401/403, a malformed reply, anything else | `1` | stops |
@@ -425,13 +436,13 @@ repository planted there is discovered from inside it.
 Hand a task to any provider from a terminal or a session. Install it as a tool:
 
 ```sh
-uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.2#subdirectory=packages/headless-agents"
+uv tool install "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.3#subdirectory=packages/headless-agents"
 ```
 
 ```text
 ha run TARGET [PROMPT | -] [-m|--model MODEL] [--effort E] [--timeout SECONDS] [--wait SECONDS]
        [--context full|global|none] [--context-parents] [--mcp PROFILE]
-       [--base-url URL --key-env VAR] [--repo PATH] [--json] [--run-dir DIR]
+       [--base-url URL --key-env VAR] [--max-tokens N] [--repo PATH] [--json] [--run-dir DIR]
        [--output-schema FILE]
        [--write [--shell] [--base REF]]
        [--continue RUN_ID] [--findings RUN_ID] [--head REF] [--run RUN_ID]
@@ -491,6 +502,13 @@ reads free, and the two `git worktree add` calls measurably overlap -- before re
 instructions -- or a workflow declared in `~/.config/ha/workflows.toml`. `-p` and `--chain`
 were removed in 0.5.0: the provider is the target, and a chain is declared in a role.
 
+Each link prints its effective configuration when it starts, including the source of every
+value: `step 1 run build: codex/gpt-6-luna (models.toml), effort medium (default), timeout
+300 s (default)`. Model sources are `chain link`, `-m`, `role`, `models.toml`, or `rail
+default` (agy only); effort and timeout come from their flags, the role, or their defaults.
+Rails that do not use effort say so. Codex runs with `--ignore-user-config`, so its model
+and effort cannot silently come from `~/.codex/config.toml`.
+
 - **`--wait SECONDS`** (spec §3.3): a bounded admission wait for `ha run`. `ha clean` takes
   no `--wait`: it is admitted through this very same queue with the default ten-second bound,
   never a lock of its own. Ordinary
@@ -526,6 +544,10 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
 
   The queue only orders who may try the global lock: exclusion is still that lock's alone,
   so an unconfined write never runs beside another run, whatever the queue holds.
+  `ha runs` and `ha show` display a live queued run as `waiting`; a dead run reads
+  `incomplete` even when a stale queue file names it. A global-lock refusal appends the
+  live holders' run ids, targets and ages (up to five), or says when the holder is outside
+  the registry.
 
 ### Proof state before a run fails
 
@@ -621,8 +643,9 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   patch path and the agent's text are printed; exit `5` when nothing changed. **It never
   merges**: read the diff, integrate, or `ha clean`. If the `.git` tripwire fired, no git
   command runs at all, the lineage is compromised or the repository or operator
-  quarantined, and the worktree is kept for inspection; `ha clean` then refuses until
-  the operator recovers it by hand. A write role on a rail without a passing
+  quarantined, and the worktree is kept for inspection. Follow the
+  [manual lift procedure](#manually-lift-a-lineage-or-quarantine) after inspecting
+  any residue. A write role on a rail without a passing
   confinement proof for its installed version is serialised against every other run
   (`ha roles` shows `confined` or `unconfined`). codex needs no `--shell`
   here: it reads files only through its shell, which is always on and stays inside its OS
@@ -631,6 +654,16 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   (proof that nothing was written); each link gets its own directory under `links/` and
   may name its own model after the FIRST colon (`openrouter:meta/llama:free`). A provider
   appears at most once in a chain.
+- **Role language**: `language = "en"` in `roles.toml` instructs every link to write its
+  whole answer in that language. This is an instruction in the role's context, not an
+  answer validator.
+
+  | Tag | Language | Tag | Language |
+  |---|---|---|---|
+  | `en` | English | `fr` | French |
+  | `de` | German | `es` | Spanish |
+  | `it` | Italian | `pt` | Portuguese |
+  | `nl` | Dutch | | |
 - **Models**: the rails never pick one for you (opencode's own default can be a
   contributor model its vendor trains on), so each link's model is, first match wins: its
   own in the chain, then `-m`, then the role's `model`, then your declared default in `~/.config/ha/models.toml`
@@ -738,7 +771,8 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   `vendor_check`, `cleanup`, `pid`, `started_at`, `duration_seconds`, `cost_usd`,
   `cost_complete` and `steps`. Also at the top: `prompt.md` (the task, written once), and
   for `--write` the worktree and `change.patch`. Each entry of `steps` names its `provider`,
-  `model`, `exit_code`, `tokens`, `cost_usd`, `tools` and `dir` -- the run-relative path of
+  `model`, `model_source`, `effort`, `timeout_seconds`, `exit_code`, `tokens`, `cost_usd`,
+  `tools` and `dir` -- the run-relative path of
   that step's own directory, `steps/<NN>-<slot>-<role>/`, holding its logs, its `commit.log`
   for a write step, and its own `result.json` (schema 1, unchanged, no `"kind"`, still
   `"provider"`): `run.json` is the run's report, `result.json` stays each provider's own
@@ -750,6 +784,39 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   (nothing ran); `3` provider unavailable, chain exhausted; `4` timeout with no tool call
   started; `5` `--write` finished with no change; `6` a review's CHANGES verdict; `124`
   timeout.
+
+
+### Manually lift a lineage or quarantine
+
+Use the run id and lineage named in the refusal. Inspect the run's worktree, commits,
+and state files first; keep any work you need. For a continuation, use the lineage
+owner's run id in the worktree, branch, and lineage paths, and inspect every member
+run record before lifting it. Set `<run_dir>` to the owner's run directory
+and `<state>` to the state directory (`~/.local/state/ha`, or `$XDG_STATE_HOME/ha`
+when set). First stop or let finish every ha run that uses this lineage or
+repository (`ha runs` shows them), and confirm that no process holds
+`<state>/lineages/<run_id>.lock` or `<state>/unconfined.lock`, for example with
+`fuser <state>/lineages/<run_id>.lock <state>/unconfined.lock` printing nothing: renaming
+a lock a run still holds lets another run take a new lock while the first keeps writing.
+Then:
+
+1. Remove the worktree with `git worktree remove --force <run_dir>/wt` from the
+   repository. Check that `ha/<run_id>` holds nothing to keep, then delete it with
+   `git branch -D ha/<run_id>`.
+2. Rename `<state>/lineages/<run_id>.json`,
+   `<state>/lineages/<run_id>.lock`, and `<state>/runs/<run_id>.json` by appending
+   `.lifted-<UTC timestamp>` to each filename. Rename any other member run records
+   involved in the same lineage after inspection.
+3. If the refusal names a stale unconfined intent, inspect `<state>/unconfined-intent.json`
+   (the run it names must no longer be running) and rename it in the same way; otherwise
+   the next write reads it again and publishes the operator quarantine once more. Do this
+   before step 4, while the operator quarantine still blocks new writes.
+4. Then rename the matching `<state>/quarantine/repo-*.json` in the same way. Inspect
+   its `run_id` and repository before choosing it. If an operator quarantine is
+   also involved, inspect and rename `<state>/quarantine/operator.json` likewise.
+
+Keep every lifted file for audit; never delete these state files. Use the same UTC
+timestamp for the files lifted together, for example `20260928T212416Z`.
 
 ## Live tests
 

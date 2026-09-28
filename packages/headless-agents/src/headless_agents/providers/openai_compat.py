@@ -17,7 +17,8 @@ Exit codes (never echoing an error body, which may contain the key):
 ========================================  ======  =========================
 condition                                 code    chain
 ========================================  ======  =========================
-the answer came back                      0
+non-empty answer came back                0
+empty answer, nothing written             3       advances
 own deadline fired                        124     stops
 HTTP 429 or 5xx, host unreachable         3       advances (no tool: safe)
 HTTP 401/403, any other failure           1       stops (configuration)
@@ -57,15 +58,17 @@ from ..spec import RunSpec
 from ..structured import refuse_unsupported
 
 GENERIC_NAME: Final = "openai-compat"
+DEFAULT_MAX_TOKENS: Final = 8192
 
 
 @dataclass(frozen=True)
 class Preset:
-    """A provider whose endpoint and key variable are fixed."""
+    """A fixed endpoint with a declared bound; API defaults vary and may answer empty."""
 
     name: str
     base_url: str
     key_env: str
+    max_tokens: int = DEFAULT_MAX_TOKENS
 
 
 PRESETS: Final[Mapping[str, Preset]] = {
@@ -85,6 +88,10 @@ CONFIGURATION_KEYS: Final = frozenset({"base_url", "key_env"})
 SOCKET_TIMEOUT_MARGIN_SECONDS: Final = 5.0
 
 WORKER_MODULE: Final = "headless_agents.providers._openai_worker"
+# A provider's reply is untrusted; its arbitrary fields must not reach stderr.
+FINISH_REASONS: Final = frozenset(
+    {"stop", "length", "content_filter", "tool_calls", "function_call"}
+)
 
 
 class _UsageError(ValueError):
@@ -94,6 +101,7 @@ class _UsageError(ValueError):
 @dataclass(frozen=True)
 class ParsedCompletion:
     text: str | None
+    finish_reason: str | None
     model_reported: str | None
     tokens: TokenUsage | None
     cost_usd: float | None
@@ -149,8 +157,12 @@ def parse_completion(response: Mapping[str, Any]) -> ParsedCompletion:
         if isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool):
             cost = float(raw_cost)
     model = response.get("model")
+    finish_reason = choices[0].get("finish_reason")
     return ParsedCompletion(
         text=text,
+        finish_reason=finish_reason
+        if isinstance(finish_reason, str) and finish_reason in FINISH_REASONS
+        else None,
         model_reported=model if isinstance(model, str) and model else None,
         tokens=tokens,
         cost_usd=cost,
@@ -236,6 +248,9 @@ class OpenAICompatProvider:
             raise _UsageError(f"unsupported request options: {', '.join(sorted(unknown))}")
         if not spec.model:
             raise _UsageError(f"{self.name} needs a model")
+        max_tokens = spec.extra.get("max_tokens", DEFAULT_MAX_TOKENS)
+        if isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0:
+            raise _UsageError("max_tokens must be a positive integer")
         return self._endpoint(spec)
 
     def _messages(self, spec: RunSpec) -> list[dict[str, str]]:
@@ -308,7 +323,15 @@ class OpenAICompatProvider:
                 self.name,
                 model=spec.model,
                 messages=self._messages(spec),
-                options={k: v for k, v in spec.extra.items() if k in REQUEST_OPTIONS},
+                options={
+                    "max_tokens": spec.extra.get(
+                        "max_tokens",
+                        PRESETS[self.name].max_tokens
+                        if self.name in PRESETS
+                        else DEFAULT_MAX_TOKENS,
+                    ),
+                    **{k: v for k, v in spec.extra.items() if k in REQUEST_OPTIONS},
+                },
             ),
             "timeout": timeout + SOCKET_TIMEOUT_MARGIN_SECONDS,
         }
@@ -337,8 +360,17 @@ class OpenAICompatProvider:
         except (ValueError, KeyError, TypeError):
             _write(spec.stderr_log, "request failed: malformed completion\n", append=True)
             return self._result(spec, 1, start)
-        if parsed.text is not None:
-            _write(spec.report_log, parsed.text)
+        if parsed.text is None:
+            reason = parsed.finish_reason or "unknown"
+            advice = "; raise max_tokens" if reason == "length" else ""
+            _write(
+                spec.stderr_log,
+                f"empty answer (finish_reason={reason}): nothing to report, "
+                f"the run is replayable elsewhere{advice}\n",
+                append=True,
+            )
+            return self._result(spec, PROVIDER_FALLBACK_EXIT_CODE, start, parsed)
+        _write(spec.report_log, parsed.text)
         return self._result(spec, 0, start, parsed)
 
     # ── internals ─────────────────────────────────────────────────────────

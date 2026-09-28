@@ -96,15 +96,48 @@ def resolve_models(
     role_model: str = "",
 ) -> dict[str, str]:
     """Each link's model by the precedence above; refuses a link left without one."""
-    models: dict[str, str] = {}
+    return {
+        name: model
+        for name, (model, _) in resolve_model_sources(
+            links,
+            default=default,
+            declared=declared,
+            declared_path=declared_path,
+            role_model=role_model,
+        ).items()
+    }
+
+
+def resolve_model_sources(
+    links: tuple[tuple[str, str], ...],
+    *,
+    default: str,
+    declared: Mapping[str, str],
+    declared_path: Path,
+    role_model: str = "",
+) -> dict[str, tuple[str, str]]:
+    """Resolve model and provenance together so the report cannot guess its source."""
+    models: dict[str, tuple[str, str]] = {}
     for name, own in links:
-        model = own or default.strip() or role_model.strip() or declared.get(name, "")
+        model, source = next(
+            (
+                (value, label)
+                for value, label in (
+                    (own, "chain link"),
+                    (default.strip(), "-m"),
+                    (role_model.strip(), "role"),
+                    (declared.get(name, ""), "models.toml"),
+                )
+                if value
+            ),
+            ("", "rail default"),
+        )
         if not model and name not in MODEL_OPTIONAL:
             raise ModelsError(
                 f"{name} needs a model: pass -m MODEL, name it in the chain as "
                 f'{name}:MODEL, or declare it in {declared_path} ({name} = "MODEL")'
             )
-        models[name] = model
+        models[name] = (model, source)
     return models
 
 
@@ -117,6 +150,23 @@ def models_for(
     role_model: str = "",
 ) -> dict[str, str]:
     """The model each link gets; the caller validated the links first."""
+    return {
+        name: model
+        for name, (model, _) in model_sources_for(
+            links, default=default, environ=environ, home=home, role_model=role_model
+        ).items()
+    }
+
+
+def model_sources_for(
+    links: tuple[tuple[str, str], ...],
+    *,
+    default: str,
+    environ: Mapping[str, str],
+    home: Path,
+    role_model: str = "",
+) -> dict[str, tuple[str, str]]:
+    """Load defaults only when needed, preserving each chosen model's provenance."""
     path = default_models_path(environ, home=home)
     # Read only when some link is left without a model: a broken file must not
     # fail a run that never needed it.
@@ -128,7 +178,7 @@ def models_for(
         except ConfigPathError as exc:
             raise ModelsError(str(exc)) from None
         declared = load_models(found) if found is not None else {}
-    return resolve_models(
+    return resolve_model_sources(
         links, default=default, role_model=role_model, declared=declared, declared_path=path
     )
 
@@ -139,6 +189,8 @@ __all__ = [
     "default_models_path",
     "load_models",
     "models_for",
+    "model_sources_for",
     "parse_chain",
+    "resolve_model_sources",
     "resolve_models",
 ]

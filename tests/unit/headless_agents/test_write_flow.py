@@ -835,10 +835,22 @@ def test_a_stale_pending_write_keeps_the_first_compromised_reason(tmp_path: Path
 
 def test_a_stale_unconfined_intent_quarantines_the_operator(world: World) -> None:
     (world.state / write_flow.UNCONFINED_INTENT).write_text(json.dumps({"run_id": "dead"}))
-    with pytest.raises(UsageError, match="stale unconfined intent"):
+    with pytest.raises(UsageError, match="stale unconfined intent") as refused:
         world.write()
+    assert "run dead, lineage unknown" in str(refused.value)
+    assert "README.md#manually-lift-a-lineage-or-quarantine" in str(refused.value)
     refusal = quarantine.check(world.state, None)
     assert refusal is not None and refusal.startswith("operator quarantine")
+
+
+def test_a_stale_intent_never_resolves_a_run_id_outside_runs(world: World) -> None:
+    (world.state / write_flow.UNCONFINED_INTENT).write_text(json.dumps({"run_id": "../../forged"}))
+    forged = world.state.parent / "forged.json"
+    forged.write_text(json.dumps({"lineage": "wrong"}))
+    with pytest.raises(UsageError) as refused:
+        world.write()
+    assert "lineage unknown" in str(refused.value)
+    assert "lineage wrong" not in str(refused.value)
 
 
 def _instrument(world: World, monkeypatch: pytest.MonkeyPatch) -> list[str]:
@@ -1608,6 +1620,47 @@ def test_clean_under_a_repository_quarantine_runs_no_git(world: World) -> None:
     assert world.git_calls == []
 
 
+def test_quarantine_refusal_names_manual_lift_procedure(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    quarantine.publish(
+        world.state,
+        "repository",
+        reason="tripwire",
+        run_id=outcome.run_id,
+        paths=[],
+        common_dir=world.common_dir(),
+    )
+    refusal = quarantine.check(world.state, world.common_dir())
+    assert refusal is not None
+    assert f"run {outcome.run_id}" in refusal
+    assert f"lineage {outcome.run_id}" in refusal
+    assert "manual lift procedure" in refusal
+    assert "README.md#manually-lift-a-lineage-or-quarantine" in refusal
+
+
+def test_clean_cli_rejects_force() -> None:
+    from headless_agents import cli
+
+    with pytest.raises(SystemExit, match="2"):
+        cli._parser().parse_args(["clean", "--force", "20260927T000000-aaaaaaaa"])
+
+
+def test_compromised_lineage_refusal_names_manual_lift_procedure(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    lineage.save(
+        world.state, lineage.compromise(lineage.load(world.state, outcome.run_id), "tripwire")
+    )
+    with pytest.raises(UsageError) as refused:
+        world.write(repo=outcome.run_dir / "wt")
+    message = str(refused.value)
+    assert f"run {outcome.run_id}" in message
+    assert f"lineage {outcome.run_id}" in message
+    assert "manual lift procedure" in message
+    assert "README.md#manually-lift-a-lineage-or-quarantine" in message
+
+
 def test_clean_finds_a_stale_pending_write_in_the_repository(world: World) -> None:
     world.agent.edit = _edit_app
     outcome = world.write()
@@ -1832,7 +1885,7 @@ def _hold_shared(world: World, tmp_path: Path) -> subprocess.Popen[bytes]:
     return holder
 
 
-def test_the_default_refusal_of_an_unconfined_write_is_unchanged(
+def test_the_default_refusal_of_an_unconfined_write_keeps_its_prefix(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _unconfined_codex(world)
@@ -1841,10 +1894,11 @@ def test_the_default_refusal_of_an_unconfined_write_is_unchanged(
     try:
         with pytest.raises(UsageError) as refused:
             world.write()
-        assert str(refused.value) == (
+        assert str(refused.value).startswith(
             "runs and writes still running after the bound: an unconfined write waits for "
             "none of them; nothing ran"
         )
+        assert "holder outside the registry" in str(refused.value)
     finally:
         holder.kill()
         holder.wait()
@@ -1860,9 +1914,10 @@ def test_an_expired_wait_of_an_unconfined_write_names_the_runs_holding_the_lock(
         planned = replace(planned, request=replace(planned.request, wait_seconds=0.2))
         with pytest.raises(UsageError) as refused:
             execute(planned, say=world.said.append)
-        assert str(refused.value) == (
+        assert str(refused.value).startswith(
             "--wait 0.2 s expired: runs still hold the global lock; nothing ran"
         )
+        assert "holder outside the registry" in str(refused.value)
         assert world.agent.specs == []
     finally:
         holder.kill()

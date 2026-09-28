@@ -48,6 +48,7 @@ from .profile import Workspace
 from .provenance import MadeBy
 from .repo import RepoIdentity
 from .result import RunResult
+from .runs import RUN_ID_PATTERN
 from .state import Missing, Unknown, publish, read_optional
 
 if TYPE_CHECKING:
@@ -194,17 +195,25 @@ def check_unconfined_intent(state: Path, run_id: str) -> None:
         named = document.get("run_id")
     except Unknown:
         named = None
+    refused_run = str(named) if isinstance(named, str) else run_id
+    lineage: object = "unknown"
+    if RUN_ID_PATTERN.fullmatch(refused_run):
+        try:
+            entry = read_optional(state / "runs" / f"{refused_run}.json") or {}
+            lineage = entry.get("lineage") or "unknown"
+        except Unknown:
+            pass
     quarantine.publish(
         state,
         "operator",
         reason="stale_unconfined_intent",
-        run_id=str(named) if isinstance(named, str) else run_id,
+        run_id=refused_run,
         paths=[str(path)],
         common_dir=None,
     )
     raise WriteRefused(
         f"a stale unconfined intent ({path}) names a dead unconfined write: operator "
-        "quarantine published; nothing ran"
+        f"quarantine published; {quarantine.manual_lift(refused_run, lineage)}; nothing ran"
     )
 
 
@@ -261,7 +270,7 @@ def unfinalized(state: Path, lineage: LineageState, common: Path) -> WriteRefuse
     return WriteRefused(
         f"lineage {lineage.owner} holds the unfinished write of run {pending.run_id}: "
         "it is compromised (unfinalized_write) and the repository quarantined; "
-        "nothing ran"
+        f"{quarantine.manual_lift(pending.run_id, lineage.owner)}; nothing ran"
     )
 
 
@@ -274,7 +283,8 @@ def _check_sources(state: Path, sources: Sequence[str]) -> None:
             raise WriteRefused(f"lineage {owner} is unknown ({exc}); nothing ran") from None
         if source.compromised is not None:
             raise WriteRefused(
-                f"--repo is inside lineage {owner}, compromised ({source.compromised}); nothing ran"
+                f"--repo is inside lineage {owner}, compromised ({source.compromised}); "
+                f"{quarantine.manual_lift(owner, owner)}; nothing ran"
             )
         if source.pending is not None:
             raise WriteRefused(
@@ -308,7 +318,10 @@ def _check_continued(write: _Write) -> None:
     if current.pending is not None:
         raise unfinalized(state, current, current.common_dir)
     if current.compromised is not None:
-        raise WriteRefused(f"lineage {owner} is compromised ({current.compromised}); nothing ran")
+        raise WriteRefused(
+            f"lineage {owner} is compromised ({current.compromised}); "
+            f"{quarantine.manual_lift(owner, owner)}; nothing ran"
+        )
     if write.named not in current.members:
         raise WriteRefused(f"{write.named} is not a member of lineage {owner}; nothing ran")
     if not current.worktree.is_dir():
@@ -1243,7 +1256,7 @@ def clean_write(
                 reason = current.compromised or "a pending write"
                 say(
                     f"lineage {owner} is uncertain ({reason}): nothing cleaned, no git command "
-                    "run; inspect it and recover it by hand"
+                    f"run; {quarantine.manual_lift(run_id, owner)}"
                 )
                 return 1
         # The registry lock is released: the first git command comes now.

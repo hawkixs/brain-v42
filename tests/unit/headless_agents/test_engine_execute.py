@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import ast
+import io
 import json
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
 
-from headless_agents import engine, locks, proof_state
+from headless_agents import cli, engine, locks, proof_state
+from headless_agents.context import resolve_context, role_instructions
 from headless_agents.engine import Overrides, Request, UsageError, execute, plan
 from headless_agents.proofs import CLI_RAILS, proof_path, record_proof
 from headless_agents.registry import Probe
@@ -152,6 +155,58 @@ def test_a_one_step_run_writes_its_records(world: World) -> None:
     assert world.registry().resolve(outcome.run_id).status == "answered"
 
 
+def test_the_first_line_names_the_effective_configuration(world: World) -> None:
+    outcome = world.run("codex")
+    assert world.said[0] == (
+        "step 1 run codex: codex/codex-default (models.toml), "
+        "effort medium (default), timeout 300 s (default)"
+    )
+    spec = world.fakes["codex"].specs[0]
+    assert (spec.model, spec.reasoning_effort, spec.timeout_seconds) == (
+        "codex-default",
+        "medium",
+        300.0,
+    )
+    assert outcome.report["steps"][0]["model_source"] == "models.toml"
+
+
+def test_the_flags_are_named_as_sources(world: World) -> None:
+    world.run("codex", overrides=Overrides(model="flag", effort="high", timeout=42))
+    assert world.said[0] == (
+        "step 1 run codex: codex/flag (-m), effort high (--effort), timeout 42 s (--timeout)"
+    )
+
+
+def test_declared_defaults_are_named_as_role_values(world: World) -> None:
+    world.roles('[rev]\nprovider = "codex"\neffort = "medium"\ntimeout = 300\n')
+    world.run("rev")
+    assert world.said[0].endswith("effort medium (role), timeout 300 s (role)")
+
+
+def test_a_rail_that_ignores_effort_says_so(world: World) -> None:
+    world.run("claude")
+    assert "effort medium (default) (not used by claude)" in world.said[0]
+
+
+def test_each_chain_link_prints_its_own_line(world: World) -> None:
+    world.roles('[r]\nchain = ["codex:m1", "claude"]\n')
+    world.fakes["codex"] = _Fake("codex", code=3)
+    world.run("r")
+    assert world.said[0].startswith("step 1 run r: codex/m1 (chain link),")
+    fallback = next(i for i, line in enumerate(world.said) if "falling back to claude" in line)
+    assert world.said[fallback + 1].startswith("step 1 run r: claude/claude-default (models.toml),")
+
+
+def test_run_json_steps_carry_effort_timeout_and_model_source(world: World) -> None:
+    outcome = world.run("codex")
+    step = json.loads((outcome.run_dir / "run.json").read_text())["steps"][0]
+    assert (step["effort"], step["timeout_seconds"], step["model_source"]) == (
+        "medium",
+        300.0,
+        "models.toml",
+    )
+
+
 def test_a_read_only_runs_entry_records_its_providers_and_no_continuation(world: World) -> None:
     """Lot 3: every entry records its role's providers; the report's copy is a write run's."""
     outcome = world.run("codex")
@@ -174,6 +229,40 @@ def test_the_spec_carries_the_role_the_context_and_a_read_only_workspace(world: 
     assert "user rules" in preamble and "repo rules" in preamble
     assert preamble.rstrip().endswith("be terse\n</instructions>".rstrip())
     assert spec.name.startswith("ha-")
+
+
+def test_the_language_line_reaches_the_bundle(world: World) -> None:
+    world.roles(
+        '[rev]\nprovider = "codex"\ncontext = "none"\nlanguage = "en"\n'
+        'instructions = "Answer briefly."\n'
+    )
+    world.run("rev")
+    preamble = world.fakes["codex"].specs[0].context.preamble()
+    assert "<instructions" in preamble
+    assert "Answer briefly.\n\nWrite your whole answer in English" in preamble
+
+
+def test_a_role_without_language_has_a_byte_identical_bundle(world: World) -> None:
+    world.roles('[rev]\nprovider = "codex"\ncontext = "none"\ninstructions = "Answer briefly."\n')
+    world.run("rev")
+    actual = world.fakes["codex"].specs[0].context.preamble()
+    expected = (
+        resolve_context(
+            level="none",
+            repository_root=world.repo,
+            user_files=(world.home / ".claude" / "CLAUDE.md",),
+            include_parents=False,
+        )
+        .with_role(role_instructions("rev", "Answer briefly."))
+        .preamble()
+    )
+    assert actual == expected
+
+
+def test_a_language_without_instructions_still_reaches_the_bundle(world: World) -> None:
+    world.roles('[rev]\nprovider = "codex"\ncontext = "none"\nlanguage = "en"\n')
+    world.run("rev")
+    assert "Write your whole answer in English" in world.fakes["codex"].specs[0].context.preamble()
 
 
 def test_a_failed_step_is_a_failed_run(world: World) -> None:
@@ -227,6 +316,232 @@ pathlib.Path(sys.argv[2]).write_text("ok")
 time.sleep(60)
 """
 
+_HOLD_TWO = """
+import fcntl, os, pathlib, sys, time
+descriptors = [os.open(path, os.O_RDWR | os.O_CREAT, 0o600) for path in sys.argv[1:3]]
+for descriptor in descriptors:
+    fcntl.flock(descriptor, fcntl.LOCK_EX)
+pathlib.Path(sys.argv[3]).write_text("ok")
+time.sleep(60)
+"""
+
+_HOLD_SHARED = """
+import fcntl, os, pathlib, sys, time
+life = os.open(sys.argv[1], os.O_RDWR | os.O_CREAT, 0o600)
+global_lock = os.open(sys.argv[2], os.O_RDWR | os.O_CREAT, 0o600)
+fcntl.flock(life, fcntl.LOCK_EX)
+fcntl.flock(global_lock, fcntl.LOCK_SH)
+pathlib.Path(sys.argv[3]).write_text("ok")
+time.sleep(60)
+"""
+
+
+def test_a_refusal_names_the_run_holding_the_global_lock(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.2)
+    registry = world.registry()
+    entry = registry.register(
+        run_dir=None,
+        target={"kind": "provider", "name": "codex"},
+        repository=world.repo,
+        lineage=None,
+    )
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "ready"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _HOLD_TWO,
+            str(registry.lifecycle_lock(entry.run_id)),
+            str(lock),
+            str(ready),
+        ]
+    )
+    try:
+        while not ready.exists():
+            time.sleep(0.01)
+        with pytest.raises(UsageError, match=rf"held by {entry.run_id} \(codex,"):
+            world.run("codex")
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_holder_outside_the_registry_is_said_so(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.2)
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "ready"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    try:
+        while not ready.exists():
+            time.sleep(0.01)
+        with pytest.raises(UsageError, match="holder outside the registry"):
+            world.run("codex")
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_queued_run_reads_waiting_in_runs_and_show(world: World, tmp_path: Path) -> None:
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), str(ready)])
+    try:
+        limit = time.monotonic() + 5
+        while not ready.exists():
+            assert time.monotonic() < limit
+            time.sleep(0.01)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(world.run, "codex", wait_seconds=5)
+            while True:
+                waiting = [w for w in locks.waiters(world.state) if w.alive and w.label]
+                if waiting:
+                    break
+                assert time.monotonic() < limit
+                time.sleep(0.01)
+            run_id = waiting[0].label
+            entry = world.registry().resolve(run_id)
+            assert world.registry().effective_status(entry, None, waiting_ids={run_id}) == "waiting"
+            out = io.StringIO()
+            assert (
+                cli.main(
+                    ["runs", "--json"],
+                    environ={"HOME": str(world.home)},
+                    stdout=out,
+                    stderr=io.StringIO(),
+                    home=world.home,
+                    cwd=world.repo,
+                )
+                == 0
+            )
+            rows = json.loads(out.getvalue())
+            assert next(row for row in rows if row["run_id"] == run_id)["status"] == "waiting"
+            out = io.StringIO()
+            assert (
+                cli.main(
+                    ["show", run_id, "--json"],
+                    environ={"HOME": str(world.home)},
+                    stdout=out,
+                    stderr=io.StringIO(),
+                    home=world.home,
+                    cwd=world.repo,
+                )
+                == 0
+            )
+            assert json.loads(out.getvalue())["status"] == "waiting"
+            holder.kill()
+            holder.wait()
+            outcome = future.result(timeout=5)
+            assert world.registry().resolve(outcome.run_id).status == "answered"
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+            holder.wait()
+
+
+def test_a_queued_write_without_a_lineage_yet_reads_waiting(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = world.registry()
+    run_id = registry.mint()
+    registry.create(
+        run_id,
+        run_dir=None,
+        target={"kind": "role", "name": "build"},
+        repository=world.repo,
+        lineage=run_id,
+    )
+    ready = tmp_path / "ready"
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            _HOLD,
+            str(registry.lifecycle_lock(run_id)),
+            str(ready),
+        ]
+    )
+    try:
+        while not ready.exists():
+            time.sleep(0.01)
+        monkeypatch.setattr(
+            locks,
+            "waiters",
+            lambda _: [locks.Waiter(1, True, run_id, holder.pid, "2026-09-28T00:00:00Z", True)],
+        )
+        for command in (["runs", "--json"], ["show", run_id, "--json"]):
+            out = io.StringIO()
+            assert (
+                cli.main(
+                    command,
+                    environ={"HOME": str(world.home)},
+                    stdout=out,
+                    stderr=io.StringIO(),
+                    home=world.home,
+                    cwd=world.repo,
+                )
+                == 0
+            )
+            document = json.loads(out.getvalue())
+            if isinstance(document, list):
+                document = next(row for row in document if row["run_id"] == run_id)
+            assert document["status"] == "waiting"
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_a_refusal_names_up_to_five_readers_and_excludes_itself(
+    world: World, tmp_path: Path
+) -> None:
+    registry = world.registry()
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    holders: list[subprocess.Popen[bytes]] = []
+    entries: list[Entry] = []
+    try:
+        for index in range(7):
+            entry = registry.register(
+                run_dir=None,
+                target={"kind": "provider", "name": "codex"},
+                repository=world.repo,
+                lineage=None,
+            )
+            entries.append(entry)
+            ready = tmp_path / f"ready-{index}"
+            holders.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        _HOLD_SHARED,
+                        str(registry.lifecycle_lock(entry.run_id)),
+                        str(lock),
+                        str(ready),
+                    ]
+                )
+            )
+            while not ready.exists():
+                time.sleep(0.01)
+        suffix = engine._holder_suffix(world.state, registry, own="not-a-run")
+        assert suffix.count("(codex,") == 5
+        assert "and 2 more" in suffix
+        suffix = engine._holder_suffix(world.state, registry, own=entries[0].run_id)
+        assert entries[0].run_id not in suffix
+        assert suffix.count("(codex,") == 5
+        assert "and 1 more" in suffix
+    finally:
+        for holder in holders:
+            holder.kill()
+            holder.wait()
+
 
 def test_an_unconfined_write_in_progress_refuses_the_run(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -260,7 +575,7 @@ def test_expired_wait_exits_2_and_runs_no_provider(world: World, tmp_path: Path)
         request = world.request("codex", wait_seconds=0.15)
         with pytest.raises(
             UsageError,
-            match=r"^--wait 0\.15 s expired: an unconfined write holds the global lock; nothing ran$",
+            match=r"^--wait 0\.15 s expired: an unconfined write holds the global lock; nothing ran; held by a holder outside the registry",
         ):
             execute(plan(request), say=world.said.append)
         assert "codex" not in world.fakes
@@ -285,7 +600,7 @@ def test_expired_wait_forgets_the_unstarted_read(world: World, tmp_path: Path) -
         request = world.request("codex", wait_seconds=0.15)
         with pytest.raises(
             UsageError,
-            match=r"^--wait 0\.15 s expired: an unconfined write holds the global lock; nothing ran$",
+            match=r"^--wait 0\.15 s expired: an unconfined write holds the global lock; nothing ran; held by a holder outside the registry",
         ):
             execute(plan(request), say=world.said.append)
         assert "codex" not in world.fakes
@@ -667,7 +982,7 @@ def test_an_expired_wait_behind_a_queued_writer_names_it(world: World, tmp_path:
                 process.wait()
 
 
-def test_the_default_refusal_of_a_read_is_unchanged(
+def test_the_default_refusal_of_a_read_keeps_its_prefix(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.3)
@@ -680,9 +995,10 @@ def test_the_default_refusal_of_a_read_is_unchanged(
             time.sleep(0.02)
         with pytest.raises(UsageError) as refused:
             world.run("codex")
-        assert str(refused.value) == (
+        assert str(refused.value).startswith(
             "an unconfined write is running: nothing ran; retry once it has ended"
         )
+        assert "holder outside the registry" in str(refused.value)
     finally:
         holder.kill()
         holder.wait()

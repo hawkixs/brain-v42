@@ -37,13 +37,21 @@ def state_dir(environ: Mapping[str, str], *, home: Path) -> Path:
     return (_xdg(environ, "XDG_STATE_HOME", home / ".local" / "state") / "ha").resolve()
 
 
-def config_file(name: str, environ: Mapping[str, str], *, home: Path) -> Path | None:
+def config_file(
+    name: str,
+    environ: Mapping[str, str],
+    *,
+    home: Path,
+    directory: Path | None = None,
+) -> Path | None:
     """The resolved path of configuration file ``name``, ``None`` when there is none.
 
     Raises :class:`ConfigPathError` when the file is, or links to, anything
-    outside :func:`config_dir`.
+    outside :func:`config_dir`. A caller opening the original name can pass its
+    already resolved directory so both operations use the same boundary.
     """
-    directory = config_dir(environ, home=home)
+    if directory is None:
+        directory = config_dir(environ, home=home)
     candidate = directory / name
     if not candidate.exists() and not candidate.is_symlink():
         return None

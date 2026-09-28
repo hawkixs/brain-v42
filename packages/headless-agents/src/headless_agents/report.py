@@ -32,7 +32,8 @@ RUN_KEYS: Final = (
 )  # fmt: skip
 STEP_KEYS: Final = (
     "index", "slot", "role", "dir", "provider", "model", "model_reported",
-    "exit_code", "duration_seconds", "tokens", "cost_usd", "tools", "verdict",
+    "model_source", "effort", "timeout_seconds", "exit_code", "duration_seconds",
+    "tokens", "cost_usd", "tools", "verdict",
 )  # fmt: skip
 
 
@@ -73,6 +74,9 @@ def step_entry(
     step_dir: str,
     result: RunResult,
     tools: Mapping[str, int] | None = None,
+    model_source: str | None = None,
+    effort: str | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, object]:
     return {
         "index": index,
@@ -82,6 +86,9 @@ def step_entry(
         "provider": result.provider,
         "model": result.model,
         "model_reported": result.model_reported,
+        "model_source": model_source,
+        "effort": effort,
+        "timeout_seconds": timeout_seconds,
         "exit_code": result.exit_code,
         "duration_seconds": result.duration_seconds,
         "tokens": asdict(result.tokens) if result.tokens is not None else None,

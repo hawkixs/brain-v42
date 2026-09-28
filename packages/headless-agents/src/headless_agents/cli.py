@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import IO, Final
 
 from . import lineage as lineages
-from . import prove, quarantine, show, updaters
+from . import locks, prove, quarantine, show, updaters
 from .capability import INVALID_USAGE_EXIT_CODE
 from .cli_models import MODEL_OPTIONAL, MODELS_FILE_NAME, default_models_path, load_models
 from .config_paths import config_dir, config_file, state_dir
@@ -224,6 +224,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--repo", type=Path, help="the repository (default: the one holding cwd)")
     run.add_argument("--base-url", help="the endpoint of openai-compat")
     run.add_argument("--key-env", metavar="VAR", help="the key variable of openai-compat")
+    run.add_argument("--max-tokens", type=int, metavar="N", help="maximum HTTP answer tokens")
     run.add_argument("--json", action="store_true", help="print run.json")
     run.add_argument("--run-dir", type=Path, help="the run's directory (must not exist)")
     run.add_argument(
@@ -669,7 +670,10 @@ def _providers_update(args: argparse.Namespace, io: Io) -> int:
 def _models(args: argparse.Namespace, io: Io) -> int:
     path = config_file("catalog.toml", io.environ, home=io.home)
     if path is None:
-        raise UsageError(f"{config_dir(io.environ, home=io.home) / 'catalog.toml'}: missing")
+        catalog_path = config_dir(io.environ, home=io.home) / "catalog.toml"
+        raise UsageError(
+            f"{catalog_path}: missing; the ha-delegate skill (red-skills) installs a template"
+        )
     catalogue = load_catalogue(path)
     roles, _ = declared_roles(io.environ, io.home)
     defaults_path = config_file("models.toml", io.environ, home=io.home)
@@ -808,6 +812,7 @@ def _run(args: argparse.Namespace, io: Io) -> int:
             shell=args.shell,  # nosec B604
             base_url=args.base_url,
             key_env=args.key_env,
+            max_tokens=args.max_tokens,
         ),
         base=args.base,
         repo=args.repo,
@@ -834,7 +839,7 @@ def _run(args: argparse.Namespace, io: Io) -> int:
         text = report.get("text")
         if isinstance(text, str) and text:
             io.stdout.write(text if text.endswith("\n") else text + "\n")
-    elif outcome.exit_code == 0 and outcome.final is not None:
+    elif outcome.final is not None:
         if isinstance(branch, str):
             io.stdout.write(_write_header(outcome, branch))
         text = outcome.final.text
@@ -869,6 +874,18 @@ def _roles(args: argparse.Namespace, io: Io) -> int:
             f"context {row['context']}"
             + (f"  mcp {row['mcp']}" if row["mcp"] else "")
             + (f"  {'+'.join(flags)}" if flags else "")
+            + (
+                "  "
+                + " / ".join(
+                    "confined"
+                    if isinstance(link["confinement"], str)
+                    and link["confinement"].startswith("confined")
+                    else "writes serialised"
+                    for link in links
+                )
+                if row["write"]
+                else ""
+            )
             + (f"  instructions {row['instructions_bytes']} B" if row["instructions_bytes"] else "")
             + "\n"
         )
@@ -882,6 +899,12 @@ def _workflows(args: argparse.Namespace, io: Io) -> int:
     rows = describe_workflows(io.environ, io.home)
     if args.json:
         io.stdout.write(json.dumps(rows, indent=2) + "\n")
+        return 0
+    if not rows:
+        path = config_file("workflows.toml", io.environ, home=io.home) or (
+            config_dir(io.environ, home=io.home) / "workflows.toml"
+        )
+        io.stdout.write(f"No workflows declared in {path}.\n")
         return 0
     for row in rows:
         slots = row["slots"]
@@ -918,7 +941,9 @@ def _admitted_at(registry: Registry, run_id: str) -> int:
         return 0
 
 
-def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
+def _registered_row(
+    registry: Registry, run_id: str, *, waiting_ids: frozenset[str] = frozenset()
+) -> dict[str, object]:
     """One listing row: identity and status from the registry entry, the one
     authority (§3.8.1); exit code, duration, cost and answer only from a
     ``run.json`` whose ``run_id`` is this entry's -- a report is display data,
@@ -942,7 +967,7 @@ def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
     except (RegistryError, Unknown):
         return row
     lineage_status: str | None = None
-    if entry.lineage is not None:
+    if entry.lineage is not None and run_id not in waiting_ids:
         # A write run's status lives in its lineage state only (§3.8.1); a
         # readable lineage silent about the run gives no status (plan P6).
         try:
@@ -956,7 +981,7 @@ def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
         target=entry.target.get("name"),
         status=lineage_status
         if lineage_status == "unknown"
-        else registry.effective_status(entry, lineage_status),
+        else registry.effective_status(entry, lineage_status, waiting_ids=waiting_ids),
         cleaned=entry.cleaned_at is not None,
         task=read_task(entry.run_dir) if own else None,
     )
@@ -1006,8 +1031,10 @@ def _runs(args: argparse.Namespace, io: Io) -> int:
     root = runs_root(io.home)
     registry = Registry(state_dir(io.environ, home=io.home), runs_root=root)
     registered = registry.run_ids()
+    waiting_ids = frozenset(w.label for w in locks.waiters(registry.state) if w.alive and w.label)
     entries: list[tuple[int, dict[str, object]]] = [
-        (_admitted_at(registry, run_id), _registered_row(registry, run_id)) for run_id in registered
+        (_admitted_at(registry, run_id), _registered_row(registry, run_id, waiting_ids=waiting_ids))
+        for run_id in registered
     ]
     if root.is_dir():
         for run_dir in root.iterdir():

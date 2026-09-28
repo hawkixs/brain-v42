@@ -1156,6 +1156,19 @@ class TestWritableRootsPolicyShape:
             == set()
         )
 
+    @pytest.mark.parametrize("suffix", ["/.", "//scratch", "/"])
+    def test_a_disjoint_non_normalised_root_credits_nothing(
+        self, tmp_path: Path, suffix: str
+    ) -> None:
+        workspace, _, target = _paths(tmp_path)
+        policy = {
+            **proofs._WRITE_SANDBOX_POLICY,
+            "writable_roots": [str(tmp_path / "separate") + suffix],
+        }
+        assert not proofs._matches_write_policy(
+            policy, workspace=workspace, wanted={"target": target}
+        )
+
     def test_a_non_list_writable_roots_credits_nothing(self, tmp_path: Path) -> None:
         workspace, control, target = _paths(tmp_path)
 

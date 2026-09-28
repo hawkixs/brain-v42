@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Final
 
 from . import lineage as lineages
-from . import provenance, reviews
+from . import locks, provenance, reviews
 from .report import KIND, PROMPT_FILE, RUN_JSON, RUN_KEYS, SCHEMA
 from .run_record import RESULT_FILE_NAME
 from .runs import RUN_ID_PATTERN, Entry, Registry, RegistryError
@@ -181,6 +181,7 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
     lineage state or a provenance record cannot be read.
     """
     registry = Registry(state, runs_root=runs_root)
+    waiting_ids = frozenset(w.label for w in locks.waiters(state) if w.alive and w.label)
     try:
         entry = registry.resolve(run_id)
     except RegistryError as exc:
@@ -225,7 +226,13 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
     )
     status: str | None = None
     lineage_status: str | None = None
-    if entry.lineage is not None:
+    queued = entry.run_id in waiting_ids
+    if entry.lineage is not None and queued:
+        # Admission precedes a write's lineage creation. The live waiter, or a
+        # dead lifecycle lock, is enough to read its current status here.
+        document.update(dict.fromkeys(_WRITE_FIELDS))
+        document["lineage"] = entry.lineage
+    elif entry.lineage is not None:
         try:
             lineage = lineages.load(state, entry.lineage)
         except Unknown as exc:
@@ -257,7 +264,7 @@ def rebuild(run_id: str, *, state: Path, runs_root: Path) -> Shown:
     if is_review(entry):
         unknown = _review_records(document, report, state, entry, notes) or unknown
     if status is None:
-        status = registry.effective_status(entry, lineage_status)
+        status = registry.effective_status(entry, lineage_status, waiting_ids=waiting_ids)
     if report is not None and report.get("status") != status:
         notes.append(
             f"run.json says {report.get('status')}; the state says {status}: shown from the state"

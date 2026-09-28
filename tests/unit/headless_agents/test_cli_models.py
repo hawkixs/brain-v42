@@ -6,7 +6,37 @@ from pathlib import Path
 
 import pytest
 
+from headless_agents import cli_models
 from headless_agents.cli_models import ModelsError, models_for, resolve_models
+
+
+@pytest.mark.parametrize(
+    ("link", "default", "role", "declared", "expected"),
+    [
+        (("codex", "own"), "flag", "role", {"codex": "file"}, ("own", "chain link")),
+        (("codex", ""), "flag", "role", {"codex": "file"}, ("flag", "-m")),
+        (("codex", ""), "", "role", {"codex": "file"}, ("role", "role")),
+        (("codex", ""), "", "", {"codex": "file"}, ("file", "models.toml")),
+        (("agy", ""), "", "", {}, ("", "rail default")),
+    ],
+)
+def test_each_model_names_its_source(
+    tmp_path: Path,
+    link: tuple[str, str],
+    default: str,
+    role: str,
+    declared: dict[str, str],
+    expected: tuple[str, str],
+) -> None:
+    assert hasattr(cli_models, "resolve_model_sources")
+    got = cli_models.resolve_model_sources(
+        (link,),
+        default=default,
+        role_model=role,
+        declared=declared,
+        declared_path=tmp_path / "models.toml",
+    )
+    assert got[link[0]] == expected
 
 
 def _models_file(home: Path, text: str) -> Path:

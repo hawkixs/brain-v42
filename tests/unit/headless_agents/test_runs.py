@@ -13,6 +13,7 @@ import pytest
 from headless_agents.registry import PROVIDER_NAMES
 from headless_agents.runs import (
     RUN_ID_PATTERN,
+    STORED_STATUSES,
     Registry,
     RegistryError,
     make_run_dir,
@@ -127,6 +128,28 @@ def test_a_non_final_status_reads_running_while_its_lock_is_held_then_incomplete
         holder.kill()
         holder.wait()
     assert registry.effective_status(entry, None) == "incomplete"
+
+
+def test_a_run_waiting_in_the_queue_reads_waiting(tmp_path: Path) -> None:
+    registry = _registry(tmp_path)
+    entry = registry.register(run_dir=None, target=_TARGET, repository=None, lineage=None)
+    ready = tmp_path / "ready"
+    holder = subprocess.Popen(
+        [sys.executable, "-c", _HOLD, str(registry.lifecycle_lock(entry.run_id)), str(ready)]
+    )
+    try:
+        while not ready.exists():
+            time.sleep(0.02)
+        assert registry.effective_status(entry, None, waiting_ids={entry.run_id}) == "waiting"
+        assert registry.effective_status(entry, None) == "running"
+    finally:
+        holder.kill()
+        holder.wait()
+    assert registry.effective_status(entry, None, waiting_ids={entry.run_id}) == "incomplete"
+
+
+def test_waiting_is_never_stored() -> None:
+    assert "waiting" not in STORED_STATUSES
 
 
 def test_a_final_status_is_itself_and_a_lineage_status_wins(tmp_path: Path) -> None:

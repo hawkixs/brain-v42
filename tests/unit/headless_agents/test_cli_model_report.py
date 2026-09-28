@@ -69,6 +69,7 @@ def test_missing_catalogue_returns_usage_error(
     code, out, err = _invoke(tmp_path, "models")
     assert code == 2 and out == ""
     assert "catalog.toml" in err
+    assert "ha-delegate skill (red-skills) installs a template" in err
 
 
 def test_absolute_xdg_config_home_selects_its_ha_directory(

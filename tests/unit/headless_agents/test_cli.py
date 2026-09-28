@@ -54,7 +54,7 @@ class _Fake:
                 tokens=None,
                 duration_seconds=0.1,
                 tool_call_completed=False,
-                text=self.answer if self.code == 0 else None,
+                text=self.answer,
                 run_id=run_id_of(spec),
             ),
         )
@@ -420,8 +420,16 @@ def test_a_failed_run_keeps_its_code_and_says_where_the_logs_are(world: _World) 
     _prime(world, "codex", code=1)
     code, out, err = world.run("run", "codex", "go")
     assert code == 1
-    assert out == ""
+    assert out == "the answer\n"
     assert "runs" in err
+
+
+def test_a_failed_run_prints_the_provider_final_report(world: _World) -> None:
+    _prime(world, "codex", code=1)
+    world.fakes["codex"].answer = "the failure report"
+    code, out, _ = world.run("run", "codex", "go")
+    assert code == 1
+    assert out == "the failure report\n"
 
 
 def test_the_parent_claude_session_markers_never_reach_the_child(world: _World) -> None:
@@ -550,6 +558,30 @@ def test_a_write_run_reaches_the_write_protocol(world: _World) -> None:
     code, _, err = world.run("run", "codex", "--write", "go")
     assert "not available" not in err
     assert code == 1 and "cannot resolve --base" in err
+
+
+def test_a_plain_write_run_carries_the_shared_no_git_instruction(world: _World) -> None:
+    subprocess.run(["git", "-C", str(world.repo), "add", "CLAUDE.md"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(world.repo),
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-qm",
+            "initial",
+        ],
+        check=True,
+    )
+    code, _, _ = world.run("run", "codex", "--write", "--base", "HEAD", "go")
+    assert code in (0, 5)
+    context = world.spec("codex").context
+    assert context is not None
+    assert "Do not run git: the engine commits your changes" in context.preamble()
 
 
 # ── roles: declared targets, chains ─────────────────────────────────────────
@@ -751,6 +783,15 @@ def test_workflows_prints_one_line_per_workflow(world: _World) -> None:
 def test_workflows_without_a_file_lists_nothing(world: _World) -> None:
     code, out, _ = world.run("workflows", "--json")
     assert code == 0 and json.loads(out) == []
+
+
+def test_workflows_without_declarations_names_the_file(world: _World) -> None:
+    code, out, _ = world.run("workflows")
+    assert code == 0
+    assert (
+        out.strip()
+        == f"No workflows declared in {world.home / '.config' / 'ha' / 'workflows.toml'}."
+    )
 
 
 def test_workflows_on_an_invalid_file_exits_2_naming_the_problem(world: _World) -> None:
@@ -1091,6 +1132,15 @@ def test_roles_shows_each_write_links_confinement(world: _World) -> None:
         "unconfined",
     ]
     assert [link["confinement"] for link in rows["r"]["links"]] == [None]
+
+
+def test_roles_text_shows_write_confinement_mode(world: _World) -> None:
+    record_proof(world.state, "codex", version="codex 1.0", confinement=True, today="2026-09-25")
+    world.roles('[w]\nprovider = "codex"\nwrite = true\n[r]\nprovider = "claude"\nwrite = true\n')
+    code, out, _ = world.run("roles")
+    assert code == 0
+    assert "write  confined" in out
+    assert "write  writes serialised" in out
 
 
 def test_roles_shows_each_links_isolation(world: _World) -> None:
