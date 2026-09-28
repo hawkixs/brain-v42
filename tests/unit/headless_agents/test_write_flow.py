@@ -210,6 +210,45 @@ def test_a_committed_write(world: World) -> None:
     assert report["commits"] == [{"sha": tip, "made_by": "engine"}]
 
 
+def test_a_failed_diff_writes_no_patch_and_says_why(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ticket e5b93270 item 2: an empty change.patch written from a failed git diff
+    reads as "no change" -- no patch at all, and the step's commit.log says why."""
+    world.agent.edit = _edit_app
+    real = write_flow._Write.git_bytes
+
+    def failing_diff(
+        self: write_flow._Write, root: Path, args: list[str], **kwargs: object
+    ) -> tuple[int, bytes, bytes]:
+        if args and args[0] == "diff":
+            return 128, b"", b"fatal: bad object HEAD\n"
+        return real(self, root, args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(write_flow._Write, "git_bytes", failing_diff)
+    outcome = world.write()
+    assert outcome.report["status"] == "committed"
+    assert not (outcome.run_dir / write_flow.PATCH_FILE).exists()
+    (step,) = outcome.report["steps"]  # type: ignore[misc]
+    commit_log = (outcome.run_dir / step["dir"] / write_flow.COMMIT_LOG).read_text()
+    assert "change.patch not written: git diff exited 128: fatal: bad object HEAD" in commit_log
+
+
+def test_the_write_header_says_a_missing_patch_was_not_written(world: World) -> None:
+    from headless_agents import cli
+
+    outcome = engine.Outcome(
+        exit_code=0,
+        run_id="20260927T000000-aaaaaaaa",
+        run_dir=world.home / "no-patch-run",
+        report={},
+        final=None,
+    )
+    header = cli._write_header(outcome, "ha/20260927T000000-aaaaaaaa")
+    assert "patch: not written (git diff failed: see the step's commit.log)" in header
+    assert "diffstat: -" in header
+
+
 def test_a_write_run_records_its_roles_providers(world: World) -> None:
     """Lot 3, §3.10: implement_providers copies the entry's providers, every link of the role."""
     world.agent.edit = _edit_app
@@ -614,6 +653,157 @@ def test_an_unknown_lineage_of_the_repository_refuses(world: World) -> None:
     path.write_text("{broken")
     with pytest.raises(UsageError, match="unknown"):
         world.write()
+
+
+# ── A lineage withdrawn during another admission is absent (9ec19a4e) ────────
+
+_OWNER_A = "20260925T000000-aaaaaaaa"
+_OWNER_B = "20260925T000000-bbbbbbbb"
+
+
+def _bare_lineage(tmp_path: Path, owner: str, common: Path) -> lineage.LineageState:
+    return lineage.LineageState(
+        owner=owner,
+        repository=common.parent,
+        common_dir=common,
+        worktree=tmp_path / "wt" / owner,
+        branch=f"ha/{owner}",
+        base="0" * 40,
+        members={owner: "running"},
+        pending=None,
+        compromised=None,
+    )
+
+
+def test_check_repository_skips_a_lineage_that_vanishes_before_its_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Listed by of_repository, then withdrawn by its own write before this run's
+    load: absent, never "unknown" (a withdrawn new lineage had no worktree, branch
+    or commit)."""
+    state = tmp_path / "state"
+    common = tmp_path / "repo" / ".git"
+    lineage.create(state, _bare_lineage(tmp_path, _OWNER_A, common))
+    real_load = lineage.load
+
+    def vanishing(state_: Path, owner: str) -> lineage.LineageState:
+        lineage.lineage_path(state_, owner).unlink(missing_ok=True)
+        return real_load(state_, owner)
+
+    monkeypatch.setattr(lineage, "load", vanishing)
+    write_flow.check_repository(state, common, own=_OWNER_B)
+
+
+def test_check_repository_still_refuses_a_corrupt_lineage(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    common = tmp_path / "repo" / ".git"
+    lineage.create(state, _bare_lineage(tmp_path, _OWNER_A, common))
+    lineage.lineage_path(state, _OWNER_A).write_text("{broken")
+    with pytest.raises(write_flow.WriteRefused, match="is unknown"):
+        write_flow.check_repository(state, common, own=_OWNER_B)
+
+
+_WITHDRAWING_CHILD = """
+import sys
+import time
+from pathlib import Path
+from headless_agents import lineage
+from headless_agents.locks import Rank, held
+
+state, common, root = Path(sys.argv[1]), Path(sys.argv[2]), Path(sys.argv[3])
+owner = "20260925T000000-aaaaaaaa"
+document = lineage.LineageState(
+    owner=owner, repository=common.parent, common_dir=common,
+    worktree=root / "wt" / owner, branch="ha/" + owner, base="0" * 40,
+    members={owner: "running"}, pending=None, compromised=None,
+)
+# As a new write does: its lineage is created under the registry lock (_admit,
+# _intent), which is released before _prepare ...
+with held(lineage.registry_lock(state), rank=Rank.LINEAGE_REGISTRY, exclusive=True,
+          wait=10.0, what="the lineage registry lock"):
+    lineage.create(state, document)
+(root / "created").write_text("created")
+limit = time.monotonic() + 10
+while not (root / "listed").exists():
+    if time.monotonic() > limit:
+        sys.exit(3)
+    time.sleep(0.01)
+# ... and a refused preparation withdraws it WITHOUT that lock (_withdraw).
+lineage.lineage_path(state, owner).unlink()
+(root / "unlinked").write_text("unlinked")
+"""
+
+
+def _wait_for(path: Path, child: subprocess.Popen[bytes]) -> None:
+    limit = time.monotonic() + 10
+    while not path.exists():
+        assert child.poll() is None, f"the withdrawing process exited {child.returncode}"
+        assert time.monotonic() < limit, f"{path.name} never appeared"
+        time.sleep(0.01)
+
+
+def test_a_lineage_withdrawn_during_admission_is_never_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real race, ordered (9ec19a4e). Another process creates a lineage of the same
+    repository under the registry lock, then -- once this process's admission check,
+    run under the registry lock as every admission does, has listed it -- withdraws
+    it without that lock, as a refused new write's _withdraw does. The check must
+    read the withdrawn lineage as absent, never as unknown."""
+    state = tmp_path / "state"
+    common = tmp_path / "repo" / ".git"
+    child = subprocess.Popen(
+        [sys.executable, "-c", _WITHDRAWING_CHILD, str(state), str(common), str(tmp_path)],
+        start_new_session=True,
+    )
+    try:
+        _wait_for(tmp_path / "created", child)
+        real_load = lineage.load
+
+        def load_after_the_withdrawal(state_: Path, owner: str) -> lineage.LineageState:
+            if owner == _OWNER_A:
+                (tmp_path / "listed").write_text("listed")
+                _wait_for(tmp_path / "unlinked", child)
+            return real_load(state_, owner)
+
+        monkeypatch.setattr(lineage, "load", load_after_the_withdrawal)
+        with locks.held(
+            lineage.registry_lock(state),
+            rank=locks.Rank.LINEAGE_REGISTRY,
+            exclusive=False,
+            wait=10.0,
+            what="the lineage registry lock",
+        ):
+            write_flow.check_repository(state, common, own=_OWNER_B)
+        assert (tmp_path / "unlinked").exists(), "the lineage was never withdrawn"
+        assert child.wait(timeout=10) == 0
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()
+
+
+def test_a_stale_pending_write_keeps_the_first_compromised_reason(tmp_path: Path) -> None:
+    """unfinalized() on a lineage already compromised: the root cause stays, the
+    new reason is recorded after it (ticket e5b93270 item 1)."""
+    state = tmp_path / "state"
+    common = tmp_path / "repo" / ".git"
+    current = replace(
+        _bare_lineage(tmp_path, _OWNER_A, common),
+        compromised="agent_moved_head",
+        pending=lineage.PendingWrite(
+            run_id=_OWNER_A,
+            providers=("codex",),
+            unconfined=False,
+            start_tip=None,
+            start_reflog=None,
+        ),
+    )
+    lineage.create(state, current)
+    write_flow.unfinalized(state, current, common)
+    reloaded = lineage.load(state, _OWNER_A)
+    assert reloaded.compromised == "agent_moved_head"
+    assert reloaded.compromised_history == ("unfinalized_write",)
 
 
 def test_a_stale_unconfined_intent_quarantines_the_operator(world: World) -> None:

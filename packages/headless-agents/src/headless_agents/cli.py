@@ -725,10 +725,18 @@ def _write_header(outcome: Outcome, branch: str) -> str:
     takes -- the branch, the diffstat of ``change.patch`` and its path. No git: the
     patch the engine saved is read."""
     stat = read_diffstat(outcome.run_dir)
+    patch = outcome.run_dir / PATCH_FILE
+    # A failed ``git diff`` leaves no patch (ticket e5b93270 item 2): never print a
+    # path to nothing.
+    shown = (
+        str(patch)
+        if patch.is_file()
+        else "not written (git diff failed: see the step's commit.log)"
+    )
     return (
         f"run: {outcome.run_id}\nbranch: {branch}\n"
         f"diffstat: {format_diffstat(stat) if stat is not None else '-'}\n"
-        f"patch: {outcome.run_dir / PATCH_FILE}\n\n"
+        f"patch: {shown}\n\n"
     )
 
 
