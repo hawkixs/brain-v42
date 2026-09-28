@@ -1281,8 +1281,9 @@ def force_clean(
 
     The caller holds the run lifecycle and global locks. The registry lock
     excludes admission while the lineage lock excludes another member's write.
-    Git removal finishes before any state is lifted, so a failed removal keeps
-    the quarantine in force.
+    The branch tip is pinned before worktree removal so a retry cannot adopt
+    another branch's work. Git removal finishes before any state is lifted, so
+    a failed removal keeps the quarantine in force.
     """
     with ExitStack() as locks_held:
         locks_held.enter_context(
@@ -1337,6 +1338,41 @@ def force_clean(
         if current.worktree.exists() and not registered:
             say(f"lineage {owner} worktree is not registered in its repository: nothing lifted")
             return 1
+        ref = f"refs/heads/{current.branch}"
+        found = git(
+            current.repository, ["rev-parse", "--verify", "--quiet", ref], environ, state=state
+        )
+        if found.returncode not in (0, 1):
+            say(f"git rev-parse failed: {found.stderr.strip()}; nothing lifted")
+            return 1
+        actual = found.stdout.strip() if found.returncode == 0 else None
+        expected = current.clean_branch_tip
+        if current.clean_branch_deleted:
+            if actual is not None or current.worktree.exists() or registered:
+                say(
+                    f"branch {current.branch}: expected absent after ha deleted {expected}, "
+                    f"actual {actual or '<missing>'}; nothing lifted"
+                )
+                return 1
+        else:
+            if expected is None:
+                if not current.worktree.exists() or not registered or actual is None:
+                    say(
+                        f"branch {current.branch}: expected <missing recorded sha>, "
+                        f"actual {actual or '<missing>'}; nothing lifted"
+                    )
+                    return 1
+                # Save before removing the only registered worktree that links this
+                # branch to the lineage. A retry must never adopt a replacement tip.
+                expected = actual
+                current = replace(current, clean_branch_tip=expected)
+                lineages.save(state, current)
+            if actual != expected:
+                say(
+                    f"branch {current.branch}: expected {expected}, "
+                    f"actual {actual or '<missing>'}; nothing lifted"
+                )
+                return 1
         if current.worktree.exists() or current.worktree.is_symlink():
             result = git(
                 current.repository,
@@ -1348,19 +1384,26 @@ def force_clean(
                 say(f"git worktree remove --force failed: {result.stderr.strip()}; nothing lifted")
                 return 1
             say(f"{run_id}: removed worktree {current.worktree}")
-        branch = git(current.repository, ["branch", "--list", current.branch], environ, state=state)
-        if branch.returncode != 0:
-            say(f"git branch --list failed: {branch.stderr.strip()}; nothing lifted")
-            return 1
-        if branch.stdout.strip():
-            # An earlier removal can leave only the branch; the owner and path checks
-            # above also permit that retry.
+        if not current.clean_branch_deleted:
+            assert expected is not None
             deleted = git(
-                current.repository, ["branch", "-D", current.branch], environ, state=state
+                current.repository, ["update-ref", "-d", ref, expected], environ, state=state
             )
             if deleted.returncode != 0:
-                say(f"git branch -D failed: {deleted.stderr.strip()}; nothing lifted")
+                found = git(
+                    current.repository,
+                    ["rev-parse", "--verify", "--quiet", ref],
+                    environ,
+                    state=state,
+                )
+                actual = found.stdout.strip() if found.returncode == 0 else "<missing>"
+                say(
+                    f"branch {current.branch}: expected {expected}, actual {actual}; "
+                    f"git update-ref -d failed: {deleted.stderr.strip()}; nothing lifted"
+                )
                 return 1
+            current = replace(current, clean_branch_deleted=True)
+            lineages.save(state, current)
             say(f"{run_id}: deleted branch {current.branch}")
         paths = [
             lineages.lineage_path(state, owner),

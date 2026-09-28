@@ -293,6 +293,10 @@ fairness across the two populations does not.
   files if an archive rename fails. A retry finishes branch deletion and archival when
   the worktree was removed before a branch command failed. It refuses an active run.
   Quarantine and compromised-lineage refusals name the recovery command.
+- Forced cleanup saves the branch tip before removing its registered worktree and deletes
+  the branch with `git update-ref -d` against that exact commit. A retry refuses a moved
+  branch or a missing saved tip, and reports the expected and actual commits. A saved
+  deletion marker lets an archive retry finish after the branch was already deleted.
 
 ## 0.5.2 — 2026-09-27 (tag `headless-agents-v0.5.2` after merge)
 

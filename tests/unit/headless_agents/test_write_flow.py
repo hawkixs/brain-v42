@@ -1719,7 +1719,7 @@ def test_force_clean_refuses_a_lineage_pointing_at_another_repository(
     assert foreign_worktree.exists() and (outcome.run_dir / "wt").exists()
     assert _git(other, "branch", "--list", f"ha/{outcome.run_id}").strip()
     assert all(
-        args[:2] not in (["worktree", "remove"], ["branch", "-D"]) for args in world.git_calls
+        args[:2] not in (["worktree", "remove"], ["update-ref", "-d"]) for args in world.git_calls
     )
     assert any("does not match" in line for line in world.said)
 
@@ -1736,7 +1736,7 @@ def test_force_clean_refuses_a_different_registered_worktree(world: World) -> No
     assert _force_clean(world, outcome.run_id) == 1
     assert other_worktree.exists() and (outcome.run_dir / "wt").exists()
     assert all(
-        args[:2] not in (["worktree", "remove"], ["branch", "-D"]) for args in world.git_calls
+        args[:2] not in (["worktree", "remove"], ["update-ref", "-d"]) for args in world.git_calls
     )
 
 
@@ -1752,7 +1752,7 @@ def test_force_clean_refuses_a_symlinked_owner_worktree(world: World) -> None:
     assert _force_clean(world, outcome.run_id) == 1
     assert worktree.is_symlink() and moved.exists()
     assert all(
-        args[:2] not in (["worktree", "remove"], ["branch", "-D"]) for args in world.git_calls
+        args[:2] not in (["worktree", "remove"], ["update-ref", "-d"]) for args in world.git_calls
     )
     assert any("symbolic link" in line for line in world.said)
 
@@ -1768,7 +1768,7 @@ def test_force_clean_refuses_an_unregistered_owner_worktree(world: World) -> Non
     assert _force_clean(world, outcome.run_id) == 1
     assert worktree.exists()
     assert all(
-        args[:2] not in (["worktree", "remove"], ["branch", "-D"]) for args in world.git_calls
+        args[:2] not in (["worktree", "remove"], ["update-ref", "-d"]) for args in world.git_calls
     )
     assert any("registered" in line for line in world.said)
 
@@ -1780,6 +1780,7 @@ def test_force_clean_retries_branch_deletion_after_worktree_removal(
     world.agent.edit = _edit_app
     outcome = world.write()
     run_id = outcome.run_id
+    expected_tip = _git(world.repo, "rev-parse", f"refs/heads/ha/{run_id}").strip()
     real_git = write_flow.git
     failed = False
 
@@ -1787,7 +1788,7 @@ def test_force_clean_retries_branch_deletion_after_worktree_removal(
         root: Path, args: list[str], environ: Mapping[str, str], *, state: Path
     ) -> subprocess.CompletedProcess[str]:
         nonlocal failed
-        if args[:2] == ["branch", "-D"] and not failed:
+        if args[:2] == ["update-ref", "-d"] and not failed:
             failed = True
             return subprocess.CompletedProcess(args, 1, "", "simulated branch failure")
         return real_git(root, args, environ, state=state)
@@ -1795,10 +1796,12 @@ def test_force_clean_retries_branch_deletion_after_worktree_removal(
     monkeypatch.setattr(write_flow, "git", fail_once)
     assert _force_clean(world, run_id) == 1
     assert failed and not (outcome.run_dir / "wt").exists()
+    assert lineage.load(world.state, run_id).clean_branch_tip == expected_tip
     assert _git(world.repo, "branch", "--list", f"ha/{run_id}").strip()
     assert lineage.lineage_path(world.state, run_id).exists()
 
     assert _force_clean(world, run_id) == 0
+    assert ["update-ref", "-d", f"refs/heads/ha/{run_id}", expected_tip] in world.git_calls
     assert _git(world.repo, "branch", "--list", f"ha/{run_id}").strip() == ""
     assert not lineage.lineage_path(world.state, run_id).exists()
     assert list(lineage.lineage_path(world.state, run_id).parent.glob(f"{run_id}.json.lifted-*"))
@@ -1816,7 +1819,7 @@ def test_force_clean_retry_still_refuses_a_mismatching_repository(
     def fail_delete(
         root: Path, args: list[str], environ: Mapping[str, str], *, state: Path
     ) -> subprocess.CompletedProcess[str]:
-        if args[:2] == ["branch", "-D"]:
+        if args[:2] == ["update-ref", "-d"]:
             return subprocess.CompletedProcess(args, 1, "", "simulated branch failure")
         return real_git(root, args, environ, state=state)
 
@@ -1836,8 +1839,89 @@ def test_force_clean_retry_still_refuses_a_mismatching_repository(
 
     assert _force_clean(world, run_id) == 1
     assert _git(world.repo, "branch", "--list", f"ha/{run_id}").strip()
-    assert all(args[:2] != ["branch", "-D"] for args in world.git_calls)
+    assert all(args[:2] != ["update-ref", "-d"] for args in world.git_calls)
     assert lineage.lineage_path(world.state, run_id).exists()
+
+
+def test_force_clean_retry_refuses_a_replaced_branch(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The saved cleanup tip must prevent deletion of unrelated replacement work."""
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    run_id = outcome.run_id
+    original_tip = _git(world.repo, "rev-parse", f"refs/heads/ha/{run_id}").strip()
+    real_git = write_flow.git
+
+    def fail_delete(
+        root: Path, args: list[str], environ: Mapping[str, str], *, state: Path
+    ) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["update-ref", "-d"]:
+            return subprocess.CompletedProcess(args, 1, "", "simulated branch failure")
+        return real_git(root, args, environ, state=state)
+
+    monkeypatch.setattr(write_flow, "git", fail_delete)
+    assert _force_clean(world, run_id) == 1
+    assert not (outcome.run_dir / "wt").exists()
+    monkeypatch.setattr(write_flow, "git", real_git)
+    replacement = _git(world.repo, "rev-parse", "main").strip()
+    assert replacement != original_tip
+    _git(world.repo, "update-ref", f"refs/heads/ha/{run_id}", replacement)
+    world.git_calls.clear()
+
+    assert _force_clean(world, run_id) == 1
+    assert _git(world.repo, "rev-parse", f"refs/heads/ha/{run_id}").strip() == replacement
+    assert lineage.lineage_path(world.state, run_id).exists()
+    assert not any(args[:2] == ["update-ref", "-d"] for args in world.git_calls)
+    assert any(
+        f"ha/{run_id}" in line and original_tip in line and replacement in line
+        for line in world.said
+    )
+
+
+def test_force_clean_refuses_missing_saved_tip_after_worktree_removal(world: World) -> None:
+    """A branch left by a missing owner worktree has no trusted cleanup tip."""
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    run_id = outcome.run_id
+    _git(world.repo, "worktree", "remove", "--force", str(outcome.run_dir / "wt"))
+    tip = _git(world.repo, "rev-parse", f"refs/heads/ha/{run_id}").strip()
+    world.git_calls.clear()
+
+    assert _force_clean(world, run_id) == 1
+    assert _git(world.repo, "rev-parse", f"refs/heads/ha/{run_id}").strip() == tip
+    assert lineage.lineage_path(world.state, run_id).exists()
+    assert not any(args[:2] == ["update-ref", "-d"] for args in world.git_calls)
+    assert any(f"ha/{run_id}" in line and "expected" in line and tip in line for line in world.said)
+
+
+def test_force_clean_compare_and_delete_refuses_a_racing_branch_move(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A move after the tip check must still lose the atomic deletion race."""
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    run_id = outcome.run_id
+    original_tip = _git(world.repo, "rev-parse", f"refs/heads/ha/{run_id}").strip()
+    replacement = _git(world.repo, "rev-parse", "main").strip()
+    real_git = write_flow.git
+
+    def move_before_delete(
+        root: Path, args: list[str], environ: Mapping[str, str], *, state: Path
+    ) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["update-ref", "-d"]:
+            _git(world.repo, "update-ref", f"refs/heads/ha/{run_id}", replacement)
+        return real_git(root, args, environ, state=state)
+
+    monkeypatch.setattr(write_flow, "git", move_before_delete)
+    assert _force_clean(world, run_id) == 1
+    assert _git(world.repo, "rev-parse", f"refs/heads/ha/{run_id}").strip() == replacement
+    assert lineage.lineage_path(world.state, run_id).exists()
+    assert ["update-ref", "-d", f"refs/heads/ha/{run_id}", original_tip] in world.git_calls
+    assert any(
+        f"ha/{run_id}" in line and original_tip in line and replacement in line
+        for line in world.said
+    )
 
 
 def test_force_clean_rolls_back_state_when_a_later_archive_fails(
@@ -1865,6 +1949,10 @@ def test_force_clean_rolls_back_state_when_a_later_archive_fails(
         assert path.exists()
         assert not list(path.parent.glob(path.name + ".lifted-*"))
     assert any("runs directory is not writable" in line for line in world.said)
+
+    monkeypatch.setattr(Path, "rename", original_rename)
+    assert _force_clean(world, run_id) == 0, world.said
+    assert not lineage.lineage_path(world.state, run_id).exists()
 
 
 def test_quarantine_refusal_names_force_clean_command(world: World) -> None:
