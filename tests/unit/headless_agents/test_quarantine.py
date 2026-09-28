@@ -132,6 +132,7 @@ def test_a_corrupt_quarantine_file_refuses(tmp_path: Path, layout: dict[str, Pat
     path.write_text("{broken")
     refusal = quarantine.check(state, layout["common_dir"])
     assert refusal is not None and "unreadable" in refusal
+    assert f"rename {path} to {path}.lifted-<UTC timestamp>" in refusal
 
 
 def test_the_first_quarantine_is_kept(tmp_path: Path, layout: dict[str, Path]) -> None:

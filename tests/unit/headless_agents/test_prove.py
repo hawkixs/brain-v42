@@ -355,7 +355,48 @@ def test_confinement_without_evidence_is_inconclusive_and_records_nothing(
     _, run = _recorder(control_only)
     verdict = _prove(tmp_path, "opencode", "confinement", run)
     assert verdict.outcome == "inconclusive" and not verdict.recorded
+    assert "common_config not attempted" in verdict.reason
+    assert "ref not attempted" in verdict.reason
+    assert "no refused write can be verified" in verdict.reason
     assert not proof_path(tmp_path / "state", "opencode").exists()
+
+
+def test_opencode_prompt_insists_on_the_outside_write_attempt(
+    tmp_path: Path, versions: list[str]
+) -> None:
+    prompts: list[str] = []
+
+    def record_prompt(rail: str, spec: RunSpec, keep: bool) -> RunResult:
+        prompts.append(spec.prompt)
+        return _opencode_refused(rail, spec, keep)
+
+    _prove(tmp_path, "opencode", "confinement", record_prompt)
+    assert all("Use the write or edit tool on the second file" in prompt for prompt in prompts)
+
+
+def test_agy_prompt_uses_its_own_write_tools(tmp_path: Path, versions: list[str]) -> None:
+    prompts: list[str] = []
+
+    def record_prompt(rail: str, spec: RunSpec, keep: bool) -> RunResult:
+        prompts.append(spec.prompt)
+        return _result(spec)
+
+    _prove(tmp_path, "agy", "confinement", record_prompt)
+    assert all("Use the write or edit tool" not in prompt for prompt in prompts)
+
+
+def test_opencode_incomplete_run_still_names_unattempted_targets(
+    tmp_path: Path, versions: list[str]
+) -> None:
+    verdict = _prove(
+        tmp_path,
+        "opencode",
+        "confinement",
+        lambda rail, spec, keep: _result(spec, text="no calls made"),
+    )
+    assert verdict.outcome == "inconclusive"
+    assert "common_config not attempted" in verdict.reason
+    assert "ref not attempted" in verdict.reason
 
 
 def test_claude_confinement_is_skipped_without_a_provider_call(

@@ -250,6 +250,21 @@ no longer used and are harmless. **Upgrade window:** an `ha` 0.5.2 process still
 admits through its gate while 0.5.3 processes queue. Exclusion holds between the two, but
 fairness across the two populations does not.
 
+## Unreleased — 0.5.3, lot 7b: proofs and quarantine
+
+- Codex confinement attributes operator-session rollouts to the probe's own thread ids;
+  concurrent Codex clients no longer make a proof inconclusive. Unknown attribution
+  remains inconclusive.
+- opencode confinement names each target without a logged write attempt and asks for
+  the missing attempt again. Its prompt explicitly requests a write or edit tool call
+  for the outside target.
+- The confinement reader rejects non-normalised `writable_roots` strings before
+  `Path()` can erase their spelling.
+- `ha clean --force RUN_ID` retires the run's lineage after inspection: it removes its
+  worktree, deletes its `ha/<lineage>` branch, and renames the lineage, lock, member-run
+  and matching quarantine state files to `*.lifted-<UTC timestamp>`. It refuses an
+  active run. Quarantine and compromised-lineage refusals name the recovery command.
+
 ## 0.5.2 — 2026-09-27 (tag `headless-agents-v0.5.2` after merge)
 
 Parallel runs across sessions, and one operator command to update the provider CLIs

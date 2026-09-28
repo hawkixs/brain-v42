@@ -616,6 +616,8 @@ def _matches_write_policy(
     for entry in writable_roots:
         if not isinstance(entry, str):
             return False
+        if not entry.startswith("/") or "//" in entry or os.path.normpath(entry) != entry:
+            return False
         root = Path(entry)
         if not _is_absolute_and_normalised(root):
             return False
@@ -907,6 +909,24 @@ def refused_attempts(
         found |= _rollout_refusals(
             run_dir, wanted, line=line, rail_version=rail_version, workspace=workspace
         )
+    return found
+
+
+def opencode_write_attempts(run_dir: Path, targets: Sequence[Path]) -> set[Path]:
+    """Name attempted targets for diagnostics; only refused_attempts can prove confinement."""
+    wanted = {str(target): target for target in targets}
+    found: set[Path] = set()
+    for event in _events(run_dir / "events.jsonl"):
+        part = event.get("part")
+        if not isinstance(part, dict) or part.get("type") != "tool":
+            continue
+        if part.get("tool") not in _OPENCODE_WRITE_TOOLS:
+            continue
+        state = part.get("state")
+        given = state.get("input") if isinstance(state, dict) else None
+        path = given.get("filePath") if isinstance(given, dict) else None
+        if path in wanted:
+            found.add(wanted[str(path)])
     return found
 
 

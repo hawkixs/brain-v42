@@ -1608,6 +1608,106 @@ def test_clean_under_a_repository_quarantine_runs_no_git(world: World) -> None:
     assert world.git_calls == []
 
 
+def test_force_clean_lifts_a_compromised_lineage_and_its_quarantine(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    run_id = outcome.run_id
+    lineage.save(world.state, lineage.compromise(lineage.load(world.state, run_id), "tripwire"))
+    quarantine.publish(
+        world.state,
+        "repository",
+        reason="tripwire",
+        run_id=run_id,
+        paths=[],
+        common_dir=world.common_dir(),
+    )
+
+    code = engine.clean(
+        run_id,
+        force=True,
+        environ={"PATH": os.environ["PATH"], "HOME": str(world.home)},
+        home=world.home,
+        say=world.said.append,
+    )
+
+    assert code == 0
+    assert not (outcome.run_dir / "wt").exists()
+    assert _git(world.repo, "branch", "--list", f"ha/{run_id}").strip() == ""
+    for path in (
+        lineage.lineage_path(world.state, run_id),
+        lineage.lineage_lock(world.state, run_id),
+        world.state / "runs" / f"{run_id}.json",
+        quarantine.quarantine_path(world.state, "repository", world.common_dir()),
+    ):
+        assert not path.exists()
+        assert list(path.parent.glob(path.name + ".lifted-*"))
+    assert quarantine.check(world.state, world.common_dir()) is None
+    assert any("lifted" in line and run_id in line for line in world.said)
+
+
+def test_force_clean_archives_every_member_of_the_lineage(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    owner = outcome.run_id
+    member = "20260927T000000-aaaaaaaa"
+    current = lineage.load(world.state, owner)
+    lineage.save(world.state, replace(current, members={**current.members, member: "failed"}))
+    world.registry().create(
+        member,
+        run_dir=world.home / "member",
+        target={"kind": "role", "name": "codex"},
+        repository=world.repo,
+        lineage=owner,
+    )
+
+    assert (
+        engine.clean(
+            member,
+            force=True,
+            environ={"PATH": os.environ["PATH"], "HOME": str(world.home)},
+            home=world.home,
+            say=world.said.append,
+        )
+        == 0
+    )
+    for run_id in (owner, member):
+        path = world.state / "runs" / f"{run_id}.json"
+        assert not path.exists()
+        assert list(path.parent.glob(path.name + ".lifted-*"))
+
+
+def test_quarantine_refusal_names_force_clean_command(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    quarantine.publish(
+        world.state,
+        "repository",
+        reason="tripwire",
+        run_id=outcome.run_id,
+        paths=[],
+        common_dir=world.common_dir(),
+    )
+    refusal = quarantine.check(world.state, world.common_dir())
+    assert refusal is not None and f"ha clean --force {outcome.run_id}" in refusal
+
+
+def test_clean_cli_accepts_force() -> None:
+    from headless_agents import cli
+
+    args = cli._parser().parse_args(["clean", "--force", "20260927T000000-aaaaaaaa"])
+    assert args.force is True
+
+
+def test_compromised_lineage_refusal_names_force_clean_command(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    lineage.save(
+        world.state, lineage.compromise(lineage.load(world.state, outcome.run_id), "tripwire")
+    )
+    with pytest.raises(UsageError, match=f"ha clean --force {outcome.run_id}"):
+        world.write(repo=outcome.run_dir / "wt")
+
+
 def test_clean_finds_a_stale_pending_write_in_the_repository(world: World) -> None:
     world.agent.edit = _edit_app
     outcome = world.write()

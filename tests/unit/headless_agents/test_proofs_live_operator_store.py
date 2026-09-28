@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-from headless_agents.prove import _codex_touched_the_operator_session_store
+from headless_agents.prove import _codex_touched_the_operator_session_store, _probe_thread_ids
 
 
 def _plant_rollout(codex_home: Path) -> Path:
@@ -281,3 +281,77 @@ def test_an_older_rollout_does_not_count(monkeypatch: pytest.MonkeyPatch, tmp_pa
     )
 
     assert touched is False
+
+
+def test_another_clients_recent_session_does_not_count(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _clear_parent_codex_home(monkeypatch, home=home)
+    rollout = _plant_rollout(home / ".codex")
+    rollout = rollout.rename(rollout.with_name("rollout-2026-09-27T04-18-26-desktop-thread.jsonl"))
+    rollout.write_text('{"type":"session_meta","payload":{"id":"desktop-thread"}}\n')
+
+    assert not _codex_touched_the_operator_session_store(
+        _marker(),
+        spec_environment={"HOME": str(home)},
+        probe_thread_ids={"probe-thread"},
+    )
+
+
+def test_the_probes_recent_session_counts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _clear_parent_codex_home(monkeypatch, home=home)
+    rollout = _plant_rollout(home / ".codex")
+    rollout = rollout.rename(rollout.with_name("rollout-2026-09-27T04-18-26-probe-thread.jsonl"))
+    rollout.write_text('{"type":"session_meta","payload":{"id":"probe-thread"}}\n')
+
+    assert _codex_touched_the_operator_session_store(
+        _marker(),
+        spec_environment={"HOME": str(home)},
+        probe_thread_ids={"probe-thread"},
+    )
+
+
+def test_unidentified_recent_session_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _clear_parent_codex_home(monkeypatch, home=home)
+    _plant_rollout(home / ".codex")
+
+    assert _codex_touched_the_operator_session_store(
+        _marker(), spec_environment={"HOME": str(home)}, probe_thread_ids={"probe-thread"}
+    )
+
+
+def test_session_filename_disagrees_with_metadata_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _clear_parent_codex_home(monkeypatch, home=home)
+    rollout = _plant_rollout(home / ".codex")
+    rollout.write_text('{"type":"session_meta","payload":{"id":"desktop-thread"}}\n')
+
+    assert _codex_touched_the_operator_session_store(
+        _marker(), spec_environment={"HOME": str(home)}, probe_thread_ids={"probe-thread"}
+    )
+
+
+def test_malformed_probe_events_cannot_bind_a_thread(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "events.jsonl").write_text('null\n{"type":"thread.started","thread_id":"t"}\n')
+    assert _probe_thread_ids([run_dir]) is None
+
+
+def test_two_probe_runs_sharing_a_thread_cannot_be_attributed(tmp_path: Path) -> None:
+    run_dirs = [tmp_path / name for name in ("first", "second")]
+    for run_dir in run_dirs:
+        run_dir.mkdir()
+        (run_dir / "events.jsonl").write_text('{"type":"thread.started","thread_id":"same"}\n')
+    assert _probe_thread_ids(run_dirs) is None

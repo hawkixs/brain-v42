@@ -454,7 +454,7 @@ ha models [--provider NAME] [--json] [--refresh]
 ha runs [--limit N] [--json]
 ha show RUN_ID [--json]
 ha show --dir PATH [--json]
-ha clean RUN_ID
+ha clean [--force] RUN_ID
 ha --version
 ```
 
@@ -643,8 +643,9 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   patch path and the agent's text are printed; exit `5` when nothing changed. **It never
   merges**: read the diff, integrate, or `ha clean`. If the `.git` tripwire fired, no git
   command runs at all, the lineage is compromised or the repository or operator
-  quarantined, and the worktree is kept for inspection; `ha clean` then refuses until
-  the operator recovers it by hand. A write role on a rail without a passing
+  quarantined, and the worktree is kept for inspection; after inspecting any residue,
+  `ha clean --force RUN_ID` removes the worktree and branch and archives the lineage,
+  run and quarantine state as `*.lifted-<UTC timestamp>`. A write role on a rail without a passing
   confinement proof for its installed version is serialised against every other run
   (`ha roles` shows `confined` or `unconfined`). codex needs no `--shell`
   here: it reads files only through its shell, which is always on and stays inside its OS
