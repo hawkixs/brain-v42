@@ -152,9 +152,10 @@ changes to `providers/agy.py` and `providers/opencode.py`
 
 ### Fixed
 - `keys.toml` and `.env` files are read through one checked descriptor each. FIFOs are
-  refused without blocking; symbolic links and nonregular files are refused.
+  refused without blocking; symbolic links, including links within the configuration
+  directory, and nonregular files are refused.
 - Group write on `keys.toml` is allowed only for a user-private group named like the
-  user with no supplementary members.
+  user with no other primary-group or supplementary members.
 
 ### Lot 4a — write and state robustness
 
@@ -286,8 +287,10 @@ fairness across the two populations does not.
   `Path()` can erase their spelling.
 - `ha clean --force RUN_ID` retires the run's lineage after inspection: it removes its
   worktree, deletes its `ha/<lineage>` branch, and renames the lineage, lock, member-run
-  and matching quarantine state files to `*.lifted-<UTC timestamp>`. It refuses an
-  active run. Quarantine and compromised-lineage refusals name the recovery command.
+  and matching quarantine state files to `*.lifted-<UTC timestamp>`. It verifies the
+  owner run record and git worktree registration before deletion, and restores state
+  files if an archive rename fails. It refuses an active run. Quarantine and
+  compromised-lineage refusals name the recovery command.
 
 ## 0.5.2 — 2026-09-27 (tag `headless-agents-v0.5.2` after merge)
 

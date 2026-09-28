@@ -226,8 +226,10 @@ def test_a_keys_toml_writable_by_the_users_own_group_is_accepted(
     _env_file(home / "or.env", f"OPENROUTER_API_KEY={SECRET}\n")
     _declare(home, 'openrouter = "~/or.env"\n')
     (home / ".config" / "ha" / "keys.toml").chmod(0o664)
+    gid = (home / ".config" / "ha" / "keys.toml").stat().st_gid
     monkeypatch.setattr(keys.pwd, "getpwuid", lambda _uid: SimpleNamespace(pw_name="u"))
     monkeypatch.setattr(keys.grp, "getgrgid", lambda _gid: SimpleNamespace(gr_name="u", gr_mem=[]))
+    monkeypatch.setattr(keys.pwd, "getpwall", lambda: [SimpleNamespace(pw_name="u", pw_gid=gid)])
     found = preset_key("openrouter", {"HOME": str(home)})
     assert found is not None and found.value == SECRET
 
@@ -245,6 +247,39 @@ def test_a_group_named_like_the_user_but_with_members_is_refused(
     with pytest.raises(KeysError, match="writable by others") as refused:
         preset_key("openrouter", {"HOME": str(home)})
     assert SECRET not in str(refused.value)
+
+
+def test_a_group_with_another_primary_member_is_not_private(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = _home(tmp_path)
+    _declare(home, 'openrouter = "~/or.env"\n')
+    path = home / ".config" / "ha" / "keys.toml"
+    path.chmod(0o664)
+    gid = path.stat().st_gid
+    monkeypatch.setattr(keys.pwd, "getpwuid", lambda _uid: SimpleNamespace(pw_name="owner"))
+    monkeypatch.setattr(
+        keys.pwd,
+        "getpwall",
+        lambda: [
+            SimpleNamespace(pw_name="owner", pw_gid=gid),
+            SimpleNamespace(pw_name="other", pw_gid=gid),
+        ],
+    )
+    monkeypatch.setattr(
+        keys.grp, "getgrgid", lambda _gid: SimpleNamespace(gr_name="owner", gr_mem=[])
+    )
+    with pytest.raises(KeysError, match="writable by others"):
+        preset_key("openrouter", {"HOME": str(home)})
+
+
+def test_a_keys_toml_linked_inside_the_configuration_directory_is_refused(tmp_path: Path) -> None:
+    home = _home(tmp_path)
+    config = home / ".config" / "ha"
+    (config / "real.toml").write_text('openrouter = "~/or.env"\n')
+    (config / "keys.toml").symlink_to(config / "real.toml")
+    with pytest.raises(KeysError, match="symbolic link"):
+        preset_key("openrouter", {"HOME": str(home)})
 
 
 def test_an_unknown_group_is_not_private(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

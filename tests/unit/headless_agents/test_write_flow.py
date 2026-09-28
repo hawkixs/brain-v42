@@ -1645,6 +1645,17 @@ def test_force_clean_lifts_a_compromised_lineage_and_its_quarantine(world: World
     assert any("lifted" in line and run_id in line for line in world.said)
 
 
+def _force_clean(world: World, run_id: str) -> int:
+    """Use the CLI's registry resolution when exercising forced cleanup."""
+    return engine.clean(
+        run_id,
+        force=True,
+        environ={"PATH": os.environ["PATH"], "HOME": str(world.home)},
+        home=world.home,
+        say=world.said.append,
+    )
+
+
 def test_force_clean_archives_every_member_of_the_lineage(world: World) -> None:
     world.agent.edit = _edit_app
     outcome = world.write()
@@ -1674,6 +1685,119 @@ def test_force_clean_archives_every_member_of_the_lineage(world: World) -> None:
         path = world.state / "runs" / f"{run_id}.json"
         assert not path.exists()
         assert list(path.parent.glob(path.name + ".lifted-*"))
+
+
+@pytest.mark.parametrize("foreign_path", [False, True])
+def test_force_clean_refuses_a_lineage_pointing_at_another_repository(
+    world: World, foreign_path: bool
+) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    other = world.repo.parent / "other"
+    other.mkdir()
+    _git(other, "init", "-q", "-b", "main")
+    _git(other, "config", "user.name", "Op")
+    _git(other, "config", "user.email", "op@example.test")
+    (other / "app.py").write_text("other\n")
+    _git(other, "add", "app.py")
+    _git(other, "commit", "-q", "-m", "init")
+    foreign_worktree = other.parent / "foreign-wt"
+    _git(other, "worktree", "add", "-q", "-b", f"ha/{outcome.run_id}", str(foreign_worktree))
+    current = lineage.load(world.state, outcome.run_id)
+    lineage.save(
+        world.state,
+        replace(
+            current,
+            repository=other,
+            common_dir=(other / ".git").resolve(),
+            worktree=foreign_worktree if foreign_path else current.worktree,
+        ),
+    )
+    world.git_calls.clear()
+
+    assert _force_clean(world, outcome.run_id) == 1
+    assert foreign_worktree.exists() and (outcome.run_dir / "wt").exists()
+    assert _git(other, "branch", "--list", f"ha/{outcome.run_id}").strip()
+    assert all(
+        args[:2] not in (["worktree", "remove"], ["branch", "-D"]) for args in world.git_calls
+    )
+    assert any("does not match" in line for line in world.said)
+
+
+def test_force_clean_refuses_a_different_registered_worktree(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    other_worktree = world.repo.parent / "other-wt"
+    _git(world.repo, "worktree", "add", "-q", "-b", "other", str(other_worktree))
+    current = lineage.load(world.state, outcome.run_id)
+    lineage.save(world.state, replace(current, worktree=other_worktree))
+    world.git_calls.clear()
+
+    assert _force_clean(world, outcome.run_id) == 1
+    assert other_worktree.exists() and (outcome.run_dir / "wt").exists()
+    assert all(
+        args[:2] not in (["worktree", "remove"], ["branch", "-D"]) for args in world.git_calls
+    )
+
+
+def test_force_clean_refuses_a_symlinked_owner_worktree(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    worktree = outcome.run_dir / "wt"
+    moved = outcome.run_dir / "moved-wt"
+    worktree.rename(moved)
+    worktree.symlink_to(moved, target_is_directory=True)
+    world.git_calls.clear()
+
+    assert _force_clean(world, outcome.run_id) == 1
+    assert worktree.is_symlink() and moved.exists()
+    assert all(
+        args[:2] not in (["worktree", "remove"], ["branch", "-D"]) for args in world.git_calls
+    )
+    assert any("symbolic link" in line for line in world.said)
+
+
+def test_force_clean_refuses_an_unregistered_owner_worktree(world: World) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    worktree = outcome.run_dir / "wt"
+    _git(world.repo, "worktree", "remove", "--force", str(worktree))
+    worktree.mkdir()
+    world.git_calls.clear()
+
+    assert _force_clean(world, outcome.run_id) == 1
+    assert worktree.exists()
+    assert all(
+        args[:2] not in (["worktree", "remove"], ["branch", "-D"]) for args in world.git_calls
+    )
+    assert any("registered" in line for line in world.said)
+
+
+def test_force_clean_rolls_back_state_when_a_later_archive_fails(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    run_id = outcome.run_id
+    failed_path = world.state / "runs" / f"{run_id}.json"
+    original_rename = Path.rename
+
+    def fail_run_archive(path: Path, target: Path) -> Path:
+        if path == failed_path:
+            raise OSError("runs directory is not writable")
+        return original_rename(path, target)
+
+    monkeypatch.setattr(Path, "rename", fail_run_archive)
+    assert _force_clean(world, run_id) == 1
+    assert world.registry().resolve(run_id).lineage == run_id
+    for path in (
+        lineage.lineage_path(world.state, run_id),
+        lineage.lineage_lock(world.state, run_id),
+        failed_path,
+    ):
+        assert path.exists()
+        assert not list(path.parent.glob(path.name + ".lifted-*"))
+    assert any("runs directory is not writable" in line for line in world.said)
 
 
 def test_quarantine_refusal_names_force_clean_command(world: World) -> None:

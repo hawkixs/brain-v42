@@ -49,6 +49,7 @@ from .profile import Workspace
 from .provenance import MadeBy
 from .repo import RepoIdentity
 from .result import RunResult
+from .runs import Registry, RegistryError
 from .state import Missing, Unknown, publish, read, read_optional
 
 if TYPE_CHECKING:
@@ -1311,6 +1312,31 @@ def force_clean(
         if run_id not in current.members or current.branch != f"ha/{owner}":
             say(f"run {run_id} does not match lineage {owner}: nothing lifted")
             return 1
+        try:
+            owner_entry = Registry(state, runs_root=state / "runs").resolve(owner)
+        except (RegistryError, Unknown) as exc:
+            say(f"owner run {owner} is not registered ({exc}): nothing lifted")
+            return 1
+        if (
+            owner_entry.lineage != owner
+            or owner_entry.repository != current.repository
+            or current.worktree != owner_entry.run_dir / "wt"
+        ):
+            say(f"lineage {owner} does not match its owner run record: nothing lifted")
+            return 1
+        if current.worktree.is_symlink() or owner_entry.run_dir.is_symlink():
+            say(f"lineage {owner} worktree path is a symbolic link: nothing lifted")
+            return 1
+        listed = git(current.repository, ["worktree", "list", "--porcelain"], environ, state=state)
+        if listed.returncode != 0:
+            say(f"git worktree list failed: {listed.stderr.strip()}; nothing lifted")
+            return 1
+        registered = any(
+            line == f"worktree {current.worktree}" for line in listed.stdout.splitlines()
+        )
+        if current.worktree.exists() and not registered:
+            say(f"lineage {owner} worktree is not registered in its repository: nothing lifted")
+            return 1
         if current.worktree.exists() or current.worktree.is_symlink():
             result = git(
                 current.repository,
@@ -1327,6 +1353,9 @@ def force_clean(
             say(f"git branch --list failed: {branch.stderr.strip()}; nothing lifted")
             return 1
         if branch.stdout.strip():
+            if not registered:
+                say(f"lineage {owner} worktree is not registered in its repository: nothing lifted")
+                return 1
             deleted = git(
                 current.repository, ["branch", "-D", current.branch], environ, state=state
             )
@@ -1352,11 +1381,30 @@ def force_clean(
                 if document.get("run_id") in current.members:
                     paths.append(path)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
-        for path in paths:
-            if path.exists() or path.is_symlink():
-                lifted = path.with_name(f"{path.name}.lifted-{stamp}")
-                path.rename(lifted)
-                say(f"{run_id}: lifted {path} to {lifted}")
+        renamed: list[tuple[Path, Path]] = []
+        try:
+            for path in paths:
+                if path.exists() or path.is_symlink():
+                    lifted = path.with_name(f"{path.name}.lifted-{stamp}")
+                    path.rename(lifted)
+                    renamed.append((path, lifted))
+        except OSError as exc:
+            rollback_errors: list[str] = []
+            for path, lifted in reversed(renamed):
+                try:
+                    lifted.rename(path)
+                except OSError as rollback_exc:
+                    rollback_errors.append(f"{path}: {rollback_exc}")
+            if rollback_errors:
+                say(
+                    f"state archive failed ({exc}); rollback failed for "
+                    f"{', '.join(rollback_errors)}; recover state by hand"
+                )
+            else:
+                say(f"state archive failed ({exc}); all state files restored")
+            return 1
+        for path, lifted in renamed:
+            say(f"{run_id}: lifted {path} to {lifted}")
         return 0
 
 

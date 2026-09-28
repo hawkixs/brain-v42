@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
 
-from .config_paths import ConfigPathError, config_file
+from .config_paths import ConfigPathError, config_dir, config_file
 from .providers.openai_compat import PRESETS
 
 KEYS_FILE_NAME: Final = "keys.toml"
@@ -72,23 +72,30 @@ def _open_checked(path: Path, *, what: str) -> tuple[int, os.stat_result]:
 
 
 def _private_group(gid: int) -> bool:
-    """A user-private group has the user's name and no supplementary members."""
+    """Primary members are absent from gr_mem, so check the account database too."""
     try:
         user = pwd.getpwuid(os.getuid())
         group = grp.getgrgid(gid)
-    except KeyError:
+        accounts = pwd.getpwall()
+    except (KeyError, OSError):
         return False
-    return group.gr_name == user.pw_name and not group.gr_mem
+    return (
+        group.gr_name == user.pw_name
+        and all(member == user.pw_name for member in group.gr_mem)
+        and all(account.pw_name == user.pw_name or account.pw_gid != gid for account in accounts)
+    )
 
 
 def _declared(home: Path, environ: Mapping[str, str]) -> dict[str, Path]:
     """Every preset ``keys.toml`` declares, with its key file's path; ``{}`` without a file."""
     try:
-        path = config_file(KEYS_FILE_NAME, environ, home=home)
+        checked = config_file(KEYS_FILE_NAME, environ, home=home)
     except ConfigPathError as exc:
         raise KeysError(str(exc)) from None
-    if path is None:
+    if checked is None:
         return {}
+    # Keep config_file's boundary check but open the original name to reject a link.
+    path = config_dir(environ, home=home) / KEYS_FILE_NAME
     fd, info = _open_checked(path, what="keys.toml")
     # keys.toml holds paths, never a key: reading it reveals nothing, but whoever can
     # EDIT it chooses which file ha reads a key from (codex review of #215).
