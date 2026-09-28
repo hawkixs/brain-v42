@@ -793,7 +793,12 @@ and state files first; keep any work you need. For a continuation, use the linea
 owner's run id in the worktree, branch, and lineage paths, and inspect every member
 run record before lifting it. Set `<run_dir>` to the owner's run directory
 and `<state>` to the state directory (`~/.local/state/ha`, or `$XDG_STATE_HOME/ha`
-when set). Then:
+when set). First stop or let finish every ha run that uses this lineage or
+repository (`ha runs` shows them), and confirm that no process holds
+`<state>/lineages/<run_id>.lock` or `<state>/unconfined.lock`, for example with
+`fuser <state>/lineages/<run_id>.lock <state>/unconfined.lock` printing nothing: renaming
+a lock a run still holds lets another run take a new lock while the first keeps writing.
+Then:
 
 1. Remove the worktree with `git worktree remove --force <run_dir>/wt` from the
    repository. Check that `ha/<run_id>` holds nothing to keep, then delete it with
@@ -805,6 +810,9 @@ when set). Then:
 3. Rename the matching `<state>/quarantine/repo-*.json` in the same way. Inspect
    its `run_id` and repository before choosing it. If an operator quarantine is
    also involved, inspect and rename `<state>/quarantine/operator.json` likewise.
+4. If the refusal names a stale unconfined intent, inspect `<state>/unconfined-intent.json`
+   (the run it names must no longer be running) and rename it in the same way; otherwise
+   the next write reads it again and publishes the operator quarantine once more.
 
 Keep every lifted file for audit; never delete these state files. Use the same UTC
 timestamp for the files lifted together, for example `20260928T212416Z`.
