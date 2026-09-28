@@ -18,62 +18,22 @@ commit that shipped it — deliberately outside the `v*` pattern, which names br
 version and drives its release workflow. Pin it:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.2#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.5.3#subdirectory=packages/headless-agents"
 ```
 
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
-## Unreleased — 0.5.3, lot 3: HTTP answers bounded, credential files read through one descriptor
+## 0.5.3 — 2026-09-28 (tag `headless-agents-v0.5.3` after merge)
 
-### Added
-- Every HTTP request carries `max_tokens` (declared default 8192). A role with an HTTP
-  link may set `max_tokens`; `ha run --max-tokens N` overrides it.
+Schema-constrained output, more precise provider failures, safer credential reads, and fair
+admission. **After installing: `ha prove --stale`** -- the isolation fingerprints of
+claude, codex, agy and opencode moved. Credential files with a key defined twice or with
+a FIFO/symlink are now refused (lot 3).
 
-### Changed
-- An empty HTTP answer exits `3` so a chain can try its next link; billed usage and cost
-  are retained (D3).
-- A key defined twice in a `.env` file is refused (D4). Inline comments are removed
-  from values; a `#` inside a quoted value or joined to an unquoted value is retained.
+### Lot 1 — schema-constrained output
 
-### Fixed
-- `keys.toml` and `.env` files are read through one checked descriptor each. FIFOs are
-  refused without blocking; symbolic links and nonregular files are refused.
-- Group write on `keys.toml` is allowed only for a user-private group named like the
-  user with no supplementary members.
-## Unreleased — 0.5.3, lot 5: nothing important is silent
 
-### Added
-- Every started link prints its effective provider, model, effort and timeout with the
-  source of each value. `run.json` steps add `model_source`, `effort` and `timeout_seconds`.
-- `ha runs` and `ha show` derive `waiting` from the live admission queue and lifecycle
-  lock; it is never stored in the registry.
-- Global-lock refusals name live holders by run id, target and age, or identify a holder
-  outside the registry.
-- Roles accept `language` (`en`, `fr`, `de`, `es`, `it`, `pt`, `nl`) as an instruction to
-  write the whole answer in that language.
-
-### Changed
-- Each link's configuration line replaces the former `step … started` line, including
-  after a fallback.
-- Admission refusals retain their prefixes and append holder details for global-lock
-  contention.
-
-## Unreleased — 0.5.3, lot 7a: small fixes
-
-### Fixed
-- Failed runs retain and display the agent's final report; plain write runs carry the shared
-  instruction that ha handles git commits.
-- `ha workflows` names the configuration file when no workflows are declared, and `ha models`
-  points to the catalog template installed by the ha-delegate skill when its catalog is absent.
-- `ha providers` reports the underlying reason when a proof cannot be read, and `ha roles`
-  displays whether write role links are confined or have serialised writes.
-
-### Documentation
-- Documented that socket-opening or event-loop test clients can hang in codex's write sandbox;
-  run those tests on the host after the run.
-
-## Unreleased — 0.5.3, lot 1: schema-constrained output
 
 A caller that needed a machine-readable answer could only ask for JSON in the prompt and
 hope (red-arena G1, ticket a48dc8eb). A run can now ask for an answer constrained by a
@@ -133,7 +93,9 @@ file names and the meaning of every exit code stay as they were. The isolation
 fingerprints of claude, codex, agy and opencode move: `ha prove --stale` after
 installing.
 
-## Unreleased — 0.5.3, lot 2: the agy and opencode rails fail fast and precisely
+### Lot 2 — the agy and opencode rails fail fast and precisely
+
+
 
 Tickets 5921850d and a93cc8f2.
 
@@ -174,7 +136,29 @@ changes to `providers/agy.py` and `providers/opencode.py`
 (`proofs._ISOLATION_SOURCE_FILES`): re-record them with `ha prove agy opencode
 --isolation` after installing (0.5.2 lot 4a, below).
 
-## Unreleased — 0.5.3, lot 4a: write and state robustness
+### Lot 3 — HTTP answers bounded, credential files read through one descriptor
+
+
+
+### Added
+- Every HTTP request carries `max_tokens` (declared default 8192). A role with an HTTP
+  link may set `max_tokens`; `ha run --max-tokens N` overrides it.
+
+### Changed
+- An empty HTTP answer exits `3` so a chain can try its next link; billed usage and cost
+  are retained (D3).
+- A key defined twice in a `.env` file is refused (D4). Inline comments are removed
+  from values; a `#` inside a quoted value or joined to an unquoted value is retained.
+
+### Fixed
+- `keys.toml` and `.env` files are read through one checked descriptor each. FIFOs are
+  refused without blocking; symbolic links and nonregular files are refused.
+- Group write on `keys.toml` is allowed only for a user-private group named like the
+  user with no supplementary members.
+
+### Lot 4a — write and state robustness
+
+
 
 The state stays coherent under races, forged reports and failed git commands. No lock,
 gate, proof, exit-code meaning, `RunSpec`, `RunResult` or `result.json` changes; the new
@@ -204,7 +188,9 @@ state keys are additive (an older ha ignores them).
 - **A registry entry naming a provider ha does not know is `Unknown`** (ticket e5b93270
   item 6): those names are the authors the vendor rule reads.
 
-## Unreleased — 0.5.3, lot 4b: first come, first served admission
+### Lot 4b — first come, first served admission
+
+
 
 0.5.2 gave an unconfined writer only a best-effort preference at admission (lot 3's
 writer-intent lock and admission gate), because `flock` orders no waiters:
@@ -250,7 +236,45 @@ no longer used and are harmless. **Upgrade window:** an `ha` 0.5.2 process still
 admits through its gate while 0.5.3 processes queue. Exclusion holds between the two, but
 fairness across the two populations does not.
 
-## Unreleased — 0.5.3, lot 7b: proofs and quarantine
+### Lot 5 — nothing important is silent
+
+
+
+### Added
+- Every started link prints its effective provider, model, effort and timeout with the
+  source of each value. `run.json` steps add `model_source`, `effort` and `timeout_seconds`.
+- `ha runs` and `ha show` derive `waiting` from the live admission queue and lifecycle
+  lock; it is never stored in the registry.
+- Global-lock refusals name live holders by run id, target and age, or identify a holder
+  outside the registry.
+- Roles accept `language` (`en`, `fr`, `de`, `es`, `it`, `pt`, `nl`) as an instruction to
+  write the whole answer in that language.
+
+### Changed
+- Each link's configuration line replaces the former `step … started` line, including
+  after a fallback.
+- Admission refusals retain their prefixes and append holder details for global-lock
+  contention.
+
+### Lot 7a — small fixes
+
+
+
+### Fixed
+- Failed runs retain and display the agent's final report; plain write runs carry the shared
+  instruction that ha handles git commits.
+- `ha workflows` names the configuration file when no workflows are declared, and `ha models`
+  points to the catalog template installed by the ha-delegate skill when its catalog is absent.
+- `ha providers` reports the underlying reason when a proof cannot be read, and `ha roles`
+  displays whether write role links are confined or have serialised writes.
+
+### Documentation
+- Documented that socket-opening or event-loop test clients can hang in codex's write sandbox;
+  run those tests on the host after the run.
+
+### Lot 7b — proofs and quarantine
+
+
 
 - Codex confinement attributes operator-session rollouts to the probe's own thread ids;
   concurrent Codex clients no longer make a proof inconclusive. Unknown attribution
@@ -646,7 +670,9 @@ left its unconfined intent behind for the operator quarantine to find.
   `binary=True` returns the bytes untouched: `change.patch` and `commit.log` are
   written as git printed them, so the patch still rebuilds the commit.
 - **A review reads the diff the commit holds, or is refused.** Its `git diff --binary`
-  went through the text path, which also turns `\r\n` into `\n`: the reviewers and
+  went through the text path, which also turns `\r
+` into `
+`: the reviewers and
   the judge read, and `change.patch` kept, content the reviewed commit does not hold.
   The diff is now read as bytes, written to `change.patch` as is, and handed to the
   panel decoded strictly; a diff holding bytes that are not UTF-8 is refused before
@@ -659,7 +685,8 @@ left its unconfined intent behind for the operator quarantine to find.
   `str.splitlines`, so a subject holding `\r` -- which git never writes, but an agent or
   a hook can -- became an entry of its own, and the commit id inside it was attributed:
   an unrelated commit could be recorded as a hook's or the agent's. Both logs are now
-  read as bytes and split on git's own separators (`-z` for `git reflog`, `\n` for the
+  read as bytes and split on git's own separators (`-z` for `git reflog`, `
+` for the
   file); an entry whose id is not a commit id (40 or 64 lowercase hex) is never
   attributed -- the branch reflog then fails the attribution, the `HEAD` log reads as
   rewritten.
