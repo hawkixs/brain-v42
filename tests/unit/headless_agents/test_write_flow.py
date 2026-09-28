@@ -851,9 +851,19 @@ def _instrument(world: World, monkeypatch: pytest.MonkeyPatch) -> list[str]:
         events.append("git")
         return real_git(*args, **kwargs)  # type: ignore[arg-type]
 
+    real_issue = locks._issue_ticket  # noqa: SLF001
+
+    def issue(state: Path, *, exclusive: bool, label: str, wait: locks.AdmissionWait):  # type: ignore[no-untyped-def]
+        # A waiter is registered by the queue itself, not through held(): recorded
+        # here, in the admission's own mode.
+        queued = real_issue(state, exclusive=exclusive, label=label, wait=wait)
+        events.append(f"lock ADMISSION_WAITER {'ex' if exclusive else 'sh'}")
+        return queued
+
     monkeypatch.setattr(engine, "held", held)
     monkeypatch.setattr(write_flow, "held", held)
     monkeypatch.setattr(locks, "held", held)
+    monkeypatch.setattr(locks, "_issue_ticket", issue)
     monkeypatch.setattr(quarantine, "check", check)
     monkeypatch.setattr(lineage, "create", create)
     monkeypatch.setattr(write_flow, "git", git)
@@ -891,8 +901,8 @@ def test_admission_takes_every_lock_before_reading_state_and_runs_no_git(
     locks_taken = [e for e in events if e.startswith("lock")]
     assert [e.split()[1] for e in locks_taken] == [
         "LIFECYCLE",
-        "WRITER_INTENT",
-        "ADMISSION_GATE",
+        "ADMISSION_TICKET",
+        "ADMISSION_WAITER",
         "UNCONFINED",
         "LINEAGE_REGISTRY",
         "LINEAGE",
@@ -1600,14 +1610,25 @@ def test_clean_of_a_write_that_never_started_forgets_it(
     assert world.git_calls == []
 
 
+_QUEUED_WRITER = """
+import sys, time
+from pathlib import Path
+from headless_agents import locks
+queued = locks._issue_ticket(Path(sys.argv[1]), exclusive=True, label="W",
+                             wait=locks.AdmissionWait(10))
+Path(sys.argv[2]).write_text("queued")
+time.sleep(60)
+"""
+
+
 def test_clean_queues_behind_a_waiting_unconfined_writer(
     world: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``ha clean`` took ``unconfined.lock`` directly, bypassing the
-    admission gate entirely (codex review of PR #239): with the global lock
-    itself free, a clean slipped straight through even while an unconfined
-    writer was already queued on the gate, waiting its turn for that same
-    lock. Route ``clean`` through the same gate so it queues too."""
+    """``ha clean`` took ``unconfined.lock`` directly, bypassing admission
+    entirely (codex review of PR #239): with the global lock itself free, a
+    clean slipped straight through even while an unconfined writer was
+    already waiting its turn for that same lock. ``clean`` is admitted like
+    every other run, so it queues behind that writer too."""
     run_id = "20260925T000000-ffffffff"
     world.registry().create(
         run_id,
@@ -1617,21 +1638,13 @@ def test_clean_queues_behind_a_waiting_unconfined_writer(
         lineage=None,
     )
     monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.2)
-    ready = world.home / "gate-held"
-    holder = subprocess.Popen(
-        [
-            sys.executable,
-            "-c",
-            _HOLD,
-            str(world.state / "admission-gate.lock"),
-            "ex",
-            str(ready),
-        ]
-    )
+    ready = world.home / "writer-queued"
+    holder = subprocess.Popen([sys.executable, "-c", _QUEUED_WRITER, str(world.state), str(ready)])
     try:
         while not ready.exists():
+            assert holder.poll() is None
             time.sleep(0.02)
-        with pytest.raises(UsageError, match="admission gate"):
+        with pytest.raises(UsageError, match="admission queue"):
             _clean(world, run_id)
     finally:
         holder.kill()
@@ -1649,8 +1662,8 @@ def test_clean_takes_its_locks_in_order_and_releases_the_registry_before_git(
     taken = [e for e in events if e.startswith("lock")]
     assert [(e.split()[1], e.split()[-1]) for e in taken] == [
         ("LIFECYCLE", "ex"),
-        ("WRITER_INTENT", "sh"),
-        ("ADMISSION_GATE", "sh"),
+        ("ADMISSION_TICKET", "ex"),
+        ("ADMISSION_WAITER", "sh"),
         ("UNCONFINED", "sh"),
         ("LINEAGE_REGISTRY", "sh"),
         ("LINEAGE", "ex"),
@@ -1764,3 +1777,81 @@ def test_a_committed_write_records_its_tool_counts(world: World) -> None:
     outcome = world.write()
     report = json.loads((outcome.run_dir / "run.json").read_text())
     assert report["steps"][0]["tools"] == {"command_execution": 4}
+
+
+# ── admission refusals of an unconfined write (0.5.3 lot 4b, Task 4) ─────────
+
+
+def _unconfined_codex(world: World) -> None:
+    record_proof(
+        world.state,
+        "codex",
+        version="codex 1.0",
+        isolation=True,
+        confinement=False,
+        today="2026-09-25",
+    )
+
+
+def _hold_shared(world: World, tmp_path: Path) -> subprocess.Popen[bytes]:
+    lock = world.state / "unconfined.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    ready = tmp_path / "held-shared"
+    holder = subprocess.Popen([sys.executable, "-c", _HOLD, str(lock), "sh", str(ready)])
+    limit = time.monotonic() + 5
+    while not ready.exists():
+        assert time.monotonic() < limit
+        time.sleep(0.01)
+    return holder
+
+
+def test_the_default_refusal_of_an_unconfined_write_is_unchanged(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _unconfined_codex(world)
+    monkeypatch.setattr(locks, "LOCK_WAIT_SECONDS", 0.2)
+    holder = _hold_shared(world, tmp_path)
+    try:
+        with pytest.raises(UsageError) as refused:
+            world.write()
+        assert str(refused.value) == (
+            "runs and writes still running after the bound: an unconfined write waits for "
+            "none of them; nothing ran"
+        )
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_an_expired_wait_of_an_unconfined_write_names_the_runs_holding_the_lock(
+    world: World, tmp_path: Path
+) -> None:
+    _unconfined_codex(world)
+    holder = _hold_shared(world, tmp_path)
+    try:
+        planned = world.write_plan()
+        planned = replace(planned, request=replace(planned.request, wait_seconds=0.2))
+        with pytest.raises(UsageError) as refused:
+            execute(planned, say=world.said.append)
+        assert str(refused.value) == (
+            "--wait 0.2 s expired: runs still hold the global lock; nothing ran"
+        )
+        assert world.agent.specs == []
+    finally:
+        holder.kill()
+        holder.wait()
+
+
+def test_clean_is_labelled_in_the_queue(world: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    labels: list[str] = []
+    real = locks.admit_global
+
+    def recording(state: Path, *, exclusive: bool, wait: locks.AdmissionWait, label: str = ""):  # type: ignore[no-untyped-def]
+        labels.append(label)
+        return real(state, exclusive=exclusive, wait=wait, label=label)
+
+    monkeypatch.setattr(locks, "admit_global", recording)
+    assert _clean(world, outcome.run_id) == 0
+    assert labels == ["clean"]

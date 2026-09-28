@@ -26,6 +26,53 @@ time the member rode a brain-v42 tag.
 
 ## 0.5.2 — 2026-09-27 (tag `headless-agents-v0.5.2` after merge)
 ## Unreleased — 0.5.3, lot 2: the agy and opencode rails fail fast and precisely
+## Unreleased — 0.5.3, lot 4b: first come, first served admission
+
+0.5.2 gave an unconfined writer only a best-effort preference at admission (lot 3's
+writer-intent lock and admission gate), because `flock` orders no waiters:
+- a continuous, overlapping stream of readers could keep a writer still polling for
+  admission out until its deadline;
+- a stream of writers could make a waiting reader time out.
+
+Global admission is now first come, first served (decision 7ef98bc4).
+
+### Changed
+- **A ticketed admission queue replaces the writer-intent lock and the admission gate.**
+  Every admission takes a ticket in `<state>/admission/` and waits its turn:
+  - shared admissions queued together are admitted together;
+  - an unconfined write waits for every admission queued before it, and every admission
+    queued after it waits for it;
+  - `--wait` covers the queue and the global lock with its one deadline.
+
+  `ha clean` queues like any run.
+- **A crashed waiter never blocks.** A waiter's file becomes visible only once it is
+  locked, and it is removed before its lock is released. A visible file nobody holds
+  therefore means exactly "a dead waiter", skipped and removed at the next poll: no pid
+  probing, no heartbeat.
+- **An explicit `--wait` that expires at the global admission says what the run waited
+  for:** `waiting behind N earlier admission(s) (run ids)`, or that runs, or an unconfined
+  write, still hold the global lock. It used to name a lock cut out of an exception's
+  text. The engine now reads the timeout's own fields: `locks.AdmissionTimeout` carries
+  the phase (`queue` or `global`) and the waiters it waited for, and a test forbids
+  parsing exception text in `engine.py`.
+- Lock order: the admission ticket (an instant) and the admission waiter (while queued)
+  take ranks 2 and 3, in place of the writer-intent lock and the gate. The global lock,
+  the lineage registry and the lineages keep theirs.
+
+### Unchanged
+- **Exclusion.** The global lock is still the `flock` of `unconfined.lock`, shared or
+  exclusive, taken exactly as before. The queue only decides who may try it, and when:
+  a queue bug can cost fairness or time, never let an unconfined write run beside
+  another run. The exclusion invariants are pinned by process tests written against
+  0.5.2's gate, and they pass unchanged on the queue.
+- The two refusals without `--wait`, word for word, and every exit code.
+
+Leftover `writer-intent.lock` and `admission-gate.lock` files in a state directory are
+no longer used and are harmless. **Upgrade window:** an `ha` 0.5.2 process still running
+admits through its gate while 0.5.3 processes queue. Exclusion holds between the two, but
+fairness across the two populations does not.
+
+## Unreleased — 0.5.2, lot 2: proof state visible
 
 Tickets 5921850d and a93cc8f2.
 

@@ -387,7 +387,7 @@ ha --version
 
 All locks live in the state directory (`ha providers`/`ha prove` read it from
 `~/.local/state/ha`, or `$XDG_STATE_HOME/ha` when that variable is absolute), are taken in
-one fixed order (lifecycle, writer intent, the admission gate, the global lock, the lineage
+one fixed order (lifecycle, the admission queue, the global lock, the lineage
 registry, lineage locks ascending), are `flock` with `O_CLOEXEC` -- so no provider or git
 child ever inherits one -- and die with the `ha` process that took them.
 
@@ -414,17 +414,21 @@ at once -- the global lock reads shared, both lineage locks read exclusive, the 
 reads free, and the two `git worktree add` calls measurably overlap -- before releasing them.
 
 - **`--wait SECONDS`** (spec §3.3): a bounded admission wait for `ha run`. `ha clean` takes
-  no `--wait`: it is admitted through this very same gate with the default ten-second bound,
+  no `--wait`: it is admitted through this very same queue with the default ten-second bound,
   never a lock of its own. Ordinary
   reads and confined writes share the global lock; an unconfined write holds it exclusively,
   serialising every other run while it is in flight. `--wait` gives one explicit, positive
-  number of seconds, spent as a single absolute deadline across the global lock and, for a
-  write or a review, the lineage registry and lineage locks it admits under -- time spent on
-  one does not extend the budget for the next, and a lock granted past the deadline is
+  number of seconds, spent as a single absolute deadline across the admission queue, the
+  global lock and, for a write or a review, the lineage registry and lineage locks it admits
+  under -- time spent on one does not extend the budget for the next, and a lock granted past
+  the deadline is
   refused, never accepted late. Without `--wait`, each of those locks keeps its own existing
   ten-second bound. A deadline that expires exits `2` before any provider step runs and
-  leaves nothing behind (an unstarted run's entry is forgotten), naming the contested lock
-  and the wait requested. `--timeout` is unrelated in both cases, and always the provider
+  leaves nothing behind (an unstarted run's entry is forgotten). At the global admission it
+  names what the run waited for: the admissions queued ahead of it, by run id, or the runs
+  holding the lock, as in
+  `--wait 30 s expired: waiting behind 2 earlier admission(s) (…); nothing ran`.
+  `--timeout` is unrelated in both cases, and always the provider
   run's own timeout. Example: `ha run codex --wait 30 "Summarise the change"`.
 
   An invalid **value** -- zero, negative, `nan` or `inf` -- is refused by `ha` itself, before
@@ -433,18 +437,17 @@ reads free, and the two `git worktree add` calls measurably overlap -- before re
   nothing after it, or as the last argument) is refused earlier still, by argparse's own
   parsing, before that message ever runs: `argument --wait: expected one argument`. Both exit
   `2`; only the first names `ha`'s own rule, the second is argparse's.
+  **Admission is first come, first served** (0.5.3). Every run takes a ticket in
+  `<state>/admission/` and waits its turn:
+  - shared runs queued together are admitted together;
+  - an unconfined write waits for every run queued before it, and every run queued after it
+    waits for it -- a stream of readers cannot keep a writer out, and a stream of writers
+    cannot time a reader out;
+  - a waiter that crashed never blocks anyone: its ticket is dropped at the next poll;
+  - `--wait` covers the queue and the global lock alike.
 
-  An unconfined writer that already holds the short-lived admission gate excludes every
-  later run -- shared or not -- until it releases it; a reader that arrives after a writer
-  has already won that gate queues behind it too. A **writer-intent lock**, taken exclusively
-  by an unconfined writer before it ever polls the gate, narrows -- but does not close -- the
-  window where a continuous stream of readers could otherwise starve it out: once a writer
-  holds writer-intent, a reader arriving afterward blocks on that same lock, plain mutual
-  exclusion, true regardless of timing. This is a **best-effort** mitigation, not a fairness
-  guarantee: `flock` orders no waiter, so a writer still *polling* for writer-intent (not yet
-  holding it) can in principle be overtaken by a continuous, overlapping stream of readers,
-  and a continuous stream of writers can likewise make a waiting reader time out. A fair FIFO
-  admission queue is planned for 0.5.3.
+  The queue only orders who may try the global lock: exclusion is still that lock's alone,
+  so an unconfined write never runs beside another run, whatever the queue holds.
 
 ### Proof state before a run fails
 
@@ -498,7 +501,6 @@ shows what an update would do (`unknown` for a vendor with no dry-run support of
 and is refused together with `--wait` (nothing to wait for when nothing runs). The exit code
 is `0` only when every rail settled: updated (or checked) with nothing failed, timed out, or
 left with an unrecorded proof after its version changed.
-
 `TARGET` is a provider (`ha run codex "..."`), a role declared in
 `~/.config/ha/roles.toml` -- an executor: one provider, or a `chain` of them, with optional
 instructions -- or a workflow declared in `~/.config/ha/workflows.toml`. `-p` and `--chain`
