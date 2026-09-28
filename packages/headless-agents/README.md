@@ -499,6 +499,13 @@ reads free, and the two `git worktree add` calls measurably overlap -- before re
 instructions -- or a workflow declared in `~/.config/ha/workflows.toml`. `-p` and `--chain`
 were removed in 0.5.0: the provider is the target, and a chain is declared in a role.
 
+Each link prints its effective configuration when it starts, including the source of every
+value: `step 1 run build: codex/gpt-6-luna (models.toml), effort medium (default), timeout
+300 s (default)`. Model sources are `chain link`, `-m`, `role`, `models.toml`, or `rail
+default` (agy only); effort and timeout come from their flags, the role, or their defaults.
+Rails that do not use effort say so. Codex runs with `--ignore-user-config`, so its model
+and effort cannot silently come from `~/.codex/config.toml`.
+
 - **`--wait SECONDS`** (spec §3.3): a bounded admission wait for `ha run`. `ha clean` takes
   no `--wait`: it is admitted through this very same queue with the default ten-second bound,
   never a lock of its own. Ordinary
@@ -534,6 +541,10 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
 
   The queue only orders who may try the global lock: exclusion is still that lock's alone,
   so an unconfined write never runs beside another run, whatever the queue holds.
+  `ha runs` and `ha show` display a live queued run as `waiting`; a dead run reads
+  `incomplete` even when a stale queue file names it. A global-lock refusal appends the
+  live holders' run ids, targets and ages (up to five), or says when the holder is outside
+  the registry.
 
 ### Proof state before a run fails
 
@@ -639,6 +650,16 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   (proof that nothing was written); each link gets its own directory under `links/` and
   may name its own model after the FIRST colon (`openrouter:meta/llama:free`). A provider
   appears at most once in a chain.
+- **Role language**: `language = "en"` in `roles.toml` instructs every link to write its
+  whole answer in that language. This is an instruction in the role's context, not an
+  answer validator.
+
+  | Tag | Language | Tag | Language |
+  |---|---|---|---|
+  | `en` | English | `fr` | French |
+  | `de` | German | `es` | Spanish |
+  | `it` | Italian | `pt` | Portuguese |
+  | `nl` | Dutch | | |
 - **Models**: the rails never pick one for you (opencode's own default can be a
   contributor model its vendor trains on), so each link's model is, first match wins: its
   own in the chain, then `-m`, then the role's `model`, then your declared default in `~/.config/ha/models.toml`
@@ -746,7 +767,8 @@ were removed in 0.5.0: the provider is the target, and a chain is declared in a 
   `vendor_check`, `cleanup`, `pid`, `started_at`, `duration_seconds`, `cost_usd`,
   `cost_complete` and `steps`. Also at the top: `prompt.md` (the task, written once), and
   for `--write` the worktree and `change.patch`. Each entry of `steps` names its `provider`,
-  `model`, `exit_code`, `tokens`, `cost_usd`, `tools` and `dir` -- the run-relative path of
+  `model`, `model_source`, `effort`, `timeout_seconds`, `exit_code`, `tokens`, `cost_usd`,
+  `tools` and `dir` -- the run-relative path of
   that step's own directory, `steps/<NN>-<slot>-<role>/`, holding its logs, its `commit.log`
   for a write step, and its own `result.json` (schema 1, unchanged, no `"kind"`, still
   `"provider"`): `run.json` is the run's report, `result.json` stays each provider's own

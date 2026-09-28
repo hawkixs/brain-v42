@@ -28,6 +28,19 @@ def test_a_provider_role_takes_every_default(tmp_path: Path) -> None:
     assert (role.model, role.mcp, role.instructions, role.implicit) == ("", None, None, False)
 
 
+def test_language_is_read_and_validated(tmp_path: Path) -> None:
+    role = _load(tmp_path, '[rev]\nprovider = "codex"\nlanguage = "en"\n')["rev"]
+    assert role.language == "en"
+    with pytest.raises(RolesError, match="en.*fr.*de.*es.*it.*pt.*nl"):
+        _load(tmp_path, '[rev]\nprovider = "codex"\nlanguage = "klingon"\n')
+
+
+def test_a_declared_key_is_recorded_even_when_it_equals_the_default(tmp_path: Path) -> None:
+    role = _load(tmp_path, '[rev]\nprovider = "codex"\neffort = "medium"\ntimeout = 300\n')["rev"]
+    assert {"effort", "timeout"} <= role.declared
+    assert implicit_role("codex").declared == frozenset()
+
+
 def test_a_write_role_defaults_to_the_full_context(tmp_path: Path) -> None:
     role = _load(tmp_path, '[impl]\nprovider = "codex"\nwrite = true\n')["impl"]
     assert role.context == "full"

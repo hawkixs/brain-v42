@@ -41,6 +41,23 @@ time the member rode a brain-v42 tag.
   refused without blocking; symbolic links and nonregular files are refused.
 - Group write on `keys.toml` is allowed only for a user-private group named like the
   user with no supplementary members.
+## Unreleased — 0.5.3, lot 5: nothing important is silent
+
+### Added
+- Every started link prints its effective provider, model, effort and timeout with the
+  source of each value. `run.json` steps add `model_source`, `effort` and `timeout_seconds`.
+- `ha runs` and `ha show` derive `waiting` from the live admission queue and lifecycle
+  lock; it is never stored in the registry.
+- Global-lock refusals name live holders by run id, target and age, or identify a holder
+  outside the registry.
+- Roles accept `language` (`en`, `fr`, `de`, `es`, `it`, `pt`, `nl`) as an instruction to
+  write the whole answer in that language.
+
+### Changed
+- Each link's configuration line replaces the former `step … started` line, including
+  after a fallback.
+- Admission refusals retain their prefixes and append holder details for global-lock
+  contention.
 
 ## Unreleased — 0.5.3, lot 1: schema-constrained output
 

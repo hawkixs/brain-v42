@@ -1832,7 +1832,7 @@ def _hold_shared(world: World, tmp_path: Path) -> subprocess.Popen[bytes]:
     return holder
 
 
-def test_the_default_refusal_of_an_unconfined_write_is_unchanged(
+def test_the_default_refusal_of_an_unconfined_write_keeps_its_prefix(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _unconfined_codex(world)
@@ -1841,10 +1841,11 @@ def test_the_default_refusal_of_an_unconfined_write_is_unchanged(
     try:
         with pytest.raises(UsageError) as refused:
             world.write()
-        assert str(refused.value) == (
+        assert str(refused.value).startswith(
             "runs and writes still running after the bound: an unconfined write waits for "
             "none of them; nothing ran"
         )
+        assert "holder outside the registry" in str(refused.value)
     finally:
         holder.kill()
         holder.wait()
@@ -1860,9 +1861,10 @@ def test_an_expired_wait_of_an_unconfined_write_names_the_runs_holding_the_lock(
         planned = replace(planned, request=replace(planned.request, wait_seconds=0.2))
         with pytest.raises(UsageError) as refused:
             execute(planned, say=world.said.append)
-        assert str(refused.value) == (
+        assert str(refused.value).startswith(
             "--wait 0.2 s expired: runs still hold the global lock; nothing ran"
         )
+        assert "holder outside the registry" in str(refused.value)
         assert world.agent.specs == []
     finally:
         holder.kill()

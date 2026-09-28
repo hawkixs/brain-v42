@@ -15,6 +15,7 @@ in the engine every entry point shares, and ``cli.py`` only parses and prints.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import shutil
@@ -24,13 +25,15 @@ from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Final
 
+from . import lineage as lineages
 from . import locks, procgroup, proof_state, review_flow, reviews, structured, write_flow
 from .capability import scoped_environment
 from .chain import run_chain
-from .cli_models import ModelsError, models_for
+from .cli_models import ModelsError, model_sources_for, models_for
 from .config_paths import ConfigPathError, config_file, state_dir
 from .context import ContextBundle, ContextLevel, resolve_context, role_instructions
 from .locks import LockTimeout, Rank, held
@@ -60,7 +63,7 @@ from .report import (
     write_report,
 )
 from .result import RunResult
-from .roles import Role, RolesError, capability_rule, load_roles, resolve_role
+from .roles import LANGUAGES, Role, RolesError, capability_rule, load_roles, resolve_role
 from .run_record import RESULT_FILE_NAME
 from .runs import MINT_ATTEMPTS, Entry, Registry, RegistryError, make_run_dir
 from .spec import RunSpec
@@ -148,6 +151,7 @@ class SlotPlan:
     slot: str
     role: Role
     models: Mapping[str, str]
+    model_sources: Mapping[str, str]
     mcp: McpServer | None
     environment: dict[str, str]
 
@@ -157,6 +161,7 @@ class Plan:
     request: Request
     role: Role
     models: Mapping[str, str]
+    model_sources: Mapping[str, str]
     #: What the provider gets: the task as given, or a template around it (§3.7).
     prompt: str
     mcp: McpServer | None
@@ -340,15 +345,22 @@ def _prompt(request: Request) -> str:
 
 
 def _bundle(role: Role, request: Request, repository: Path | None) -> ContextBundle:
-    """The context bundle a step gets: the level's files, then the role's instructions."""
+    """Use the common role channel for language; no reliable detector fits this boundary."""
     bundle = resolve_context(
         level=role.context,
         repository_root=repository,
         user_files=(request.home / ".claude" / "CLAUDE.md",),
         include_parents=role.context_parents,
     )
-    if role.instructions:
-        bundle = bundle.with_role(role_instructions(role.name, role.instructions))
+    instructions = role.instructions
+    if role.language is not None:
+        language_line = (
+            f"Write your whole answer in {LANGUAGES[role.language]}, "
+            "whatever the language of the task or the files."
+        )
+        instructions = (instructions or "") + "\n\n" + language_line
+    if instructions:
+        bundle = bundle.with_role(role_instructions(role.name, instructions))
     return bundle
 
 
@@ -388,10 +400,10 @@ def _environment(environ: Mapping[str, str], mcp: McpServer | None) -> dict[str,
     return environment
 
 
-def _models(role: Role, request: Request) -> Mapping[str, str]:
+def _models(role: Role, request: Request) -> Mapping[str, tuple[str, str]]:
     links = tuple((link.provider, link.model) for link in role.links)
     try:
-        return models_for(
+        return model_sources_for(
             links,
             default=request.overrides.model or "",
             role_model=role.model,
@@ -560,12 +572,14 @@ def _slot_plan(slot: str, role: Role, request: Request, config: Config, name: st
         # Validated when workflows.toml was read; the engine checks again (§3.4).
         raise UsageError(f"{name}: {rule}")
     mcp = _mcp(role, request)
+    resolved = _models(role, request)
     return SlotPlan(
         slot=slot,
         role=role,
-        models=_models(role, request),
+        models={name: model for name, (model, _) in resolved.items()},
         mcp=mcp,
         environment=_environment(request.environ, mcp),
+        model_sources={name: source for name, (_, source) in resolved.items()},
     )
 
 
@@ -596,6 +610,7 @@ def _plan_review(request: Request, workflow: Workflow, config: Config) -> Plan:
         request=request,
         role=first.role,
         models=first.models,
+        model_sources=first.model_sources,
         prompt=task,
         mcp=first.mcp,
         environment=first.environment,
@@ -640,7 +655,8 @@ def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan
     rule = capability_rule(role, config.profiles)
     if rule is not None:
         raise UsageError(f"{workflow.name}: {rule}")
-    models = _models(role, request)
+    resolved = _models(role, request)
+    models = {name: model for name, (model, _) in resolved.items()}
     state = state_dir(request.environ, home=request.home)
     findings_from = (
         _findings_review(request.findings_run, state=state, home=request.home)
@@ -666,6 +682,7 @@ def _plan_workflow(request: Request, workflow: Workflow, config: Config) -> Plan
         request=request,
         role=role,
         models=models,
+        model_sources={name: source for name, (_, source) in resolved.items()},
         prompt=prompt,
         mcp=mcp,
         environment=_environment(request.environ, mcp),
@@ -703,7 +720,8 @@ def plan(request: Request) -> Plan:
     if request.base is not None and not role.write:
         raise UsageError("--base needs a write run: the role's write, or --write")
 
-    models = _models(role, request)
+    resolved = _models(role, request)
+    models = {name: model for name, (model, _) in resolved.items()}
     prompt = _prompt(request)
     _check_prompt_size(role, prompt, _bundle(role, request, None))
     mcp = _mcp(role, request)
@@ -711,6 +729,7 @@ def plan(request: Request) -> Plan:
         request=request,
         role=role,
         models=models,
+        model_sources={name: source for name, (_, source) in resolved.items()},
         prompt=prompt,
         mcp=mcp,
         environment=_environment(request.environ, mcp),
@@ -810,6 +829,8 @@ def _run_links(
     step_dir: Path,
     workspace: Workspace | None,
     say: Callable[[str], None],
+    index: int = 1,
+    slot: str = "run",
 ) -> RunResult:
     """The 0.4.0 chain, unchanged: walk the role's links on 3 and 4 (§3.4)."""
     providers = plan.role.providers
@@ -825,6 +846,7 @@ def _run_links(
         spec = _spec_for(
             provider, plan, bundle, run_id=run_id, run_dir=link_dir(provider), workspace=workspace
         )
+        say(_configuration_line(index, slot, plan, provider, spec))
         result = get_provider(provider).run(spec)
         results[provider] = result
         return result.exit_code
@@ -842,6 +864,33 @@ def _run_links(
     if outcome.dead_links:
         say(f"no answer within the deadline from: {', '.join(outcome.dead_links)}")
     return final
+
+
+def _configuration_line(index: int, slot: str, plan: Plan, provider: str, spec: RunSpec) -> str:
+    """Name every effective default: Codex ignores the operator's user config by design."""
+    role = plan.role
+    source = plan.model_sources[provider]
+    effort_source = (
+        "--effort"
+        if plan.request.overrides.effort is not None
+        else "role"
+        if "effort" in role.declared
+        else "default"
+    )
+    timeout_source = (
+        "--timeout"
+        if plan.request.overrides.timeout is not None
+        else "role"
+        if "timeout" in role.declared
+        else "default"
+    )
+    effort_note = "" if provider in {"codex", "opencode"} else f" (not used by {provider})"
+    model = spec.model or "(auto)"
+    return (
+        f"step {index} {slot} {role.name}: {provider}/{model} ({source}), "
+        f"effort {spec.reasoning_effort} ({effort_source}){effort_note}, "
+        f"timeout {spec.timeout_seconds:g} s ({timeout_source})"
+    )
 
 
 def _installed_version(provider: str, home: Path, environ: Mapping[str, str]) -> str | None:
@@ -868,6 +917,71 @@ def _expired_admission(seconds: float, exc: LockTimeout, *, exclusive: bool) -> 
     if exclusive:
         return f"{expired}: runs still hold the global lock; nothing ran"
     return f"{expired}: an unconfined write holds the global lock; nothing ran"
+
+
+@dataclass(frozen=True)
+class Holder:
+    run_id: str
+    target: str
+    age_seconds: int
+
+
+def admission_holders(state: Path, registry: Registry, *, own: str) -> list[Holder]:
+    """Read live holders at refusal time; queued and dead entries explain no held lock."""
+    waiting = {w.label for w in locks.waiters(state) if w.alive}
+    now = datetime.now(UTC)
+    holders: list[Holder] = []
+    for run_id in registry.run_ids():
+        if run_id == own or run_id in waiting:
+            continue
+        try:
+            entry = registry.resolve(run_id)
+            lineage_status = None
+            if entry.lineage is not None:
+                lineage_status = lineages.load(state, entry.lineage).members.get(run_id)
+                if lineage_status is None:
+                    continue
+            if registry.effective_status(entry, lineage_status) != "running":
+                continue
+            created = datetime.fromisoformat(entry.created_at.replace("Z", "+00:00"))
+            age = max(0, int((now - created).total_seconds()))
+        except (RegistryError, Unknown, ValueError, TypeError, OverflowError):
+            continue
+        holders.append(Holder(run_id, entry.target.get("name", "unknown"), age))
+    try:
+        intent = json.loads((state / write_flow.UNCONFINED_INTENT).read_text())
+        exclusive_id = intent.get("run_id") if isinstance(intent, dict) else None
+    except (OSError, ValueError):
+        exclusive_id = None
+    holders.sort(key=lambda holder: (holder.run_id != exclusive_id, holder.run_id))
+    return holders
+
+
+def _holder_age(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds} s"
+    if seconds < 3600:
+        return f"{seconds // 60} min"
+    return f"{seconds // 3600} h"
+
+
+def _holder_suffix(state: Path, registry: Registry, *, own: str) -> str:
+    holders = admission_holders(state, registry, own=own)
+    if holders:
+        shown = [f"{h.run_id} ({h.target}, {_holder_age(h.age_seconds)})" for h in holders[:5]]
+        if len(holders) > 5:
+            shown.append(f"and {len(holders) - 5} more")
+        return "; held by " + ", ".join(shown)
+    lock = state / "unconfined.lock"
+    try:
+        if not lock.exists():
+            return "; holder unknown"
+        with held(lock, rank=Rank.UNCONFINED, exclusive=True, wait=None, what="global lock"):
+            return "; holder unknown"
+    except LockTimeout:
+        return "; held by a holder outside the registry (ha clean or ha providers --update)"
+    except OSError:
+        return "; holder unknown"
 
 
 def _check_isolation(plan: Plan) -> None:
@@ -1014,9 +1128,14 @@ def _execute_write(
 
     def run_links(workspace: Workspace, directory: Path) -> RunResult:
         registry.set_started(entry.run_id, _utc_now())
-        say(f"step 1 {slot} {role.name}: started")
         final = _run_links(
-            plan, bundle, run_id=entry.run_id, step_dir=directory, workspace=workspace, say=say
+            plan,
+            bundle,
+            run_id=entry.run_id,
+            step_dir=directory,
+            workspace=workspace,
+            say=say,
+            slot=slot,
         )
         say(f"step 1 {slot} {role.name}: exit {final.exit_code}")
         return final
@@ -1051,6 +1170,9 @@ def _execute_write(
                 step_dir=f"steps/{step_name}",
                 result=outcome.final,
                 tools=tool_counts(outcome.final),
+                model_source=plan.model_sources[outcome.final.provider],
+                effort=role.effort,
+                timeout_seconds=role.timeout,
             ),
         )
     failure_reason = outcome.failure_reason
@@ -1088,6 +1210,7 @@ def _slot_run_plan(plan: Plan, slot: SlotPlan, prompt: str) -> Plan:
         plan,
         role=slot.role,
         models=slot.models,
+        model_sources=slot.model_sources,
         mcp=slot.mcp,
         environment=slot.environment,
         prompt=prompt,
@@ -1143,7 +1266,6 @@ def _run_phase(
     def run_one(step: tuple[int, SlotPlan, str]) -> RunResult:
         index, slot, prompt = step
         name = step_dir_name(index, slot.slot, slot.role.name)
-        said(f"step {index} {slot.slot} {slot.role.name}: started")
         with procgroup.collecting(live):
             final = _run_links(
                 _slot_run_plan(plan, slot, prompt),
@@ -1152,6 +1274,8 @@ def _run_phase(
                 step_dir=run_dir / "steps" / name,
                 workspace=Workspace(path=worktree),
                 say=said,
+                index=index,
+                slot=slot.slot,
             )
         said(f"step {index} {slot.slot} {slot.role.name}: exit {final.exit_code}")
         return final
@@ -1179,6 +1303,9 @@ def _run_phase(
             step_dir=f"steps/{name}",
             result=result,
             tools=tool_counts(result),
+            model_source=slot.model_sources[result.provider],
+            effort=slot.role.effort,
+            timeout_seconds=slot.role.timeout,
         )
         entry["verdict"] = read_verdict(result.text)
         entries.append(entry)
@@ -1422,6 +1549,11 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 )
             )
         except LockTimeout as exc:
+            suffix = (
+                ""
+                if isinstance(exc, locks.AdmissionTimeout) and exc.phase == "queue"
+                else _holder_suffix(plan.state, registry, own=entry.run_id)
+            )
             if request.wait_seconds is not None:
                 # An explicit deadline that expires here means nothing ran at
                 # all, read or write alike: forget the entry outright instead
@@ -1437,13 +1569,13 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 if unconfined:
                     raise UsageError(
                         "runs and writes still running after the bound: an unconfined write "
-                        "waits for none of them; nothing ran"
+                        "waits for none of them; nothing ran" + suffix
                     ) from None
                 raise UsageError(
-                    "an unconfined write is running: nothing ran; retry once it has ended"
+                    "an unconfined write is running: nothing ran; retry once it has ended" + suffix
                 ) from None
             raise UsageError(
-                _expired_admission(request.wait_seconds, exc, exclusive=unconfined)
+                _expired_admission(request.wait_seconds, exc, exclusive=unconfined) + suffix
             ) from None
 
         try:
@@ -1509,7 +1641,6 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 admission_wait=admission_wait,
             )
         registry.set_started(entry.run_id, _utc_now())
-        say(f"step 1 run {role.name}: started")
         final = _run_links(
             plan,
             bundle,
@@ -1528,6 +1659,9 @@ def execute(plan: Plan, *, say: Callable[[str], None]) -> Outcome:
                 step_dir=f"steps/{step_name}",
                 result=final,
                 tools=tool_counts(final),
+                model_source=plan.model_sources[final.provider],
+                effort=role.effort,
+                timeout_seconds=role.timeout,
             ),
         )
         exit_code, failure_reason = _schema_outcome(request, final, say)

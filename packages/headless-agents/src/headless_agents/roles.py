@@ -44,6 +44,15 @@ NAME_PATTERN: Final = re.compile(r"[a-z][a-z0-9-]{0,63}")
 CONTEXT_LEVELS: Final[tuple[ContextLevel, ...]] = ("full", "global", "none")
 DEFAULT_EFFORT: Final = "medium"
 DEFAULT_TIMEOUT_SECONDS: Final = 300.0
+LANGUAGES: Final[Mapping[str, str]] = {
+    "en": "English",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+}
 
 _FIELDS: Final = frozenset(
     {
@@ -61,6 +70,7 @@ _FIELDS: Final = frozenset(
         "key_env",
         "max_tokens",
         "instructions",
+        "language",
     }
 )
 
@@ -94,6 +104,8 @@ class Role:
     instructions: str | None
     max_tokens: int | None = None
     implicit: bool = False
+    declared: frozenset[str] = frozenset()
+    language: str | None = None
 
     @property
     def providers(self) -> tuple[str, ...]:
@@ -225,6 +237,9 @@ def _role(path: Path, name: str, table: object, mcp_profiles: Mapping[str, objec
         isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens <= 0
     ):
         raise entry.refuse("max_tokens must be a positive integer")
+    language = entry.string(table, "language", "language must be a tag")
+    if language is not None and language not in LANGUAGES:
+        raise entry.refuse(f"language must be one of {', '.join(LANGUAGES)}")
 
     context = table.get("context", "full" if write else "global")
     if context not in CONTEXT_LEVELS:
@@ -246,6 +261,8 @@ def _role(path: Path, name: str, table: object, mcp_profiles: Mapping[str, objec
         key_env=key_env,
         instructions=instructions,
         max_tokens=cast("int | None", max_tokens),
+        declared=frozenset(table),
+        language=language,
     )
     rule = capability_rule(role, mcp_profiles)
     if rule is not None:

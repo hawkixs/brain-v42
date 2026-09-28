@@ -36,7 +36,7 @@ from pathlib import Path
 from typing import IO, Final
 
 from . import lineage as lineages
-from . import prove, quarantine, show, updaters
+from . import locks, prove, quarantine, show, updaters
 from .capability import INVALID_USAGE_EXIT_CODE
 from .cli_models import MODEL_OPTIONAL, MODELS_FILE_NAME, default_models_path, load_models
 from .config_paths import config_dir, config_file, state_dir
@@ -920,7 +920,9 @@ def _admitted_at(registry: Registry, run_id: str) -> int:
         return 0
 
 
-def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
+def _registered_row(
+    registry: Registry, run_id: str, *, waiting_ids: frozenset[str] = frozenset()
+) -> dict[str, object]:
     """One listing row: identity and status from the registry entry, the one
     authority (§3.8.1); exit code, duration, cost and answer only from a
     ``run.json`` whose ``run_id`` is this entry's -- a report is display data,
@@ -944,7 +946,7 @@ def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
     except (RegistryError, Unknown):
         return row
     lineage_status: str | None = None
-    if entry.lineage is not None:
+    if entry.lineage is not None and run_id not in waiting_ids:
         # A write run's status lives in its lineage state only (§3.8.1); a
         # readable lineage silent about the run gives no status (plan P6).
         try:
@@ -958,7 +960,7 @@ def _registered_row(registry: Registry, run_id: str) -> dict[str, object]:
         target=entry.target.get("name"),
         status=lineage_status
         if lineage_status == "unknown"
-        else registry.effective_status(entry, lineage_status),
+        else registry.effective_status(entry, lineage_status, waiting_ids=waiting_ids),
         cleaned=entry.cleaned_at is not None,
         task=read_task(entry.run_dir) if own else None,
     )
@@ -1008,8 +1010,10 @@ def _runs(args: argparse.Namespace, io: Io) -> int:
     root = runs_root(io.home)
     registry = Registry(state_dir(io.environ, home=io.home), runs_root=root)
     registered = registry.run_ids()
+    waiting_ids = frozenset(w.label for w in locks.waiters(registry.state) if w.alive and w.label)
     entries: list[tuple[int, dict[str, object]]] = [
-        (_admitted_at(registry, run_id), _registered_row(registry, run_id)) for run_id in registered
+        (_admitted_at(registry, run_id), _registered_row(registry, run_id, waiting_ids=waiting_ids))
+        for run_id in registered
     ]
     if root.is_dir():
         for run_dir in root.iterdir():
