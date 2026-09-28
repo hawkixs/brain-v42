@@ -807,12 +807,13 @@ Then:
    `<state>/lineages/<run_id>.lock`, and `<state>/runs/<run_id>.json` by appending
    `.lifted-<UTC timestamp>` to each filename. Rename any other member run records
    involved in the same lineage after inspection.
-3. Rename the matching `<state>/quarantine/repo-*.json` in the same way. Inspect
+3. If the refusal names a stale unconfined intent, inspect `<state>/unconfined-intent.json`
+   (the run it names must no longer be running) and rename it in the same way; otherwise
+   the next write reads it again and publishes the operator quarantine once more. Do this
+   before step 4, while the operator quarantine still blocks new writes.
+4. Then rename the matching `<state>/quarantine/repo-*.json` in the same way. Inspect
    its `run_id` and repository before choosing it. If an operator quarantine is
    also involved, inspect and rename `<state>/quarantine/operator.json` likewise.
-4. If the refusal names a stale unconfined intent, inspect `<state>/unconfined-intent.json`
-   (the run it names must no longer be running) and rename it in the same way; otherwise
-   the next write reads it again and publishes the operator quarantine once more.
 
 Keep every lifted file for audit; never delete these state files. Use the same UTC
 timestamp for the files lifted together, for example `20260928T212416Z`.
