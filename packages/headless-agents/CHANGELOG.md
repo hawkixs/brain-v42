@@ -24,7 +24,7 @@ uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-
 The earlier `v0.6.0` tag (2026-09-14) also carries 0.1.0 and stays valid; it is the last
 time the member rode a brain-v42 tag.
 
-## 0.5.3 — 2026-09-28 (tag `headless-agents-v0.5.3` after merge)
+## 0.5.3 — 2026-09-29 (tag `headless-agents-v0.5.3` after merge)
 
 Schema-constrained output, more precise provider failures, safer credential reads, and fair
 admission. **After installing: `ha prove --stale`** -- the isolation fingerprints of
