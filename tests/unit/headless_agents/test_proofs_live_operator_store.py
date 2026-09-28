@@ -24,6 +24,7 @@ only ever exercised behind ``HA_LIVE=1``.
 
 from __future__ import annotations
 
+import json
 import time
 from pathlib import Path
 
@@ -297,6 +298,46 @@ def test_another_clients_recent_session_does_not_count(
         _marker(),
         spec_environment={"HOME": str(home)},
         probe_thread_ids={"probe-thread"},
+    )
+
+
+@pytest.mark.parametrize(
+    ("thread_id", "expected"), [("desktop-thread", False), ("probe-thread", True)]
+)
+def test_long_session_metadata_is_attributed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, thread_id: str, expected: bool
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _clear_parent_codex_home(monkeypatch, home=home)
+    rollout = _plant_rollout(home / ".codex")
+    rollout = rollout.rename(rollout.with_name(f"rollout-2026-09-27T04-18-26-{thread_id}.jsonl"))
+    payload = json.dumps(
+        {"type": "session_meta", "payload": {"id": thread_id, "instructions": "x" * 20_000}}
+    )
+    rollout.write_text(payload + "\n")
+
+    assert (
+        _codex_touched_the_operator_session_store(
+            _marker(), spec_environment={"HOME": str(home)}, probe_thread_ids={"probe-thread"}
+        )
+        is expected
+    )
+
+
+def test_session_metadata_without_newline_within_bound_fails_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    _clear_parent_codex_home(monkeypatch, home=home)
+    rollout = _plant_rollout(home / ".codex")
+    rollout.write_bytes(
+        b'{"type":"session_meta","payload":{"id":"desktop-thread"},"pad":"' + b"x" * 1_048_600
+    )
+
+    assert _codex_touched_the_operator_session_store(
+        _marker(), spec_environment={"HOME": str(home)}, probe_thread_ids={"probe-thread"}
     )
 
 
