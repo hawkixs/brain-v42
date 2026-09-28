@@ -279,8 +279,8 @@ fairness across the two populations does not.
 
 
 - Codex confinement attributes operator-session rollouts to the probe's own thread ids;
-  concurrent Codex clients no longer make a proof inconclusive. Unknown attribution
-  remains inconclusive.
+  concurrent Codex clients no longer make a proof inconclusive. Session metadata is read
+  through the complete first line up to 1 MiB; unknown attribution remains inconclusive.
 - opencode confinement names each target without a logged write attempt and asks for
   the missing attempt again. Its prompt explicitly requests a write or edit tool call
   for the outside target.

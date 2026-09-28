@@ -514,7 +514,19 @@ def _codex_touched_the_operator_session_store(
                 try:
                     if not stat.S_ISREG(os.fstat(descriptor).st_mode):
                         return True
-                    first = os.read(descriptor, 4096).split(b"\n", 1)[0]
+                    first_line = bytearray()
+                    while len(first_line) < 1_048_576:
+                        chunk = os.read(descriptor, min(4096, 1_048_576 - len(first_line)))
+                        if not chunk:
+                            break
+                        newline = chunk.find(b"\n")
+                        if newline >= 0:
+                            first_line.extend(chunk[:newline])
+                            break
+                        first_line.extend(chunk)
+                    else:
+                        return True
+                    first = bytes(first_line)
                 finally:
                     os.close(descriptor)
                 document = json.loads(first)
