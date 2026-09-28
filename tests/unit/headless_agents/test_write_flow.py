@@ -14,7 +14,7 @@ import os
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -1771,6 +1771,73 @@ def test_force_clean_refuses_an_unregistered_owner_worktree(world: World) -> Non
         args[:2] not in (["worktree", "remove"], ["branch", "-D"]) for args in world.git_calls
     )
     assert any("registered" in line for line in world.said)
+
+
+def test_force_clean_retries_branch_deletion_after_worktree_removal(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed branch command must not strand a lineage after Git removed its worktree."""
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    run_id = outcome.run_id
+    real_git = write_flow.git
+    failed = False
+
+    def fail_once(
+        root: Path, args: list[str], environ: Mapping[str, str], *, state: Path
+    ) -> subprocess.CompletedProcess[str]:
+        nonlocal failed
+        if args[:2] == ["branch", "-D"] and not failed:
+            failed = True
+            return subprocess.CompletedProcess(args, 1, "", "simulated branch failure")
+        return real_git(root, args, environ, state=state)
+
+    monkeypatch.setattr(write_flow, "git", fail_once)
+    assert _force_clean(world, run_id) == 1
+    assert failed and not (outcome.run_dir / "wt").exists()
+    assert _git(world.repo, "branch", "--list", f"ha/{run_id}").strip()
+    assert lineage.lineage_path(world.state, run_id).exists()
+
+    assert _force_clean(world, run_id) == 0
+    assert _git(world.repo, "branch", "--list", f"ha/{run_id}").strip() == ""
+    assert not lineage.lineage_path(world.state, run_id).exists()
+    assert list(lineage.lineage_path(world.state, run_id).parent.glob(f"{run_id}.json.lifted-*"))
+
+
+def test_force_clean_retry_still_refuses_a_mismatching_repository(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing worktree cannot bypass the owner run record on retry."""
+    world.agent.edit = _edit_app
+    outcome = world.write()
+    run_id = outcome.run_id
+    real_git = write_flow.git
+
+    def fail_delete(
+        root: Path, args: list[str], environ: Mapping[str, str], *, state: Path
+    ) -> subprocess.CompletedProcess[str]:
+        if args[:2] == ["branch", "-D"]:
+            return subprocess.CompletedProcess(args, 1, "", "simulated branch failure")
+        return real_git(root, args, environ, state=state)
+
+    monkeypatch.setattr(write_flow, "git", fail_delete)
+    assert _force_clean(world, run_id) == 1
+    assert not (outcome.run_dir / "wt").exists()
+    monkeypatch.setattr(write_flow, "git", real_git)
+    other = world.repo.parent / "other"
+    other.mkdir()
+    _git(other, "init", "-q", "-b", "main")
+    current = lineage.load(world.state, run_id)
+    lineage.save(
+        world.state,
+        replace(current, repository=other, common_dir=(other / ".git").resolve()),
+    )
+    world.git_calls.clear()
+
+    assert _force_clean(world, run_id) == 1
+    assert _git(world.repo, "branch", "--list", f"ha/{run_id}").strip()
+    assert all(args[:2] != ["branch", "-D"] for args in world.git_calls)
+    assert lineage.lineage_path(world.state, run_id).exists()
 
 
 def test_force_clean_rolls_back_state_when_a_later_archive_fails(

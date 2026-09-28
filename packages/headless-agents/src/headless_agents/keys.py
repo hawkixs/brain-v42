@@ -89,13 +89,14 @@ def _private_group(gid: int) -> bool:
 def _declared(home: Path, environ: Mapping[str, str]) -> dict[str, Path]:
     """Every preset ``keys.toml`` declares, with its key file's path; ``{}`` without a file."""
     try:
-        checked = config_file(KEYS_FILE_NAME, environ, home=home)
+        directory = config_dir(environ, home=home)
+        checked = config_file(KEYS_FILE_NAME, environ, home=home, directory=directory)
     except ConfigPathError as exc:
         raise KeysError(str(exc)) from None
     if checked is None:
         return {}
-    # Keep config_file's boundary check but open the original name to reject a link.
-    path = config_dir(environ, home=home) / KEYS_FILE_NAME
+    # Open the original name under the checked directory to reject a link.
+    path = directory / KEYS_FILE_NAME
     fd, info = _open_checked(path, what="keys.toml")
     # keys.toml holds paths, never a key: reading it reveals nothing, but whoever can
     # EDIT it chooses which file ha reads a key from (codex review of #215).

@@ -330,6 +330,34 @@ def test_a_keys_toml_swapped_for_a_link_after_resolution_is_refused(
         preset_key("openrouter", {"HOME": str(home)})
 
 
+def test_keys_toml_uses_the_same_resolved_configuration_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A directory link change cannot redirect the open after the boundary check."""
+    home = _home(tmp_path)
+    config = home / ".config" / "ha"
+    other = tmp_path / "other"
+    other.mkdir()
+    _env_file(home / "safe.env", "OPENROUTER_API_KEY=safe-key\n")
+    _env_file(home / "other.env", "OPENROUTER_API_KEY=other-key\n")
+    _declare(home, 'openrouter = "~/safe.env"\n')
+    (other / "keys.toml").write_text('openrouter = "~/other.env"\n')
+    original_resolve = Path.resolve
+    resolutions = 0
+
+    def changing_resolve(path: Path, strict: bool = False) -> Path:
+        nonlocal resolutions
+        if path == config:
+            resolutions += 1
+            return config if resolutions == 1 else other
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", changing_resolve)
+    found = preset_key("openrouter", {"HOME": str(home)})
+    assert resolutions == 1
+    assert found is not None and found.value == "safe-key"
+
+
 def test_keys_py_reads_through_descriptors_only() -> None:
     tree = ast.parse(Path(keys.__file__).read_text())
     forbidden = {"read_text", "read_bytes", "stat", "lstat", "exists", "is_file"}

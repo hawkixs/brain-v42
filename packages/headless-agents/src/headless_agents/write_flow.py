@@ -1353,9 +1353,8 @@ def force_clean(
             say(f"git branch --list failed: {branch.stderr.strip()}; nothing lifted")
             return 1
         if branch.stdout.strip():
-            if not registered:
-                say(f"lineage {owner} worktree is not registered in its repository: nothing lifted")
-                return 1
+            # An earlier removal can leave only the branch; the owner and path checks
+            # above also permit that retry.
             deleted = git(
                 current.repository, ["branch", "-D", current.branch], environ, state=state
             )
