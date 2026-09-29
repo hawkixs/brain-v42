@@ -58,6 +58,7 @@ from brain_v42.facts.sources import PostgresSourceFactory, PostgresSourceSession
 from brain_v42.facts.verification import ClaimVerificationService
 from brain_v42.repositories.pg_claim_nightly import (
     VerifyRunOwnership,
+    count_self_referential_claims,
     eligible_fact_names,
     finish_dry_run,
     finish_run,
@@ -272,6 +273,7 @@ async def _wet_pass(
     run_date: date,
     *,
     max_concurrency: int = 4,
+    max_claims: int = 200,
     service: object = None,
 ) -> tuple[int, object]:
     ownership = VerifyRunOwnership(engine)
@@ -279,11 +281,15 @@ async def _wet_pass(
     try:
         run_id = await get_or_create_wet_run(ownership, run_date)
         now = datetime.now(UTC)
+        eligible_facts = await eligible_fact_names(session_factory, now=now)
+        skipped_self_referential = await count_self_referential_claims(
+            session_factory, now=now, eligible_fact_names=eligible_facts
+        )
         claims = await select_nightly_claims(
             session_factory,
             now=now,
-            max_claims=200,
-            eligible_fact_names=await eligible_fact_names(session_factory, now=now),
+            max_claims=max_claims,
+            eligible_fact_names=eligible_facts,
         )
         release_check = ReleaseCheck(cli_release_path=_NONEXISTENT_RELEASE_PATH)
         verifier = NightlyVerifier(
@@ -293,6 +299,7 @@ async def _wet_pass(
             max_concurrency=max_concurrency,
         )
         report = await verifier.run(claims, run_id=run_id, run_date=run_date, wet=True)
+        report.skipped_self_referential = skipped_self_referential
         await finish_run(
             ownership, run_id, status=report.status, duration_s=0.0, error_message=None
         )
@@ -633,6 +640,9 @@ async def test_dream_last_night_claim_is_skipped_without_a_verdict(
         report = await verifier.run_dry(
             claims, registry=dream_last_night_registry, run_id=run_id, run_date=run_date
         )
+        report.skipped_self_referential = await count_self_referential_claims(
+            session_factory, now=now, eligible_fact_names=("dream_last_night",)
+        )
 
     async with session_factory() as session:
         verdict_count = await session.scalar(
@@ -641,7 +651,85 @@ async def test_dream_last_night_claim_is_skipped_without_a_verdict(
             .where(knowledge_claim_verdicts.c.claim_id == claim_id)
         )
     assert verdict_count == 0
-    assert report.selected == 1
+    assert report.selected == 0
     assert report.skipped_self_referential == 1
     assert report.as_dict()["skipped_self_referential"] == 1
     assert report.holds == 0 and report.falsified == 0
+
+
+@pytest.mark.parametrize("wet", [True, False], ids=["wet", "dry"])
+async def test_self_referential_claim_does_not_starve_a_newer_claim_at_cap_one(
+    wet: bool,
+    session_factory: async_sessionmaker[AsyncSession],
+    engine: AsyncEngine,
+    run_date: date,
+) -> None:
+    from brain_v42.facts.probes.dream_last_night import DreamLastNightProbe
+
+    async with session_factory() as identity_session, identity_session.begin():
+        real_identity = await PostgresSourceSession(identity_session).identity()
+
+    probe = _RealHeadProbe(f"nightly_head_{uuid4().hex}", revision="057")
+    registry = FactRegistry(
+        sources={FactTarget.PRODUCTION: PostgresSourceFactory(session_factory)},
+        expected={FactTarget.PRODUCTION: real_identity},
+    )
+    registry.register(DreamLastNightProbe())
+    registry.register(probe)
+    registry.freeze()
+    assert await register_fact_definitions(registry, session_factory)
+
+    async with session_factory() as session, session.begin():
+        self_id = await _insert_claim(
+            session,
+            fact_name="dream_last_night",
+            expected_revision=run_date.isoformat(),
+            expected_path="/run_date",
+        )
+    async with session_factory() as session, session.begin():
+        other_id = await _insert_claim(session, fact_name=probe.name, expected_revision="057")
+
+    now = datetime.now(UTC)
+    names = await eligible_fact_names(session_factory, now=now)
+    assert (
+        await count_self_referential_claims(session_factory, now=now, eligible_fact_names=names)
+        == 1
+    )
+    selected = await select_nightly_claims(
+        session_factory, now=now, max_claims=1, eligible_fact_names=names
+    )
+    assert [claim.id for claim in selected] == [other_id]
+
+    if wet:
+        _, report = await _wet_pass(engine, session_factory, registry, run_date, max_claims=1)
+        assert report.holds == 1
+    else:
+        run_id = await insert_dry_run(session_factory, run_date)
+        verifier = NightlyVerifier(
+            service=None,  # type: ignore[arg-type]
+            release_check=ReleaseCheck(cli_release_path=_NONEXISTENT_RELEASE_PATH),
+        )
+        report = await verifier.run_dry(
+            selected, registry=registry, run_id=run_id, run_date=run_date
+        )
+        report.skipped_self_referential = await count_self_referential_claims(
+            session_factory, now=now, eligible_fact_names=names
+        )
+        assert report.dry_claims["measurable"] == 1
+        assert probe.runs == 1
+
+    assert report.selected == 1
+    assert report.skipped_self_referential == 1
+    async with session_factory() as session:
+        rows = (
+            (
+                await session.execute(
+                    sa.select(knowledge_claim_verdicts.c.claim_id).where(
+                        knowledge_claim_verdicts.c.claim_id.in_((self_id, other_id))
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert rows == ([other_id] if wet else [])

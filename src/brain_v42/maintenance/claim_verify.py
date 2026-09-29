@@ -148,6 +148,7 @@ async def _run(args: argparse.Namespace) -> int:
     from brain_v42.repositories.pg_claim_nightly import (  # noqa: PLC0415
         VerifyRunOwnership,
         VerifyRunOwnershipLost,
+        count_self_referential_claims,
         eligible_fact_names,
         finish_dry_run,
         finish_run,
@@ -246,6 +247,9 @@ async def _run(args: argparse.Namespace) -> int:
                 return write_exit("fail", 1)
 
             eligible_at_start = await _eligible_count(session_factory, now)
+            skipped_self_referential = await count_self_referential_claims(
+                session_factory, now=now, eligible_fact_names=eligible_facts
+            )
             claims = await select_nightly_claims(
                 session_factory,
                 now=now,
@@ -264,6 +268,7 @@ async def _run(args: argparse.Namespace) -> int:
                     deadline_seconds=deadline_seconds,
                 )
                 report = await verifier.run(claims, run_id=run_id, run_date=run_date, wet=True)
+                report.skipped_self_referential = skipped_self_referential
                 duration_s = time.monotonic() - started
                 if report.status == "ownership_lost":
                     rc = 7
@@ -288,6 +293,7 @@ async def _run(args: argparse.Namespace) -> int:
                 report = await verifier.run_dry(
                     claims, registry=registry, run_id=run_id, run_date=run_date
                 )
+                report.skipped_self_referential = skipped_self_referential
                 duration_s = time.monotonic() - started
                 await finish_dry_run(
                     session_factory,

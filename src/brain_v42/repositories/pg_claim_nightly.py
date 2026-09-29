@@ -123,7 +123,10 @@ def _ranked_query(
     """Wrap the eligibility predicate in the spec §4.3 per-project round robin."""
     eligible = (
         _eligible_query(now)
-        .where(knowledge_claims.c.fact_name.in_(eligible_fact_names))
+        .where(
+            knowledge_claims.c.fact_name.in_(eligible_fact_names),
+            knowledge_claims.c.fact_name != "dream_last_night",
+        )
         .subquery("eligible")
     )
     rank = (
@@ -135,6 +138,21 @@ def _ranked_query(
     return (
         sa.select(ranked).order_by(ranked.c.rank, ranked.c.age_key, ranked.c.seq).limit(max_claims)
     )
+
+
+def _self_referential_count_query(
+    now: datetime, *, eligible_fact_names: Sequence[str]
+) -> sa.Select:
+    """Count self-referential claims that the uncapped selector would have admitted."""
+    eligible = (
+        _eligible_query(now)
+        .where(
+            knowledge_claims.c.fact_name.in_(eligible_fact_names),
+            knowledge_claims.c.fact_name == "dream_last_night",
+        )
+        .subquery("eligible")
+    )
+    return sa.select(sa.func.count()).select_from(eligible)
 
 
 def _nightly_claim(row: sa.RowMapping) -> NightlyClaim:
@@ -170,6 +188,21 @@ async def select_nightly_claims(
             .all()
         )
     return tuple(_nightly_claim(row) for row in rows)
+
+
+async def count_self_referential_claims(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    now: datetime,
+    eligible_fact_names: Sequence[str],
+) -> int:
+    """Read the uncapped skipped count without locking claims or writing verdicts."""
+    async with session_factory() as session, session.begin():
+        await session.execute(sa.text("SET TRANSACTION READ ONLY"))
+        count = await session.scalar(
+            _self_referential_count_query(now, eligible_fact_names=eligible_fact_names)
+        )
+    return int(count or 0)
 
 
 async def eligible_fact_names(

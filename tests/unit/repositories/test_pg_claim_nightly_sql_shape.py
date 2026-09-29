@@ -15,7 +15,11 @@ from datetime import UTC, datetime
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-from brain_v42.repositories.pg_claim_nightly import _eligible_query, _ranked_query
+from brain_v42.repositories.pg_claim_nightly import (
+    _eligible_query,
+    _ranked_query,
+    _self_referential_count_query,
+)
 
 
 def _compiled(statement: sa.Select) -> str:
@@ -56,3 +60,21 @@ def test_ranked_query_limits_stale_claims_to_fact_names_eligible_at_start() -> N
 
     assert "knowledge_claims.fact_name IN" in sql
     assert "allowed_fact" in sql
+
+
+def test_self_referential_claims_are_excluded_before_the_cap_but_counted_without_it() -> None:
+    now = datetime.now(UTC)
+    selected = str(
+        _ranked_query(now, 1, eligible_fact_names=("dream_last_night", "probe")).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+    skipped = str(
+        _self_referential_count_query(
+            now, eligible_fact_names=("dream_last_night", "probe")
+        ).compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+
+    assert "knowledge_claims.fact_name != 'dream_last_night'" in selected
+    assert "knowledge_claims.fact_name = 'dream_last_night'" in skipped
+    assert selected.count(" LIMIT ") == skipped.count(" LIMIT ") + 1
