@@ -10,8 +10,11 @@ from uuid import uuid4
 import pytest
 from fastmcp import FastMCP
 
+from brain_v42.facts.model import FactTarget, Measured, SourceIdentity, Unreadable
+from brain_v42.facts.probe import FactDescriptor
 from brain_v42.mcp.tools.session_tools import (
     _format_session_briefing,
+    _render_briefing_facts,
     _section_blockers,
     _section_cross_project,
     _section_drill_in_hint,
@@ -103,6 +106,76 @@ class TestFormatSessionBriefing:
         """Missing project context shows fallback message."""
         result = _format_session_briefing(None, [], [], _no_activity_ks(), None, [], [])
         assert "no project context found" in result.lower()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("unreadable", [False, True])
+    async def test_claim_verification_fact_appears_in_briefing(self, unreadable: bool) -> None:
+        descriptor = FactDescriptor(
+            name="claims_verification_last_night",
+            definition_version=1,
+            target=FactTarget.PRODUCTION,
+            ttl_seconds=60,
+            timeout_seconds=3,
+            queue_timeout_seconds=2,
+            deadline_seconds=5,
+            briefing=True,
+            policies={},
+            value_schema={
+                "run_date": "string",
+                "run_id": "int",
+                "status": "string",
+                "holds": "int",
+                "falsified": "int",
+                "unreadable": "int",
+                "verdicts": "int",
+                "eligible_now": "int",
+            },
+        )
+        common = {
+            "fact": descriptor.name,
+            "definition_version": 1,
+            "target": FactTarget.PRODUCTION,
+            "observation_id": uuid4(),
+            "measured_at": datetime(2026, 9, 27, tzinfo=UTC),
+            "duration_ms": 1,
+            "ttl_seconds": 60,
+        }
+        if unreadable:
+            measurement = Unreadable(
+                **common, error_code="probe_error", where=None, source_kind="probe"
+            )
+            expected = "- Vérification des claims : illisible (probe_error)"
+        else:
+            measurement = Measured.from_value(
+                **common,
+                source=SourceIdentity("7612696091383607335", "brain", "172.31.0.4", 5432),
+                value={
+                    "run_date": "2026-09-27",
+                    "run_id": 812,
+                    "status": "done",
+                    "holds": 1,
+                    "falsified": 0,
+                    "unreadable": 0,
+                    "verdicts": 1,
+                    "eligible_now": 0,
+                },
+            )
+            expected = (
+                "- Vérification des claims (nuit du 2026-09-27, run 812) : "
+                "1 tient, 0 FALSIFIÉ, 0 illisible — 0 en attente"
+            )
+        registry = MagicMock()
+        registry.briefing_names.return_value = (descriptor.name,)
+        registry.refusals.return_value = {}
+        registry.disabled.return_value = {}
+        registry.measure_many = AsyncMock(return_value={descriptor.name: measurement})
+        registry.describe.return_value = descriptor
+        lines = await _render_briefing_facts(registry)
+        briefing = _format_session_briefing(
+            None, [], [], _no_activity_ks(), None, [], [], fact_lines=lines
+        )
+        assert expected in briefing
+        assert briefing.index(expected) > briefing.index("### État technique (mesuré)")
 
     def test_empty_decisions_and_learnings(self):
         """Works with empty lists."""

@@ -31,6 +31,7 @@ that copies a measurement cannot know it has aged: it stays green through the dr
 | **Live** immutable release | `brain_fact_get("live_release_sha")` |
 | **Declared** Dream killswitches | `brain_fact_get("dream_killswitches_declared")` |
 | Last Dream night | `brain_fact_get("dream_last_night")` |
+| Last nightly claim verification | `brain_fact_get("claims_verification_last_night")` |
 | Graph projection lag | `brain_fact_get("graph_projection_lag")` |
 | Full catalogue of facts | `brain_fact_list` |
 | Focus, roadmap, tickets, blockers, the night's failure | the `brain_session_start` briefing |

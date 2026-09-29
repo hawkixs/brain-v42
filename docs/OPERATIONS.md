@@ -321,6 +321,12 @@ compare it with the dated Dream log. A successful dry run proves selection and
 measurement, not that verdicts were written. An argument-parser failure or the
 outer timeout may leave no JSON line; inspect the CLI log in that case.
 
+For the morning reading of the latest wet run, call
+`brain_fact_get("claims_verification_last_night")`. The fact reports the run status,
+verdicts written by that run, and claims eligible now. An unreadable fact means
+no wet run was measured; use the JSON report and dated log for errors, skips,
+and dry-run details.
+
 | Return code | Meaning | Dream handling |
 | --- | --- | --- |
 | `0` | Done | Records `DONE` and continues |
