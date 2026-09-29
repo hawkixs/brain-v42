@@ -37,7 +37,7 @@ logger = structlog.get_logger(__name__)
 # `sweep` have no project dimension (global queues and rotations): they run once
 # and write the sentinel into dream_runs.project_key.
 LOOP_PHASES = ("promote", "reorg")
-GLOBAL_PHASES = ("extract", "roadmap", "sweep")
+GLOBAL_PHASES = ("extract", "roadmap", "sweep", "verify")
 
 
 def expected_dream_phases(killswitches_path: Path | None = None) -> set[str]:

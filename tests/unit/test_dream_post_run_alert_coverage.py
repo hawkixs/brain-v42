@@ -422,6 +422,43 @@ async def test_without_a_manifest_the_synthesis_lines_are_the_ones_of_today(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("dry_run", [True, False])
+async def test_fallback_reports_only_a_missing_verify_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, dry_run: bool
+) -> None:
+    from brain_v42.metrics.collector_dream import (
+        expected_dream_phase_pairs,
+        expected_dream_phases,
+    )
+
+    drop_in = tmp_path / "killswitches.conf"
+    drop_in.write_text(
+        "[Service]\nEnvironment=BRAIN_DREAM_VERIFY_ENABLED=true\n"
+        "Environment=BRAIN_DREAM_PROJECT_POOL=alpha\n"
+    )
+    monkeypatch.setattr(
+        post_run_alert,
+        "expected_dream_phase_pairs",
+        lambda: expected_dream_phase_pairs(drop_in),
+    )
+    monkeypatch.setattr(
+        post_run_alert, "expected_dream_phases", lambda: expected_dream_phases(drop_in)
+    )
+
+    missing = await post_run_alert.review_night(_session(_rows((("scan", "alpha"),))), RUN_DATE)
+    assert missing.report is not None
+    assert post_run_alert.MISSING_EXPECTED_MESSAGE in missing.report
+    assert "verify" in missing.report
+    assert "missing=1" in missing.coverage.machine_line
+
+    observed = _rows((("scan", "alpha"), ("verify", "*")))
+    observed[1]["dry_run"] = dry_run
+    complete = await post_run_alert.review_night(_session(observed), RUN_DATE)
+    assert "missing=0" in complete.coverage.machine_line
+    assert complete.report is None
+
+
+@pytest.mark.asyncio
 async def test_the_fallback_line_never_compares_incomparable_sets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

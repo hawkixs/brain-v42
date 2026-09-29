@@ -605,6 +605,19 @@ class TestExpectedDreamPhasesSweep:
         assert "sweep" not in phases
 
 
+class TestExpectedDreamPhasesVerify:
+    def test_verify_expected_only_when_enabled(self, tmp_path) -> None:
+        from brain_v42.metrics.collector_dream import expected_dream_phases
+
+        drop_in = tmp_path / "killswitches.conf"
+        for value, expected in (("true", True), ("false", False)):
+            drop_in.write_text(f"[Service]\nEnvironment=BRAIN_DREAM_VERIFY_ENABLED={value}\n")
+            assert ("verify" in expected_dream_phases(drop_in)) is expected
+
+        drop_in.write_text("[Service]\n")
+        assert "verify" not in expected_dream_phases(drop_in)
+
+
 class TestExpectedDreamPhasesPromote:
     """Promote stays EXPECTED for as long as its killswitch is open.
 
