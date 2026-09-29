@@ -504,6 +504,87 @@ async def test_an_unexpected_exception_returns_rc_1_instead_of_crashing_raw(
     assert rc == 1
 
 
+async def test_unexpected_error_on_reused_wet_run_replaces_done_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    calls = _patch_pipeline(monkeypatch, report=_FakeReport(status="done"))
+    args = build_parser().parse_args(["--run-date", date.today().isoformat(), "--wet"])
+
+    assert await _run(args) == 0
+    assert calls["finish_run"]["status"] == "done"
+
+    failing_verifier = MagicMock()
+    failing_verifier.run = AsyncMock(side_effect=RuntimeError("db blip"))
+    monkeypatch.setattr(
+        "brain_v42.facts.nightly.NightlyVerifier", lambda **kwargs: failing_verifier
+    )
+
+    assert await _run(args) == 1
+    assert calls["finish_run"]["status"] == "fail"
+    assert calls["finish_run"]["error_message"] == "RuntimeError: db blip"
+    assert calls["finish_run"]["duration_s"] >= 0
+
+
+async def test_selection_uses_the_fact_names_checked_for_this_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    _patch_pipeline(monkeypatch, report=_FakeReport(status="done"))
+    monkeypatch.setattr(
+        "brain_v42.repositories.pg_claim_nightly.eligible_fact_names",
+        AsyncMock(return_value=("allowed_fact",)),
+    )
+    select = AsyncMock(return_value=())
+    monkeypatch.setattr("brain_v42.repositories.pg_claim_nightly.select_nightly_claims", select)
+    args = build_parser().parse_args(["--run-date", date.today().isoformat(), "--wet"])
+
+    assert await _run(args) == 0
+    assert select.await_args.kwargs["eligible_fact_names"] == ("allowed_fact",)
+
+
+async def test_unexpected_error_keeps_rc_1_when_finishing_the_run_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    _patch_pipeline(monkeypatch, report=None, run_side_effect=RuntimeError("db blip"))
+    finish = AsyncMock(side_effect=RuntimeError("write failed"))
+    monkeypatch.setattr("brain_v42.repositories.pg_claim_nightly.finish_run", finish)
+    args = build_parser().parse_args(["--run-date", date.today().isoformat(), "--wet"])
+
+    assert await _run(args) == 1
+    finish.assert_awaited_once()
+
+
+async def test_unexpected_error_respects_ownership_loss_during_fallback_finish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    _patch_pipeline(monkeypatch, report=None, run_side_effect=RuntimeError("db blip"))
+    finish = AsyncMock(side_effect=VerifyRunOwnershipLost())
+    monkeypatch.setattr("brain_v42.repositories.pg_claim_nightly.finish_run", finish)
+    args = build_parser().parse_args(["--run-date", date.today().isoformat(), "--wet"])
+
+    assert await _run(args) == 7
+    finish.assert_awaited_once()
+
+
+async def test_unexpected_error_fallback_bounds_the_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    calls = _patch_pipeline(monkeypatch, report=None, run_side_effect=RuntimeError("x" * 3000))
+    args = build_parser().parse_args(["--run-date", date.today().isoformat(), "--wet"])
+
+    assert await _run(args) == 1
+    assert len(calls["finish_run"]["error_message"]) == 2000
+
+
 @pytest.mark.parametrize(
     ("scenario", "expected_status", "expected_rc"),
     [

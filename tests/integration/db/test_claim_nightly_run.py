@@ -277,7 +277,13 @@ async def _wet_pass(
     assert await ownership.acquire()
     try:
         run_id = await get_or_create_wet_run(ownership, run_date)
-        claims = await select_nightly_claims(session_factory, now=datetime.now(UTC), max_claims=200)
+        now = datetime.now(UTC)
+        claims = await select_nightly_claims(
+            session_factory,
+            now=now,
+            max_claims=200,
+            eligible_fact_names=await eligible_fact_names(session_factory, now=now),
+        )
         release_check = ReleaseCheck(cli_release_path=_NONEXISTENT_RELEASE_PATH)
         verifier = NightlyVerifier(
             service=service or ClaimVerificationService(registry, session_factory),
@@ -553,7 +559,13 @@ async def test_dry_mode_writes_no_verdict_takes_no_lock_and_marks_the_row_dry(
     event.listen(engine.sync_engine, "before_cursor_execute", _capture)
     try:
         run_id = await insert_dry_run(session_factory, run_date)
-        claims = await select_nightly_claims(session_factory, now=datetime.now(UTC), max_claims=200)
+        now = datetime.now(UTC)
+        claims = await select_nightly_claims(
+            session_factory,
+            now=now,
+            max_claims=200,
+            eligible_fact_names=await eligible_fact_names(session_factory, now=now),
+        )
         release_check = ReleaseCheck(cli_release_path=_NONEXISTENT_RELEASE_PATH)
         verifier = NightlyVerifier(service=None, release_check=release_check)  # type: ignore[arg-type]
         report = await verifier.run_dry(claims, registry=registry, run_id=run_id, run_date=run_date)

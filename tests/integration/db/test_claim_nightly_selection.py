@@ -33,7 +33,11 @@ from brain_v42.db.tables import (
     knowledge_fact_definitions,
     project_contexts,
 )
-from brain_v42.repositories.pg_claim_nightly import eligible_fact_names, select_nightly_claims
+from brain_v42.repositories.pg_claim_nightly import (
+    NightlyClaim,
+    eligible_fact_names,
+    select_nightly_claims,
+)
 from brain_v42.repositories.pg_knowledge_claims import insert_claim
 from tests.integration.conftest import _get_integration_db_url_or_skip
 from tests.integration.disposable_db import fresh_head_database
@@ -155,17 +159,45 @@ async def _insert_verdict(
     )
 
 
+async def _select_all_eligible(
+    session_factory: async_sessionmaker[AsyncSession], *, now: datetime, max_claims: int
+) -> tuple[NightlyClaim, ...]:
+    names = await eligible_fact_names(session_factory, now=now)
+    return await select_nightly_claims(
+        session_factory, now=now, max_claims=max_claims, eligible_fact_names=names
+    )
+
+
 async def test_a_never_verified_claim_is_selected(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     async with session_factory() as session, session.begin():
         claim_id, fact_name, _ = await _insert_claim(session)
 
-    selected = await select_nightly_claims(session_factory, now=datetime.now(UTC), max_claims=200)
+    selected = await _select_all_eligible(session_factory, now=datetime.now(UTC), max_claims=200)
 
     assert claim_id in {claim.id for claim in selected}
     match = next(claim for claim in selected if claim.id == claim_id)
     assert match.fact_name == fact_name
+
+
+async def test_a_stale_claim_outside_the_checked_fact_set_is_not_selected(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    async with session_factory() as session, session.begin():
+        allowed_id, allowed_fact, _ = await _insert_claim(session)
+        excluded_id, _, _ = await _insert_claim(session)
+
+    selected = await select_nightly_claims(
+        session_factory,
+        now=datetime.now(UTC),
+        max_claims=200,
+        eligible_fact_names=(allowed_fact,),
+    )
+    ids = {claim.id for claim in selected}
+
+    assert allowed_id in ids
+    assert excluded_id not in ids
 
 
 async def test_expiry_boundary_is_inclusive_and_measured_from_emitted_at(
@@ -184,7 +216,7 @@ async def test_expiry_boundary_is_inclusive_and_measured_from_emitted_at(
             session, claim_id=fresh_id, verdict="holds", emitted_at=now - timedelta(seconds=599)
         )
 
-    selected = await select_nightly_claims(session_factory, now=now, max_claims=200)
+    selected = await _select_all_eligible(session_factory, now=now, max_claims=200)
     ids = {claim.id for claim in selected}
 
     assert expired_id in ids
@@ -203,7 +235,7 @@ async def test_expiry_follows_emitted_at_never_recorded_at(
             session, claim_id=claim_id, verdict="holds", emitted_at=now - timedelta(days=1)
         )
 
-    selected = await select_nightly_claims(session_factory, now=now, max_claims=200)
+    selected = await _select_all_eligible(session_factory, now=now, max_claims=200)
 
     assert claim_id in {claim.id for claim in selected}
 
@@ -218,7 +250,7 @@ async def test_falsified_counts_as_conclusive_and_expires_the_same_way(
             session, claim_id=claim_id, verdict="falsified", emitted_at=now - timedelta(seconds=1)
         )
 
-    selected = await select_nightly_claims(session_factory, now=now, max_claims=200)
+    selected = await _select_all_eligible(session_factory, now=now, max_claims=200)
 
     assert claim_id not in {claim.id for claim in selected}
 
@@ -237,7 +269,7 @@ async def test_unreadable_latest_after_a_still_valid_holds_is_selected(
             session, claim_id=claim_id, verdict="unreadable", emitted_at=now - timedelta(seconds=5)
         )
 
-    selected = await select_nightly_claims(session_factory, now=now, max_claims=200)
+    selected = await _select_all_eligible(session_factory, now=now, max_claims=200)
 
     assert claim_id in {claim.id for claim in selected}
 
@@ -248,7 +280,7 @@ async def test_a_retired_claim_is_never_selected(
     async with session_factory() as session, session.begin():
         claim_id, _, _ = await _insert_claim(session, retired=True)
 
-    selected = await select_nightly_claims(session_factory, now=datetime.now(UTC), max_claims=200)
+    selected = await _select_all_eligible(session_factory, now=datetime.now(UTC), max_claims=200)
 
     assert claim_id not in {claim.id for claim in selected}
 
@@ -284,7 +316,7 @@ async def test_per_project_round_robin_ranking_with_a_cap(
         b_ids = [(await _insert_claim(session, project_key=project_b))[0] for _ in range(2)]
         c_ids = [(await _insert_claim(session, project_key=project_c))[0] for _ in range(1)]
 
-    selected = await select_nightly_claims(session_factory, now=now, max_claims=4)
+    selected = await _select_all_eligible(session_factory, now=now, max_claims=4)
     selected_ids = [claim.id for claim in selected]
 
     # rank 1 of every project (insertion order == age order here, oldest first), then rank 2.
@@ -316,7 +348,7 @@ async def test_select_nightly_claims_opens_a_read_only_transaction(
 
     sa.event.listen(engine.sync_engine, "before_cursor_execute", _capture)
     try:
-        await select_nightly_claims(session_factory, now=datetime.now(UTC), max_claims=200)
+        await _select_all_eligible(session_factory, now=datetime.now(UTC), max_claims=200)
     finally:
         sa.event.remove(engine.sync_engine, "before_cursor_execute", _capture)
 

@@ -23,7 +23,7 @@ def _compiled(statement: sa.Select) -> str:
 
 
 def test_ranked_query_compiles_with_lateral_joins_and_a_window_function() -> None:
-    sql = _compiled(_ranked_query(datetime.now(UTC), 200))
+    sql = _compiled(_ranked_query(datetime.now(UTC), 200, eligible_fact_names=("probe",)))
 
     assert "LEFT OUTER JOIN LATERAL" in sql
     assert "row_number() OVER (PARTITION BY eligible.project_key" in sql
@@ -45,3 +45,14 @@ def test_eligible_query_joins_are_correlated_to_the_claims_table() -> None:
     sql = _compiled(_eligible_query(datetime.now(UTC)))
 
     assert sql.count("knowledge_claim_verdicts.claim_id = knowledge_claims.id") == 2
+
+
+def test_ranked_query_limits_stale_claims_to_fact_names_eligible_at_start() -> None:
+    sql = str(
+        _ranked_query(datetime.now(UTC), 200, eligible_fact_names=("allowed_fact",)).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
+    )
+
+    assert "knowledge_claims.fact_name IN" in sql
+    assert "allowed_fact" in sql

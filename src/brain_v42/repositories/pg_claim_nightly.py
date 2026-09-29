@@ -16,7 +16,7 @@ must be run for real before this is trusted.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -117,9 +117,15 @@ def _eligible_query(now: datetime) -> sa.Select:
     )
 
 
-def _ranked_query(now: datetime, max_claims: int) -> sa.Select:
+def _ranked_query(
+    now: datetime, max_claims: int, *, eligible_fact_names: Sequence[str]
+) -> sa.Select:
     """Wrap the eligibility predicate in the spec §4.3 per-project round robin."""
-    eligible = _eligible_query(now).subquery("eligible")
+    eligible = (
+        _eligible_query(now)
+        .where(knowledge_claims.c.fact_name.in_(eligible_fact_names))
+        .subquery("eligible")
+    )
     rank = (
         sa.func.row_number()
         .over(partition_by=eligible.c.project_key, order_by=(eligible.c.age_key, eligible.c.seq))
@@ -149,11 +155,20 @@ async def select_nightly_claims(
     *,
     now: datetime,
     max_claims: int,
+    eligible_fact_names: Sequence[str],
 ) -> tuple[NightlyClaim, ...]:
     """One short read-only transaction, separate from the verifications (spec §4.4)."""
     async with session_factory() as session, session.begin():
         await session.execute(sa.text("SET TRANSACTION READ ONLY"))
-        rows = (await session.execute(_ranked_query(now, max_claims))).mappings().all()
+        rows = (
+            (
+                await session.execute(
+                    _ranked_query(now, max_claims, eligible_fact_names=eligible_fact_names)
+                )
+            )
+            .mappings()
+            .all()
+        )
     return tuple(_nightly_claim(row) for row in rows)
 
 

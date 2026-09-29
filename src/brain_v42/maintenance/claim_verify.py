@@ -23,6 +23,8 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
+import structlog
+
 import brain_v42
 
 if TYPE_CHECKING:
@@ -31,6 +33,7 @@ if TYPE_CHECKING:
 _MAX_ERROR_CHARS: Final = 2000
 _DEFAULT_RUN_BUDGET_SECONDS: Final = 240.0
 _RUN_DATE_TOLERANCE_DAYS: Final = 1
+_LOG = structlog.get_logger(__name__)
 
 
 def _run_date(value: str) -> date:
@@ -159,6 +162,7 @@ async def _run(args: argparse.Namespace) -> int:
     run_id: int | None = None
     eligible_at_start: int | None = None
     max_claims = args.max_claims
+    run_finished = False
 
     def write_exit(status: str, rc: int) -> int:
         nonlocal report
@@ -228,6 +232,7 @@ async def _run(args: argparse.Namespace) -> int:
                         duration_s=duration_s,
                         error_message=failure.reason,
                     )
+                    run_finished = True
                 else:
                     await finish_dry_run(
                         session_factory,
@@ -240,7 +245,12 @@ async def _run(args: argparse.Namespace) -> int:
                 return write_exit("fail", 1)
 
             eligible_at_start = await _eligible_count(session_factory, now)
-            claims = await select_nightly_claims(session_factory, now=now, max_claims=max_claims)
+            claims = await select_nightly_claims(
+                session_factory,
+                now=now,
+                max_claims=max_claims,
+                eligible_fact_names=eligible_facts,
+            )
             release_check = ReleaseCheck(cli_release_path=Path(brain_v42.__file__))
 
             if wet:
@@ -267,6 +277,7 @@ async def _run(args: argparse.Namespace) -> int:
                         duration_s=duration_s,
                         error_message=diagnostic[:_MAX_ERROR_CHARS] if diagnostic else None,
                     )
+                    run_finished = True
                     rc = STATUS_TO_RC[report.status]
             else:
                 verifier = NightlyVerifier(
@@ -311,6 +322,19 @@ async def _run(args: argparse.Namespace) -> int:
         except Exception as exc:  # noqa: BLE001 -- an unattended nightly job must not crash raw
             detail = f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_CHARS]
             print(f"claim_verify: FAIL — unexpected error: {detail}", file=sys.stderr)
+            if wet and ownership is not None and run_id is not None and not run_finished:
+                try:
+                    await finish_run(
+                        ownership,
+                        run_id,
+                        status="fail",
+                        duration_s=time.monotonic() - started,
+                        error_message=detail,
+                    )
+                except VerifyRunOwnershipLost:
+                    return write_exit("ownership_lost", 7)
+                except Exception:  # noqa: BLE001 -- keep the original failure exit code
+                    _LOG.exception("claim_verify_finish_run_failed", run_id=run_id)
             return write_exit("fail", 1)
     finally:
         if wet and ownership is not None:
