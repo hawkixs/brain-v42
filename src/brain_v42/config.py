@@ -459,6 +459,11 @@ class Settings(BaseSettings):
     # is a reversible detail, not the capability.
     brain_session_inactive_sweep_enabled: bool = Field(default=False)
 
+    # ADR 27 lot C: nightly claim verification cap (spec §4.2, Q5 default 200).
+    # `1..5000` matches the spec's bound; the setting exists so an operator can
+    # widen or narrow the nightly cap without a code change.
+    brain_dream_verify_max_claims: int = Field(default=200, ge=1, le=5000)
+
     @field_validator("client_activity_url")
     @classmethod
     def _client_activity_loopback_only(cls, v: str) -> str:

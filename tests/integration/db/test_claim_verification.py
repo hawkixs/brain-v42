@@ -31,7 +31,7 @@ from brain_v42.db.tables import (
 from brain_v42.facts.canonical import MAX_CANONICAL_BYTES, canonical_json
 from brain_v42.facts.model import FactTarget, SourceIdentity
 from brain_v42.facts.registry import FactRegistry, RefreshBudget
-from brain_v42.facts.verification import ClaimVerificationService
+from brain_v42.facts.verification import ClaimVerificationService, VerificationOutcome
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.repositories.pg_claim_verdicts import VerdictRow
 from brain_v42.repositories.pg_knowledge_claims import insert_claim
@@ -378,6 +378,33 @@ async def test_concurrent_duplicate_requests_converge_on_one_row_and_one_probe(
     )
 
     assert all(result == results[0] for result in results)
+    assert await _count(session_factory, knowledge_claim_verdicts, "claim_id", claim_id) == 1
+    assert probe.runs == 1
+
+
+async def test_verify_outcome_marks_exactly_one_winner_under_the_row_lock(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The `FOR UPDATE` lock that serializes the race must also gate `replayed`."""
+    claim_id, fact_name, _ = await _claim(session_factory)
+    probe = _SlowProbe(fact_name, delay=0.3)
+    service = ClaimVerificationService(_registry(probe), session_factory)
+
+    outcomes = await asyncio.gather(
+        *(
+            service.verify_outcome(
+                claim_id,
+                issuer_identity="mcp:integration",
+                issuer_kind="robot",
+                idempotency_key="concurrent-outcome",
+            )
+            for _ in range(4)
+        )
+    )
+
+    assert all(isinstance(outcome, VerificationOutcome) for outcome in outcomes)
+    assert all(outcome.row == outcomes[0].row for outcome in outcomes)
+    assert sorted(outcome.replayed for outcome in outcomes) == [False, True, True, True]
     assert await _count(session_factory, knowledge_claim_verdicts, "claim_id", claim_id) == 1
     assert probe.runs == 1
 

@@ -679,29 +679,9 @@ def build_services() -> dict[str, Any]:
     # Measured facts (spec 2026-09-19, lot A): the closed catalogue, frozen
     # here, verified against the identity the operator declared — never against
     # the DSN the probes connect with.
-    from brain_v42.facts.composition import build_fact_registry  # noqa: PLC0415
+    from brain_v42.facts.composition import build_fact_registry_from_settings  # noqa: PLC0415
 
-    declared_identity: object = None
-    try:
-        declared_identity = settings.facts_production_identity()
-    except Exception as exc:  # a settings double without the method, or a refused value
-        logger.warning("facts.production_identity_unreadable", error=str(exc))
-    declared_live_release_identity: object = None
-    try:
-        declared_live_release_identity = settings.facts_live_release_identity()
-    except Exception as exc:
-        logger.warning("facts.live_release_identity_unreadable", error=str(exc))
-    declared_host_identity: object = None
-    try:
-        declared_host_identity = settings.facts_host_identity()
-    except Exception as exc:
-        logger.warning("facts.host_identity_unreadable", error=str(exc))
-    fact_registry = build_fact_registry(
-        declared_identity,
-        session_factory=session_factory,
-        declared_live_release_identity=declared_live_release_identity,
-        declared_host_identity=declared_host_identity,
-    )
+    fact_registry = build_fact_registry_from_settings(settings, session_factory)
 
     logger.info("brain_v42.server.services_initialized")
 
