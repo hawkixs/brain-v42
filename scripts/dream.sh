@@ -312,14 +312,14 @@ PHASES=(
 # brain_v42.agents.phase.PHASE_DEPS, read by run_phase (lot 2, Brain ticket
 # afd56820) -- no longer read from bash.
 
-# The two GLOBAL phases, named for the `planned_phases` computation alone.
-# The two blocks stay hand-written OUTSIDE the loop (pinned by
+# The GLOBAL phases, named for the `planned_phases` computation alone.
+# The blocks stay hand-written OUTSIDE the loop (pinned by
 # tests/unit/test_dream_sh_global_phases_outside_loop.py): this array does not
 # drive them, it counts them.
 # ROADMAP was the third until 2026-09-10 (ADR 45671595). Its CLI still exists
 # and is still runnable by hand for the ~185 pending proposals; what stopped is
 # the unattended nightly invocation.
-DREAM_GLOBAL_PHASES=(extract sweep)
+DREAM_GLOBAL_PHASES=(extract sweep verify)
 
 # OTEL env vars for Claude Code telemetry
 export CLAUDE_CODE_ENABLE_TELEMETRY=1
@@ -521,6 +521,86 @@ log "=== Dream started (project=$PROJECT_KEY, provider=$BRAIN_DREAM_AGENT_PROVID
 # the variable — both render the same line.
 log "=== Pool (${#PROJECT_POOL[@]}) from $POOL_SOURCE: ${PROJECT_POOL[*]} ==="
 
+declare -a FAILED_PHASES=()
+declare -a TIMED_OUT_PHASES=()
+# A subset of TIMED_OUT_PHASES: the BOUNDED deadlines a phase imposes on itself
+# AFTER recording its terminal dream_run. That is not a breakdown, it is a
+# normal night carried to its time limit. They alert (the FAIL_TOTAL counter)
+# but no longer redden the systemd unit. Fail-closed by construction: a timeout
+# one forgets to classify here stays counted as a failure, hence noisy. An
+# EXTERNAL guard-rail timeout (`timeout` killed the process) NEVER enters here:
+# the phase's state is
+# unknown.
+declare -a CONTROLLED_TIMEOUT_PHASES=()
+declare -a SKIPPED_PHASES=()
+# Skips WITHOUT a dream_runs row — the only count the reconciliation must
+# subtract: a skip that DOES write (empty promote pool, record-empty-pool) is
+# already in pairs_written, and subtracting it too would give gap=-1 on a
+# healthy night (2nd fix from the PR 47 review, wolf-cry by the other path).
+SKIPPED_UNWRITTEN=0
+# Phases a standby link caught. Deliberately OUTSIDE FAIL_TOTAL and outside the
+# exit guard: they succeeded. They exist only so the summary can tell "codex
+# worked" from "codex died, agy saved the night" — the distinction
+# `run_phase_chain` already logs per phase but that nothing aggregated, for six
+# nights running.
+declare -a FALLBACK_PHASES=()
+# Links retired for the night by retire_dead_link, in order of death. Read by
+# the empty-chain guard of the phase loop and by the summary.
+declare -a DEAD_LINKS=()
+TOTAL_PHASES=0
+
+# --- VERIFY: nightly claim verification (deterministic, no LLM) -------------
+TOTAL_PHASES=$(( TOTAL_PHASES + 1 ))
+manifest_put expected verify '*'
+if [[ "$BRAIN_DREAM_VERIFY_ENABLED" != "true" ]]; then
+  log "SKIP verify (killswitch BRAIN_DREAM_VERIFY_ENABLED=$BRAIN_DREAM_VERIFY_ENABLED)"
+  SKIPPED_PHASES+=("*/verify")
+  SKIPPED_UNWRITTEN=$(( SKIPPED_UNWRITTEN + 1 ))
+  manifest_put skipped verify '*' killswitch
+else
+  verify_args=(--run-date "$TIMESTAMP" --report-dir "$LOG_DIR")
+  if dream_wants_wet BRAIN_DREAM_VERIFY_DRY_RUN "$BRAIN_DREAM_VERIFY_DRY_RUN"; then
+    verify_args+=(--wet)
+  fi
+  log "verify: claim_verify starting (dry_run=$BRAIN_DREAM_VERIFY_DRY_RUN)"
+  set +e
+  timeout 5m uv run python -m brain_v42.maintenance.claim_verify "${verify_args[@]}" \
+    >> "$LOG_DIR/${TIMESTAMP}_verify.log" 2>&1
+  verify_rc=$?
+  set -e
+  case "$verify_rc" in
+    0)
+      log "DONE verify"
+      ;;
+    3)
+      log "TIMEOUT verify (controlled deadline; terminal dream_run recorded)"
+      TIMED_OUT_PHASES+=("*/verify")
+      CONTROLLED_TIMEOUT_PHASES+=("*/verify")
+      manifest_put timeout verify '*'
+      ;;
+    124)
+      log "TIMEOUT verify (outer guard; inspect ${TIMESTAMP}_verify.log)"
+      TIMED_OUT_PHASES+=("*/verify")
+      manifest_put timeout verify '*'
+      ;;
+    5)
+      log "FAIL verify (partial: per-claim errors) — see ${TIMESTAMP}_verify.log"
+      FAILED_PHASES+=("*/verify")
+      manifest_put failed verify '*'
+      ;;
+    6)
+      log "BUSY verify (another wet claim_verify holds the run lock)"
+      FAILED_PHASES+=("*/verify")
+      manifest_put failed verify '*'
+      ;;
+    *)
+      log "FAIL verify (rc=$verify_rc) — see ${TIMESTAMP}_verify.log"
+      FAILED_PHASES+=("*/verify")
+      manifest_put failed verify '*'
+      ;;
+  esac
+fi
+
 # Preflights, run across the WHOLE chain — not on its first link alone.
 #
 # This is what decides whether a chain is worth anything. The preflight detects
@@ -668,34 +748,6 @@ set -e
 if (( scrub_rc != 0 )); then
   log "WARN  pre-phase XML scrub failed (rc=$scrub_rc); continuing dream run"
 fi
-
-declare -a FAILED_PHASES=()
-declare -a TIMED_OUT_PHASES=()
-# A subset of TIMED_OUT_PHASES: the BOUNDED deadlines a phase imposes on itself
-# AFTER recording its terminal dream_run. That is not a breakdown, it is a
-# normal night carried to its time limit. They alert (the FAIL_TOTAL counter)
-# but no longer redden the systemd unit. Fail-closed by construction: a timeout
-# one forgets to classify here stays counted as a failure, hence noisy. An
-# EXTERNAL guard-rail timeout (`timeout` killed the process) NEVER enters here:
-# the phase's state is
-# unknown.
-declare -a CONTROLLED_TIMEOUT_PHASES=()
-declare -a SKIPPED_PHASES=()
-# Skips WITHOUT a dream_runs row — the only count the reconciliation must
-# subtract: a skip that DOES write (empty promote pool, record-empty-pool) is
-# already in pairs_written, and subtracting it too would give gap=-1 on a
-# healthy night (2nd fix from the PR 47 review, wolf-cry by the other path).
-SKIPPED_UNWRITTEN=0
-# Phases a standby link caught. Deliberately OUTSIDE FAIL_TOTAL and outside the
-# exit guard: they succeeded. They exist only so the summary can tell "codex
-# worked" from "codex died, agy saved the night" — the distinction
-# `run_phase_chain` already logs per phase but that nothing aggregated, for six
-# nights running.
-declare -a FALLBACK_PHASES=()
-# Links retired for the night by retire_dead_link, in order of death. Read by
-# the empty-chain guard of the phase loop and by the summary.
-declare -a DEAD_LINKS=()
-TOTAL_PHASES=0
 
 # --- Pre-flight gate: skip the costly deep phases (synth/promote/reorg) when
 # the brain corpus is provably unchanged since the previous run. ~40% of nights
