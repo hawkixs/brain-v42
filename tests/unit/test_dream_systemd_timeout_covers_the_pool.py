@@ -14,7 +14,7 @@ of the second project, and the following projects would have NO row at all in
 phases of the projects already processed.
 
 This test retypes no number. It reads the real timeouts from `PHASES` and from
-the three `timeout Nm` of the global phases, then checks that the versioned
+the `timeout Nm` of the global phases, then checks that the versioned
 template covers `_MAX_POOL` projects. A phase timeout raised without raising the
 cap fails here, naming what is missing.
 
@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DREAM_SH = REPO_ROOT / "scripts" / "dream.sh"
@@ -56,15 +58,36 @@ def _global_phase_minutes() -> int:
     Its module still exists and is still runnable by hand, so the guard has to
     read the phases dream.sh actually INVOKES rather than the CLIs that exist:
     keeping `scripts.roadmap_curate` here would have kept 20 minutes in a
-    ceiling the night can no longer spend.
+    ceiling the night can no longer spend. Claim verification now contributes
+    its own five-minute global timeout.
     """
     content = DREAM_SH.read_text(encoding="utf-8")
     total = 0
-    for module in ("scripts.ticket_extract", "session_sweep"):
+    for module in ("scripts.ticket_extract", "session_sweep", "claim_verify"):
         match = re.search(rf"timeout (\d+)m uv run python -m [\w.]*{re.escape(module)}", content)
         assert match, f"garde-fou `timeout Nm` introuvable pour {module}"
         total += int(match.group(1))
     return total
+
+
+def test_global_timeout_derivation_requires_verify(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source = DREAM_SH.read_text(encoding="utf-8")
+    without_verify_timeout = source.replace(
+        "timeout 5m uv run python -m brain_v42.maintenance.claim_verify",
+        "uv run python -m brain_v42.maintenance.claim_verify",
+    )
+    assert without_verify_timeout != source
+    script_without_verify_timeout = tmp_path / "dream.sh"
+    script_without_verify_timeout.write_text(without_verify_timeout, encoding="utf-8")
+    monkeypatch.setattr(
+        "tests.unit.test_dream_systemd_timeout_covers_the_pool.DREAM_SH",
+        script_without_verify_timeout,
+    )
+
+    with pytest.raises(AssertionError, match="claim_verify"):
+        _global_phase_minutes()
 
 
 def _retry_budget() -> int:
