@@ -413,6 +413,20 @@ async def test_live_release_claims_go_through_the_release_check() -> None:
     assert report.status == "done"
 
 
+async def test_wet_release_decision_is_reused_for_every_live_release_claim() -> None:
+    service = _FakeService()
+    claims = tuple(_claim(index, target="live_release") for index in range(20))
+    release_check = _FakeReleaseCheck("skip_release_mismatch")
+
+    report = await _verifier(service, release_check=release_check).run(
+        claims, run_id=1, run_date=date(2026, 9, 27), wet=True
+    )
+
+    assert release_check.calls == 1
+    assert report.skipped_release_mismatch == len(claims)
+    assert service.calls == []
+
+
 async def test_a_non_live_release_claim_never_calls_the_release_check() -> None:
     service = _FakeService()
     c1 = _claim(0, target="production")

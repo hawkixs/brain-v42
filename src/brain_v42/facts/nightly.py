@@ -217,9 +217,8 @@ def _default_proc_reader(pid: int) -> str:
 class ReleaseCheck:
     """Compare the Dream CLI's own release against the running `brain-mcp-http`'s.
 
-    Evaluated fresh on every call (no caching): the spec requires a server
-    restart mid-invocation to be observed on the NEXT claim, not carried over
-    from an earlier one.
+    Each call reads current process identity; the orchestrator shares one
+    decision across the claims selected for a single run.
     """
 
     def __init__(
@@ -414,6 +413,8 @@ class NightlyVerifier:
         stopped_facts: set[str] = set()
         state = {"aborted": False, "ownership_lost": False, "next_index": 0}
         dispatch_lock = asyncio.Lock()
+        release_decision_lock = asyncio.Lock()
+        release_decision: ReleaseDecision | None = None
         lane_tasks: list[asyncio.Task[None]] = []
         deliberately_cancelled: set[asyncio.Task[None]] = set()
 
@@ -438,6 +439,7 @@ class NightlyVerifier:
                 return claims[index]
 
         async def process(claim: NightlyClaimLike) -> None:
+            nonlocal release_decision
             if claim.fact_name in stopped_facts:
                 report.skipped_budget += 1
                 return
@@ -449,7 +451,10 @@ class NightlyVerifier:
                     _cancel_other_lanes()
                     return
             if claim.target == "live_release":
-                decision = await self._release_check.decide()
+                async with release_decision_lock:
+                    if release_decision is None:
+                        release_decision = await self._release_check.decide()
+                    decision = release_decision
                 report.release = {
                     "cli_sha": decision.cli_sha,
                     "server_sha": decision.server_sha,
@@ -568,10 +573,14 @@ class NightlyVerifier:
         historical: list[dict[str, object]] = []
         release_skip = 0
         measurable: set[str] = set()
+        measurable_claims = 0
+        release_decision: ReleaseDecision | None = None
 
         for claim in claims:
             if claim.target == "live_release":
-                decision = await self._release_check.decide()
+                if release_decision is None:
+                    release_decision = await self._release_check.decide()
+                decision = release_decision
                 report.release = {
                     "cli_sha": decision.cli_sha,
                     "server_sha": decision.server_sha,
@@ -603,6 +612,7 @@ class NightlyVerifier:
                 )
                 continue
             measurable.add(claim.fact_name)
+            measurable_claims += 1
 
         dry_facts: dict[str, dict[str, object]] = {}
         for name in sorted(measurable):
@@ -625,7 +635,7 @@ class NightlyVerifier:
         report.dry_claims = {
             "historical_definition": historical,
             "release_skip": release_skip,
-            "measurable": len(measurable),
+            "measurable": measurable_claims,
         }
         report.dry_facts = dry_facts
         report.status = "done"

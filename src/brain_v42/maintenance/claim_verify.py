@@ -153,35 +153,53 @@ async def _run(args: argparse.Namespace) -> int:
     )
 
     run_date = args.run_date
+    wet = args.wet
+    started_at = datetime.now(UTC).isoformat()
+    report: NightlyReport | None = None
+    run_id: int | None = None
+    eligible_at_start: int | None = None
+    max_claims = args.max_claims
+
+    def write_exit(status: str, rc: int) -> int:
+        nonlocal report
+        if report is None:
+            report = NightlyReport(
+                run_date=run_date.isoformat(),
+                run_id=run_id,
+                mode="wet" if wet else "dry",
+            )
+        report.status = status
+        report.started_at = started_at
+        report.finished_at = datetime.now(UTC).isoformat()
+        report.max_claims = max_claims
+        report.eligible_at_start = eligible_at_start
+        _write_report(args.report_dir, run_date, report, rc)
+        return rc
+
     if abs((run_date - date.today()).days) > _RUN_DATE_TOLERANCE_DAYS:
         print(
             f"claim_verify: --run-date {run_date} is more than "
             f"{_RUN_DATE_TOLERANCE_DAYS} day(s) from today",
             file=sys.stderr,
         )
-        return 2
+        return write_exit("fail", 2)
 
     try:
         settings = Settings()  # type: ignore[call-arg]
     except ValidationError as exc:
         print(f"claim_verify: invalid configuration: {exc}", file=sys.stderr)
-        return 2
+        return write_exit("fail", 2)
 
     max_claims = args.max_claims or settings.brain_dream_verify_max_claims
     deadline_seconds = args.run_budget_seconds or _DEFAULT_RUN_BUDGET_SECONDS
-    wet = args.wet
 
     session_factory = get_session_factory()
     engine = get_engine()
     registry = build_fact_registry_from_settings(settings, session_factory)
     now = datetime.now(UTC)
-    started_at = now.isoformat()
     started = time.monotonic()
 
     ownership: VerifyRunOwnership | None = None
-    report: NightlyReport | None = None
-    run_id: int | None = None
-    eligible_at_start: int | None = None
     try:
         try:
             registered_ok = await register_fact_definitions(registry, session_factory)
@@ -194,7 +212,7 @@ async def _run(args: argparse.Namespace) -> int:
                 ownership = VerifyRunOwnership(engine)
                 if not await ownership.acquire():
                     print("claim_verify: BUSY verify", file=sys.stderr)
-                    return 6
+                    return write_exit("busy", 6)
                 run_id = await get_or_create_wet_run(ownership, run_date)
             else:
                 run_id = await insert_dry_run(session_factory, run_date)
@@ -219,7 +237,7 @@ async def _run(args: argparse.Namespace) -> int:
                         error_message=failure.reason,
                     )
                 print(f"claim_verify: FAIL — {failure.reason}", file=sys.stderr)
-                return 1
+                return write_exit("fail", 1)
 
             eligible_at_start = await _eligible_count(session_factory, now)
             claims = await select_nightly_claims(session_factory, now=now, max_claims=max_claims)
@@ -293,7 +311,7 @@ async def _run(args: argparse.Namespace) -> int:
         except Exception as exc:  # noqa: BLE001 -- an unattended nightly job must not crash raw
             detail = f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_CHARS]
             print(f"claim_verify: FAIL — unexpected error: {detail}", file=sys.stderr)
-            return 1
+            return write_exit("fail", 1)
     finally:
         if wet and ownership is not None:
             await ownership.release()

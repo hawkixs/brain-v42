@@ -121,6 +121,34 @@ async def test_measures_exactly_once_per_distinct_measurable_fact() -> None:
     assert report.status == "done"
 
 
+async def test_measurable_counts_claims_while_measuring_each_fact_once() -> None:
+    registry = _FakeRegistry(
+        descriptors={"fact_a": _Descriptor(1, FactTarget.PRODUCTION)},
+        measurements={"fact_a": _measured("fact_a")},
+    )
+    claims = tuple(_claim(index, fact="fact_a") for index in range(3))
+    verifier = NightlyVerifier(service=None, release_check=_FakeReleaseCheckDry("verify"))
+
+    report = await verifier.run_dry(claims, registry=registry, run_id=1, run_date=date(2026, 9, 27))
+
+    assert report.dry_claims["measurable"] == 3
+    assert registry.measure_calls == [("fact_a", None)]
+
+
+async def test_dry_release_decision_is_reused_for_every_live_release_claim() -> None:
+    registry = _FakeRegistry(
+        descriptors={"fact_a": _Descriptor(1, FactTarget.LIVE_RELEASE)}, measurements={}
+    )
+    claims = tuple(_claim(index, fact="fact_a", target="live_release") for index in range(20))
+    release_check = _FakeReleaseCheckDry("skip_release_mismatch")
+    verifier = NightlyVerifier(service=None, release_check=release_check)
+
+    report = await verifier.run_dry(claims, registry=registry, run_id=1, run_date=date(2026, 9, 27))
+
+    assert release_check.calls == 1
+    assert report.dry_claims["release_skip"] == len(claims)
+
+
 async def test_a_fact_absent_from_the_catalogue_is_historical_and_not_measured() -> None:
     registry = _FakeRegistry(descriptors={}, measurements={})
     claims = (_claim(0, fact="fact_gone", version=1),)

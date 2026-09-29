@@ -504,6 +504,71 @@ async def test_an_unexpected_exception_returns_rc_1_instead_of_crashing_raw(
     assert rc == 1
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected_status", "expected_rc"),
+    [
+        ("busy", "busy", 6),
+        ("precondition", "fail", 1),
+        ("unexpected", "fail", 1),
+    ],
+)
+async def test_early_exit_appends_report_and_log(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    scenario: str,
+    expected_status: str,
+    expected_rc: int,
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    _patch_pipeline(
+        monkeypatch,
+        report=None,
+        acquire_result=scenario != "busy",
+        precondition_failure=(
+            PreconditionFailure("definitions_unregistered") if scenario == "precondition" else None
+        ),
+        run_side_effect=RuntimeError("db blip") if scenario == "unexpected" else None,
+    )
+    run_date = date.today()
+    args = build_parser().parse_args(
+        ["--run-date", run_date.isoformat(), "--wet", "--report-dir", str(tmp_path)]
+    )
+
+    assert await _run(args) == expected_rc
+    payloads = [
+        json.loads(line)
+        for line in (tmp_path / f"{run_date.isoformat()}_verify.json").read_text().splitlines()
+    ]
+    log_lines = (tmp_path / f"{run_date.isoformat()}_verify.log").read_text().splitlines()
+    assert len(payloads) == len(log_lines) == 1
+    assert payloads[0]["status"] == expected_status
+    assert payloads[0]["rc"] == expected_rc
+    assert f"status={expected_status} rc={expected_rc}" in log_lines[0]
+
+
+@pytest.mark.parametrize("failure", ["run_date", "configuration"])
+async def test_initial_precondition_exit_appends_report(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    run_date = date.today()
+    if failure == "run_date":
+        run_date += timedelta(days=2)
+    else:
+        monkeypatch.delenv("BRAIN_POSTGRES_URL", raising=False)
+        monkeypatch.setenv("POSTGRES_URL", "invalid")
+    args = build_parser().parse_args(
+        ["--run-date", run_date.isoformat(), "--report-dir", str(tmp_path)]
+    )
+
+    assert await _run(args) == 2
+    payload = json.loads((tmp_path / f"{run_date.isoformat()}_verify.json").read_text())
+    assert payload["status"] == "fail"
+    assert payload["rc"] == 2
+
+
 async def test_cancellation_still_propagates_out_of_the_catch_all(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
