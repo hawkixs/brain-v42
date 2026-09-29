@@ -44,6 +44,12 @@ _VERIFY_PHASE: Final = "verify"
 _INITIAL_STATUS: Final = "fail"
 _INITIAL_ERROR_MESSAGE: Final = "verify started; no terminal status recorded"
 
+# The step's own dream_runs row exists before verification and would make these
+# probes observe the incomplete run that is trying to verify their claims.
+SELF_REFERENTIAL_FACTS: Final[frozenset[str]] = frozenset(
+    {"dream_last_night", "claims_verification_last_night"}
+)
+
 # LIMIT 1 prevents PostgreSQL from pulling up the lateral lookup into a
 # ledger-wide hash join. The unique claim/issuer/key constraint makes it lossless.
 LAST_WET_VERIFY_RUN_SQL = sa.text("""
@@ -187,7 +193,7 @@ def _ranked_query(
         _eligible_query(now)
         .where(
             knowledge_claims.c.fact_name.in_(eligible_fact_names),
-            knowledge_claims.c.fact_name != "dream_last_night",
+            knowledge_claims.c.fact_name.not_in(tuple(sorted(SELF_REFERENTIAL_FACTS))),
         )
         .subquery("eligible")
     )
@@ -210,7 +216,7 @@ def _self_referential_count_query(
         _eligible_query(now)
         .where(
             knowledge_claims.c.fact_name.in_(eligible_fact_names),
-            knowledge_claims.c.fact_name == "dream_last_night",
+            knowledge_claims.c.fact_name.in_(tuple(sorted(SELF_REFERENTIAL_FACTS))),
         )
         .subquery("eligible")
     )

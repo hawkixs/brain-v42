@@ -146,9 +146,12 @@ async def test_outcomes_are_counted_per_verdict_and_replay_comes_from_the_outcom
     assert STATUS_TO_RC[report.status] == 0
 
 
-async def test_wet_run_skips_dream_last_night_without_writing_a_verdict() -> None:
+@pytest.mark.parametrize("fact_name", ["dream_last_night", "claims_verification_last_night"])
+async def test_wet_run_skips_self_referential_fact_without_writing_a_verdict(
+    fact_name: str,
+) -> None:
     service = _FakeService()
-    self_referential = _claim(0, fact="dream_last_night")
+    self_referential = _claim(0, fact=fact_name)
     other = _claim(1)
     service.respond(other, _Outcome(_row(other, "holds"), False))
 

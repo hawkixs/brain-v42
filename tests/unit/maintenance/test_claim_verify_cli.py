@@ -562,7 +562,12 @@ async def test_self_referential_count_is_reported_outside_the_selection_budget(
         run_date=date.today().isoformat(), run_id=812, mode="wet" if wet else "dry", selected=1
     )
     _patch_pipeline(monkeypatch, report=report)
-    count = AsyncMock(return_value=1)
+    names = ("dream_last_night", "claims_verification_last_night")
+    monkeypatch.setattr(
+        "brain_v42.repositories.pg_claim_nightly.eligible_fact_names",
+        AsyncMock(return_value=names),
+    )
+    count = AsyncMock(return_value=2)
     monkeypatch.setattr(
         "brain_v42.repositories.pg_claim_nightly.count_self_referential_claims", count
     )
@@ -572,8 +577,9 @@ async def test_self_referential_count_is_reported_outside_the_selection_budget(
 
     assert await _run(args) == 0
     assert report.selected == 1
-    assert report.skipped_self_referential == 1
+    assert report.skipped_self_referential == 2
     count.assert_awaited_once()
+    assert count.await_args.kwargs["eligible_fact_names"] == names
 
 
 async def test_unexpected_error_keeps_rc_1_when_finishing_the_run_fails(
