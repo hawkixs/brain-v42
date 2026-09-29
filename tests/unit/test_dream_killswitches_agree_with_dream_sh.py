@@ -49,6 +49,7 @@ _DRY_KEYS = {
     "BRAIN_DREAM_EXTRACT_DRY_RUN": "extract_dry",
     "BRAIN_DREAM_ROADMAP_DRY_RUN": "roadmap_dry",
     "BRAIN_DREAM_SWEEP_DRY_RUN": "sweep_dry",
+    "BRAIN_DREAM_VERIFY_DRY_RUN": "verify_dry",
 }
 
 
@@ -91,6 +92,7 @@ def test_an_explicit_true_is_dry(env: str, flag: str) -> None:
         ("BRAIN_DREAM_EXTRACT_ENABLED", "extract"),
         ("BRAIN_DREAM_ROADMAP_ENABLED", "roadmap"),
         ("BRAIN_DREAM_SWEEP_ENABLED", "sweep"),
+        ("BRAIN_DREAM_VERIFY_ENABLED", "verify"),
     ],
 )
 @pytest.mark.parametrize("value", ["false", "", "flase", "0", "True", "TRUE"])
@@ -110,7 +112,11 @@ def test_a_non_true_enabled_flag_still_reads_as_disabled(env: str, flag: str, va
 
 @pytest.mark.parametrize(
     ("env", "flag"),
-    [("BRAIN_DREAM_PROMOTE_ENABLED", "promote"), ("BRAIN_DREAM_REORG_ENABLED", "reorg")],
+    [
+        ("BRAIN_DREAM_PROMOTE_ENABLED", "promote"),
+        ("BRAIN_DREAM_REORG_ENABLED", "reorg"),
+        ("BRAIN_DREAM_VERIFY_ENABLED", "verify"),
+    ],
 )
 def test_an_explicit_true_enabled_flag_reads_as_enabled(env: str, flag: str) -> None:
     assert parse_killswitches(_drop_in(env, "true"))[flag] is True

@@ -8,7 +8,9 @@ from pathlib import Path
 import pytest
 
 from brain_v42.facts import FactRegistry, FactTarget, HostIdentity, Measured, Unreadable
+from brain_v42.facts.probe import check_value_schema
 from brain_v42.facts.probes.dream_killswitches_declared import DreamKillswitchesDeclaredProbe
+from brain_v42.facts.render import render_fact_line
 from brain_v42.facts.sources import HostSourceFactory, HostSourceSession
 
 _RELATIVE = "brain-v42-dream.service.d/killswitches.conf"
@@ -34,6 +36,8 @@ def _all_settings(*, reorg_enabled: str = "true") -> str:
             "Environment=BRAIN_DREAM_ROADMAP_DRY_RUN=true",
             "Environment=BRAIN_DREAM_SWEEP_ENABLED=true",
             "Environment=BRAIN_DREAM_SWEEP_DRY_RUN=false",
+            "Environment=BRAIN_DREAM_VERIFY_ENABLED=true",
+            "Environment=BRAIN_DREAM_VERIFY_DRY_RUN=true",
             "",
         ]
     )
@@ -47,7 +51,7 @@ async def test_probe_declares_the_host_contract_and_publishes_raw_values(tmp_pat
     value = await probe.measure(HostSourceSession(tmp_path, lambda: "h"))
 
     assert probe.name == "dream_killswitches_declared"
-    assert probe.definition_version == 1
+    assert probe.definition_version == 2
     assert probe.target is FactTarget.HOST
     assert probe.ttl.total_seconds() == 60
     assert probe.timeout.total_seconds() == 1
@@ -63,6 +67,8 @@ async def test_probe_declares_the_host_contract_and_publishes_raw_values(tmp_pat
         "roadmap_dry": "string",
         "sweep": "string",
         "sweep_dry": "string",
+        "verify": "string",
+        "verify_dry": "string",
         "file_mtime_epoch": "int",
     }
     assert value == {
@@ -75,8 +81,11 @@ async def test_probe_declares_the_host_contract_and_publishes_raw_values(tmp_pat
         "roadmap_dry": "true",
         "sweep": "true",
         "sweep_dry": "false",
+        "verify": "true",
+        "verify_dry": "true",
         "file_mtime_epoch": int(os.stat(path).st_mtime),
     }
+    check_value_schema(value, probe.value_schema)
 
 
 async def test_probe_uses_the_last_assignment_and_keeps_absent_keys_empty(tmp_path: Path) -> None:
@@ -94,6 +103,26 @@ async def test_probe_uses_the_last_assignment_and_keeps_absent_keys_empty(tmp_pa
     assert value["reorg"] == "true"
     assert value["reorg_dry"] == ""
     assert value["sweep_dry"] == ""
+    assert value["verify"] == ""
+    assert value["verify_dry"] == ""
+    check_value_schema(value, DreamKillswitchesDeclaredProbe.value_schema)
+
+
+async def test_measured_verify_state_appears_in_the_briefing(tmp_path: Path) -> None:
+    _write_drop_in(tmp_path, _all_settings())
+    registry = FactRegistry(
+        sources={FactTarget.HOST: HostSourceFactory(tmp_path, hostname=lambda: "h")},
+        expected={FactTarget.HOST: HostIdentity("h")},
+    )
+    registry.register(DreamKillswitchesDeclaredProbe())
+
+    measured = await registry.measure("dream_killswitches_declared")
+
+    assert isinstance(measured, Measured)
+    line = render_fact_line(
+        measured, registry.describe("dream_killswitches_declared"), age_seconds=None
+    )
+    assert "VERIFY on dry" in line
 
 
 async def test_probe_propagates_missing_and_refused_host_files(tmp_path: Path) -> None:

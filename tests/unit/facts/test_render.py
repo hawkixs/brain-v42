@@ -47,7 +47,7 @@ _ALEMBIC_DESCRIPTOR = FactDescriptor(
 
 _DREAM_DESCRIPTOR = FactDescriptor(
     name="dream_killswitches_declared",
-    definition_version=1,
+    definition_version=2,
     target=FactTarget.HOST,
     ttl_seconds=60,
     timeout_seconds=1,
@@ -65,6 +65,8 @@ _DREAM_DESCRIPTOR = FactDescriptor(
         "roadmap_dry": "string",
         "sweep": "string",
         "sweep_dry": "string",
+        "verify": "string",
+        "verify_dry": "string",
         "file_mtime_epoch": "int",
     },
 )
@@ -81,12 +83,14 @@ def _dream_measured(**overrides: object) -> Measured:
         "roadmap_dry": "true",
         "sweep": "true",
         "sweep_dry": "false",
+        "verify": "true",
+        "verify_dry": "true",
         "file_mtime_epoch": int(datetime(2026, 9, 15, 14, 10, tzinfo=UTC).timestamp()),
     }
     value.update(overrides)
     return Measured.from_value(
         fact="dream_killswitches_declared",
-        definition_version=1,
+        definition_version=2,
         target=FactTarget.HOST,
         source=HostIdentity("host-a"),
         value=value,
@@ -100,7 +104,7 @@ def _dream_measured(**overrides: object) -> Measured:
 def _dream_unreadable(code: str) -> Unreadable:
     return Unreadable(
         fact="dream_killswitches_declared",
-        definition_version=1,
+        definition_version=2,
         target=FactTarget.HOST,
         error_code=code,
         where=None,
@@ -299,7 +303,7 @@ def test_declared_dream_killswitches_render_the_canonical_phase_words() -> None:
     """The line distinguishes enabled phases from their wet execution mode."""
     assert render_fact_line(_dream_measured(), _DREAM_DESCRIPTOR, age_seconds=None) == (
         "- Killswitches déclarés : PROMOTE on, REORG on wet, EXTRACT on wet, "
-        "ROADMAP off, SWEEP on wet (drop-in modifié le 2026-09-15 14:10 UTC)"
+        "ROADMAP off, SWEEP on wet, VERIFY on dry (drop-in modifié le 2026-09-15 14:10 UTC)"
     )
 
 
@@ -309,7 +313,7 @@ def test_declared_dream_killswitches_keep_a_noncanonical_dry_value_visible() -> 
         _dream_measured(reorg_dry="True"), _DREAM_DESCRIPTOR, age_seconds=None
     ) == (
         "- Killswitches déclarés : PROMOTE on, REORG on 'True' (illisible → dry), "
-        "EXTRACT on wet, ROADMAP off, SWEEP on wet "
+        "EXTRACT on wet, ROADMAP off, SWEEP on wet, VERIFY on dry "
         "(drop-in modifié le 2026-09-15 14:10 UTC)"
     )
 
@@ -459,3 +463,7 @@ def test_an_undeclared_killswitch_key_renders_as_undeclared_not_as_a_typo() -> N
     # An undeclared dry key on an enabled phase reads the same way.
     line = render_fact_line(_dream_measured(reorg_dry=""), _DREAM_DESCRIPTOR, age_seconds=None)
     assert "REORG on (mode non déclaré → dry)" in line
+    line = render_fact_line(
+        _dream_measured(verify="", verify_dry=""), _DREAM_DESCRIPTOR, age_seconds=None
+    )
+    assert "VERIFY off (non déclaré)" in line

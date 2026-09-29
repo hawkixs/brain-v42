@@ -146,6 +146,7 @@ def _render_dream_killswitches_declared(measured: Measured, descriptor: FactDesc
         _render_killswitch_phase(value, "extract", "extract_dry"),
         _render_killswitch_phase(value, "roadmap", "roadmap_dry"),
         _render_killswitch_phase(value, "sweep", "sweep_dry"),
+        _render_killswitch_phase(value, "verify", "verify_dry"),
     )
     try:
         modified_at = datetime.fromtimestamp(_int(value.get("file_mtime_epoch")), UTC)

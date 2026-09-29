@@ -21,7 +21,7 @@ class DreamKillswitchesDeclaredProbe:
     """Publish the host drop-in exactly as declared, with its modification time."""
 
     name: str = "dream_killswitches_declared"
-    definition_version: int = 1
+    definition_version: int = 2
     target: FactTarget = FactTarget.HOST
     ttl: timedelta = timedelta(seconds=60)
     timeout: timedelta = timedelta(seconds=1)
@@ -37,6 +37,8 @@ class DreamKillswitchesDeclaredProbe:
         "roadmap_dry": "string",
         "sweep": "string",
         "sweep_dry": "string",
+        "verify": "string",
+        "verify_dry": "string",
         "file_mtime_epoch": "int",
     }
 

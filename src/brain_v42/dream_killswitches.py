@@ -21,6 +21,8 @@ _KS_KEYS = {
     "BRAIN_DREAM_ROADMAP_DRY_RUN": "roadmap_dry",
     "BRAIN_DREAM_SWEEP_ENABLED": "sweep",
     "BRAIN_DREAM_SWEEP_DRY_RUN": "sweep_dry",
+    "BRAIN_DREAM_VERIFY_ENABLED": "verify",
+    "BRAIN_DREAM_VERIFY_DRY_RUN": "verify_dry",
 }
 
 #: Public read-only vocabulary so other readers preserve the Dream parser's keys.

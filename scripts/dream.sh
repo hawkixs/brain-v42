@@ -107,6 +107,8 @@ BRAIN_DREAM_EXTRACT_DRY_RUN="${BRAIN_DREAM_EXTRACT_DRY_RUN:-true}"
 # threshold lives in brain_v42.models.brain_session.AUTO_STALE_AFTER, never here.
 BRAIN_DREAM_SWEEP_ENABLED="${BRAIN_DREAM_SWEEP_ENABLED:-false}"
 BRAIN_DREAM_SWEEP_DRY_RUN="${BRAIN_DREAM_SWEEP_DRY_RUN:-true}"
+BRAIN_DREAM_VERIFY_ENABLED="${BRAIN_DREAM_VERIFY_ENABLED:-false}"
+BRAIN_DREAM_VERIFY_DRY_RUN="${BRAIN_DREAM_VERIFY_DRY_RUN:-true}"
 # The retry allocation for the WHOLE NIGHT, all projects together (§10). Two,
 # because the most expensive phase (synth) is worth 15 min: 2 × 15 = 30 min of
 # maximum extension, against 43 min PER PROJECT if retries stayed per phase.
