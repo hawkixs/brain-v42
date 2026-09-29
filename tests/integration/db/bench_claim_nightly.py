@@ -41,6 +41,7 @@ import json
 import statistics
 import sys
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import Any
 
@@ -50,7 +51,11 @@ from sqlalchemy.ext.asyncio import AsyncConnection, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from brain_v42.facts.nightly import ISSUER_PREFIX, KEY_PREFIX
-from brain_v42.repositories.pg_claim_nightly import _eligible_query, _ranked_query
+from brain_v42.repositories.pg_claim_nightly import (
+    LAST_WET_VERIFY_RUN_SQL,
+    _eligible_query,
+    _ranked_query,
+)
 from tests.integration.conftest import _get_integration_db_url_or_skip
 from tests.integration.disposable_db import fresh_head_database
 
@@ -82,27 +87,8 @@ SELECT r.id, r.run_date, r.status,
  GROUP BY r.id, r.run_date, r.status
 """
 
-#: The run query under the gate: one claim-first probe of the unique index per
-#: claim (see the module docstring for why it is not the spec's text).
-RUN_QUERY = f"""
-WITH r AS (
-  SELECT id, run_date, status FROM dream_runs
-   WHERE phase = 'verify' AND project_key = '*' AND phase_dry_run = false
-   ORDER BY run_date DESC, id ASC LIMIT 1)
-SELECT r.id, r.run_date, r.status,
-       count(v.verdict) FILTER (WHERE v.verdict = 'holds')      AS holds,
-       count(v.verdict) FILTER (WHERE v.verdict = 'falsified')  AS falsified,
-       count(v.verdict) FILTER (WHERE v.verdict = 'unreadable') AS unreadable
-  FROM r
-  LEFT JOIN knowledge_claims c ON true
-  LEFT JOIN LATERAL (
-       SELECT v.verdict FROM knowledge_claim_verdicts v
-        WHERE v.claim_id = c.id
-          AND v.issuer_identity = '{ISSUER_PREFIX}' || r.id
-          AND v.idempotency_key = '{KEY_PREFIX}' || to_char(r.run_date, 'YYYY-MM-DD')
-        LIMIT 1) v ON true
- GROUP BY r.id, r.run_date, r.status
-"""
+#: Gate the exact statement the production repository executes.
+RUN_QUERY = LAST_WET_VERIFY_RUN_SQL
 
 SEED = [
     # Ten projects, each with its anchors.
@@ -228,11 +214,18 @@ async def _seed(connection: AsyncConnection) -> dict[str, int]:
     return counts
 
 
-async def _explain(connection: AsyncConnection, sql: str) -> tuple[list[str], dict[str, Any]]:
+async def _explain(
+    connection: AsyncConnection, sql: str | sa.TextClause, params: Mapping[str, str]
+) -> tuple[list[str], dict[str, Any]]:
+    statement = sql.text if isinstance(sql, sa.TextClause) else sql
     text_plan = (
-        (await connection.execute(sa.text(f"EXPLAIN (ANALYZE, BUFFERS) {sql}"))).scalars().all()
+        (await connection.execute(sa.text(f"EXPLAIN (ANALYZE, BUFFERS) {statement}"), params))
+        .scalars()
+        .all()
     )
-    json_plan = await connection.scalar(sa.text(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {sql}"))
+    json_plan = await connection.scalar(
+        sa.text(f"EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) {statement}"), params
+    )
     plan = json_plan if isinstance(json_plan, list) else json.loads(json_plan)
     return list(text_plan), plan[0]
 
@@ -246,12 +239,15 @@ def _nodes(plan: dict[str, Any]) -> list[dict[str, Any]]:
     return nodes
 
 
-async def _timings(connection: AsyncConnection, sql: str) -> list[float]:
-    await connection.execute(sa.text(sql))  # warm-up, not counted
+async def _timings(
+    connection: AsyncConnection, sql: str | sa.TextClause, params: Mapping[str, str]
+) -> list[float]:
+    statement = sql if isinstance(sql, sa.TextClause) else sa.text(sql)
+    await connection.execute(statement, params)  # warm-up, not counted
     samples = []
     for _ in range(WARM_RUNS):
         started = time.perf_counter()
-        (await connection.execute(sa.text(sql))).all()
+        (await connection.execute(statement, params)).all()
         samples.append((time.perf_counter() - started) * 1000)
     return samples
 
@@ -279,16 +275,22 @@ async def _bench(url: str) -> bool:
         selection = _render(_ranked_query(now, 200, eligible_fact_names=names))
 
         queries = [
-            ("(1) run query", RUN_QUERY, True, True),
-            ("(2) eligible_now", eligible_now, True, False),
-            ("(3) selection at cap 200", selection, False, False),
-            ("(4) spec run query, verbatim", SPEC_RUN_QUERY, False, True),
+            (
+                "(1) run query",
+                RUN_QUERY,
+                True,
+                True,
+                {"issuer_prefix": ISSUER_PREFIX, "key_prefix": KEY_PREFIX},
+            ),
+            ("(2) eligible_now", eligible_now, True, False, {}),
+            ("(3) selection at cap 200", selection, False, False, {}),
+            ("(4) spec run query, verbatim", SPEC_RUN_QUERY, False, True, {}),
         ]
         passed = True
         async with engine.connect() as connection:
-            for label, sql, gated, needs_unique in queries:
-                text_plan, plan = await _explain(connection, sql)
-                samples = await _timings(connection, sql)
+            for label, sql, gated, needs_unique, params in queries:
+                text_plan, plan = await _explain(connection, sql, params)
+                samples = await _timings(connection, sql, params)
                 nodes = _nodes(plan)
                 seq_scans = [
                     node
@@ -301,7 +303,9 @@ async def _bench(url: str) -> bool:
                     for node in nodes
                 )
                 median = statistics.median(samples)
-                print(f"\n=== {label} ===\n{sql.strip()}\n")
+                print(
+                    f"\n=== {label} ===\n{(sql.text if isinstance(sql, sa.TextClause) else sql).strip()}\n"
+                )
                 print("\n".join(text_plan))
                 print(
                     f"\nwarm runs (ms): {', '.join(f'{s:.1f}' for s in samples)}"

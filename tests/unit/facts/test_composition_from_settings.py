@@ -78,6 +78,8 @@ def test_matches_direct_construction_with_every_identity_declared() -> None:
     )
 
     _assert_equal_registries(from_settings, direct)
+    assert from_settings.names()[-1] == "claims_verification_last_night"
+    assert from_settings.briefing_names()[-1] == "claims_verification_last_night"
 
 
 def test_matches_direct_construction_with_no_identity_declared() -> None:

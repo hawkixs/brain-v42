@@ -19,7 +19,7 @@ import asyncio
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from typing import TYPE_CHECKING, Any, Final, Literal
 from uuid import UUID
 
@@ -32,8 +32,6 @@ from brain_v42.db.tables import dream_runs, knowledge_claim_verdicts, knowledge_
 from brain_v42.dream_run_project_key import GLOBAL_PHASE_PROJECT_KEY
 
 if TYPE_CHECKING:
-    from datetime import date
-
     from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 #: `dream_runs` phase name for the nightly claim-verification step (spec §5.1).
@@ -45,6 +43,70 @@ _VERIFY_PHASE: Final = "verify"
 #: already treat `fail` that way; no vocabulary change needed).
 _INITIAL_STATUS: Final = "fail"
 _INITIAL_ERROR_MESSAGE: Final = "verify started; no terminal status recorded"
+
+# LIMIT 1 prevents PostgreSQL from pulling up the lateral lookup into a
+# ledger-wide hash join. The unique claim/issuer/key constraint makes it lossless.
+LAST_WET_VERIFY_RUN_SQL = sa.text("""
+WITH r AS (
+  SELECT id, run_date, status FROM dream_runs
+   WHERE phase = 'verify' AND project_key = '*' AND phase_dry_run = false
+   ORDER BY run_date DESC, id ASC LIMIT 1)
+SELECT r.id, r.run_date, r.status,
+       count(v.verdict) FILTER (WHERE v.verdict = 'holds') AS holds,
+       count(v.verdict) FILTER (WHERE v.verdict = 'falsified') AS falsified,
+       count(v.verdict) FILTER (WHERE v.verdict = 'unreadable') AS unreadable
+  FROM r
+  LEFT JOIN knowledge_claims c ON true
+  LEFT JOIN LATERAL (
+       SELECT v.verdict FROM knowledge_claim_verdicts v
+        WHERE v.claim_id = c.id
+          AND v.issuer_identity = CAST(:issuer_prefix AS text) || r.id
+          AND v.idempotency_key = CAST(:key_prefix AS text) || to_char(r.run_date, 'YYYY-MM-DD')
+        LIMIT 1) v ON true
+ GROUP BY r.id, r.run_date, r.status
+""")
+
+
+@dataclass(frozen=True, slots=True)
+class LastWetVerifyRun:
+    """One measured wet run and the current uncapped eligibility count."""
+
+    run_id: int
+    run_date: date
+    status: str
+    holds: int
+    falsified: int
+    unreadable: int
+    eligible_now: int
+
+
+async def read_last_wet_verify_run(
+    session: AsyncSession, issuer_prefix: str, key_prefix: str, now: datetime
+) -> LastWetVerifyRun | None:
+    """Read run evidence and eligibility inside the caller's source snapshot."""
+    row = (
+        (
+            await session.execute(
+                LAST_WET_VERIFY_RUN_SQL,
+                {"issuer_prefix": issuer_prefix, "key_prefix": key_prefix},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None:
+        return None
+    eligible = _eligible_query(now).subquery("eligible")
+    eligible_now = await session.scalar(sa.select(sa.func.count()).select_from(eligible))
+    return LastWetVerifyRun(
+        run_id=row["id"],
+        run_date=row["run_date"],
+        status=row["status"],
+        holds=row["holds"],
+        falsified=row["falsified"],
+        unreadable=row["unreadable"],
+        eligible_now=int(eligible_now or 0),
+    )
 
 
 @dataclass(frozen=True, slots=True)
