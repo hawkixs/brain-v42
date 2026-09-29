@@ -31,14 +31,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 USER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
-# Three paired (service, timer) sets:
+# Two paired (service, timer) sets:
 #   - dream:          daily 06:00 — knowledge consolidation pipeline
 #   - graph-recon:    weekly Sunday 04:00 — read-only graph ledger inventory
-#   - model-liveness: weekly Monday 05:00 — read-only provider EOL probe
 UNITS=(
   "brain-v42-dream"
   "brain-v42-graph-recon"
-  "brain-v42-model-liveness"
 )
 
 MANAGED_UNIT_FILES=(
@@ -46,8 +44,6 @@ MANAGED_UNIT_FILES=(
   brain-v42-dream.timer
   brain-v42-graph-recon.service
   brain-v42-graph-recon.timer
-  brain-v42-model-liveness.service
-  brain-v42-model-liveness.timer
   brain-mcp-http.service
   brain-mcp-http-watchdog.service
   brain-mcp-http-watchdog.timer
@@ -55,6 +51,10 @@ MANAGED_UNIT_FILES=(
   brain-v42-embedding-backfill.service
   brain-v42-embedding-backfill.timer
 )
+
+# Keep retired units on install: the live immutable release and a rollback still
+# declare the service as a writer, and release preflight requires its ExecStart.
+RETIRED_TIMERS=(brain-v42-model-liveness)
 
 # The repository-managed production client and systemd path use one fixed port.
 REQUESTED_MCP_HTTP_HOST="${MCP_HTTP_HOST:-127.0.0.1}"
@@ -365,10 +365,13 @@ unit_state() {
 
 unit_requires_disable() {
   local unit="$1"
+  local ignore_unit_file="${2:-false}"
   local active_state
   local enabled_state
 
-  [[ -e "$USER_UNIT_DIR/$unit" ]] && return 0
+  if [[ "$ignore_unit_file" != "true" && -e "$USER_UNIT_DIR/$unit" ]]; then
+    return 0
+  fi
   active_state="$(unit_state is-active "$unit")" || return 1
   enabled_state="$(unit_state is-enabled "$unit")" || return 1
   case "$active_state" in
@@ -480,6 +483,10 @@ require_mcp_watchdog_quiescent() {
 if $UNINSTALL; then
   log "stopping + disabling managed units"
   systemctl --user show-environment >/dev/null
+  for unit in "${RETIRED_TIMERS[@]}"; do
+    disable_and_stop_unit "$unit.timer"
+    disable_and_stop_unit "$unit.service"
+  done
   for unit in "${UNITS[@]}"; do
     disable_and_stop_unit "$unit.timer"
     disable_and_stop_unit "$unit.service"
@@ -493,6 +500,9 @@ if $UNINSTALL; then
   # Do not remove unit files until every process is quiesced and every enablement
   # state is safe; a failed command leaves a retryable installation on disk.
   systemctl --user show-environment >/dev/null
+  for unit in "${RETIRED_TIMERS[@]}"; do
+    rm -f "$USER_UNIT_DIR/$unit.service" "$USER_UNIT_DIR/$unit.timer"
+  done
   for unit in "${UNITS[@]}"; do
     rm -f "$USER_UNIT_DIR/$unit.service" "$USER_UNIT_DIR/$unit.timer"
   done
@@ -836,6 +846,17 @@ run_isolated_mode() {
 }
 
 if [[ "$MODE" == "check_only" || "$MODE" == "render_dir" ]]; then
+  if [[ "$MODE" == "check_only" ]]; then
+    for unit in "${RETIRED_TIMERS[@]}"; do
+      if [[ -e "$USER_UNIT_DIR/$unit.timer" ]]; then
+        retired_active_state="$(unit_state is-active "$unit.timer")"
+        retired_enabled_state="$(unit_state is-enabled "$unit.timer")"
+        log "retired timer $unit.timer: active=$retired_active_state, enabled=$retired_enabled_state"
+      else
+        log "retired timer $unit.timer: absent"
+      fi
+    done
+  fi
   run_isolated_mode
   exit 0
 fi
@@ -1002,6 +1023,22 @@ if $DRY_RUN; then
   log "--dry-run: skipping systemctl reload / enable"
   exit 0
 fi
+
+# Retire units after validation, while preserving their files for rollback.
+for unit in "${RETIRED_TIMERS[@]}"; do
+  for suffix in timer service; do
+    if [[ -e "$USER_UNIT_DIR/$unit.$suffix" ]]; then
+      if unit_requires_disable "$unit.$suffix" true; then
+        systemctl --user disable --now "$unit.$suffix"
+        log "retired $suffix $unit.$suffix: disabled and stopped"
+      else
+        log "retired $suffix $unit.$suffix: already inactive and disabled"
+      fi
+      assert_unit_inactive "$unit.$suffix"
+      assert_unit_disabled "$unit.$suffix"
+    fi
+  done
+done
 
 # --- Reload + enable ---
 systemctl --user daemon-reload

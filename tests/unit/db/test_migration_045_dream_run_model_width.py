@@ -60,8 +60,7 @@ def _declared_model_width() -> int:
 def _rail_models() -> list[str]:
     """RAIL models, read from `dream.sh` — never retyped.
 
-    The ticket thread asks for this explicitly: `configured_models()` enumerates
-    only the five phase models, no rail model (codex, agy, claude). A guard
+    The phase defaults cover no rail model (codex, agy, claude). A guard
     reading only the phase inventory would stay blind to a future long rail name
     — exactly the failure mode 045 closes.
     """
@@ -77,9 +76,22 @@ def _rail_models() -> list[str]:
 
 
 def _all_configured_models() -> list[str]:
-    from scripts.probe_model_liveness import configured_models
+    from scripts.domain_backfill import DEFAULT_MODEL
+    from scripts.roadmap_curate import (
+        DEFAULT_ROADMAP_FALLBACK_MODEL,
+        DEFAULT_ROADMAP_MODEL,
+        DEFAULT_WET_ROADMAP_MODEL,
+    )
+    from scripts.ticket_extract import DEFAULT_EXTRACT_FALLBACK_MODEL
 
-    return [entry.model for entry in configured_models()] + _rail_models()
+    return [
+        DEFAULT_ROADMAP_MODEL,
+        DEFAULT_ROADMAP_FALLBACK_MODEL,
+        DEFAULT_WET_ROADMAP_MODEL,
+        DEFAULT_MODEL,
+        DEFAULT_EXTRACT_FALLBACK_MODEL,
+        *_rail_models(),
+    ]
 
 
 def test_migration_045_chains_from_044() -> None:

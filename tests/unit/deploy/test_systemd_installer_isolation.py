@@ -33,8 +33,6 @@ EXPECTED_UNITS = frozenset(
         "brain-v42-dream.timer",
         "brain-v42-graph-recon.service",
         "brain-v42-graph-recon.timer",
-        "brain-v42-model-liveness.service",
-        "brain-v42-model-liveness.timer",
         "brain-mcp-http.service",
         "brain-mcp-http-watchdog.service",
         "brain-mcp-http-watchdog.timer",
@@ -499,6 +497,107 @@ def _expected_rendered_artifacts(fixture: InstallerFixture) -> dict[str, str]:
 
 def _assert_no_systemctl(fixture: InstallerFixture) -> None:
     assert not fixture.logs["systemctl"].exists()
+
+
+def _install_retired_timer_fixture(fixture: InstallerFixture) -> tuple[Path, Path, Path]:
+    make_directory(fixture.user_unit_dir, parents=True)
+    service = fixture.user_unit_dir / "brain-v42-model-liveness.service"
+    timer = fixture.user_unit_dir / "brain-v42-model-liveness.timer"
+    drop_in = fixture.user_unit_dir / "brain-v42-model-liveness.service.d" / "local.conf"
+    make_directory(drop_in.parent)
+    write_file(service, "retired service\n")
+    write_file(timer, "retired timer\n")
+    write_file(drop_in, "local override\n")
+    (fixture.fake_bin.parent / "retired-timer-enabled").touch()
+    (fixture.fake_bin.parent / "retired-service-enabled").touch()
+    _write_executable(
+        fixture.fake_bin / "systemctl",
+        """
+        #!/bin/bash
+        printf '%s\n' "$*" >> "$SYSTEMCTL_LOG"
+        case "$*" in
+          "--user is-active brain-v42-model-liveness.timer")
+            if [[ -e "$TOOL_CONTROL_ROOT/retired-timer-enabled" ]]; then echo active; else echo inactive; fi ;;
+          "--user is-enabled brain-v42-model-liveness.timer")
+            if [[ -e "$TOOL_CONTROL_ROOT/retired-timer-enabled" ]]; then echo enabled; else echo disabled; fi ;;
+          "--user disable --now brain-v42-model-liveness.timer")
+            rm -f "$TOOL_CONTROL_ROOT/retired-timer-enabled" ;;
+          "--user is-active brain-v42-model-liveness.service")
+            if [[ -e "$TOOL_CONTROL_ROOT/retired-service-enabled" ]]; then echo active; else echo inactive; fi ;;
+          "--user is-enabled brain-v42-model-liveness.service")
+            if [[ -e "$TOOL_CONTROL_ROOT/retired-service-enabled" ]]; then echo enabled; else echo disabled; fi ;;
+          "--user disable --now brain-v42-model-liveness.service")
+            rm -f "$TOOL_CONTROL_ROOT/retired-service-enabled" ;;
+          "--user is-active "*) echo inactive ;;
+          "--user is-enabled "*) echo disabled ;;
+        esac
+        """,
+    )
+    return service, timer, drop_in
+
+
+def _systemctl_calls(fixture: InstallerFixture) -> list[str]:
+    return fixture.logs["systemctl"].read_text().splitlines()
+
+
+def test_install_retires_present_units_without_removing_rollback_files(tmp_path: Path) -> None:
+    fixture = _make_fixture(tmp_path)
+    service, timer, drop_in = _install_retired_timer_fixture(fixture)
+
+    environment_updates = {"ALLOW_LIVE_ACCESS": "1", "ANALYZE_REQUIRE_ISOLATION": "0"}
+    first = _run_installer(fixture, environment_updates=environment_updates)
+    second = _run_installer(fixture, environment_updates=environment_updates)
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    assert "brain-v42-model-liveness.timer" in first.stdout
+    assert (
+        _systemctl_calls(fixture).count("--user disable --now brain-v42-model-liveness.timer") == 1
+    )
+    assert (
+        _systemctl_calls(fixture).count("--user disable --now brain-v42-model-liveness.service")
+        == 1
+    )
+    assert not (fixture.fake_bin.parent / "retired-timer-enabled").exists()
+    assert not (fixture.fake_bin.parent / "retired-service-enabled").exists()
+    assert service.read_text() == "retired service\n"
+    assert timer.read_text() == "retired timer\n"
+    assert drop_in.read_text() == "local override\n"
+
+
+def test_check_only_reports_retired_timer_without_changing_it(tmp_path: Path) -> None:
+    fixture = _make_fixture(tmp_path)
+    service, timer, drop_in = _install_retired_timer_fixture(fixture)
+
+    result = _run_installer(fixture, "--check-only")
+
+    assert result.returncode == 0, result.stderr
+    assert "retired timer brain-v42-model-liveness.timer: active=active, enabled=enabled" in (
+        result.stdout
+    )
+    assert _systemctl_calls(fixture) == [
+        "--user is-active brain-v42-model-liveness.timer",
+        "--user is-enabled brain-v42-model-liveness.timer",
+    ]
+    assert service.read_text() == "retired service\n"
+    assert timer.read_text() == "retired timer\n"
+    assert drop_in.read_text() == "local override\n"
+    assert (fixture.fake_bin.parent / "retired-timer-enabled").exists()
+
+
+def test_uninstall_disables_and_removes_retired_unit_files(tmp_path: Path) -> None:
+    fixture = _make_fixture(tmp_path)
+    service, timer, drop_in = _install_retired_timer_fixture(fixture)
+
+    result = _run_installer(fixture, "--uninstall", environment_updates={"ALLOW_LIVE_ACCESS": "1"})
+
+    assert result.returncode == 0, result.stderr
+    calls = _systemctl_calls(fixture)
+    assert "--user disable --now brain-v42-model-liveness.timer" in calls
+    assert "--user disable --now brain-v42-model-liveness.service" in calls
+    assert not service.exists()
+    assert not timer.exists()
+    assert drop_in.read_text() == "local override\n"
 
 
 def _assert_host_preflights_ran(fixture: InstallerFixture) -> None:
