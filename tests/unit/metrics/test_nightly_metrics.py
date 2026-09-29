@@ -69,6 +69,28 @@ class TestParseKillswitches:
         )
         assert ks == {"sweep": True, "sweep_dry": False}
 
+    def test_verify_keys_map_to_their_short_flags(self) -> None:
+        ks = parse_killswitches(
+            "[Service]\n"
+            "Environment=BRAIN_DREAM_VERIFY_ENABLED=true\n"
+            "Environment=BRAIN_DREAM_VERIFY_DRY_RUN=false\n"
+        )
+        assert ks == {"verify": True, "verify_dry": False}
+
+    def test_verify_pair_is_global_only_when_enabled(self, tmp_path) -> None:
+        from brain_v42.metrics.collector_dream import expected_dream_phase_pairs
+
+        drop_in = tmp_path / "killswitches.conf"
+        for value, expected in (("true", {("verify", "*")}), ("false", set())):
+            drop_in.write_text(
+                f"[Service]\nEnvironment=BRAIN_DREAM_VERIFY_ENABLED={value}\n"
+                "Environment=BRAIN_DREAM_PROJECT_POOL=alpha,beta\n"
+            )
+            assert expected_dream_phase_pairs(drop_in) == expected
+
+        drop_in.write_text("[Service]\nEnvironment=BRAIN_DREAM_PROJECT_POOL=alpha,beta\n")
+        assert expected_dream_phase_pairs(drop_in) == set()
+
     def test_ignores_unknown_keys_and_garbage(self) -> None:
         ks = parse_killswitches(
             "# commentaire\n"

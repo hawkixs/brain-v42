@@ -325,6 +325,7 @@ class NightlyReport:
     skipped_deadline: int = 0
     skipped_release_mismatch: int = 0
     skipped_release_unknown: int = 0
+    skipped_self_referential: int = 0
     release: dict[str, str | None] | None = None
     retired_mid_run: int = 0
     errors: dict[str, int] = field(default_factory=dict)
@@ -354,6 +355,7 @@ class NightlyReport:
             "skipped_deadline": self.skipped_deadline,
             "skipped_release_mismatch": self.skipped_release_mismatch,
             "skipped_release_unknown": self.skipped_release_unknown,
+            "skipped_self_referential": self.skipped_self_referential,
             "release": self.release,
             "retired_mid_run": self.retired_mid_run,
             "errors": dict(self.errors),
@@ -440,6 +442,9 @@ class NightlyVerifier:
 
         async def process(claim: NightlyClaimLike) -> None:
             nonlocal release_decision
+            if claim.fact_name == "dream_last_night":
+                report.skipped_self_referential += 1
+                return
             if claim.fact_name in stopped_facts:
                 report.skipped_budget += 1
                 return
@@ -577,6 +582,9 @@ class NightlyVerifier:
         release_decision: ReleaseDecision | None = None
 
         for claim in claims:
+            if claim.fact_name == "dream_last_night":
+                report.skipped_self_referential += 1
+                continue
             if claim.target == "live_release":
                 if release_decision is None:
                     release_decision = await self._release_check.decide()

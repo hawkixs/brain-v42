@@ -366,6 +366,8 @@ BRAIN_DREAM_ROADMAP_ENABLED=false
 BRAIN_DREAM_ROADMAP_DRY_RUN=true
 BRAIN_DREAM_SWEEP_ENABLED=false
 BRAIN_DREAM_SWEEP_DRY_RUN=true
+BRAIN_DREAM_VERIFY_ENABLED=false
+BRAIN_DREAM_VERIFY_DRY_RUN=true
 ```
 
 > **Add no `NEO4J_*` and no `GRAPH_PROJECTOR_*` key to the shared `.env`.** The projector
@@ -397,7 +399,7 @@ Private files, never in the shared `.env` and never read other than by key name:
 - **Three sets not to confuse**: the POOL (loop phases); what `sweep` touches
   (**global**, every open session); the `roadmap` window (its own rotation, independent of
   the pool).
-- The global phases — `extract`, `roadmap`, `sweep` — run **outside** the loop.
+- The global phases — `extract`, `roadmap`, `sweep`, `verify` (disabled and dry by default) — run **outside** the loop.
 - Retry is a **night-wide** allocation (`BRAIN_DREAM_RETRY_BUDGET`), not a per-phase one.
 - The `MCP_HTTP_DREAM_TOKENS` registry requires a **complete matrix** (six phases × every
   project of the pool). Adding a project without re-minting the registry fails its

@@ -2723,6 +2723,20 @@ def test_sweep_killswitches_are_documented_in_the_shared_environment() -> None:
     )
 
 
+@requires_claude
+def test_verify_killswitches_are_documented_in_the_shared_environment() -> None:
+    """The nightly verifier is off and dry in the shared `.env` an operator copies."""
+    configuration = CLAUDE.split("## Configuration", maxsplit=1)[1]
+    shared_config = re.findall(r"```bash\n(.*?)```", configuration, flags=re.DOTALL)[0]
+
+    assert "BRAIN_DREAM_VERIFY_ENABLED=false" in shared_config
+    assert "BRAIN_DREAM_VERIFY_DRY_RUN=true" in shared_config
+    documented_keys = _environment_assignment_keys(shared_config)
+    assert len(documented_keys) == len(set(documented_keys)), (
+        f"duplicated environment key in the shared .env: {sorted(documented_keys)}"
+    )
+
+
 def test_readme_versioning_contract_matches_the_shipped_version() -> None:
     """The number announced to the reader is the one the distribution will carry.
 

@@ -100,6 +100,11 @@ def _patch_pipeline(
         raising=True,
     )
     monkeypatch.setattr(
+        "brain_v42.repositories.pg_claim_nightly.count_self_referential_claims",
+        AsyncMock(return_value=0),
+        raising=False,
+    )
+    monkeypatch.setattr(
         "brain_v42.maintenance.claim_verify._eligible_count",
         AsyncMock(return_value=0),
         raising=True,
@@ -188,6 +193,7 @@ def test_human_line_carries_the_spec_counts() -> None:
     report.falsified = 1
     report.unreadable = {"probe:timeout": 2}
     report.skipped_release_mismatch = 1
+    report.skipped_self_referential = 1
     report.retired_mid_run = 1
 
     line = render_report_line(report, 0)
@@ -195,6 +201,7 @@ def test_human_line_carries_the_spec_counts() -> None:
     assert "selected=14/200 eligible=14" in line
     assert "unreadable=2 (probe:timeout=2)" in line
     assert "skipped_release=1/0" in line
+    assert "skipped_self_referential=1" in line
     assert "retired=1 errors=0" in line
 
 
@@ -543,6 +550,30 @@ async def test_selection_uses_the_fact_names_checked_for_this_run(
 
     assert await _run(args) == 0
     assert select.await_args.kwargs["eligible_fact_names"] == ("allowed_fact",)
+
+
+@pytest.mark.parametrize("wet", [True, False], ids=["wet", "dry"])
+async def test_self_referential_count_is_reported_outside_the_selection_budget(
+    monkeypatch: pytest.MonkeyPatch, wet: bool
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    report = NightlyReport(
+        run_date=date.today().isoformat(), run_id=812, mode="wet" if wet else "dry", selected=1
+    )
+    _patch_pipeline(monkeypatch, report=report)
+    count = AsyncMock(return_value=1)
+    monkeypatch.setattr(
+        "brain_v42.repositories.pg_claim_nightly.count_self_referential_claims", count
+    )
+    args = build_parser().parse_args(
+        ["--run-date", date.today().isoformat(), "--max-claims", "1", *(["--wet"] if wet else [])]
+    )
+
+    assert await _run(args) == 0
+    assert report.selected == 1
+    assert report.skipped_self_referential == 1
+    count.assert_awaited_once()
 
 
 async def test_unexpected_error_keeps_rc_1_when_finishing_the_run_fails(

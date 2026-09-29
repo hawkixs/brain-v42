@@ -121,6 +121,28 @@ async def test_measures_exactly_once_per_distinct_measurable_fact() -> None:
     assert report.status == "done"
 
 
+async def test_dry_run_skips_dream_last_night_without_measuring_it() -> None:
+    registry = _FakeRegistry(
+        descriptors={
+            "dream_last_night": _Descriptor(1, FactTarget.PRODUCTION),
+            "fact_a": _Descriptor(1, FactTarget.PRODUCTION),
+        },
+        measurements={"fact_a": _measured("fact_a")},
+    )
+    claims = (_claim(0, fact="dream_last_night"), _claim(1, fact="fact_a"))
+    verifier = NightlyVerifier(service=None, release_check=_FakeReleaseCheckDry("verify"))
+
+    report = await verifier.run_dry(claims, registry=registry, run_id=1, run_date=date(2026, 9, 27))
+
+    assert registry.measure_calls == [("fact_a", None)]
+    assert report.skipped_self_referential == 1
+    assert report.as_dict()["skipped_self_referential"] == 1
+    assert report.dry_claims["measurable"] == 1
+    assert report.dry_facts == {
+        "fact_a": {"status": "measured", "error_code": None, "identity_ok": True}
+    }
+
+
 async def test_measurable_counts_claims_while_measuring_each_fact_once() -> None:
     registry = _FakeRegistry(
         descriptors={"fact_a": _Descriptor(1, FactTarget.PRODUCTION)},

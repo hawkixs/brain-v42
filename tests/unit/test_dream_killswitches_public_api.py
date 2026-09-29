@@ -36,4 +36,6 @@ def test_public_short_names_cover_every_killswitch_environment_key() -> None:
         "BRAIN_DREAM_ROADMAP_DRY_RUN": "roadmap_dry",
         "BRAIN_DREAM_SWEEP_ENABLED": "sweep",
         "BRAIN_DREAM_SWEEP_DRY_RUN": "sweep_dry",
+        "BRAIN_DREAM_VERIFY_ENABLED": "verify",
+        "BRAIN_DREAM_VERIFY_DRY_RUN": "verify_dry",
     }

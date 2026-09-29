@@ -296,6 +296,75 @@ administrator stays global. The runner forwards only the `active` bearer, in a
 allow-listed child environment, and strips the full registry. `BRAIN_CODE_MODE=true`
 is incompatible with it.
 
+## Nightly claim verification
+
+`dream.sh` runs `verify` once per night, before provider preflight and the project
+loop. It selects active claims across all projects, capped at 200 by default
+(`BRAIN_DREAM_VERIFY_MAX_CLAIMS`, range 1–5000). This in-process step uses no LLM,
+MCP call, or Dream bearer. It ships disabled and dry:
+`BRAIN_DREAM_VERIFY_ENABLED=false` skips it, while
+`BRAIN_DREAM_VERIFY_DRY_RUN=true` runs it without writing claim verdicts. Only the
+literal `false` for the dry-run key enables wet verification. A dry run still
+records its own `dream_runs` row and measures each distinct eligible fact once.
+Eligible claims have no conclusive verdict, have an expired conclusive verdict,
+or have a later unreadable verdict. Dry mode classifies historical definitions,
+release skips and measurable claims. Both modes refuse to verify anything if
+fact definitions are unregistered or an eligible fact is refused or disabled.
+
+The step appends a structured report to `logs/dream/<date>_verify.json` and a
+one-line summary to `logs/dream/<date>_verify.log`. A second invocation on the
+same date appends another line; read the last matching report for the run ID and
+mode you are investigating. The dated Dream log records `SKIP`, `DONE`, `TIMEOUT`,
+`BUSY`, or `FAIL verify`. In the morning, check the JSON report's `status`, `rc`,
+`selected`, `eligible_at_start`, `unreadable`, `errors`, and skipped counts, then
+compare it with the dated Dream log. A successful dry run proves selection and
+measurement, not that verdicts were written. An argument-parser failure or the
+outer timeout may leave no JSON line; inspect the CLI log in that case.
+
+| Return code | Meaning | Dream handling |
+| --- | --- | --- |
+| `0` | Done | Records `DONE` and continues |
+| `3` | Controlled deadline; terminal run row recorded | Records a controlled timeout and continues |
+| `5` | Partial, with per-claim errors | Records failure and continues |
+| `1` | Failed, including a precondition refusal | Records failure and continues |
+| `6` | Busy: another wet verifier holds the run lock | Records failure and continues; no run row or verdict is written by this attempt |
+| `7` | Wet run lost ownership | Records failure and continues; no further verdict dispatch or run-row update |
+| `2` | Invalid configuration or run date | Records failure and continues |
+| `124` | Outer five-minute guard killed the CLI | Records an uncontrolled timeout and continues; inspect the log and database before assuming a terminal run status |
+
+For a manual dry run, first inspect `systemctl --user show
+brain-v42-dream.service -p Environment -p EnvironmentFiles -p WorkingDirectory`.
+Confirm the release environment, working directory and facts identity file on
+the live unit without displaying private file contents. Then use its release
+venv and the same facts identity file in an isolated transient unit:
+
+```bash
+unit=brain-v42-dream.service
+environment=$(systemctl --user show "$unit" -p Environment --value)
+repo=$(systemctl --user show "$unit" -p WorkingDirectory --value)
+rel=$(printf '%s\n' "$environment" | tr ' ' '\n' |
+  sed -n 's#^UV_PROJECT_ENVIRONMENT=\(.*\)/venv$#\1#p')
+live_identity=$(printf '%s\n' "$environment" | tr ' ' '\n' |
+  sed -n 's#^BRAIN_FACTS_LIVE_RELEASE_IDENTITY=##p')
+test -n "$repo" && test -n "$rel" && test -n "$live_identity" || exit 1
+systemd-run --user --wait --pipe --collect \
+  --working-directory="$repo" \
+  -p EnvironmentFile=-"$HOME"/.config/brain-v42/facts-identity.env \
+  -p NoNewPrivileges=true -p UMask=0077 \
+  -E PYTHONSAFEPATH=1 -E UV_NO_SYNC=1 -E PYTHONHOME= \
+  -E PYTHONPATH="$rel/brain-v42" \
+  -E BRAIN_FACTS_LIVE_RELEASE_IDENTITY="$live_identity" \
+  "$rel/venv/bin/python" -m brain_v42.maintenance.claim_verify \
+    --run-date "$(date +%F)" --report-dir "$rel/brain-v42/logs/dream"
+```
+
+There is no `--wet` in this invocation. Run it only after confirming that the
+live release contains `claim_verify`; this hand-run procedure still needs a
+live-unit check before it can be treated as proven. The nightly `verify` step
+skips claims on `dream_last_night` in both wet and dry modes and reports them as
+`skipped_self_referential`. Its own `dream_runs` row could otherwise make that
+fact describe the current, incomplete night instead of the previous complete one.
+
 ## Reading a Dream night: the file, not journald
 
 `dream.sh` tees every `log()` line to `logs/dream/<date>.log` AND to the unit's

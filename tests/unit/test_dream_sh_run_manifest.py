@@ -43,7 +43,7 @@ _HEADER_ANCHOR = 'MANIFEST_FILE="$LOG_DIR/'
 _HEADER_END_ANCHOR = "manifest_put meta started"
 _TRUNCATE_ANCHOR = ': > "$MANIFEST_FILE"'
 _LOCK_ANCHOR = 'LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/brain-v42-dream.lock"'
-_GLOBAL_PHASES_ANCHOR = "DREAM_GLOBAL_PHASES=(extract sweep)"
+_GLOBAL_PHASES_ANCHOR = "DREAM_GLOBAL_PHASES=(extract sweep verify)"
 _LOOP_ANCHOR = 'for phase_spec in "${PHASES[@]}"; do'
 _LOOP_END_ANCHOR = 'manifest_put expected "$name" "$PROJECT_KEY"'
 _EMPTY_POOL_ANCHOR = "if (( record_rc == 0 )); then"
@@ -52,6 +52,7 @@ _EMPTY_POOL_END_ANCHOR = 'SKIPPED_PHASES+=("$PROJECT_KEY/promote")'
 _GLOBAL_BLOCKS = {
     "extract": ("# --- EXTRACT:", 'if [[ "$BRAIN_DREAM_EXTRACT_ENABLED"'),
     "sweep": ("# --- SWEEP:", 'if [[ "$BRAIN_DREAM_SWEEP_ENABLED"'),
+    "verify": ("# --- VERIFY:", 'if [[ "$BRAIN_DREAM_VERIFY_ENABLED"'),
 }
 
 
@@ -124,7 +125,7 @@ def _run_header(
         "promote:deep:10:50",
         "reorg:deep:10:50",
     ),
-    global_phases: tuple[str, ...] = ("extract", "sweep"),
+    global_phases: tuple[str, ...] = ("extract", "sweep", "verify"),
     log_dir: Path | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     directory = log_dir if log_dir is not None else tmp_path / "logs"
@@ -159,9 +160,8 @@ def test_the_header_states_what_the_night_planned_before_running_it(tmp_path: Pa
 
     assert proc.returncode == 0, proc.stderr
     manifest = rm.parse_run_manifest(manifest_path.read_text(encoding="utf-8"))
-    # 21 until 2026-09-10: ten projects x 6 phases + extract + roadmap + sweep.
-    # ROADMAP left the rail (ADR 45671595), so the night plans one phase less.
-    assert manifest.meta["planned_phases"] == "20"
+    # Three projects x six phases, plus extract, sweep, and verify.
+    assert manifest.meta["planned_phases"] == "21"
     assert manifest.meta["run_date"] == "2026-08-18"
     assert manifest.meta["pool"] == "red,brain-v42,red-lab"
     assert manifest.meta["pool_source"] == "BRAIN_DREAM_PROJECT_POOL"
@@ -303,7 +303,7 @@ def _run_lock_then_header(
             "POOL_SOURCE=BRAIN_DREAM_PROJECT_POOL",
             "declare -a PROJECT_POOL=(red)",
             'declare -a PHASES=("scan:fast:5:30")',
-            "declare -a DREAM_GLOBAL_PHASES=(extract sweep)",
+            "declare -a DREAM_GLOBAL_PHASES=(extract sweep verify)",
             'log() { printf "%s\\n" "$*"; }',
             "",
             _lock_then_header_block(),
@@ -348,7 +348,7 @@ def test_the_holder_of_the_lock_still_truncates_and_stamps_its_header(
     assert "expected\tscan\tred" not in text, "la nuit précédente a bien été effacée"
     manifest = rm.parse_run_manifest(text)
     assert manifest.meta["run_date"] == "2026-08-18"
-    assert manifest.meta["planned_phases"] == "3"
+    assert manifest.meta["planned_phases"] == "4"
 
 
 # --- The loop: the expectation is emitted AT THE ITERATION ------------------
