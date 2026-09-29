@@ -34,7 +34,7 @@ brain-v42-internal repository (ticket 8dc6f0d2), at the same relative path under
 | ACL contract, restored target | `ops/recovery/brain-v42-v11-acl-pgrestore.sql` | `1/1`, zero failure, on the disposable clone both AS restored at head `056` and after migrating that same clone to `057` — unchanged since the 056 cutover, for the same reason as the row above. Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md` ("clone as restored (056) proved by … ACL v11: zero failure"; "clone migrated 056 → 057 … ACL v11: pass"). |
 | ACL receipt, live | `1/1` — 0 owner, 0 grant, 0 role-privilege and 0 unexpected-grantee mismatches | 2026-09-24, live production; receipt `internal/docs/receipts/2026-09-24-release-457bc7f7.md` |
 | ACL receipt, restored | `1/1` — 0 owner, 0 grant, 0 role-privilege and 0 unexpected-grantee mismatches, on the disposable clone the `prove` phase restored and then migrated | 2026-09-24, same disposable clone as the row above; receipt `internal/docs/receipts/2026-09-24-release-457bc7f7.md` |
-| Search top-10 churn across HNSW rebuilds, `learnings` ONLY, n=40 probes | `0` — overlap `10/10` on ten build pairs (`BUILDS=5`, seed 0.42), strict order included, both probe bands | 2026-08-29, copy of the 3243 real `learnings` embeddings, index path forced |
+| Search top-10 churn across HNSW rebuilds, `learnings` ONLY, n=40 probes | `0` — overlap `10/10` on ten build pairs (`BUILDS=5`, seed 0.42), strict order included, both probe bands | 2026-09-29, copy of the 4137 real `learnings` embeddings, index path forced |
 
 Replay the head and the two live-target assets against production:
 
