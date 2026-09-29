@@ -323,9 +323,13 @@ outer timeout may leave no JSON line; inspect the CLI log in that case.
 
 For the morning reading of the latest wet run, call
 `brain_fact_get("claims_verification_last_night")`. The fact reports the run status,
-verdicts written by that run, and claims eligible now. An unreadable fact means
-no wet run was measured; use the JSON report and dated log for errors, skips,
-and dry-run details.
+verdicts written by that run, and claims eligible now. An unreadable fact is not
+by itself a missing run: read its error code first. No wet verify row makes the
+probe fail with `probe_error`, but a failed database read yields the same code,
+so confirm in `dream_runs` before concluding that the step never ran. `timeout`,
+`queue_timeout`, `capacity_timeout`, `target_mismatch` and `identity_unreadable`
+mean the measurement itself failed, not the run. Use the JSON report and dated
+log for errors, skips, and dry-run details.
 
 | Return code | Meaning | Dream handling |
 | --- | --- | --- |
