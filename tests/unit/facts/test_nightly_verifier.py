@@ -146,6 +146,23 @@ async def test_outcomes_are_counted_per_verdict_and_replay_comes_from_the_outcom
     assert STATUS_TO_RC[report.status] == 0
 
 
+async def test_wet_run_skips_dream_last_night_without_writing_a_verdict() -> None:
+    service = _FakeService()
+    self_referential = _claim(0, fact="dream_last_night")
+    other = _claim(1)
+    service.respond(other, _Outcome(_row(other, "holds"), False))
+
+    report = await _verifier(service, max_concurrency=1).run(
+        (self_referential, other), run_id=1, run_date=date(2026, 9, 27), wet=True
+    )
+
+    assert service.calls == [other.id]
+    assert report.skipped_self_referential == 1
+    assert report.as_dict()["skipped_self_referential"] == 1
+    assert report.holds == 1
+    assert report.status == "done"
+
+
 async def test_refresh_budget_exhausted_stops_only_its_own_fact() -> None:
     service = _FakeService()
     a1 = _claim(0, fact="fact_a")
@@ -281,6 +298,7 @@ def test_report_serializes_exact_spec_fields() -> None:
         "skipped_deadline",
         "skipped_release_mismatch",
         "skipped_release_unknown",
+        "skipped_self_referential",
         "release",
         "retired_mid_run",
         "errors",

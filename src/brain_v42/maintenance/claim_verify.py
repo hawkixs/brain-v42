@@ -90,6 +90,7 @@ def render_report_line(report: object, rc: int) -> str:
         f"skipped_budget={getattr(report, 'skipped_budget', 0)} "
         f"skipped_release={getattr(report, 'skipped_release_mismatch', 0)}/"
         f"{getattr(report, 'skipped_release_unknown', 0)} "
+        f"skipped_self_referential={getattr(report, 'skipped_self_referential', 0)} "
         f"skipped_deadline={getattr(report, 'skipped_deadline', 0)} "
         f"retired={getattr(report, 'retired_mid_run', 0)} errors={errors}"
     )

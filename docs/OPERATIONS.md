@@ -360,11 +360,10 @@ systemd-run --user --wait --pipe --collect \
 
 There is no `--wet` in this invocation. Run it only after confirming that the
 live release contains `claim_verify`; this hand-run procedure still needs a
-live-unit check before it can be treated as proven. H1(a) is intentional:
-`dream_last_night` aggregates all `dream_runs`, so a wet `verify` row may make
-it measure the current run rather than the previous complete night. No active
-claim names `dream_last_night` today; changing that behavior requires a
-separate decision.
+live-unit check before it can be treated as proven. The nightly `verify` step
+skips claims on `dream_last_night` in both wet and dry modes and reports them as
+`skipped_self_referential`. Its own `dream_runs` row could otherwise make that
+fact describe the current, incomplete night instead of the previous complete one.
 
 ## Reading a Dream night: the file, not journald
 

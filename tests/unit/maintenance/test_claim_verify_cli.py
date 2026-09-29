@@ -188,6 +188,7 @@ def test_human_line_carries_the_spec_counts() -> None:
     report.falsified = 1
     report.unreadable = {"probe:timeout": 2}
     report.skipped_release_mismatch = 1
+    report.skipped_self_referential = 1
     report.retired_mid_run = 1
 
     line = render_report_line(report, 0)
@@ -195,6 +196,7 @@ def test_human_line_carries_the_spec_counts() -> None:
     assert "selected=14/200 eligible=14" in line
     assert "unreadable=2 (probe:timeout=2)" in line
     assert "skipped_release=1/0" in line
+    assert "skipped_self_referential=1" in line
     assert "retired=1 errors=0" in line
 
 
