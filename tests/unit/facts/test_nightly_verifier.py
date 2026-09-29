@@ -13,7 +13,13 @@ from uuid import UUID, uuid4
 
 import pytest
 
-from brain_v42.facts.nightly import STATUS_TO_RC, NightlyVerifier, issuer_for, key_for
+from brain_v42.facts.nightly import (
+    STATUS_TO_RC,
+    NightlyReport,
+    NightlyVerifier,
+    issuer_for,
+    key_for,
+)
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.repositories.pg_claim_nightly import NightlyClaim, VerifyRunOwnershipLost
 from brain_v42.repositories.pg_claim_verdicts import VerdictRow
@@ -217,14 +223,70 @@ async def test_each_abort_error_code_stops_the_run_as_fail(code: str) -> None:
     assert report.errors == {code: 1}
 
 
-async def test_an_unexpected_exception_aborts_with_fail() -> None:
+async def test_an_unexpected_exception_aborts_with_fail_and_logs_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     service = _FakeService()
     c1 = _claim(0)
     service.respond(c1, RuntimeError("boom"))
+    logged: list[tuple[str, dict[str, str]]] = []
+
+    class _Logger:
+        def exception(self, event: str, **fields: str) -> None:
+            logged.append((event, fields))
+
+    monkeypatch.setattr("brain_v42.facts.nightly._LOG", _Logger())
 
     report = await _verifier(service).run((c1,), run_id=1, run_date=date(2026, 9, 27), wet=True)
 
     assert report.status == "fail"
+    assert report.error_message == "RuntimeError: boom"
+    assert logged == [
+        (
+            "claim_verify_lane_failed",
+            {"error_type": "RuntimeError", "error_message": "RuntimeError: boom"},
+        )
+    ]
+
+
+async def test_an_unexpected_exception_diagnostic_is_bounded() -> None:
+    service = _FakeService()
+    claim = _claim(0)
+    service.respond(claim, RuntimeError("x" * 3000))
+
+    report = await _verifier(service).run((claim,), run_id=1, run_date=date(2026, 9, 27), wet=True)
+
+    assert len(report.error_message) == 2000
+
+
+def test_report_serializes_exact_spec_fields() -> None:
+    report = NightlyReport(run_date="2026-09-27", run_id=812, mode="wet")
+    assert set(report.as_dict()) == {
+        "run_date",
+        "run_id",
+        "mode",
+        "started_at",
+        "finished_at",
+        "status",
+        "rc",
+        "max_claims",
+        "eligible_at_start",
+        "selected",
+        "holds",
+        "falsified",
+        "unreadable",
+        "replayed",
+        "skipped_budget",
+        "stopped_facts",
+        "skipped_deadline",
+        "skipped_release_mismatch",
+        "skipped_release_unknown",
+        "release",
+        "retired_mid_run",
+        "errors",
+        "dry_claims",
+        "dry_facts",
+    }
 
 
 async def test_cancelled_error_propagates_out_of_run() -> None:
@@ -339,6 +401,11 @@ async def test_live_release_claims_go_through_the_release_check() -> None:
     report = await _verifier(service, release_check=release_check).run(
         (c1,), run_id=1, run_date=date(2026, 9, 27), wet=True
     )
+    assert report.release == {
+        "cli_sha": "a" * 40,
+        "server_sha": "a" * 40,
+        "unknown_reason": None,
+    }
 
     assert release_check.calls == 1
     assert c1.id not in service.calls

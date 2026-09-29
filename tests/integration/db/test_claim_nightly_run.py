@@ -20,6 +20,7 @@ import asyncio
 from collections.abc import AsyncIterator, Iterator, Mapping
 from contextlib import asynccontextmanager
 from datetime import UTC, date, datetime, timedelta
+from itertools import count
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -70,8 +71,14 @@ from tests.integration.disposable_db import fresh_head_database
 
 pytestmark = pytest.mark.integration
 
-_RUN_DATE = date(2026, 9, 27)
+_RUN_DATE_SEQUENCE = count()
 _NONEXISTENT_RELEASE_PATH = Path("/nonexistent")
+
+
+@pytest.fixture
+def run_date() -> date:
+    """Each test owns its run row, while a rerun within one test keeps that date."""
+    return date(2030, 1, 1) + timedelta(days=next(_RUN_DATE_SEQUENCE))
 
 
 @pytest.fixture(scope="session")
@@ -261,6 +268,7 @@ async def _wet_pass(
     engine: AsyncEngine,
     session_factory: async_sessionmaker[AsyncSession],
     registry: FactRegistry,
+    run_date: date,
     *,
     max_concurrency: int = 4,
     service: object = None,
@@ -268,7 +276,7 @@ async def _wet_pass(
     ownership = VerifyRunOwnership(engine)
     assert await ownership.acquire()
     try:
-        run_id = await get_or_create_wet_run(ownership, _RUN_DATE)
+        run_id = await get_or_create_wet_run(ownership, run_date)
         claims = await select_nightly_claims(session_factory, now=datetime.now(UTC), max_claims=200)
         release_check = ReleaseCheck(cli_release_path=_NONEXISTENT_RELEASE_PATH)
         verifier = NightlyVerifier(
@@ -277,7 +285,7 @@ async def _wet_pass(
             ownership=ownership,
             max_concurrency=max_concurrency,
         )
-        report = await verifier.run(claims, run_id=run_id, run_date=_RUN_DATE, wet=True)
+        report = await verifier.run(claims, run_id=run_id, run_date=run_date, wet=True)
         await finish_run(
             ownership, run_id, status=report.status, duration_s=0.0, error_message=None
         )
@@ -287,7 +295,7 @@ async def _wet_pass(
 
 
 async def test_a_wet_run_records_holds_and_falsified(
-    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine, run_date: date
 ) -> None:
     probe = _RealHeadProbe(f"nightly_head_{uuid4().hex}", revision="057")
     registry = _registry(probe)
@@ -297,7 +305,7 @@ async def test_a_wet_run_records_holds_and_falsified(
         holds_id = await _insert_claim(session, fact_name=probe.name, expected_revision="057")
         falsified_id = await _insert_claim(session, fact_name=probe.name, expected_revision="055")
 
-    run_id, report = await _wet_pass(engine, session_factory, registry)
+    run_id, report = await _wet_pass(engine, session_factory, registry, run_date)
 
     assert report.status == "done"
     async with session_factory() as session:
@@ -327,13 +335,13 @@ async def test_a_wet_run_records_holds_and_falsified(
     assert falsified_row["verdict"] == "falsified"
     assert holds_row["issuer_identity"] == issuer_for(run_id)
     assert holds_row["issuer_kind"] == "robot"
-    assert holds_row["idempotency_key"] == key_for(_RUN_DATE)
+    assert holds_row["idempotency_key"] == key_for(run_date)
     run_row = await _run_id_row(session_factory, run_id)
     assert run_row["status"] == "done"
 
 
 async def test_a_rerun_of_the_same_run_date_adds_zero_verdicts_and_reuses_the_run_id(
-    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine, run_date: date
 ) -> None:
     probe = _RealHeadProbe(f"nightly_rerun_{uuid4().hex}", revision="057")
     registry = _registry(probe)
@@ -341,7 +349,7 @@ async def test_a_rerun_of_the_same_run_date_adds_zero_verdicts_and_reuses_the_ru
     async with session_factory() as session, session.begin():
         claim_id = await _insert_claim(session, fact_name=probe.name, expected_revision="057")
 
-    first_run_id, _ = await _wet_pass(engine, session_factory, registry)
+    first_run_id, _ = await _wet_pass(engine, session_factory, registry, run_date)
     async with session_factory() as session:
         first_count = await session.scalar(
             sa.select(sa.func.count())
@@ -349,7 +357,7 @@ async def test_a_rerun_of_the_same_run_date_adds_zero_verdicts_and_reuses_the_ru
             .where(knowledge_claim_verdicts.c.claim_id == claim_id)
         )
 
-    second_run_id, _ = await _wet_pass(engine, session_factory, registry)
+    second_run_id, _ = await _wet_pass(engine, session_factory, registry, run_date)
     async with session_factory() as session:
         second_count = await session.scalar(
             sa.select(sa.func.count())
@@ -362,7 +370,7 @@ async def test_a_rerun_of_the_same_run_date_adds_zero_verdicts_and_reuses_the_ru
 
 
 async def test_a_timed_out_probe_gives_a_durable_unreadable_row(
-    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine, run_date: date
 ) -> None:
     probe = _TimeoutProbe(f"nightly_timeout_{uuid4().hex}", revision="057")
     registry = _registry(probe)
@@ -370,7 +378,7 @@ async def test_a_timed_out_probe_gives_a_durable_unreadable_row(
     async with session_factory() as session, session.begin():
         claim_id = await _insert_claim(session, fact_name=probe.name, expected_revision="057")
 
-    await _wet_pass(engine, session_factory, registry)
+    await _wet_pass(engine, session_factory, registry, run_date)
 
     async with session_factory() as session:
         row = (
@@ -418,7 +426,7 @@ async def test_a_disabled_drifted_fact_named_by_an_eligible_claim_fails_closed(
 
 
 async def test_refresh_budget_exhaustion_skips_the_rest_of_one_fact_and_verifies_others(
-    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine, run_date: date
 ) -> None:
     """Spec §6.4: an exhausted TARGET bucket stops each OTHER fact on it in turn.
 
@@ -461,7 +469,7 @@ async def test_refresh_budget_exhaustion_skips_the_rest_of_one_fact_and_verifies
         )
         other_id = await _insert_claim(session, fact_name=other_probe.name, expected_revision="057")
 
-    _, report = await _wet_pass(engine, session_factory, registry, max_concurrency=1)
+    _, report = await _wet_pass(engine, session_factory, registry, run_date, max_concurrency=1)
 
     assert report.stopped_facts == sorted([probe_b.name, probe_c.name])
     assert report.skipped_budget == 2
@@ -485,7 +493,7 @@ async def test_refresh_budget_exhaustion_skips_the_rest_of_one_fact_and_verifies
 
 
 async def test_a_mid_run_retirement_is_counted_and_writes_no_row(
-    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine, run_date: date
 ) -> None:
     probe = _RealHeadProbe(f"nightly_retire_{uuid4().hex}", revision="057")
     registry = _registry(probe)
@@ -505,7 +513,9 @@ async def test_a_mid_run_retirement_is_counted_and_writes_no_row(
                 )
             return await real_service.verify_outcome(*args, **kwargs)  # type: ignore[arg-type]
 
-    _, report = await _wet_pass(engine, session_factory, registry, service=_RetireThenVerify())
+    _, report = await _wet_pass(
+        engine, session_factory, registry, run_date, service=_RetireThenVerify()
+    )
 
     assert report.retired_mid_run == 1
     async with session_factory() as session:
@@ -518,7 +528,7 @@ async def test_a_mid_run_retirement_is_counted_and_writes_no_row(
 
 
 async def test_dry_mode_writes_no_verdict_takes_no_lock_and_marks_the_row_dry(
-    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine, run_date: date
 ) -> None:
     probe = _RealHeadProbe(f"nightly_dry_{uuid4().hex}", revision="057")
     registry = _registry(probe)
@@ -542,13 +552,11 @@ async def test_dry_mode_writes_no_verdict_takes_no_lock_and_marks_the_row_dry(
 
     event.listen(engine.sync_engine, "before_cursor_execute", _capture)
     try:
-        run_id = await insert_dry_run(session_factory, _RUN_DATE)
+        run_id = await insert_dry_run(session_factory, run_date)
         claims = await select_nightly_claims(session_factory, now=datetime.now(UTC), max_claims=200)
         release_check = ReleaseCheck(cli_release_path=_NONEXISTENT_RELEASE_PATH)
         verifier = NightlyVerifier(service=None, release_check=release_check)  # type: ignore[arg-type]
-        report = await verifier.run_dry(
-            claims, registry=registry, run_id=run_id, run_date=_RUN_DATE
-        )
+        report = await verifier.run_dry(claims, registry=registry, run_id=run_id, run_date=run_date)
         await finish_dry_run(
             session_factory, run_id, status=report.status, duration_s=0.0, error_message=None
         )
@@ -567,7 +575,7 @@ async def test_dry_mode_writes_no_verdict_takes_no_lock_and_marks_the_row_dry(
 
 
 async def test_dream_last_night_measured_during_a_wet_run_includes_its_own_row(
-    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine
+    session_factory: async_sessionmaker[AsyncSession], engine: AsyncEngine, run_date: date
 ) -> None:
     """H1(a), pinned deliberately: this is the accepted, documented behaviour.
 
@@ -598,11 +606,11 @@ async def test_dream_last_night_measured_during_a_wet_run_includes_its_own_row(
     ownership = VerifyRunOwnership(engine)
     assert await ownership.acquire()
     try:
-        run_id = await get_or_create_wet_run(ownership, _RUN_DATE)
+        run_id = await get_or_create_wet_run(ownership, run_date)
         await finish_run(ownership, run_id, status="done", duration_s=0.0, error_message=None)
     finally:
         await ownership.release()
 
     measurement = await dream_last_night_registry.measure("dream_last_night", max_age=timedelta(0))
 
-    assert measurement.value["run_date"] == _RUN_DATE.isoformat()
+    assert measurement.value["run_date"] == run_date.isoformat()

@@ -15,15 +15,20 @@ import time
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol
 from uuid import UUID
+
+import structlog
 
 from brain_v42.facts.model import Unreadable
 from brain_v42.facts.sources import release_sha_from_path
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.repositories.pg_claim_nightly import VerifyRunOwnershipLost
+
+_LOG = structlog.get_logger(__name__)
+_MAX_ERROR_CHARS: Final = 2000
 
 if TYPE_CHECKING:
     from brain_v42.facts.model import FactTarget, Measurement
@@ -304,8 +309,12 @@ class NightlyReport:
     """
 
     run_date: str
-    run_id: int
+    run_id: int | None
     mode: Literal["dry", "wet"]
+    started_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    finished_at: str | None = None
+    max_claims: int | None = None
+    eligible_at_start: int | None = None
     selected: int = 0
     status: str = "done"
     holds: int = 0
@@ -317,8 +326,10 @@ class NightlyReport:
     skipped_deadline: int = 0
     skipped_release_mismatch: int = 0
     skipped_release_unknown: int = 0
+    release: dict[str, str | None] | None = None
     retired_mid_run: int = 0
     errors: dict[str, int] = field(default_factory=dict)
+    error_message: str | None = None
     #: Set only by `run_dry` (T1.7); `None` for a wet report.
     dry_claims: dict[str, object] | None = None
     dry_facts: dict[str, dict[str, object]] | None = None
@@ -328,8 +339,12 @@ class NightlyReport:
             "run_date": self.run_date,
             "run_id": self.run_id,
             "mode": self.mode,
+            "started_at": self.started_at,
+            "finished_at": self.finished_at,
             "status": self.status,
             "rc": STATUS_TO_RC.get(self.status),
+            "max_claims": self.max_claims,
+            "eligible_at_start": self.eligible_at_start,
             "selected": self.selected,
             "holds": self.holds,
             "falsified": self.falsified,
@@ -340,6 +355,7 @@ class NightlyReport:
             "skipped_deadline": self.skipped_deadline,
             "skipped_release_mismatch": self.skipped_release_mismatch,
             "skipped_release_unknown": self.skipped_release_unknown,
+            "release": self.release,
             "retired_mid_run": self.retired_mid_run,
             "errors": dict(self.errors),
             "dry_claims": self.dry_claims,
@@ -391,6 +407,7 @@ class NightlyVerifier:
         )
         if not claims:
             report.status = "done"
+            report.finished_at = datetime.now(UTC).isoformat()
             return report
 
         start = self._clock()
@@ -433,6 +450,11 @@ class NightlyVerifier:
                     return
             if claim.target == "live_release":
                 decision = await self._release_check.decide()
+                report.release = {
+                    "cli_sha": decision.cli_sha,
+                    "server_sha": decision.server_sha,
+                    "unknown_reason": decision.unknown_reason,
+                }
                 if decision.action == "skip_release_mismatch":
                     report.skipped_release_mismatch += 1
                     return
@@ -477,7 +499,14 @@ class NightlyVerifier:
                     await process(claim)
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
+                    detail = f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_CHARS]
+                    _LOG.exception(
+                        "claim_verify_lane_failed",
+                        error_type=type(exc).__name__,
+                        error_message=detail,
+                    )
+                    report.error_message = detail
                     state["aborted"] = True
                     _cancel_other_lanes()
                     return
@@ -509,6 +538,7 @@ class NightlyVerifier:
             report.status = "timeout"
         else:
             report.status = "done"
+        report.finished_at = datetime.now(UTC).isoformat()
         return report
 
     async def run_dry(
@@ -542,6 +572,11 @@ class NightlyVerifier:
         for claim in claims:
             if claim.target == "live_release":
                 decision = await self._release_check.decide()
+                report.release = {
+                    "cli_sha": decision.cli_sha,
+                    "server_sha": decision.server_sha,
+                    "unknown_reason": decision.unknown_reason,
+                }
                 if decision.action != "verify":
                     release_skip += 1
                     continue
@@ -594,4 +629,5 @@ class NightlyVerifier:
         }
         report.dry_facts = dry_facts
         report.status = "done"
+        report.finished_at = datetime.now(UTC).isoformat()
         return report

@@ -12,8 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from brain_v42.facts.nightly import PreconditionFailure
-from brain_v42.maintenance.claim_verify import build_parser
+from brain_v42.facts.nightly import NightlyReport, PreconditionFailure
+from brain_v42.maintenance.claim_verify import build_parser, render_report_line
 from brain_v42.repositories.pg_claim_nightly import VerifyRunOwnershipLost
 
 
@@ -99,6 +99,11 @@ def _patch_pipeline(
         AsyncMock(return_value=()),
         raising=True,
     )
+    monkeypatch.setattr(
+        "brain_v42.maintenance.claim_verify._eligible_count",
+        AsyncMock(return_value=0),
+        raising=True,
+    )
 
     ownership = MagicMock()
     ownership.acquire = AsyncMock(return_value=acquire_result)
@@ -165,6 +170,32 @@ async def test_an_unknown_argument_is_a_usage_error() -> None:
     with pytest.raises(SystemExit) as exit_info:
         build_parser().parse_args(["--run-date", "2026-09-27", "--not-a-real-flag"])
     assert exit_info.value.code == 2
+
+
+@pytest.mark.parametrize("value", ["0", "5001"])
+def test_max_claims_outside_setting_bounds_is_a_usage_error(value: str) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        build_parser().parse_args(["--run-date", "2026-09-27", "--max-claims", value])
+    assert exit_info.value.code == 2
+
+
+def test_human_line_carries_the_spec_counts() -> None:
+    report = NightlyReport(run_date="2026-09-27", run_id=812, mode="wet")
+    report.max_claims = 200
+    report.eligible_at_start = 14
+    report.selected = 14
+    report.holds = 11
+    report.falsified = 1
+    report.unreadable = {"probe:timeout": 2}
+    report.skipped_release_mismatch = 1
+    report.retired_mid_run = 1
+
+    line = render_report_line(report, 0)
+
+    assert "selected=14/200 eligible=14" in line
+    assert "unreadable=2 (probe:timeout=2)" in line
+    assert "skipped_release=1/0" in line
+    assert "retired=1 errors=0" in line
 
 
 async def test_a_run_date_more_than_one_day_from_today_is_refused(
@@ -273,6 +304,60 @@ async def test_ownership_lost_raised_mid_run_also_returns_rc_7(
     assert calls["finish_run"] is None
 
 
+@pytest.mark.parametrize("stage", ["get_or_create", "finish", "verify", "report"])
+async def test_every_ownership_loss_writes_a_report_without_finishing_the_row(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, stage: str
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    report = _FakeReport(status="ownership_lost" if stage == "report" else "done")
+    calls = _patch_pipeline(
+        monkeypatch,
+        report=report,
+        run_side_effect=VerifyRunOwnershipLost() if stage == "verify" else None,
+    )
+    if stage == "get_or_create":
+        monkeypatch.setattr(
+            "brain_v42.repositories.pg_claim_nightly.get_or_create_wet_run",
+            AsyncMock(side_effect=VerifyRunOwnershipLost()),
+        )
+    elif stage == "finish":
+        monkeypatch.setattr(
+            "brain_v42.repositories.pg_claim_nightly.finish_run",
+            AsyncMock(side_effect=VerifyRunOwnershipLost()),
+        )
+    run_date = date.today()
+    args = build_parser().parse_args(
+        ["--run-date", run_date.isoformat(), "--wet", "--report-dir", str(tmp_path)]
+    )
+
+    rc = await _run(args)
+
+    assert rc == 7
+    payload = json.loads((tmp_path / f"{run_date.isoformat()}_verify.json").read_text())
+    assert payload["status"] == "ownership_lost"
+    assert payload["rc"] == 7
+    assert "status=ownership_lost" in (tmp_path / f"{run_date.isoformat()}_verify.log").read_text()
+    if stage != "finish":
+        assert calls["finish_run"] is None
+
+
+async def test_failed_report_finishes_with_bounded_diagnostic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    report = _FakeReport(status="fail")
+    report.error_message = "RuntimeError: " + "x" * 3000
+    calls = _patch_pipeline(monkeypatch, report=report)
+    args = build_parser().parse_args(["--run-date", date.today().isoformat(), "--wet"])
+
+    assert await _run(args) == 1
+    message = calls["finish_run"]["error_message"]
+    assert message.startswith("RuntimeError: ")
+    assert len(message) == 2000
+
+
 async def test_dry_mode_never_touches_ownership(monkeypatch: pytest.MonkeyPatch) -> None:
     from brain_v42.maintenance.claim_verify import _run
 
@@ -349,7 +434,7 @@ async def test_report_dir_appends_json_and_log_lines_and_a_rerun_gives_two(
     await _run(args)
 
     json_path = tmp_path / f"{run_date.isoformat()}_verify.json"
-    log_path = tmp_path / f"{run_date.isoformat()}.log"
+    log_path = tmp_path / f"{run_date.isoformat()}_verify.log"
     json_lines = json_path.read_text(encoding="utf-8").splitlines()
     log_lines = log_path.read_text(encoding="utf-8").splitlines()
     assert len(json_lines) == 2
@@ -357,6 +442,37 @@ async def test_report_dir_appends_json_and_log_lines_and_a_rerun_gives_two(
     for line in json_lines:
         parsed = json.loads(line)
         assert parsed["run_id"] == 812
+
+
+async def test_json_report_includes_invocation_limits_and_timestamps(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from brain_v42.maintenance.claim_verify import _run
+
+    run_date = date.today()
+    report = NightlyReport(run_date=run_date.isoformat(), run_id=812, mode="wet")
+    _patch_pipeline(monkeypatch, report=report)
+    monkeypatch.setattr(
+        "brain_v42.maintenance.claim_verify._eligible_count",
+        AsyncMock(return_value=17),
+    )
+    args = build_parser().parse_args(
+        [
+            "--run-date",
+            run_date.isoformat(),
+            "--wet",
+            "--max-claims",
+            "5",
+            "--report-dir",
+            str(tmp_path),
+        ]
+    )
+
+    assert await _run(args) == 0
+    payload = json.loads((tmp_path / f"{run_date.isoformat()}_verify.json").read_text())
+    assert payload["max_claims"] == 5
+    assert payload["eligible_at_start"] == 17
+    assert payload["started_at"] <= payload["finished_at"]
 
 
 async def test_without_report_dir_nothing_is_written_to_disk(
