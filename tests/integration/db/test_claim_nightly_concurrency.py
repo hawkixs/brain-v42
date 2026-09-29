@@ -3,7 +3,7 @@
 NOTE for reviewers: this module SKIPPED in the container that wrote it (no
 `BRAIN_V42_TEST_DB_URL`, no reachable PostgreSQL) -- every assertion below is
 untested against a real server and must be run for real before PR 1 merges.
-The process-death scenario in particular (a real subprocess, a table lock
+The process-death scenario in particular (a real subprocess, a claim row lock
 from another connection, SIGTERM) is the least-verified test in this PR.
 """
 
@@ -34,6 +34,7 @@ from brain_v42.db.tables import (
     brain_entities,
     dream_runs,
     knowledge_claim_verdicts,
+    knowledge_claims,
     project_contexts,
 )
 from brain_v42.facts.definitions_startup import register_fact_definitions
@@ -49,8 +50,6 @@ from tests.integration.conftest import _get_integration_db_url_or_skip
 from tests.integration.disposable_db import asyncpg_dsn, fresh_head_database
 
 pytestmark = pytest.mark.integration
-
-_RUN_DATE = date(2026, 9, 27)
 
 
 @pytest.fixture(scope="session")
@@ -109,10 +108,11 @@ def _registry() -> FactRegistry:
 async def test_a_second_wet_invocation_is_busy_while_the_first_holds_the_lock(
     engine: AsyncEngine, session_factory: async_sessionmaker[AsyncSession]
 ) -> None:
+    run_date = date.today() - timedelta(days=1)
     first = VerifyRunOwnership(engine)
     assert await first.acquire()
     try:
-        first_run_id = await get_or_create_wet_run(first, _RUN_DATE)
+        first_run_id = await get_or_create_wet_run(first, run_date)
 
         second = VerifyRunOwnership(engine)
         assert not await second.acquire()
@@ -127,7 +127,7 @@ async def test_a_second_wet_invocation_is_busy_while_the_first_holds_the_lock(
     rerun = VerifyRunOwnership(engine)
     assert await rerun.acquire()
     try:
-        rerun_id = await get_or_create_wet_run(rerun, _RUN_DATE)
+        rerun_id = await get_or_create_wet_run(rerun, run_date)
         assert rerun_id == first_run_id
         async with session_factory() as session:
             row = (
@@ -146,9 +146,10 @@ async def test_lock_loss_followed_by_a_competing_invocation(
     """R2-M1: a terminated backend must not let a stale owner write after a new one wins."""
     from brain_v42.repositories.pg_claim_nightly import finish_run
 
+    run_date = date.today()
     first = VerifyRunOwnership(engine)
     assert await first.acquire()
-    first_run_id = await get_or_create_wet_run(first, _RUN_DATE)
+    first_run_id = await get_or_create_wet_run(first, run_date)
     first_backend_pid = first.backend_pid
 
     async with engine.begin() as other:
@@ -165,7 +166,7 @@ async def test_lock_loss_followed_by_a_competing_invocation(
         await asyncio.sleep(0.1)
     assert acquired
     try:
-        second_run_id = await get_or_create_wet_run(second, _RUN_DATE)
+        second_run_id = await get_or_create_wet_run(second, run_date)
         assert second_run_id == first_run_id
         await finish_run(second, second_run_id, status="done", duration_s=1.0, error_message=None)
 
@@ -216,7 +217,8 @@ async def test_process_death_leaves_the_initial_status_and_releases_the_lock(
     session_factory: async_sessionmaker[AsyncSession],
     migration_database_url: str,
 ) -> None:
-    """The CLI runs as a real subprocess, blocked mid-verification by a table lock, then killed."""
+    """The CLI runs as a real subprocess, blocked on the claim row, then killed."""
+    run_date = date.today() + timedelta(days=1)
     registry = _registry()
     assert await register_fact_definitions(registry, session_factory)
 
@@ -265,8 +267,17 @@ async def test_process_death_leaves_the_initial_status_and_releases_the_lock(
     # must survive until the explicit rollback below releases it.
     blocker = await engine.connect()
     lock_txn = await blocker.begin()
+    proc = None
     try:
-        await blocker.execute(sa.text("LOCK TABLE knowledge_claims IN ACCESS EXCLUSIVE MODE"))
+        locked_claim_id = (
+            await blocker.execute(
+                sa.select(knowledge_claims.c.id)
+                .where(knowledge_claims.c.id == claim_id)
+                .with_for_update(of=knowledge_claims)
+            )
+        ).scalar_one()
+        assert locked_claim_id == claim_id
+        blocker_pid = await blocker.scalar(sa.text("SELECT pg_backend_pid()"))
 
         env = {
             **os.environ,
@@ -278,20 +289,44 @@ async def test_process_death_leaves_the_initial_status_and_releases_the_lock(
             "-m",
             "brain_v42.maintenance.claim_verify",
             "--run-date",
-            _RUN_DATE.isoformat(),
+            run_date.isoformat(),
             "--wet",
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
 
-        # Give the CLI time to reach the SELECT ... FOR UPDATE it blocks on.
-        await asyncio.sleep(3)
+        # The blocked backend proves the CLI reached its claim-row lock after creating the run.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + 120
+        async with engine.connect() as observer:
+            while True:
+                blocked = await observer.scalar(
+                    sa.text(
+                        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                        "WHERE datname = current_database() "
+                        "AND :blocker_pid = ANY(pg_blocking_pids(pid)))"
+                    ),
+                    {"blocker_pid": blocker_pid},
+                )
+                await observer.rollback()
+                if blocked:
+                    break
+                if proc.returncode is not None:
+                    pytest.fail(
+                        f"the CLI exited before blocking on the claim row: {proc.returncode}"
+                    )
+                if loop.time() >= deadline:
+                    pytest.fail("the CLI did not block on the claim row within 120 seconds")
+                await asyncio.sleep(0.1)
         assert proc.returncode is None, "the CLI exited before it should have blocked"
 
         proc.send_signal(signal.SIGTERM)
         await asyncio.wait_for(proc.wait(), timeout=10)
     finally:
+        if proc is not None and proc.returncode is None:
+            proc.kill()
+            await proc.wait()
         await lock_txn.rollback()
         await blocker.close()
 
@@ -300,7 +335,7 @@ async def test_process_death_leaves_the_initial_status_and_releases_the_lock(
             (
                 await session.execute(
                     sa.select(dream_runs).where(
-                        dream_runs.c.run_date == _RUN_DATE, dream_runs.c.phase == "verify"
+                        dream_runs.c.run_date == run_date, dream_runs.c.phase == "verify"
                     )
                 )
             )
