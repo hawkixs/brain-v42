@@ -283,9 +283,13 @@ async def test_actual_lost_backend_during_collection_exits_nonzero_without_publi
         process = await start("--once")
         await asyncio.wait_for(case.http_entered.wait(), 10)
         async with engine.begin() as connection:
+            # pg_locks is cluster-wide: without the database filter this can return
+            # the live observer, which holds the same key in another database.
             pid = await connection.scalar(
                 sa.text(
                     "SELECT pid FROM pg_locks WHERE locktype='advisory' AND granted AND objid=:key"
+                    " AND database = (SELECT oid FROM pg_database"
+                    " WHERE datname = current_database())"
                 ),
                 {"key": ObserverOwnership.LOCK_KEY & 0xFFFFFFFF},
             )
