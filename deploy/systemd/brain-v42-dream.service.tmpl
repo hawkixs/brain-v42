@@ -12,6 +12,8 @@ WorkingDirectory=__REPO_ROOT__
 # Required by the isolated Codex runner. Keep the bearer in a 0600 file; never
 # inline it in the unit or Codex config.
 EnvironmentFile=%h/.config/brain-v42/mcp-token.env
+# Q3: Dream and MCP read one facts identity file; server_addr once changed after a reboot.
+EnvironmentFile=-%h/.config/brain-v42/facts-identity.env
 
 # JSONL MCP results can contain full Brain records. Keep all Dream logs private.
 UMask=0077

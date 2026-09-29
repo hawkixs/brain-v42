@@ -29,6 +29,8 @@ ExecStart=__REPO_ROOT__/.venv/bin/python -m brain_v42.mcp.server --http-server
 
 EnvironmentFile=__REPO_ROOT__/.env
 EnvironmentFile=%h/.config/brain-v42/mcp-token.env
+# Q3: MCP and Dream read one facts identity file; server_addr once changed after a reboot.
+EnvironmentFile=-%h/.config/brain-v42/facts-identity.env
 # Optional while the shared ledger flag is dormant. The preflight requires an
 # owned regular 0600 file at cutover; only GRAPH_PROJECTOR_* belongs here.
 EnvironmentFile=-%h/.config/brain-v42/graph-projector.env

@@ -24,6 +24,16 @@ def _read(name: str) -> str:
     return (SYSTEMD_DIR / name).read_text()
 
 
+def test_dream_reads_the_shared_facts_identity_after_the_token() -> None:
+    content = _read("brain-v42-dream.service.tmpl")
+    token = "EnvironmentFile=%h/.config/brain-v42/mcp-token.env"
+    identity = "EnvironmentFile=-%h/.config/brain-v42/facts-identity.env"
+
+    assert content.splitlines().count(identity) == 1
+    assert content.index(token) < content.index(identity)
+    assert "BRAIN_FACTS_LIVE_RELEASE_IDENTITY=" not in content
+
+
 class TestMcpHttpServiceTemplate:
     def test_file_exists(self) -> None:
         assert (SYSTEMD_DIR / "brain-mcp-http.service.tmpl").exists()
@@ -80,12 +90,16 @@ class TestMcpHttpServiceTemplate:
         content = _read("brain-mcp-http.service.tmpl")
         shared = "EnvironmentFile=__REPO_ROOT__/.env"
         token = "EnvironmentFile=%h/.config/brain-v42/mcp-token.env"
+        identity = "EnvironmentFile=-%h/.config/brain-v42/facts-identity.env"
         projector = "EnvironmentFile=-%h/.config/brain-v42/graph-projector.env"
 
         assert shared in content
         assert token in content
+        assert content.splitlines().count(identity) == 1
         assert projector in content
-        assert content.index(shared) < content.index(token) < content.index(projector)
+        assert content.index(shared) < content.index(token) < content.index(identity)
+        assert content.index(identity) < content.index(projector)
+        assert "BRAIN_FACTS_LIVE_RELEASE_IDENTITY=" not in content
 
     def test_projector_environment_is_not_shared_with_other_units(self) -> None:
         private_environment = "graph-projector.env"
