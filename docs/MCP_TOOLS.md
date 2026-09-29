@@ -130,7 +130,7 @@ start, named in the journal and in the briefing, and absent from
 | `alembic_head` | production | 60 s / 3 s | yes (`- Schéma : 054`, replaces the legacy read) | `revision`; an unstamped database is unreadable |
 | `live_release_sha` | live_release | process lifetime / 1 s | yes | `release_sha`, `package_version` of the running package; a checkout is unreadable |
 | `alembic_head_shipped` | live_release | process lifetime / 1 s | yes | `revision` from a strict read of the shipped migrations |
-| `dream_killswitches_declared` | host | 60 s / 1 s | yes | the nine raw drop-in strings and `file_mtime_epoch` |
+| `dream_killswitches_declared` | host | 60 s / 1 s | yes | v2: the eleven raw drop-in strings, including `verify` (`BRAIN_DREAM_VERIFY_ENABLED`) and `verify_dry` (`BRAIN_DREAM_VERIFY_DRY_RUN`), plus `file_mtime_epoch` |
 | `dream_last_night` | production | 60 s / 3 s | no | the latest `dream_runs` night by status and dry flag |
 
 ## Claim verification
