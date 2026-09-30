@@ -24,10 +24,10 @@ brain-v42-internal repository (ticket 8dc6f0d2), at the same relative path under
 <!-- dr-current:start -->
 | Target | Value | Measured, and against what |
 | --- | --- | --- |
-| Alembic head | `057` | 2026-09-24 17:09:21Z, live production, measured right after the 056 → 057 upgrade. Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md`. Machine-readable binding: `ops/recovery/current.json` (`schema_head`), checked against the head the code ships by `tests/unit/test_recovery_current_binding.py` in CI on every pull request. |
-| Recovery contract, live target | `ops/recovery/brain-v42-v14.sql` | **30/30 against production at head `057`**, 2026-09-24 (Acceptance). Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md` (`v14-production-result.json`, sha256 `05abc24753dd3f3523a984bc9e6ea7d19ad29485b90731da3b17499591f5532f`). The v14 base SQL is not pinned by the release script; this 30/30 against production is what attests it. |
-| Recovery contract, previous generation | `ops/recovery/brain-v42-v13.sql` | Frozen. Its own 30/30 at head `056` on 2026-09-23 stands and is not rewritten — v13 attested the state v13 described. Superseded as the replay target by v14 on 2026-09-24. Receipt: `internal/docs/receipts/2026-09-23-release-d9a72644.md`. |
-| Recovery contract, restored target | `ops/recovery/brain-v42-v14-pgrestore.sql` | **30/30 on the disposable clone migrated 056 → 057**, measured in the same `prove` window as the live target (2026-09-24, 17:07:13 → 17:07:32 UTC): a fresh owner-only `pg_dump` of production at 056 restored into a disposable clone, then that same clone migrated to 057 with the installed wheel. Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md` ("clone migrated 056 → 057 with the installed wheel, proved by the v14 twin: 30/30"). |
+| Alembic head | `058` | **Candidate, not yet measured on production.** 058 is the repository head (claim-extraction PR 1, 2026-09-30); production stays at `057` until the release that ships 058 is cut over, and this row is re-measured then with `select version_num from alembic_version`. Previous measurement: `057`, 2026-09-24 17:09:21Z, live production, receipt `internal/docs/receipts/2026-09-24-release-457bc7f7.md`. Machine-readable binding: `ops/recovery/current.json` (`schema_head`). |
+| Recovery contract, live target | `ops/recovery/brain-v42-v15.sql` | **Candidate for head `058`.** Minted 2026-09-30 by `scripts/mint_recovery_contract_v15.py` on a disposable chain-built 058 database: v14 plus one rewritten constraint fingerprint (`knowledge_claims_provenance_valid`) and the identity move, nothing else. Replayed on disposable databases by `tests/integration/db/test_recovery_contract_v15.py` and `test_fresh_head_is_the_yardstick.py` (zero unexplained mismatch). Production replay pending the 058 release. |
+| Recovery contract, previous generation | `ops/recovery/brain-v42-v14.sql` | Frozen. Its own 30/30 against production at head `057` on 2026-09-24 stands and is not rewritten — v14 attested the state v14 described. Superseded as the replay target by v15 once 058 is live. Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md`. |
+| Recovery contract, restored target | `ops/recovery/brain-v42-v15-pgrestore.sql` | **Candidate.** Minted 2026-09-30 on a real custom-format `pg_dump`/`pg_restore` of a disposable chain-built 057 database, migrated 057 → 058 after the restore; one constraint fingerprint rewritten, as on the live asset. The release `prove` phase re-measures it on its own restored clone. |
 | Contract receipt, live asset replayed live | `30/30` — zero failing checks, out of 30 checks total (057 adds no CHECK, no index and no trigger to the receipt: it is a bare `add_column`, extending no existing invariant and creating none) | 2026-09-24, live production; receipt `internal/docs/receipts/2026-09-24-release-457bc7f7.md` |
 | Contract receipt, `-pgrestore` asset against a real restore | `30/30` — zero failing checks out of 30, on the disposable clone AFTER migrating it from a real restore at head `056` to `057`. ACL v11 passed on the same clone (`1/1`, zero failure) both as restored at 056 and after the migration. Replay: `psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f ops/recovery/brain-v42-v14-pgrestore.sql` on the restored, migrated database | 2026-09-24, disposable clone created and destroyed during the `prove` phase of release `457bc7f7`; receipt `internal/docs/receipts/2026-09-24-release-457bc7f7.md` |
 | ACL contract, live target | `ops/recovery/brain-v42-v11-acl.sql` | `1/1` on production at head `057`, 2026-09-24 (Acceptance). 057 grants nothing and touches no view, so the ACL authority is unchanged since the 056 cutover: it stays at v11. Receipt: `internal/docs/receipts/2026-09-24-release-457bc7f7.md`. |
@@ -41,7 +41,7 @@ Replay the head and the two live-target assets against production:
 ```bash
 docker exec brain_v42_postgres psql -U brain -d brain -Atc \
   "select version_num from alembic_version;"
-for asset in brain-v42-v14.sql brain-v42-v11-acl.sql; do
+for asset in brain-v42-v15.sql brain-v42-v11-acl.sql; do
   docker exec -i brain_v42_postgres psql -U brain -d brain -Atq -v ON_ERROR_STOP=1 -f - \
     < "ops/recovery/$asset"
 done
@@ -64,7 +64,7 @@ prescribes. Run them only against a genuinely restored target, and say which one
 # against the production cluster itself.
 RESTORED_CONTAINER=${RESTORED_CONTAINER:?name the container holding the restored instance}
 [ "$RESTORED_CONTAINER" != "brain_v42_postgres" ] || { echo "refusing: that is the production cluster" >&2; exit 2; }
-for twin in brain-v42-v14-pgrestore.sql brain-v42-v11-acl-pgrestore.sql; do
+for twin in brain-v42-v15-pgrestore.sql brain-v42-v11-acl-pgrestore.sql; do
   docker exec -i "$RESTORED_CONTAINER" psql -U brain -d "${RESTORED_DB:-brain}" -Atq -v ON_ERROR_STOP=1 -f - \
     < "ops/recovery/$twin"
 done
