@@ -42,7 +42,7 @@ class ClaimRead:
     expected: Mapping[str, object]
     expected_resolved: Mapping[str, object]
     validity_seconds: int
-    provenance: str
+    provenance: Literal["measured", "declared", "extracted"]
     declared_by: str
     declared_at: datetime
     recorded_at: datetime

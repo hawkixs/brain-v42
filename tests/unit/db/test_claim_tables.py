@@ -100,6 +100,18 @@ def test_claim_tables_are_registered_on_shared_metadata() -> None:
     assert set(CLAIM_TABLE_NAMES) <= set(METADATA.tables)
 
 
+def test_extracted_provenance_matches_migration_check() -> None:
+    """Metadata must accept exactly the provenance values stored by migration 058."""
+    claims = METADATA.tables["knowledge_claims"]
+    constraint = next(
+        check
+        for check in claims.constraints
+        if isinstance(check, sa.CheckConstraint)
+        and check.name == "knowledge_claims_provenance_valid"
+    )
+    assert str(constraint.sqltext) == "provenance IN ('measured', 'declared', 'extracted')"
+
+
 @pytest.mark.parametrize("table_name", ("knowledge_claims", "knowledge_claim_verdicts"))
 def test_ledger_sequences_are_always_generated_identities(table_name: str) -> None:
     """Ledger read order cannot be supplied by an inserting client."""

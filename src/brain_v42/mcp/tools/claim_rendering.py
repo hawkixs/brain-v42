@@ -246,10 +246,11 @@ def format_claim_list(items: Sequence[ClaimState], next_after_seq: int | None) -
     for state in items:
         claim = state.claim
         retired = " [retired]" if claim.retired_at is not None else ""
+        provenance = " [provenance: extracted]" if claim.provenance == "extracted" else ""
         statement = _render_safe(claim.statement, max_length=_STATEMENT_MAX_LENGTH)
         lines.append(
             f"- {claim.id} ({claim.entity_type}/{claim.entry_id}) "
-            f'"{statement}"{retired} — {_single_state_status_text(state)}'
+            f'"{statement}"{retired}{provenance} — {_single_state_status_text(state)}'
         )
     if next_after_seq is not None:
         lines.append(f"\n… (more results — after_seq={next_after_seq})")
