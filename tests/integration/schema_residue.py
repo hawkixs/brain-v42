@@ -65,6 +65,7 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     # still moves the shared head down to 056 and back, so it takes the fence
     # like every other file in this list.
     "tests/integration/db/test_migration_057_search_log_embedding_model.py",
+    "tests/integration/db/test_migration_058_claim_provenance.py",
 )
 
 # Tables probed for leftover rows, in the order the message lists them.
