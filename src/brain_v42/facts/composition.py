@@ -27,6 +27,7 @@ from brain_v42.facts.model import (
 from brain_v42.facts.probe import Probe
 from brain_v42.facts.probes.alembic_head import AlembicHeadProbe
 from brain_v42.facts.probes.alembic_head_shipped import AlembicHeadShippedProbe
+from brain_v42.facts.probes.claims_verification_last_night import ClaimsVerificationLastNightProbe
 from brain_v42.facts.probes.dream_killswitches_declared import DreamKillswitchesDeclaredProbe
 from brain_v42.facts.probes.dream_last_night import DreamLastNightProbe
 from brain_v42.facts.probes.graph_projection_lag import GraphProjectionLagProbe
@@ -44,8 +45,9 @@ logger = structlog.get_logger(__name__)
 
 def _catalogue() -> tuple[Probe, ...]:
     """The closed catalogue, in the order the briefing renders it."""
-    # Revision 6 order: graph_projection_lag, alembic_head, live_release_sha,
-    # alembic_head_shipped, dream_killswitches_declared, dream_last_night.
+    # Revision 7 order: graph_projection_lag, alembic_head, live_release_sha,
+    # alembic_head_shipped, dream_killswitches_declared, dream_last_night,
+    # claims_verification_last_night.
     return (
         GraphProjectionLagProbe(),
         AlembicHeadProbe(),
@@ -53,6 +55,7 @@ def _catalogue() -> tuple[Probe, ...]:
         AlembicHeadShippedProbe(),
         DreamKillswitchesDeclaredProbe(),
         DreamLastNightProbe(),
+        ClaimsVerificationLastNightProbe(),
     )
 
 

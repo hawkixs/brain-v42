@@ -71,6 +71,53 @@ _DREAM_DESCRIPTOR = FactDescriptor(
     },
 )
 
+_CLAIMS_VERIFICATION_DESCRIPTOR = FactDescriptor(
+    name="claims_verification_last_night",
+    definition_version=1,
+    target=FactTarget.PRODUCTION,
+    ttl_seconds=60,
+    timeout_seconds=3,
+    queue_timeout_seconds=2,
+    deadline_seconds=5,
+    briefing=True,
+    policies={},
+    value_schema={
+        "run_date": "string",
+        "run_id": "int",
+        "status": "string",
+        "holds": "int",
+        "falsified": "int",
+        "unreadable": "int",
+        "verdicts": "int",
+        "eligible_now": "int",
+    },
+)
+
+
+def _claims_verification_measured(**overrides: object) -> Measured:
+    value: dict[str, object] = {
+        "run_date": "2026-09-27",
+        "run_id": 812,
+        "status": "done",
+        "holds": 11,
+        "falsified": 1,
+        "unreadable": 2,
+        "verdicts": 14,
+        "eligible_now": 3,
+    }
+    value.update(overrides)
+    return Measured.from_value(
+        fact="claims_verification_last_night",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        source=_IDENTITY,
+        value=value,
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=1,
+        ttl_seconds=60,
+    )
+
 
 def _dream_measured(**overrides: object) -> Measured:
     value: dict[str, object] = {
@@ -467,3 +514,80 @@ def test_an_undeclared_killswitch_key_renders_as_undeclared_not_as_a_typo() -> N
         _dream_measured(verify="", verify_dry=""), _DREAM_DESCRIPTOR, age_seconds=None
     )
     assert "VERIFY off (non déclaré)" in line
+
+
+@pytest.mark.parametrize(
+    ("status", "prefix"),
+    [
+        ("done", ""),
+        ("partial", "PARTIELLE (erreurs, voir 2026-09-27_verify.json) — "),
+        ("timeout", "ÉCHÉANCE ATTEINTE — "),
+        ("fail", "ÉCHEC — "),
+        ("unexpected", "ÉCHEC — "),
+    ],
+)
+def test_claim_verification_renders_every_run_status(status: str, prefix: str) -> None:
+    line = render_fact_line(
+        _claims_verification_measured(status=status),
+        _CLAIMS_VERIFICATION_DESCRIPTOR,
+        age_seconds=None,
+    )
+    assert line == (
+        "- Vérification des claims (nuit du 2026-09-27, run 812) : "
+        f"{prefix}11 tiennent, 1 FALSIFIÉ, 2 illisibles — 3 en attente"
+    )
+
+
+def test_claim_verification_initial_fail_row_never_looks_successful() -> None:
+    line = render_fact_line(
+        _claims_verification_measured(
+            status="fail", holds=0, falsified=0, unreadable=0, verdicts=0, eligible_now=0
+        ),
+        _CLAIMS_VERIFICATION_DESCRIPTOR,
+        age_seconds=None,
+    )
+    assert line == (
+        "- Vérification des claims (nuit du 2026-09-27, run 812) : "
+        "ÉCHEC — 0 tient, 0 FALSIFIÉ, 0 illisible — 0 en attente"
+    )
+
+
+@pytest.mark.parametrize(
+    ("count", "holds", "falsified", "unreadable"),
+    [
+        (0, "tient", "FALSIFIÉ", "illisible"),
+        (1, "tient", "FALSIFIÉ", "illisible"),
+        (2, "tiennent", "FALSIFIÉS", "illisibles"),
+    ],
+)
+def test_claim_verification_count_words_pluralize_from_two(
+    count: int, holds: str, falsified: str, unreadable: str
+) -> None:
+    line = render_fact_line(
+        _claims_verification_measured(
+            holds=count, falsified=count, unreadable=count, verdicts=3 * count
+        ),
+        _CLAIMS_VERIFICATION_DESCRIPTOR,
+        age_seconds=None,
+    )
+    assert line.endswith(
+        f"{count} {holds}, {count} {falsified}, {count} {unreadable} — 3 en attente"
+    )
+
+
+def test_unreadable_claim_verification_names_its_subject_and_code() -> None:
+    unreadable = Unreadable(
+        fact="claims_verification_last_night",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        error_code="probe_error",
+        where=None,
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=1,
+        ttl_seconds=60,
+        source_kind="probe",
+    )
+    assert render_fact_line(unreadable, _CLAIMS_VERIFICATION_DESCRIPTOR, age_seconds=None) == (
+        "- Vérification des claims : illisible (probe_error)"
+    )

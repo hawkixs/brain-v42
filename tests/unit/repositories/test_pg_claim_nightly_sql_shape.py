@@ -15,6 +15,8 @@ from datetime import UTC, datetime
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
+from brain_v42.facts.composition import _catalogue
+from brain_v42.repositories import pg_claim_nightly
 from brain_v42.repositories.pg_claim_nightly import (
     _eligible_query,
     _ranked_query,
@@ -64,17 +66,30 @@ def test_ranked_query_limits_stale_claims_to_fact_names_eligible_at_start() -> N
 
 def test_self_referential_claims_are_excluded_before_the_cap_but_counted_without_it() -> None:
     now = datetime.now(UTC)
+    names = ("dream_last_night", "claims_verification_last_night", "probe")
     selected = str(
-        _ranked_query(now, 1, eligible_fact_names=("dream_last_night", "probe")).compile(
+        _ranked_query(now, 1, eligible_fact_names=names).compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
         )
     )
     skipped = str(
-        _self_referential_count_query(
-            now, eligible_fact_names=("dream_last_night", "probe")
-        ).compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+        _self_referential_count_query(now, eligible_fact_names=names).compile(
+            dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+        )
     )
 
-    assert "knowledge_claims.fact_name != 'dream_last_night'" in selected
-    assert "knowledge_claims.fact_name = 'dream_last_night'" in skipped
+    expected = "('claims_verification_last_night', 'dream_last_night')"
+    assert f"knowledge_claims.fact_name NOT IN {expected}" in selected
+    assert f"knowledge_claims.fact_name IN {expected}" in skipped
     assert selected.count(" LIMIT ") == skipped.count(" LIMIT ") + 1
+
+
+def test_self_referential_fact_names_are_complete() -> None:
+    assert getattr(pg_claim_nightly, "SELF_REFERENTIAL_FACTS", None) == frozenset(
+        {"dream_last_night", "claims_verification_last_night"}
+    )
+
+
+def test_every_self_referential_fact_remains_in_the_catalogue() -> None:
+    catalogue_names = {probe.name for probe in _catalogue()}
+    assert pg_claim_nightly.SELF_REFERENTIAL_FACTS <= catalogue_names

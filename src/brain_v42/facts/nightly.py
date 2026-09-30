@@ -25,7 +25,7 @@ import structlog
 from brain_v42.facts.model import Unreadable
 from brain_v42.facts.sources import release_sha_from_path
 from brain_v42.models.claim_verdict import ClaimVerificationError
-from brain_v42.repositories.pg_claim_nightly import VerifyRunOwnershipLost
+from brain_v42.repositories.pg_claim_nightly import SELF_REFERENTIAL_FACTS, VerifyRunOwnershipLost
 
 _LOG = structlog.get_logger(__name__)
 _MAX_ERROR_CHARS: Final = 2000
@@ -442,7 +442,7 @@ class NightlyVerifier:
 
         async def process(claim: NightlyClaimLike) -> None:
             nonlocal release_decision
-            if claim.fact_name == "dream_last_night":
+            if claim.fact_name in SELF_REFERENTIAL_FACTS:
                 report.skipped_self_referential += 1
                 return
             if claim.fact_name in stopped_facts:
@@ -582,7 +582,7 @@ class NightlyVerifier:
         release_decision: ReleaseDecision | None = None
 
         for claim in claims:
-            if claim.fact_name == "dream_last_night":
+            if claim.fact_name in SELF_REFERENTIAL_FACTS:
                 report.skipped_self_referential += 1
                 continue
             if claim.target == "live_release":

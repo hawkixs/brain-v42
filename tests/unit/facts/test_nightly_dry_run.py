@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from uuid import UUID
 
+import pytest
+
 from brain_v42.facts.model import FactTarget, Measured, SourceIdentity, Unreadable
 from brain_v42.facts.nightly import NightlyVerifier, ReleaseDecision
 
@@ -121,15 +123,16 @@ async def test_measures_exactly_once_per_distinct_measurable_fact() -> None:
     assert report.status == "done"
 
 
-async def test_dry_run_skips_dream_last_night_without_measuring_it() -> None:
+@pytest.mark.parametrize("fact_name", ["dream_last_night", "claims_verification_last_night"])
+async def test_dry_run_skips_self_referential_fact_without_measuring_it(fact_name: str) -> None:
     registry = _FakeRegistry(
         descriptors={
-            "dream_last_night": _Descriptor(1, FactTarget.PRODUCTION),
+            fact_name: _Descriptor(1, FactTarget.PRODUCTION),
             "fact_a": _Descriptor(1, FactTarget.PRODUCTION),
         },
         measurements={"fact_a": _measured("fact_a")},
     )
-    claims = (_claim(0, fact="dream_last_night"), _claim(1, fact="fact_a"))
+    claims = (_claim(0, fact=fact_name), _claim(1, fact="fact_a"))
     verifier = NightlyVerifier(service=None, release_check=_FakeReleaseCheckDry("verify"))
 
     report = await verifier.run_dry(claims, registry=registry, run_id=1, run_date=date(2026, 9, 27))

@@ -38,6 +38,7 @@ _SUBJECTS: Mapping[str, str] = {
     "alembic_head_shipped": "Tête Alembic livrée",
     "dream_killswitches_declared": "Killswitches déclarés",
     "dream_last_night": "Dernière nuit Dream",
+    "claims_verification_last_night": "Vérification des claims",
 }
 
 
@@ -175,12 +176,40 @@ def _render_alembic_head(measured: Measured, descriptor: FactDescriptor) -> str:
     return f"- Schéma : {measured.value.get('revision')}"
 
 
+def _render_claims_verification_last_night(measured: Measured, descriptor: FactDescriptor) -> str:
+    """Keep every nonterminal or unknown run visibly distinct from success."""
+    value = measured.value
+    run_date = _string(value.get("run_date"))
+    run_id = _int(value.get("run_id"))
+    status = _string(value.get("status"))
+    holds = _int(value.get("holds"))
+    falsified = _int(value.get("falsified"))
+    unreadable = _int(value.get("unreadable"))
+    eligible_now = _int(value.get("eligible_now"))
+    if status == "done":
+        prefix = ""
+    elif status == "partial":
+        prefix = f"PARTIELLE (erreurs, voir {run_date}_verify.json) — "
+    elif status == "timeout":
+        prefix = "ÉCHÉANCE ATTEINTE — "
+    else:
+        prefix = "ÉCHEC — "
+    return (
+        f"- Vérification des claims (nuit du {run_date}, run {run_id}) : {prefix}"
+        f"{holds} {'tient' if holds < 2 else 'tiennent'}, "
+        f"{falsified} {'FALSIFIÉ' if falsified < 2 else 'FALSIFIÉS'}, "
+        f"{unreadable} {'illisible' if unreadable < 2 else 'illisibles'} "
+        f"— {eligible_now} en attente"
+    )
+
+
 _RENDERERS: Mapping[str, Callable[[Measured, FactDescriptor], str]] = {
     "graph_projection_lag": _render_graph_projection_lag,
     "alembic_head": _render_alembic_head,
     "live_release_sha": _render_live_release_sha,
     "alembic_head_shipped": _render_alembic_head_shipped,
     "dream_killswitches_declared": _render_dream_killswitches_declared,
+    "claims_verification_last_night": _render_claims_verification_last_night,
 }
 
 

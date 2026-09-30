@@ -321,6 +321,16 @@ compare it with the dated Dream log. A successful dry run proves selection and
 measurement, not that verdicts were written. An argument-parser failure or the
 outer timeout may leave no JSON line; inspect the CLI log in that case.
 
+For the morning reading of the latest wet run, call
+`brain_fact_get("claims_verification_last_night")`. The fact reports the run status,
+verdicts written by that run, and claims eligible now. An unreadable fact is not
+by itself a missing run: read its error code first. No wet verify row makes the
+probe fail with `probe_error`, but a failed database read yields the same code,
+so confirm in `dream_runs` before concluding that the step never ran. `timeout`,
+`queue_timeout`, `capacity_timeout`, `target_mismatch` and `identity_unreadable`
+mean the measurement itself failed, not the run. Use the JSON report and dated
+log for errors, skips, and dry-run details.
+
 | Return code | Meaning | Dream handling |
 | --- | --- | --- |
 | `0` | Done | Records `DONE` and continues |
@@ -361,9 +371,10 @@ systemd-run --user --wait --pipe --collect \
 There is no `--wet` in this invocation. Run it only after confirming that the
 live release contains `claim_verify`; this hand-run procedure still needs a
 live-unit check before it can be treated as proven. The nightly `verify` step
-skips claims on `dream_last_night` in both wet and dry modes and reports them as
-`skipped_self_referential`. Its own `dream_runs` row could otherwise make that
-fact describe the current, incomplete night instead of the previous complete one.
+skips claims on `dream_last_night` and `claims_verification_last_night` in both
+wet and dry modes and reports them as `skipped_self_referential`. Its own
+`dream_runs` row could otherwise make either fact describe the current,
+incomplete run instead of the previous complete one.
 
 ## Reading a Dream night: the file, not journald
 

@@ -595,35 +595,45 @@ async def test_dry_mode_writes_no_verdict_takes_no_lock_and_marks_the_row_dry(
 
 
 @pytest.mark.parametrize("wet", [True, False], ids=["wet", "dry"])
-async def test_dream_last_night_claim_is_skipped_without_a_verdict(
+@pytest.mark.parametrize("fact_name", ["dream_last_night", "claims_verification_last_night"])
+async def test_self_referential_claim_is_skipped_without_a_verdict(
+    fact_name: str,
     wet: bool,
     session_factory: async_sessionmaker[AsyncSession],
     engine: AsyncEngine,
     run_date: date,
 ) -> None:
     """The verify row must never become evidence for a claim about its own night."""
+    from brain_v42.facts.probes.claims_verification_last_night import (
+        ClaimsVerificationLastNightProbe,
+    )
     from brain_v42.facts.probes.dream_last_night import DreamLastNightProbe
 
     async with session_factory() as identity_session, identity_session.begin():
         real_identity = await PostgresSourceSession(identity_session).identity()
 
-    dream_last_night_registry = FactRegistry(
+    registry = FactRegistry(
         sources={FactTarget.PRODUCTION: PostgresSourceFactory(session_factory)},
         expected={FactTarget.PRODUCTION: real_identity},
     )
-    dream_last_night_registry.register(DreamLastNightProbe())
-    dream_last_night_registry.freeze()
-    assert await register_fact_definitions(dream_last_night_registry, session_factory)
+    probe = (
+        DreamLastNightProbe()
+        if fact_name == "dream_last_night"
+        else ClaimsVerificationLastNightProbe()
+    )
+    registry.register(probe)
+    registry.freeze()
+    assert await register_fact_definitions(registry, session_factory)
     async with session_factory() as session, session.begin():
         claim_id = await _insert_claim(
             session,
-            fact_name="dream_last_night",
+            fact_name=fact_name,
             expected_revision=run_date.isoformat(),
             expected_path="/run_date",
         )
 
     if wet:
-        _, report = await _wet_pass(engine, session_factory, dream_last_night_registry, run_date)
+        _, report = await _wet_pass(engine, session_factory, registry, run_date)
     else:
         run_id = await insert_dry_run(session_factory, run_date)
         now = datetime.now(UTC)
@@ -637,11 +647,9 @@ async def test_dream_last_night_claim_is_skipped_without_a_verdict(
             service=None,  # type: ignore[arg-type]
             release_check=ReleaseCheck(cli_release_path=_NONEXISTENT_RELEASE_PATH),
         )
-        report = await verifier.run_dry(
-            claims, registry=dream_last_night_registry, run_id=run_id, run_date=run_date
-        )
+        report = await verifier.run_dry(claims, registry=registry, run_id=run_id, run_date=run_date)
         report.skipped_self_referential = await count_self_referential_claims(
-            session_factory, now=now, eligible_fact_names=("dream_last_night",)
+            session_factory, now=now, eligible_fact_names=(fact_name,)
         )
 
     async with session_factory() as session:
