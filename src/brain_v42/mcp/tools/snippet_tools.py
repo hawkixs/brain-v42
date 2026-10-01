@@ -10,12 +10,14 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
+from brain_v42.facts.claim_extractor import extract_candidates
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.claim_writes import (
     claim_write_log_fields,
     claims_confirmation,
     gated_claim_session,
     persist_claims,
+    persist_extracted_claims,
     resolve_claim_inputs,
 )
 from brain_v42.mcp.tools.formatters import (
@@ -53,8 +55,13 @@ def register_snippet_tools(
     fact_registry: FactRegistry | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     claim_verification_svc: ClaimVerificationService | None = None,
+    extraction_enabled: bool = False,
 ) -> None:
     """Register snippet MCP tools on the FastMCP instance via closures."""
+
+    extraction_available = (
+        extraction_enabled and fact_registry is not None and session_factory is not None
+    )
 
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_save_snippet(
@@ -96,7 +103,7 @@ def register_snippet_tools(
         if related_to:
             validated_relations = [RelationInput(**r).model_dump() for r in related_to]
         scope = get_dream_project_scope()
-        if not claims:
+        if not claims and not extraction_available:
             if scope is None:
                 snippet = await snippet_svc.create(data, related_to=validated_relations)
             else:
@@ -116,24 +123,45 @@ def register_snippet_tools(
 
         if fact_registry is None or session_factory is None:
             raise RuntimeError("declared claims require the fact registry and a session factory")
-        resolved = await resolve_claim_inputs(fact_registry, claims)
-        if project_key is None:
+        if claims and project_key is None:
             raise ValueError("declared claims require project_key")
+        resolved = await resolve_claim_inputs(fact_registry, claims) if claims else []
+        candidates = (
+            extract_candidates(
+                entity="snippet",
+                project_key=project_key,
+                fields={"intention": data.intention, "gotchas": data.gotchas},
+            ).candidates
+            if extraction_available
+            else ()
+        )
         declared_at = datetime.now(UTC)
         async with gated_claim_session(
             session_factory, claim_verification_svc, resolved
         ) as session:
             snippet = await snippet_svc.create(data, session=session)
-            outcomes = await persist_claims(
-                session,
-                entry_id=snippet.id,
-                entity_type="snippet",
-                project_key=project_key,
-                resolved=resolved,
-                declared_by=get_current_actor(),
-                declared_at=declared_at,
-                verification=claim_verification_svc,
-            )
+            outcomes: list[Any] = []
+            if resolved:
+                assert project_key is not None
+                outcomes = await persist_claims(
+                    session,
+                    entry_id=snippet.id,
+                    entity_type="snippet",
+                    project_key=project_key,
+                    resolved=resolved,
+                    declared_by=get_current_actor(),
+                    declared_at=declared_at,
+                    verification=claim_verification_svc,
+                )
+            if candidates:
+                await persist_extracted_claims(
+                    session,
+                    fact_registry,
+                    entry_id=snippet.id,
+                    entity_type="snippet",
+                    project_key=project_key,
+                    candidates=candidates,
+                )
         snippet = await snippet_svc.enrich_created(
             snippet,
             data,
@@ -146,12 +174,19 @@ def register_snippet_tools(
             language_supplied=bool(snippet.language),
             **claim_write_log_fields(outcomes),
         )
+        if claims:
+            return format_confirmation(
+                "Snippet saved",
+                snippet.title,
+                id=str(snippet.id),
+                lang=snippet.language,
+                claims=claims_confirmation(outcomes),
+            )
         return format_confirmation(
             "Snippet saved",
             snippet.title,
             id=str(snippet.id),
             lang=snippet.language,
-            claims=claims_confirmation(outcomes),
         )
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)

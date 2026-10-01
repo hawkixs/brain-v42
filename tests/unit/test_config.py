@@ -945,6 +945,32 @@ class TestBrainPrefixEndToEnd:
         assert settings.reranker_url == "http://localhost:9999"
 
 
+def test_extraction_flag_defaults_off(monkeypatch) -> None:
+    """`BRAIN_CLAIM_EXTRACTION_ENABLED` is a typed bool, false by default, true from env.
+
+    Extraction is a new write-time capability: it ships CLOSED, like every other
+    capability here, so a merge arms nothing until an operator gesture sets the
+    flag on the live service.
+    """
+    monkeypatch.delenv("BRAIN_CLAIM_EXTRACTION_ENABLED", raising=False)
+    from brain_v42.config import Settings
+
+    assert Settings.model_fields["brain_claim_extraction_enabled"].default is False
+
+    settings = Settings(
+        postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+        _env_file=None,  # type: ignore[call-arg]
+    )
+    assert settings.brain_claim_extraction_enabled is False
+
+    monkeypatch.setenv("BRAIN_CLAIM_EXTRACTION_ENABLED", "true")
+    armed = Settings(
+        postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+        _env_file=None,  # type: ignore[call-arg]
+    )
+    assert armed.brain_claim_extraction_enabled is True
+
+
 class TestDerivedCaptureFlag:
     """Capture derivation ships CLOSED, like every new capability here.
 

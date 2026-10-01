@@ -10,9 +10,11 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 import sqlalchemy as sa
+import structlog
 
 from brain_v42.db.tables import brain_entities
 from brain_v42.facts import ResolvedClaim, resolve_claim
+from brain_v42.facts.claim_extractor import ClaimCandidate
 from brain_v42.facts.registry import UnknownFactError
 from brain_v42.mcp.tools.claim_tools import _issuer
 from brain_v42.models.claim_input import ClaimInput, validate_claim_inputs
@@ -30,6 +32,13 @@ if TYPE_CHECKING:
 
     from brain_v42.facts.registry import FactRegistry
     from brain_v42.facts.verification import ClaimVerificationService
+
+
+logger = structlog.get_logger(__name__)
+
+#: The fixed server attribution stamped on every automatic, extracted claim.
+#: The entry author remains in the entry's own provenance, never forged here.
+EXTRACTED_DECLARED_BY = "server:claim-extractor:v1"
 
 
 class ClaimMutationError(ValueError):
@@ -266,6 +275,90 @@ async def persist_claims(
                 declared_at=declared_at,
                 verification=verification,
             )
+        )
+    return outcomes
+
+
+async def persist_extracted_claims(
+    session: AsyncSession,
+    registry: FactRegistry,
+    *,
+    entry_id: UUID,
+    entity_type: str,
+    project_key: str | None,
+    candidates: Sequence[ClaimCandidate],
+) -> list[ClaimWriteOutcome]:
+    """Persist automatic candidates in one savepoint that failure cannot poison.
+
+    Automatic extraction is best-effort and server-owned: an unregistered or
+    disabled fact skips its candidate, and any parser, resolver or insert error
+    rolls back only this savepoint, reports a bounded reason code, and lets the
+    entry write commit. Explicit claims and the outer commit belong to the
+    caller and are never touched here — only the automatic part is caught.
+    """
+    if project_key is None or not candidates:
+        return []
+    outcomes: list[ClaimWriteOutcome] = []
+    try:
+        async with session.begin_nested():
+            entity_ref_id = await _claim_anchor_id(session, entry_id, entity_type)
+            for candidate in candidates:
+                try:
+                    descriptor = registry.describe(candidate.fact_name)
+                except UnknownFactError:
+                    logger.warning(
+                        "claim_extraction_skip",
+                        reason="unregistered_fact",
+                        fact=candidate.fact_name,
+                        entity_type=entity_type,
+                        entity_id=str(entry_id),
+                    )
+                    continue
+                if candidate.fact_name in registry.disabled():
+                    logger.warning(
+                        "claim_extraction_skip",
+                        reason="disabled_fact",
+                        fact=candidate.fact_name,
+                        entity_type=entity_type,
+                        entity_id=str(entry_id),
+                    )
+                    continue
+                resolved = resolve_claim(
+                    ClaimInput(
+                        statement=candidate.statement,
+                        fact_name=candidate.fact_name,
+                        expected=dict(candidate.expected),
+                        measure=False,
+                    ),
+                    descriptor,
+                )
+                row = await insert_claim(
+                    session,
+                    entity_ref_id=entity_ref_id,
+                    entity_type=entity_type,
+                    project_key=project_key,
+                    claim_key=resolved.claim_key,
+                    statement=resolved.statement,
+                    fact_name=resolved.fact_name,
+                    definition_version=resolved.definition_version,
+                    target=resolved.target.value,
+                    expected=resolved.expected,
+                    expected_resolved=resolved.expected_resolved,
+                    validity_seconds=resolved.validity_seconds,
+                    provenance="extracted",
+                    declared_by=EXTRACTED_DECLARED_BY,
+                    declared_at=datetime.now(UTC),
+                )
+                outcomes.append(
+                    ClaimWriteOutcome(claim_id=row.id, provenance="extracted", detail=None)
+                )
+    except Exception as exc:
+        logger.warning(
+            "claim_extraction_failed",
+            reason="extraction_error",
+            entity_type=entity_type,
+            entity_id=str(entry_id),
+            where=type(exc).__name__,
         )
     return outcomes
 

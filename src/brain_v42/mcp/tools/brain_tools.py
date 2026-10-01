@@ -33,6 +33,7 @@ from uuid import UUID
 import structlog
 from sqlalchemy.exc import IntegrityError
 
+from brain_v42.facts.claim_extractor import extract_candidates
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.claim_rendering import claim_suffix_map
 from brain_v42.mcp.tools.claim_writes import (
@@ -40,6 +41,7 @@ from brain_v42.mcp.tools.claim_writes import (
     claims_confirmation,
     gated_claim_session,
     persist_claims,
+    persist_extracted_claims,
     resolve_claim_inputs,
 )
 from brain_v42.mcp.tools.tool_annotations import (
@@ -145,6 +147,7 @@ def register_tools(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     claim_verification_svc: ClaimVerificationService | None = None,
     claim_read_svc: ClaimReadService | None = None,
+    extraction_enabled: bool = False,
 ) -> None:
     """Register all brain_* tools on the FastMCP instance.
 
@@ -162,6 +165,14 @@ def register_tools(
             raise RuntimeError("declared claims require the fact registry and a session factory")
         return fact_registry, session_factory
 
+    # Automatic extraction needs both the flag and its write dependencies; a
+    # missing registry or session factory degrades to the entry-only path, never
+    # to a refused entry write (spec §6: registry availability is not a
+    # precondition for a successful knowledge write).
+    extraction_available = (
+        extraction_enabled and fact_registry is not None and session_factory is not None
+    )
+
     # Metrics are no longer installed here. They are applied after registration
     # by brain_v42.metrics.tool_instrumentation, from _run_mcp (ticket
     # c352eaaa): no more mutation of mcp.tool, no more dependence on declaration
@@ -175,6 +186,7 @@ def register_tools(
             "fact_registry": fact_registry,
             "session_factory": session_factory,
             "claim_verification_svc": claim_verification_svc,
+            "extraction_enabled": extraction_enabled,
         }
     register_snippet_tools(
         mcp,
@@ -227,7 +239,7 @@ def register_tools(
         validated_relations = None
         if related_to:
             validated_relations = [RelationInput(**r).model_dump() for r in related_to]
-        if not claims:
+        if not claims and not extraction_available:
             decision = await decision_svc.create(data, related_to=validated_relations)
             logger.info("mcp.brain_log_decision", title=title, project_key=project_key)
             return format_confirmation(
@@ -238,24 +250,45 @@ def register_tools(
             )
 
         registry, claim_session_factory = claim_write_dependencies()
-        resolved = await resolve_claim_inputs(registry, claims)
-        if project_key is None:
+        if claims and project_key is None:
             raise ValueError("declared claims require project_key")
+        resolved = await resolve_claim_inputs(registry, claims) if claims else []
+        candidates = (
+            extract_candidates(
+                entity="decision",
+                project_key=project_key,
+                fields={"description": data.description, "reasoning": data.reasoning},
+            ).candidates
+            if extraction_available
+            else ()
+        )
         declared_at = datetime.now(UTC)
         async with gated_claim_session(
             claim_session_factory, claim_verification_svc, resolved
         ) as session:
             decision = await decision_svc.create(data, session=session)
-            outcomes = await persist_claims(
-                session,
-                entry_id=decision.id,
-                entity_type="decision",
-                project_key=project_key,
-                resolved=resolved,
-                declared_by=get_current_actor(),
-                declared_at=declared_at,
-                verification=claim_verification_svc,
-            )
+            outcomes: list[Any] = []
+            if resolved:
+                assert project_key is not None
+                outcomes = await persist_claims(
+                    session,
+                    entry_id=decision.id,
+                    entity_type="decision",
+                    project_key=project_key,
+                    resolved=resolved,
+                    declared_by=get_current_actor(),
+                    declared_at=declared_at,
+                    verification=claim_verification_svc,
+                )
+            if candidates:
+                await persist_extracted_claims(
+                    session,
+                    registry,
+                    entry_id=decision.id,
+                    entity_type="decision",
+                    project_key=project_key,
+                    candidates=candidates,
+                )
         decision = await decision_svc.enrich_created(decision, data, related_to=validated_relations)
         logger.info(
             "mcp.brain_log_decision",
@@ -263,12 +296,19 @@ def register_tools(
             project_key=project_key,
             **claim_write_log_fields(outcomes),
         )
+        if claims:
+            return format_confirmation(
+                "Decision logged",
+                title,
+                id=str(decision.id),
+                project=project_key,
+                claims=claims_confirmation(outcomes),
+            )
         return format_confirmation(
             "Decision logged",
             title,
             id=str(decision.id),
             project=project_key,
-            claims=claims_confirmation(outcomes),
         )
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
@@ -489,7 +529,7 @@ def register_tools(
         validated_relations = None
         if related_to:
             validated_relations = [RelationInput(**r).model_dump() for r in related_to]
-        if not claims:
+        if not claims and not extraction_available:
             scope = get_dream_project_scope()
             if scope is None:
                 learning = await learning_svc.create(data, related_to=validated_relations)
@@ -515,32 +555,53 @@ def register_tools(
             )
 
         registry, claim_session_factory = claim_write_dependencies()
-        resolved = await resolve_claim_inputs(registry, claims)
-        if project_key is None:
+        if claims and project_key is None:
             raise ValueError("declared claims require project_key")
+        resolved = await resolve_claim_inputs(registry, claims) if claims else []
         scope = get_dream_project_scope()
+        candidates = (
+            extract_candidates(
+                entity="learning",
+                project_key=project_key,
+                fields={"insight": data.insight},
+            ).candidates
+            if extraction_available
+            else ()
+        )
         declared_at = datetime.now(UTC)
         async with gated_claim_session(
             claim_session_factory, claim_verification_svc, resolved
         ) as session:
             learning = await learning_svc.create(data, session=session)
-            outcomes = await persist_claims(
-                session,
-                entry_id=learning.id,
-                entity_type="learning",
-                project_key=project_key,
-                resolved=resolved,
-                declared_by=get_current_actor(),
-                declared_at=declared_at,
-                verification=claim_verification_svc,
-            )
+            outcomes: list[Any] = []
+            if resolved:
+                assert project_key is not None
+                outcomes = await persist_claims(
+                    session,
+                    entry_id=learning.id,
+                    entity_type="learning",
+                    project_key=project_key,
+                    resolved=resolved,
+                    declared_by=get_current_actor(),
+                    declared_at=declared_at,
+                    verification=claim_verification_svc,
+                )
+            if candidates:
+                await persist_extracted_claims(
+                    session,
+                    registry,
+                    entry_id=learning.id,
+                    entity_type="learning",
+                    project_key=project_key,
+                    candidates=candidates,
+                )
         learning = await learning_svc.enrich_created(
             learning,
             data,
             related_to=validated_relations,
             authorization=cast("RelationAuthorization", scope) if scope is not None else None,
         )
-        extra = {"claims": claims_confirmation(outcomes)}
+        extra = {"claims": claims_confirmation(outcomes)} if claims else {}
         if learning.graph_warnings:
             extra["warnings"] = "; ".join(learning.graph_warnings)
         logger.info(
@@ -637,7 +698,7 @@ def register_tools(
             tags,
         )
         scope = get_dream_project_scope()
-        if not claims:
+        if not claims and not extraction_available:
             if scope is None:
                 adr = await adr_svc.create(data)
             else:
@@ -654,22 +715,46 @@ def register_tools(
             )
 
         registry, claim_session_factory = claim_write_dependencies()
-        resolved = await resolve_claim_inputs(registry, claims)
+        resolved = await resolve_claim_inputs(registry, claims) if claims else []
+        candidates = (
+            extract_candidates(
+                entity="adr",
+                project_key=project_key,
+                fields={
+                    "context": data.context,
+                    "decision": data.decision,
+                    "consequences": data.consequences,
+                },
+            ).candidates
+            if extraction_available
+            else ()
+        )
         declared_at = datetime.now(UTC)
         async with gated_claim_session(
             claim_session_factory, claim_verification_svc, resolved
         ) as session:
             adr = await adr_svc.create(data, session=session)
-            outcomes = await persist_claims(
-                session,
-                entry_id=adr.id,
-                entity_type="adr",
-                project_key=project_key,
-                resolved=resolved,
-                declared_by=get_current_actor(),
-                declared_at=declared_at,
-                verification=claim_verification_svc,
-            )
+            outcomes: list[Any] = []
+            if resolved:
+                outcomes = await persist_claims(
+                    session,
+                    entry_id=adr.id,
+                    entity_type="adr",
+                    project_key=project_key,
+                    resolved=resolved,
+                    declared_by=get_current_actor(),
+                    declared_at=declared_at,
+                    verification=claim_verification_svc,
+                )
+            if candidates:
+                await persist_extracted_claims(
+                    session,
+                    registry,
+                    entry_id=adr.id,
+                    entity_type="adr",
+                    project_key=project_key,
+                    candidates=candidates,
+                )
         adr = await adr_svc.enrich_created(
             adr,
             data,
@@ -682,12 +767,19 @@ def register_tools(
             project_key=project_key,
             **claim_write_log_fields(outcomes),
         )
+        if claims:
+            return format_confirmation(
+                f"ADR #{adr.number} proposed",
+                title,
+                id=str(adr.id),
+                project=project_key,
+                claims=claims_confirmation(outcomes),
+            )
         return format_confirmation(
             f"ADR #{adr.number} proposed",
             title,
             id=str(adr.id),
             project=project_key,
-            claims=claims_confirmation(outcomes),
         )
 
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
