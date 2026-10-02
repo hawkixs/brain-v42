@@ -94,14 +94,68 @@ def test_migration_script_never_renders_frame_locals(
     _assert_traceback_without_locals(capsys.readouterr().out)
 
 
+def _console_renderer_calls(source: str) -> list[int]:
+    """Line numbers of ConsoleRenderer constructions, however the name is reached.
+
+    An attribute call (``structlog.dev.ConsoleRenderer()``, ``d.ConsoleRenderer()``)
+    is matched on the attribute; a bare-name call is matched only when the name
+    was imported from ``structlog.dev`` in this module, aliased or not.
+    """
+    tree = ast.parse(source)
+    imported_as = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "structlog.dev"
+        for alias in node.names
+        if alias.name == "ConsoleRenderer"
+    }
+    return [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Attribute) and node.func.attr == "ConsoleRenderer")
+            or (isinstance(node.func, ast.Name) and node.func.id in imported_as)
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import structlog\nstructlog.dev.ConsoleRenderer()",
+        "import structlog\nstructlog.dev.ConsoleRenderer(exception_formatter=f)",
+        "import structlog.dev as d\nd.ConsoleRenderer()",
+        "from structlog import dev\ndev.ConsoleRenderer()",
+        "from structlog import dev as d\nd.ConsoleRenderer()",
+        "from structlog.dev import ConsoleRenderer\nConsoleRenderer()",
+        "from structlog.dev import ConsoleRenderer as CR\nCR()",
+    ],
+)
+def test_guard_flags_every_way_of_building_a_console_renderer(source: str) -> None:
+    assert _console_renderer_calls(source) == [2]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "from brain_v42.safe_logging import safe_console_renderer\nsafe_console_renderer()",
+        "from other import ConsoleRenderer\nConsoleRenderer()",
+        "from structlog.dev import ConsoleRenderer\nclass Sub(ConsoleRenderer): ...",
+        "import structlog\nstructlog.dev.plain_traceback",
+    ],
+)
+def test_guard_ignores_code_that_builds_no_structlog_console_renderer(
+    source: str,
+) -> None:
+    assert _console_renderer_calls(source) == []
+
+
 def test_src_builds_no_console_renderer_outside_the_safe_helper() -> None:
     offenders = [
-        f"{path.relative_to(_SRC)}:{node.lineno}"
+        f"{path.relative_to(_SRC)}:{lineno}"
         for path in sorted(_SRC.rglob("*.py"))
         if path.name != "safe_logging.py"
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "ConsoleRenderer"
+        for lineno in _console_renderer_calls(path.read_text(encoding="utf-8"))
     ]
     assert offenders == []
