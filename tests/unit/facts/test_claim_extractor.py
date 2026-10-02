@@ -438,7 +438,7 @@ def test_extract_claims_overflow_counts_only_candidate_sentences() -> None:
 def test_extract_claims_many_bounded_french_sentences_full_of_ne_stay_fast() -> None:
     """60 KiB of bounded French sentences with a cue and many "ne" stays linear."""
     sentence = "Le schéma de production est 058 " + "ne " * 150 + "fin. "
-    text = sentence * (60 * 1024 // len(sentence.encode())) + "Le schéma de production est 058."
+    text = sentence * (60 * 1024 // len(sentence.encode())) + "\n\nLe schéma de production est 058."
     start = time.perf_counter()
     result = _extract("learning", {"insight": text})
     duration = time.perf_counter() - start
@@ -555,4 +555,58 @@ def test_extract_claims_accepts_measurement_attributions(insight: str) -> None:
     """The closed lead-in and trailer lists still let a measured assertion through."""
     result = _extract("learning", {"insight": insight})
     assert [c.expected["value"] for c in result.candidates] == ["058"]
+    assert result.reasons == frozenset()
+
+
+@pytest.mark.parametrize(
+    "insight",
+    [
+        "- ~~~text\n  comment.\n  The production schema is 056.\n  ~~~",
+        "1) ~~~\n   x.\n   The production schema is 056.\n   ~~~",
+        # A label paragraph governs what follows it: the whole field is refused.
+        "Example.\nThe production schema is 056.",
+        "Example. The production schema is 056.",
+        "Exemple.\nLe schéma de production est 056.",
+        "For instance. The production schema is 056.",
+        "E.g. The production schema is 056.",
+        "Par exemple. Le schéma de production est 056.",
+        "Here is an example. The production schema is 056.",
+        "Voici un exemple. Le schéma de production est 056.",
+        "Hypothetically. The production schema is 056.",
+        "Imagine this. The production schema is 056.",
+        "Template. The production schema is 056.",
+        "Example!\nThe production schema is 056.",
+        "Example.\n\nThe production schema is 058.",
+        "The production schema is 058.\n\nExample: none.",
+        "Wrong. The production schema is 056.",
+        "Faux. Le schéma de production est 056.",
+        "Wrong:\n\nThe production schema is 056.",
+        # A neighbouring sentence can retract or date an otherwise valid assertion.
+        "The production schema is 056. Just kidding.",
+        "The production schema is 056. That was last week.",
+        "Le schéma de production est 056. Plus maintenant.",
+        "Note this. The production schema is 056.",
+    ],
+)
+def test_extract_claims_paragraph_must_be_pure_and_field_free_of_markers(insight: str) -> None:
+    """Context a sentence cannot show on its own refuses the paragraph or the field."""
+    result = _extract("learning", {"insight": insight})
+    assert result.candidates == ()
+    assert result.reasons == frozenset()
+
+
+@pytest.mark.parametrize(
+    ("insight", "value"),
+    [
+        (
+            "- ~~~text\n  comment.\n  The production schema is 056.\n  ~~~\n\nThe production schema is 058.",
+            "058",
+        ),
+        ("The production schema is 058.\n\nSome unrelated remark here.", "058"),
+    ],
+)
+def test_extract_claims_other_paragraphs_are_independent(insight: str, value: str) -> None:
+    """A list-item fence ends where its closer is, and a paragraph is judged alone."""
+    result = _extract("learning", {"insight": insight})
+    assert [c.expected["value"] for c in result.candidates] == [value]
     assert result.reasons == frozenset()

@@ -26,6 +26,14 @@ grammar replaced. The negation, history and uncertainty blacklists stay as an
 extra filter on the whole sentence. Quotes and code are rejected, never
 stripped: stripping can delete the very word ("not") that changes the meaning
 of what is left.
+
+Context is judged per paragraph, not per sentence. A paragraph yields claims
+only when ALL of its sentences are plain assertions: a neighbouring sentence
+can relabel ("Example."), retract ("Just kidding.") or date ("That was last
+week.") an otherwise valid assertion, and enumerating such sentences is the
+blacklist this grammar replaced. A closed list of context markers refuses a
+whole field, because a label paragraph ("Example.", "Wrong:") governs the
+paragraphs that follow it.
 """
 
 from __future__ import annotations
@@ -171,12 +179,60 @@ _SHA_TOKEN = re.compile(r"(?<![0-9a-fA-F])([0-9a-f]{40})(?![0-9a-fA-F])")
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
-_FENCE_START = re.compile(r"^\s*(`{3,}|~{3,})")
+# A fence may open inside a list item, after indentation and a list marker.
+_FENCE_START = re.compile(r"^\s*(?:(?:[-*+]|[0-9]{1,9}[.)])\s+)?(`{3,}|~{3,})")
 # A closing fence is ONLY a run of the opener's character: "```python" inside an
 # open fence is content, not a closer.
 _FENCE_CLOSE = re.compile(r"^\s*(`{3,}|~{3,})\s*$")
 _INDENTED_LINE = re.compile(r"^[ \t]{4,}")
 _BLOCKQUOTE_LINE = re.compile(r"^\s*>")
+
+# A label paragraph ("Example.", "Wrong:") governs the paragraphs after it, so
+# one such word anywhere in a field refuses the whole field. Word-bounded and
+# matched on the casefolded text.
+_CONTEXT_MARKERS: tuple[str, ...] = (
+    "example",
+    "examples",
+    "exemple",
+    "exemples",
+    "e.g.",
+    "for instance",
+    "par exemple",
+    "hypothetical",
+    "hypothetically",
+    "hypoth\u00e8se",
+    "hypoth\u00e9tique",
+    "suppose",
+    "supposons",
+    "imagine",
+    "imaginons",
+    "sample",
+    "illustration",
+    "illustrative",
+    "scenario",
+    "sc\u00e9nario",
+    "template",
+    "fictional",
+    "fictif",
+    "demo",
+    "wrong",
+    "faux",
+    "incorrect",
+    "outdated",
+    "obsol\u00e8te",
+    "stale",
+    "p\u00e9rim\u00e9",
+    "deprecated",
+    "myth",
+    "todo",
+    "draft",
+    "brouillon",
+)
+_CONTEXT_MARKER = re.compile(
+    r"(?<!\w)(?:"
+    + "|".join(r"\s+".join(re.escape(w) for w in m.split(" ")) for m in _CONTEXT_MARKERS)
+    + r")(?!\w)"
+)
 
 # A straight apostrophe or a typographic right quote between two letters is a
 # contraction, a possessive or a French elision, never a quote. Anything else
@@ -226,17 +282,19 @@ def _has_unbalanced_quote(line: str) -> bool:
     return False
 
 
-def _assertion_text(text: str) -> str:
-    """Keep only the lines of a field that may carry an assertion.
+def _assertion_paragraphs(text: str) -> list[str]:
+    """Return the paragraphs of a field that may carry an assertion.
 
     Examples and instructions describe possible state, not the current one, so
     fenced and indented code and Markdown blockquotes (including their lazy
     continuations, which run until a blank line) are removed line by line. A
-    field with a line that opens a quote or backtick span it does not close is
-    refused whole: a span running across lines can hide a clean-looking sentence
-    in its middle, and no line-level rule can tell which lines are inside it.
+    paragraph is a run of kept lines between blank lines; a removed region also
+    ends one. A field is refused whole (no paragraph) when a line opens a quote
+    or backtick span it does not close, since a span running across lines can
+    hide a clean-looking sentence in its middle, or when it holds a context
+    marker, since the label governs what follows it.
     """
-    kept: list[str] = []
+    kept: list[str | None] = []
     in_fence = False
     fence_char = ""
     fence_len = 0
@@ -253,22 +311,36 @@ def _assertion_text(text: str) -> str:
             fence_char = m.group(1)[0]
             fence_len = len(m.group(1))
             in_blockquote = False
+            kept.append(None)
             continue
         if not line.strip():
             in_blockquote = False
-            kept.append(line)
+            kept.append(None)
             continue
         if in_blockquote:
             continue
         if _INDENTED_LINE.match(line):
+            kept.append(None)
             continue
         if _BLOCKQUOTE_LINE.match(line):
             in_blockquote = True
+            kept.append(None)
             continue
         kept.append(line)
-    if any(_has_unbalanced_quote(line) for line in kept):
-        return ""
-    return "\n".join(kept)
+    lines = [line for line in kept if line is not None]
+    if any(_has_unbalanced_quote(line) for line in lines):
+        return []
+    if _CONTEXT_MARKER.search("\n".join(lines).casefold()):
+        return []
+    paragraphs: list[str] = []
+    run: list[str] = []
+    for entry in [*kept, None]:
+        if entry is not None:
+            run.append(entry)
+        elif run:
+            paragraphs.append("\n".join(run))
+            run = []
+    return paragraphs
 
 
 def _has_quote(sentence: str) -> bool:
@@ -362,6 +434,45 @@ def _token_values(fact: str, sentence: str) -> frozenset[str]:
     return frozenset(_SHA_TOKEN.findall(sentence))
 
 
+@dataclass(frozen=True, slots=True)
+class _Reading:
+    """What one sentence is: a plain assertion, or silence, ambiguity or overflow."""
+
+    fact: str | None = None
+    value: str = ""
+    statement: str = ""
+    ambiguous: tuple[str, ...] = ()
+    overflow: bool = False
+
+
+def _read_sentence(trimmed: str) -> _Reading:
+    """Classify one trimmed sentence against the closed grammar."""
+    folded = trimmed.casefold()
+    if len(trimmed) > _SENTENCE_LIMIT_CHARS:
+        # Only a sentence that could have been a candidate is an overflow;
+        # the bound is checked before any regex runs on the sentence.
+        return _Reading(overflow=_has_any_cue(folded))
+    if _has_quote(trimmed):
+        return _Reading()
+    facts = _qualifying_facts(folded)
+    if not facts:
+        return _Reading()
+    if len(facts) > 1:
+        return _Reading(ambiguous=facts)
+    fact = facts[0]
+    anchor = _anchored_value(fact, folded)
+    if anchor is None:
+        return _Reading()
+    # Tokens are read from the original sentence: casefolding would turn
+    # an uppercase SHA into a valid one.
+    values = _token_values(fact, trimmed)
+    if len(values) > 1:
+        return _Reading(ambiguous=(fact,))
+    if values != {anchor[0]} or not _is_clean_trailer(folded[anchor[1] :]):
+        return _Reading()
+    return _Reading(fact=fact, value=anchor[0], statement=trimmed)
+
+
 def extract_candidates(
     *,
     entity: EntityKind,
@@ -370,9 +481,10 @@ def extract_candidates(
 ) -> ExtractionResult:
     """Extract at most one deterministic candidate per allowlisted fact.
 
-    Selected prose fields are read in a fixed per-entity order, then sentences
-    in order, so a retry with unchanged prose yields the same candidates. The
-    first qualifying sentence supplies the ``statement``; overflow, ambiguity
+    Selected prose fields are read in a fixed per-entity order, then paragraphs
+    and sentences in order, so a retry with unchanged prose yields the same
+    candidates. A paragraph counts only when every sentence in it is a plain
+    assertion. The first qualifying sentence supplies the ``statement``; overflow, ambiguity
     and missing scope are reported as reasons rather than truncating or
     guessing a value.
     """
@@ -396,45 +508,29 @@ def extract_candidates(
     order: list[str] = []
 
     for text in prose:
-        for sentence in _SENTENCE_SPLIT.split(_assertion_text(text)):
-            trimmed = sentence.strip()
-            if not trimmed:
-                continue
-            folded = trimmed.casefold()
-            if len(trimmed) > _SENTENCE_LIMIT_CHARS:
-                # Only a sentence that could have been a candidate is an overflow;
-                # the bound is checked before any regex runs on the sentence.
-                if _has_any_cue(folded):
+        for paragraph in _assertion_paragraphs(text):
+            readings = [
+                _read_sentence(trimmed)
+                for sentence in _SENTENCE_SPLIT.split(paragraph)
+                if (trimmed := sentence.strip())
+            ]
+            # Two passes: reasons and ambiguity are recorded for every sentence,
+            # but claims are committed only when the whole paragraph matched.
+            for reading in readings:
+                fact_ambiguous.update(reading.ambiguous)
+                if reading.overflow:
                     reasons.add("sentence_overflow")
+            if not readings or any(reading.fact is None for reading in readings):
                 continue
-            if _has_quote(trimmed):
-                continue
-            facts = _qualifying_facts(folded)
-            if not facts:
-                continue
-            if len(facts) > 1:
-                fact_ambiguous.update(facts)
-                continue
-            fact = facts[0]
-            if fact in fact_ambiguous:
-                continue
-            anchor = _anchored_value(fact, folded)
-            if anchor is None:
-                continue
-            # Tokens are read from the original sentence: casefolding would turn
-            # an uppercase SHA into a valid one.
-            values = _token_values(fact, trimmed)
-            if len(values) > 1:
-                fact_ambiguous.add(fact)
-                continue
-            if values != {anchor[0]} or not _is_clean_trailer(folded[anchor[1] :]):
-                continue
-            if fact not in fact_values:
-                fact_values[fact] = set()
-                order.append(fact)
-            fact_values[fact].update(values)
-            if fact not in fact_statement:
-                fact_statement[fact] = trimmed
+            for reading in readings:
+                fact = reading.fact
+                if fact is None:
+                    continue
+                if fact not in fact_values:
+                    fact_values[fact] = set()
+                    order.append(fact)
+                fact_values[fact].add(reading.value)
+                fact_statement.setdefault(fact, reading.statement)
 
     candidates: list[ClaimCandidate] = []
     for fact in order:
