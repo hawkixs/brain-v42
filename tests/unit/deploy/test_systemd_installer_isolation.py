@@ -191,6 +191,7 @@ def _install_tool_wrappers(fake_bin: Path, *, include_analyzer: bool) -> None:
         "cp",
         extra_guard="""
         if [[ -e "$TOOL_CONTROL_ROOT/compat-sync-fail" && "$*" == *zz-apparmor-userns-compat.conf* ]]; then
+          : > "$TOOL_CONTROL_ROOT/compat-sync-fired"
           exit 93
         fi
         """,
@@ -1240,7 +1241,7 @@ def test_render_dir_includes_compat_dropins_only_when_host_restricts_userns(
 
 
 def test_compat_dropin_sync_failure_restores_published_units_and_dropins(tmp_path: Path) -> None:
-    fixture = _make_fixture(tmp_path, include_analyzer=False)
+    fixture = _make_fixture(tmp_path)
     make_directory(fixture.user_unit_dir, parents=True)
     previous = "previous-unit-content\n"
     (fixture.user_unit_dir / "brain-v42-dream.service").write_text(previous, encoding="utf-8")
@@ -1253,8 +1254,12 @@ def test_compat_dropin_sync_failure_restores_published_units_and_dropins(tmp_pat
     fixture.environment["BRAIN_APPARMOR_USERNS_SYSCTL"] = str(sysctl)
     (tmp_path / "compat-sync-fail").touch()
 
-    result = _run_installer(fixture, "--dry-run")
+    result = _run_installer(fixture, "--dry-run", environment_updates=LIVE_INSTALL_UPDATES)
 
+    # The shim only fires once the installer has published the units and reached the drop-in
+    # sync. Without this, the restoration assertions below hold trivially: an early unrelated
+    # exit also leaves the previous files in place.
+    assert (tmp_path / "compat-sync-fired").exists(), result.stdout + result.stderr
     assert result.returncode != 0
     assert (fixture.user_unit_dir / "brain-v42-dream.service").read_text() == previous
     assert old_dropin.read_text() == "previous-dropin-content\n"
