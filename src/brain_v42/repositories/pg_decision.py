@@ -30,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.tables import decisions
 from brain_v42.models.decision import Decision, DecisionCreate, DecisionUpdate
+from brain_v42.repositories.capture_guard import lock_unless_captured
 from brain_v42.repositories.pg_base import BasePgRepository, Row, project_scope
 
 logger = structlog.get_logger(__name__)
@@ -49,6 +50,7 @@ class PgDecisionRepo(BasePgRepository):
 
     table = decisions
     fts_columns: list[str] = []  # search_vector is DB-generated
+    guard_captured_deletes = True
 
     _STRIP_COLS = frozenset(("search_vector", "rank", "similarity", "distance"))
 
@@ -230,19 +232,14 @@ class PgDecisionRepo(BasePgRepository):
         This prevents FK violation when deleting a superseding decision.
 
         Uses transaction() so both statements land in the same atomic commit.
+        Raises KnowledgeCapturedError, changing nothing, when a session captured
+        the decision.
         """
         if project_key is not None:
             async with self.transaction(session) as sess:
-                target_stmt = (
-                    sa.select(decisions.c.id)
-                    .where(
-                        decisions.c.id == decision_id,
-                        decisions.c.project_key == project_key,
-                    )
-                    .with_for_update()
-                )
-                target = (await sess.execute(target_stmt)).scalar_one_or_none()
-                if target is None:
+                if not await lock_unless_captured(
+                    sess, decisions, decision_id, project_key=project_key
+                ):
                     return False
 
                 reference_locks_stmt = (
@@ -275,6 +272,9 @@ class PgDecisionRepo(BasePgRepository):
                 return deleted is not None
 
         async with self.transaction() as sess:
+            # Refuse BEFORE touching other rows: a refusal must change nothing.
+            if not await lock_unless_captured(sess, decisions, decision_id):
+                return False
             # Clear superseded_by refs pointing to this decision
             clear_stmt = (
                 decisions.update()

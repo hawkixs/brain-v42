@@ -15,6 +15,7 @@ from brain_v42.mcp.dream_project_authorization import (
     DreamProjectScope,
     bind_dream_project_scope,
 )
+from brain_v42.models.brain_session import KnowledgeCapturedError
 from brain_v42.models.decision import Decision
 from brain_v42.models.indexed_plan import IndexedPlan
 from tests.unit.mcp._tool_error_adapter import capture_tool_errors
@@ -186,6 +187,18 @@ async def test_scoped_entity_delete_forwards_authenticated_project() -> None:
         entity_id,
         project_key=PROJECT_KEY,
     )
+
+
+@pytest.mark.asyncio
+async def test_scoped_delete_of_captured_knowledge_is_refused_the_same_way() -> None:
+    tools, services, _session_factory = _registered_tools()
+    entity_id, session_id = uuid4(), uuid4()
+    services["decision_svc"].delete.side_effect = KnowledgeCapturedError(entity_id, session_id)
+
+    with bind_dream_project_scope(_scope("brain_delete")):
+        result = await tools["brain_delete"]("decision", str(entity_id))
+
+    assert f"was captured by session {session_id}; deletion refused." in result
 
 
 @pytest.mark.asyncio
