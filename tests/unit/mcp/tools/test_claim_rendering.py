@@ -347,6 +347,16 @@ def test_an_unverified_declaration_is_named_as_such() -> None:
     assert render_claim_suffix([state]) == "[claims : 1 non vérifiée]"
 
 
+def test_extracted_claim_without_verdict_is_rendered_unverified() -> None:
+    """The claim list identifies server extraction without implying verification."""
+    state = _state(replace(_claim(), provenance="extracted"), None, None)
+    rendered = format_claim_list([state], None)
+    assert "extracted" in rendered
+    assert "non vérifiée" in rendered
+    assert "tient" not in rendered
+    assert "FALSIFIÉ" not in rendered
+
+
 def test_a_newer_unreadable_attempt_after_a_fresh_conclusive_stays_visible() -> None:
     """Contract: 'if a newer attempt is unreadable after a conclusive verdict, retain both facts'."""
     conclusive = _verdict("holds", 1, NOW)

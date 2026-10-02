@@ -49,13 +49,14 @@ def _run_alembic(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_057_is_the_head_and_follows_056() -> None:
-    """Bumping the head without noticing this file is what the fence prevents."""
+def test_057_follows_056_and_precedes_058() -> None:
+    """The 057 round trip still targets its predecessor after 058 lands."""
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
     head = script.get_current_head()
 
-    assert head == "057"
+    assert head == "058"
     assert script.get_revision("057").down_revision == "056"
+    assert script.get_revision("058").down_revision == "057"
 
 
 class TestTheColumnLandsOnTheTable:

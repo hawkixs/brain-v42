@@ -230,13 +230,19 @@ if TYPE_CHECKING:
 # It adds no trigger, no CHECK and no NOT NULL column on any table this repair
 # touches — there is nothing for this repair to interact with.
 #
+# Bumped to 058 after reviewing the complete migration, inert by TABLE as well:
+# 058 only widens the `knowledge_claims` provenance CHECK to accept `extracted`,
+# and `knowledge_claims` is not one of the three tables this repair reads or
+# writes. Measured the same way: 058 contains zero references to
+# `indexed_plans`, `indexed_plan_chunks` or `project_contexts` (`grep -c` → 0).
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "057"
+_REQUIRED_ALEMBIC_HEAD = "058"
 
 
 class RepairStore:
