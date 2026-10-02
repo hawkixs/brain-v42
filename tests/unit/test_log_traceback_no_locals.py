@@ -1,0 +1,107 @@
+"""No ConsoleRenderer in src/ may print frame locals in a traceback.
+
+structlog's ConsoleRenderer renders ``exc_info`` through rich when it is
+installed, and rich shows every frame's local variables. During a Postgres
+outage the asyncpg connect frame holds ``password=...``, so the journal received
+the database password in clear (ticket 1bffd79a). Each test below logs an
+exception raised under a local named like a secret and asserts that the value
+never reaches the rendered output while the traceback itself still does.
+"""
+
+from __future__ import annotations
+
+import ast
+import importlib
+import io
+import logging
+import sys
+import uuid
+from collections.abc import Iterator
+from pathlib import Path
+from unittest.mock import MagicMock
+
+import pytest
+import structlog
+
+from brain_v42.mcp import server as mcp_server
+from brain_v42.metrics.runtime import build_sidecar_structlog_processors
+
+_SECRET = f"s3cr3t-{uuid.uuid4().hex}"
+_SRC = Path(__file__).resolve().parents[2] / "src" / "brain_v42"
+
+
+def _connect() -> None:
+    """Raise with the secret held in a local, as asyncpg's connect frame does."""
+    password = _SECRET
+    raise ConnectionRefusedError(f"postgres down (len {len(password)})")
+
+
+def _log_failure() -> None:
+    log = structlog.get_logger("test.no_locals")
+    try:
+        _connect()
+    except ConnectionRefusedError:
+        log.error("db.connect_failed", exc_info=True)
+
+
+def _assert_traceback_without_locals(rendered: str) -> None:
+    assert "Traceback" in rendered, rendered
+    assert "ConnectionRefusedError" in rendered, rendered
+    assert "postgres down" in rendered, rendered
+    assert _SECRET not in rendered, "frame local leaked into the rendered traceback"
+
+
+@pytest.fixture(autouse=True)
+def _restore_structlog() -> Iterator[None]:
+    saved = structlog.get_config()
+    yield
+    structlog.reset_defaults()
+    structlog.configure(**saved)
+
+
+def test_sidecar_chain_never_renders_frame_locals() -> None:
+    buffer = io.StringIO()
+    structlog.configure(
+        processors=build_sidecar_structlog_processors(MagicMock()),
+        wrapper_class=structlog.BoundLogger,
+        logger_factory=structlog.PrintLoggerFactory(file=buffer),
+    )
+
+    _log_failure()
+
+    _assert_traceback_without_locals(buffer.getvalue())
+
+
+def test_mcp_logging_never_renders_frame_locals(monkeypatch: pytest.MonkeyPatch) -> None:
+    buffer = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", buffer)
+    monkeypatch.setattr(logging, "basicConfig", lambda **_: None)
+    mcp_server._configure_stdio_logging()
+
+    _log_failure()
+
+    _assert_traceback_without_locals(buffer.getvalue())
+
+
+def test_migration_script_never_renders_frame_locals(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = importlib.import_module("brain_v42.scripts.migrate_neo4j_to_pg")
+    importlib.reload(module)  # the script configures structlog at import time
+
+    _log_failure()
+
+    _assert_traceback_without_locals(capsys.readouterr().out)
+
+
+def test_src_builds_no_console_renderer_outside_the_safe_helper() -> None:
+    offenders = [
+        f"{path.relative_to(_SRC)}:{node.lineno}"
+        for path in sorted(_SRC.rglob("*.py"))
+        if path.name != "safe_logging.py"
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8")))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "ConsoleRenderer"
+    ]
+    assert offenders == []
