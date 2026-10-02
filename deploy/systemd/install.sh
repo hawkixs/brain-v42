@@ -1055,6 +1055,9 @@ rollback_published_units() {
   exit "$status"
 }
 
+# -E: without it, functions do not inherit the ERR trap, so a failure inside
+# snapshot_/sync_userns_compat_dropins would exit under `set -e` without any rollback.
+set -E
 trap rollback_published_units ERR INT TERM
 
 snapshot_userns_compat_dropins() {
