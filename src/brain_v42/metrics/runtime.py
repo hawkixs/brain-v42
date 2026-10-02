@@ -36,6 +36,7 @@ from brain_v42.metrics.collector import MetricsCollector
 from brain_v42.metrics.recent_log import RecentLogProcessor
 from brain_v42.metrics.retention import PROCESS_METRICS_STALE_SQL
 from brain_v42.metrics.server import MetricsServer
+from brain_v42.safe_logging import safe_console_renderer
 from brain_v42.services.brain_graph_projection import (
     BrainGraphProjectionService,
     Neo4jGraphSnapshotReader,
@@ -267,7 +268,7 @@ def build_sidecar_structlog_processors(collector: MetricsCollector) -> list[Any]
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
         RecentLogProcessor(collector, min_level="info"),
-        structlog.dev.ConsoleRenderer(),
+        safe_console_renderer(),
     ]
 
 

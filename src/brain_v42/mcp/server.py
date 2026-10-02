@@ -65,6 +65,7 @@ from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.repositories.pg_runbook import PgRunbookRepo
 from brain_v42.repositories.pg_snippet import PgSnippetRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
+from brain_v42.safe_logging import safe_console_renderer
 from brain_v42.services.adr_service import ADRService
 from brain_v42.services.auto_linker import AutoLinker
 from brain_v42.services.brain_service import BrainService
@@ -112,7 +113,7 @@ def _configure_stdio_logging() -> None:
         processors=[
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.add_log_level,
-            structlog.dev.ConsoleRenderer(colors=False),
+            safe_console_renderer(colors=False),
         ],
     )
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, force=True)
