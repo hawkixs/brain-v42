@@ -124,6 +124,12 @@ Seven facts, in registration order, each bound to a target the operator declared
 start, named in the journal and in the briefing, and absent from
 `brain_fact_list`.
 
+The production identity requires `system_identifier`, `database` and
+`server_port`; `server_addr` is optional. When it is omitted, the address is not
+compared, so a container whose address Docker reassigns stays measurable; when it
+is declared, it must match the observed address exactly. The observed identity
+always carries the address it read.
+
 | Fact | Target | TTL / timeout | Briefing | Value |
 | --- | --- | --- | --- | --- |
 | `graph_projection_lag` | production | 15 s / 3 s | yes | outbox counts, `lag_seconds`, lease state, `healthy` |
@@ -132,7 +138,7 @@ start, named in the journal and in the briefing, and absent from
 | `alembic_head_shipped` | live_release | process lifetime / 1 s | yes | `revision` from a strict read of the shipped migrations |
 | `dream_killswitches_declared` | host | 60 s / 1 s | yes | v2: the eleven raw drop-in strings, including `verify` (`BRAIN_DREAM_VERIFY_ENABLED`) and `verify_dry` (`BRAIN_DREAM_VERIFY_DRY_RUN`), plus `file_mtime_epoch` |
 | `dream_last_night` | production | 60 s / 3 s | no | the latest `dream_runs` night by status and dry flag |
-| `claims_verification_last_night` | production | 60 s / 3 s | yes | latest wet nightly claim verification run, verdicts it wrote by outcome, and claims eligible now; unreadable when no wet run exists |
+| `claims_verification_last_night` | production | 60 s / 3 s | yes | latest wet nightly claim verification run, verdicts it wrote by outcome, and claims eligible now; `no_observation` (not an error) when no wet run exists |
 
 ## Claim verification
 
@@ -1076,6 +1082,8 @@ Partial update validated through the per-type `<Entity>Update` Pydantic model. `
 brain_delete(entity_type, entity_id)
 ```
 Hard delete; no soft-delete here — use `brain_merge_entities` if you want audit + archive. Raises `Invalid UUID: <value>` if `entity_id` is malformed.
+
+Refuses to delete knowledge that a session captured (any row in the capture ledger `brain_session_artifacts`, whatever its type, `legacy` included). The error names the capturing session and, for every type except `plan`, gives the call that archives the entry instead: `brain_update(entity_type=..., entity_id=..., fields={"freshness_status": "archived"})`. Plans are immutable, so no archive call is offered. The Dream project scope is refused the same way.
 
 ---
 

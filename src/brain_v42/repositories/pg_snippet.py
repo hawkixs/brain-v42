@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.tables import snippets
 from brain_v42.models.snippet import Snippet, SnippetCreate, SnippetUpdate
+from brain_v42.repositories.capture_guard import lock_unless_captured
 from brain_v42.repositories.pg_base import BasePgRepository, Row
 
 logger = structlog.get_logger(__name__)
@@ -31,6 +32,7 @@ class PgSnippetRepo(BasePgRepository):
 
     table = snippets
     fts_columns: list[str] = []  # search_vector is DB-generated
+    guard_captured_deletes = True
 
     # -------------------------------------------------------------------------
     # Helpers
@@ -148,6 +150,8 @@ class PgSnippetRepo(BasePgRepository):
             .returning(snippets.c.id)
         )
         async with self._maybe_session(session, write=True) as sess:
+            if not await lock_unless_captured(sess, snippets, id, project_key=project_key):
+                return False
             return (await sess.execute(stmt)).one_or_none() is not None
 
     # -------------------------------------------------------------------------

@@ -5,8 +5,14 @@ from unittest.mock import MagicMock
 
 import pytest
 import sqlalchemy as sa
+from pydantic import ValidationError
 
-from brain_v42.db.tables import delivery_artifact_bindings, delivery_workflows, tickets
+from brain_v42.db.tables import (
+    delivery_artifact_bindings,
+    delivery_contract_revisions,
+    delivery_workflows,
+    tickets,
+)
 from brain_v42.delivery_observer.ownership import ObserverOwnership
 from brain_v42.models.ticket import TicketStatus
 from brain_v42.repositories.pg_ticket import PgTicketRepo
@@ -53,6 +59,43 @@ async def test_due_order_is_stable_oldest_first_with_exclusions_and_limit(engine
             assert [job.binding.id for job in rest] == [ordered[2].id]
     finally:
         await owner.release()
+
+
+async def test_due_reports_bad_stored_contract_and_returns_next_job(engine, session_factory):
+    queue = _queue()
+    case = ObserverCase(engine, session_factory)
+    bad_ticket, bad_binding, _ = await case.create(number=401)
+    _, healthy_binding, _ = await case.create(number=402)
+    base = datetime.now(UTC) - timedelta(minutes=10)
+    async with session_factory.begin() as session:
+        await session.execute(
+            delivery_artifact_bindings.update()
+            .where(delivery_artifact_bindings.c.id == bad_binding.id)
+            .values(due_at=base)
+        )
+        await session.execute(
+            delivery_artifact_bindings.update()
+            .where(delivery_artifact_bindings.c.id == healthy_binding.id)
+            .values(due_at=base + timedelta(seconds=1))
+        )
+        await session.execute(
+            # Valid JSON with a shape rejected by ContractRevision.
+            delivery_contract_revisions.update()
+            .where(delivery_contract_revisions.c.ticket_id == bad_ticket.id)
+            .values(normalized_contract={})
+        )
+    reported = []
+    async with session_factory() as session:
+        jobs = await queue.due(
+            session,
+            limit=2,
+            on_undecodable=lambda identity, error_type: reported.append((identity, error_type)),
+        )
+    assert [job.binding.id for job in jobs] == [healthy_binding.id]
+    assert reported == [(f"artifact_binding:{bad_binding.id}", "ValidationError")]
+    async with session_factory() as session:
+        with pytest.raises(ValidationError):
+            await queue.due(session, limit=2)
 
 
 @pytest.mark.parametrize("disposition", ["fulfilled", "cancelled", "wontfix"])

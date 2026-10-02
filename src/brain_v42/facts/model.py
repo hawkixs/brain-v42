@@ -40,6 +40,7 @@ ERROR_CODES = frozenset(
         "refresh_budget",
         "target_mismatch",
         "probe_error",
+        "no_observation",
         "value_too_large",
         "value_not_canonical",
         "identity_unreadable",
@@ -58,6 +59,17 @@ class IdentityUnreadableError(ValueError):
     A bare ``ValueError`` could instead be a probe failure; this dedicated
     type lets the registry report ``identity_unreadable`` even when a probe's
     value is the identity itself.
+    """
+
+
+class NoObservationError(ValueError):
+    """Signal that there is nothing to observe yet, which is an expected state.
+
+    A bare ``ValueError`` reads as a probe failure; a fact whose subject has not
+    happened (a verify step never armed, a night that did not run) raises this
+    so the registry reports ``no_observation`` and the briefing says so without
+    calling it an error. The target identity is still checked first: an empty
+    answer from the wrong database proves nothing.
     """
 
 
@@ -99,11 +111,17 @@ def _validate_measurement_fields(
 
 @dataclass(frozen=True, slots=True)
 class SourceIdentity:
-    """PostgreSQL source fields needed to reject a probe pointed at the wrong cluster."""
+    """PostgreSQL source fields needed to reject a probe pointed at the wrong cluster.
+
+    ``server_addr`` is ``None`` only in a declaration that chose not to pin it
+    (Q134 = c): Docker reassigns a container's address across restarts, while
+    the cluster identifier, the database and the port do not move. An observed
+    identity always carries the address it read.
+    """
 
     system_identifier: str
     database: str
-    server_addr: str
+    server_addr: str | None
     server_port: int
 
     def __post_init__(self) -> None:
@@ -125,6 +143,10 @@ class SourceIdentity:
             or _POSTGRES_IDENTIFIER.fullmatch(self.database) is None
         ):
             raise ValueError("database must be a lowercase PostgreSQL identifier")
+        if type(self.server_port) is not int or not 1 <= self.server_port <= 65535:
+            raise ValueError("server_port must be between 1 and 65535")
+        if self.server_addr is None:
+            return
         if not isinstance(self.server_addr, str):
             raise ValueError("server_addr must be an IP address literal")
         address = self.server_addr
@@ -136,28 +158,39 @@ class SourceIdentity:
             parsed = ipaddress.ip_address(address)
         except ValueError as exc:
             raise ValueError("server_addr must be an IP address literal") from exc
-        if type(self.server_port) is not int or not 1 <= self.server_port <= 65535:
-            raise ValueError("server_port must be between 1 and 65535")
         # Canonical spelling: `::1`, `0:0:0:0:0:0:0:1` and the zero-padded form
         # are one address and must compare equal.
         object.__setattr__(self, "server_addr", str(parsed))
 
     def as_dict(self) -> dict[str, str | int]:
-        """Return plain scalar data for comparison and JSON API serialization."""
-        return {
+        """Return plain scalar data for comparison and JSON API serialization.
+
+        An undeclared address is absent, not ``None``: absence is what tells
+        `identity_matches` not to compare it.
+        """
+        fields: dict[str, str | int] = {
             "system_identifier": self.system_identifier,
             "database": self.database,
-            "server_addr": self.server_addr,
-            "server_port": self.server_port,
         }
+        if self.server_addr is not None:
+            fields["server_addr"] = self.server_addr
+        fields["server_port"] = self.server_port
+        return fields
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> SourceIdentity:
-        """Require every identity field so omitted evidence cannot silently compare equal."""
-        expected = frozenset({"system_identifier", "database", "server_addr", "server_port"})
+        """Require every mandatory field so omitted evidence cannot silently compare equal.
+
+        Only ``server_addr`` may be omitted (Q134 = c); the other three stay mandatory.
+        An explicit ``None`` is refused rather than read as an omission: absence is a
+        declaration's choice, a null is evidence nobody can vouch for.
+        """
+        if "server_addr" in mapping and mapping["server_addr"] is None:
+            raise ValueError("server_addr must be an IP address literal when present")
+        expected = frozenset({"system_identifier", "database", "server_port"})
         actual = frozenset(mapping)
         missing = expected - actual
-        extra = actual - expected
+        extra = actual - expected - {"server_addr"}
         if missing:
             raise ValueError(f"source identity has missing keys: {sorted(missing)!r}")
         if extra:
@@ -165,7 +198,7 @@ class SourceIdentity:
         return cls(
             system_identifier=cast(str, mapping["system_identifier"]),
             database=cast(str, mapping["database"]),
-            server_addr=cast(str, mapping["server_addr"]),
+            server_addr=cast("str | None", mapping.get("server_addr")),
             server_port=cast(int, mapping["server_port"]),
         )
 
@@ -259,6 +292,58 @@ class HostIdentity:
 
 Identity = SourceIdentity | ReleaseIdentity | HostIdentity
 
+#: Every field name an identity can carry: the closed vocabulary a mismatch may
+#: name. Names only — a value (address, identifier, port) never leaves the comparison.
+IDENTITY_FIELD_NAMES: frozenset[str] = frozenset(
+    {
+        "system_identifier",
+        "database",
+        "server_addr",
+        "server_port",
+        "release_sha",
+        "package_version",
+        "hostname",
+    }
+)
+
+
+def identity_matches(observed: Identity, expected: Identity) -> bool:
+    """Whether an observed identity satisfies the declared one.
+
+    Every field the declaration carries must be observed with the same value; a
+    field the declaration omits (only ``SourceIdentity.server_addr`` may be) is
+    not compared. Identities of different kinds never match, and an observed
+    PostgreSQL identity without an address never matches: an observation must say
+    where it was read, whatever the declaration chose to pin.
+    """
+    if type(observed) is not type(expected):
+        return False
+    if isinstance(observed, SourceIdentity) and observed.server_addr is None:
+        return False
+    seen = observed.as_dict()
+    return all(name in seen and seen[name] == value for name, value in expected.as_dict().items())
+
+
+def differing_identity_fields(observed: Identity, expected: Identity) -> str | None:
+    """Name the fields on which two identities differ, in declaration order.
+
+    Returns field names only, comma-separated, so an operator can tell a moved
+    address from a swapped cluster without any observed or declared value being
+    published. `None` when the two identities are not even of the same kind.
+    """
+    if type(observed) is not type(expected):
+        return None
+    seen, wanted = observed.as_dict(), expected.as_dict()
+    names = [name for name in wanted if seen.get(name) != wanted[name]]
+    if isinstance(observed, SourceIdentity) and observed.server_addr is None:
+        # An observation without its address never matches (see `identity_matches`),
+        # even when the declaration omits it: name the missing field in that case too.
+        if "server_addr" not in names:
+            names.append("server_addr")
+        order = ("system_identifier", "database", "server_addr", "server_port")
+        names.sort(key=order.index)
+    return ", ".join(names) if names else None
+
 
 @dataclass(frozen=True, slots=True)
 class Measured:
@@ -290,6 +375,10 @@ class Measured:
         )
         if not isinstance(self.source, (SourceIdentity, ReleaseIdentity, HostIdentity)):
             raise ValueError("source must be an identity")
+        if isinstance(self.source, SourceIdentity) and self.source.server_addr is None:
+            # Only a DECLARATION may omit the address; a measurement records the
+            # address it read, or it records nothing.
+            raise ValueError("a measured source must carry the server_addr it read")
         if not isinstance(self.value_json, str):
             raise ValueError("value_json must be canonical JSON")
         try:

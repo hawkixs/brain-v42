@@ -130,6 +130,22 @@ class BrainSessionCaptureConflictError(BrainSessionConflictError):
     """Raised when knowledge is already attributed to another session."""
 
 
+class KnowledgeCapturedError(Exception):
+    """Raised when a delete targets knowledge that a session captured.
+
+    Deliberately NOT a ``BrainSessionError``: that family reports lifecycle
+    commands, while this one refuses a destructive write on a knowledge row.
+    The capture ledger (``brain_session_artifacts``) is the session's record of
+    what it produced; deleting a row behind its back leaves a dangling id with
+    no foreign key to notice it.
+    """
+
+    def __init__(self, knowledge_id: UUID, session_id: UUID) -> None:
+        super().__init__(f"knowledge {knowledge_id} was captured by session {session_id}")
+        self.knowledge_id = knowledge_id
+        self.session_id = session_id
+
+
 class BrainSessionFocusConflictError(BrainSessionConflictError):
     """Raised when the project focus revision changed concurrently."""
 
