@@ -403,4 +403,5 @@ def test_render_dir_adds_the_userns_compat_dropin_only_on_a_restricted_host(
     assert unrestricted.returncode == 0, unrestricted.stderr
     dropin = parent / "restricted" / f"{UNIT}.d" / USERNS_COMPAT.name
     assert dropin.read_text(encoding="utf-8") == USERNS_COMPAT.read_text(encoding="utf-8")
+    assert (parent / "restricted" / f"{UNIT}.d" / USERNS_COMPAT.name).is_file()
     assert {path.name for path in (parent / "unrestricted").iterdir()} == {UNIT}

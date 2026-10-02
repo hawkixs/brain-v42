@@ -516,6 +516,7 @@ installer_manages_unit() {
 # host restricts user namespaces, absent otherwise. The set of units is derived from the
 # templates, never listed; other drop-ins in the same directory are left alone.
 sync_userns_compat_dropins() {
+  local unit_dir="${1:-$USER_UNIT_DIR}"
   local template
   local unit
   local dropin_dir
@@ -526,7 +527,7 @@ sync_userns_compat_dropins() {
     unit="${unit%.tmpl}"
     installer_manages_unit "$unit" || continue
     template_needs_userns_compat "$template" || continue
-    dropin_dir="$USER_UNIT_DIR/$unit.d"
+    dropin_dir="$unit_dir/$unit.d"
     if host_restricts_userns; then
       mkdir -p -- "$dropin_dir"
       staged="$(mktemp "$dropin_dir/.$USERNS_COMPAT_FILE.XXXXXX")"
@@ -791,6 +792,7 @@ render_isolated_units() {
     "$BACKFILL_TEMPLATE" \
     > "$ISOLATED_RENDER_DIR/brain-v42-embedding-backfill.service"
   cp "$BACKFILL_TIMER" "$ISOLATED_RENDER_DIR/brain-v42-embedding-backfill.timer"
+  sync_userns_compat_dropins "$ISOLATED_RENDER_DIR"
 }
 
 validate_isolated_artifacts() {
@@ -800,7 +802,18 @@ validate_isolated_artifacts() {
   shopt -s nullglob dotglob
   entries=("$ISOLATED_RENDER_DIR"/*)
   shopt -u nullglob dotglob
-  if ((${#entries[@]} != ${#MANAGED_UNIT_FILES[@]})); then
+  local dropin_count=0
+  local template
+  for template in "$SCRIPT_DIR"/*.service.tmpl; do
+    unit="${template##*/}"
+    unit="${unit%.tmpl}"
+    installer_manages_unit "$unit" || continue
+    template_needs_userns_compat "$template" || continue
+    if host_restricts_userns; then
+      ((dropin_count += 1))
+    fi
+  done
+  if ((${#entries[@]} != ${#MANAGED_UNIT_FILES[@]} + dropin_count)); then
     echo "ERROR: isolated render produced an unexpected artifact count." >&2
     return 1
   fi
@@ -814,6 +827,18 @@ validate_isolated_artifacts() {
       return 1
     fi
   done
+  if host_restricts_userns; then
+    for template in "$SCRIPT_DIR"/*.service.tmpl; do
+      unit="${template##*/}"
+      unit="${unit%.tmpl}"
+      installer_manages_unit "$unit" || continue
+      template_needs_userns_compat "$template" || continue
+      [[ -f "$ISOLATED_RENDER_DIR/$unit.d/$USERNS_COMPAT_FILE" ]] || {
+        echo "ERROR: isolated render omitted a required user namespace compatibility drop-in." >&2
+        return 1
+      }
+    done
+  fi
 }
 
 verify_isolated_artifacts() {
@@ -977,10 +1002,33 @@ rollback_published_units() {
   local target
   local backup
   local rollback_failed=false
+  local template
+  local unit
+  local snapshot
 
   ((status != 0)) || status=1
   trap - ERR INT TERM
   set +e
+  for template in "$SCRIPT_DIR"/*.service.tmpl; do
+    unit="${template##*/}"
+    unit="${unit%.tmpl}"
+    installer_manages_unit "$unit" || continue
+    template_needs_userns_compat "$template" || continue
+    snapshot="$BACKUP_DIR/userns/$unit.d"
+    if [[ -e "$snapshot/.present" ]]; then
+      if ! rm -rf -- "$USER_UNIT_DIR/$unit.d" \
+        || ! cp -a -- "$snapshot/content" "$USER_UNIT_DIR/$unit.d"; then
+        echo "ERROR: failed to restore user namespace drop-in backup: $unit.d" >&2
+        rollback_failed=true
+      fi
+    elif [[ -d "$snapshot" ]]; then
+      if ! rm -f -- "$USER_UNIT_DIR/$unit.d/$USERNS_COMPAT_FILE"; then
+        echo "ERROR: failed to remove partial user namespace drop-in: $unit.d" >&2
+        rollback_failed=true
+      fi
+      rmdir -- "$USER_UNIT_DIR/$unit.d" 2>/dev/null || true
+    fi
+  done
   for ((index = ${#PUBLISHED_FILES[@]} - 1; index >= 0; index--)); do
     filename="${PUBLISHED_FILES[$index]}"
     target="$USER_UNIT_DIR/$filename"
@@ -1008,6 +1056,27 @@ rollback_published_units() {
 }
 
 trap rollback_published_units ERR INT TERM
+
+snapshot_userns_compat_dropins() {
+  local template
+  local unit
+  local source
+  local snapshot
+
+  for template in "$SCRIPT_DIR"/*.service.tmpl; do
+    unit="${template##*/}"
+    unit="${unit%.tmpl}"
+    installer_manages_unit "$unit" || continue
+    template_needs_userns_compat "$template" || continue
+    source="$USER_UNIT_DIR/$unit.d"
+    snapshot="$BACKUP_DIR/userns/$unit.d"
+    mkdir -p -- "$snapshot"
+    if [[ -d "$source" ]]; then
+      : > "$snapshot/.present"
+      cp -a -- "$source" "$snapshot/content"
+    fi
+  done
+}
 
 # --- Generate the .service from the template ---
 log "repo root: $REPO_ROOT"
@@ -1082,10 +1151,11 @@ for filename in "${MANAGED_UNIT_FILES[@]}"; do
   mv -f -- "$RENDER_DIR/$filename" "$target"
   PUBLISHED_FILES+=("$filename")
 done
+snapshot_userns_compat_dropins
+sync_userns_compat_dropins
 trap - ERR INT TERM
 cleanup_staging_dir
 log "published validated managed units"
-sync_userns_compat_dropins
 
 if $DRY_RUN; then
   log "--dry-run: skipping systemctl reload / enable"

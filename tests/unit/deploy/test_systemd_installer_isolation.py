@@ -188,6 +188,15 @@ def _install_tool_wrappers(fake_bin: Path, *, include_analyzer: bool) -> None:
     )
     _write_live_scan_wrapper(
         fake_bin,
+        "cp",
+        extra_guard="""
+        if [[ -e "$TOOL_CONTROL_ROOT/compat-sync-fail" && "$*" == *zz-apparmor-userns-compat.conf* ]]; then
+          exit 93
+        fi
+        """,
+    )
+    _write_live_scan_wrapper(
+        fake_bin,
         "stat",
         extra_guard="""
         if [[ -f "$TOOL_CONTROL_ROOT/stat-foreign-exact-path" ]]; then
@@ -1194,6 +1203,62 @@ def test_render_dir_publishes_exact_verified_artifacts_atomically(tmp_path: Path
     _assert_published_bytes_are_the_verified_bytes(fixture, target)
     _assert_logged_temp_paths_absent(fixture)
     _assert_secret_redacted(result)
+
+
+@pytest.mark.parametrize(
+    "sysctl_value, expected",
+    [
+        (
+            "1",
+            {
+                "brain-v42-graph-recon.service",
+                "brain-mcp-http.service",
+                "brain-v42-automation.service",
+            },
+        ),
+        ("0", set()),
+    ],
+)
+def test_render_dir_includes_compat_dropins_only_when_host_restricts_userns(
+    tmp_path: Path, sysctl_value: str, expected: set[str]
+) -> None:
+    fixture = _make_fixture(tmp_path)
+    sysctl = tmp_path / "userns"
+    sysctl.write_text(f"{sysctl_value}\n", encoding="utf-8")
+    fixture.environment["BRAIN_APPARMOR_USERNS_SYSCTL"] = str(sysctl)
+    parent = tmp_path / "render-parent"
+    make_directory(parent)
+    target = parent / "rendered"
+
+    result = _run_installer(fixture, "--render-dir", str(target))
+
+    assert result.returncode == 0, result.stderr
+    assert {
+        path.parent.name.removesuffix(".d")
+        for path in target.glob("*.service.d/zz-apparmor-userns-compat.conf")
+    } == expected
+
+
+def test_compat_dropin_sync_failure_restores_published_units_and_dropins(tmp_path: Path) -> None:
+    fixture = _make_fixture(tmp_path, include_analyzer=False)
+    make_directory(fixture.user_unit_dir, parents=True)
+    previous = "previous-unit-content\n"
+    (fixture.user_unit_dir / "brain-v42-dream.service").write_text(previous, encoding="utf-8")
+    compat_dir = fixture.user_unit_dir / "brain-v42-dream.service.d"
+    make_directory(compat_dir)
+    old_dropin = compat_dir / "local.conf"
+    old_dropin.write_text("previous-dropin-content\n", encoding="utf-8")
+    sysctl = tmp_path / "userns"
+    sysctl.write_text("1\n", encoding="utf-8")
+    fixture.environment["BRAIN_APPARMOR_USERNS_SYSCTL"] = str(sysctl)
+    (tmp_path / "compat-sync-fail").touch()
+
+    result = _run_installer(fixture, "--dry-run")
+
+    assert result.returncode != 0
+    assert (fixture.user_unit_dir / "brain-v42-dream.service").read_text() == previous
+    assert old_dropin.read_text() == "previous-dropin-content\n"
+    assert not (compat_dir / "zz-apparmor-userns-compat.conf").exists()
 
 
 @pytest.mark.parametrize(

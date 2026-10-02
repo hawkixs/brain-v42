@@ -22,6 +22,7 @@ from collections.abc import Callable, Mapping, Sequence
 
 import asyncpg
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ArgumentError
 
 MAX_WAIT_SECONDS = 120
 DEFAULT_WAIT_SECONDS = 90
@@ -34,8 +35,13 @@ def resolve_dsn(names: Sequence[str], environ: Mapping[str, str]) -> str:
     for name in names:
         value = environ.get(name, "").strip()
         if value:
-            url = make_url(value).set(drivername="postgresql")
-            return url.render_as_string(hide_password=False)
+            try:
+                url = make_url(value).set(drivername="postgresql")
+                if url.port is not None and not 1 <= url.port <= 65535:
+                    raise ValueError("port out of range")
+                return url.render_as_string(hide_password=False)
+            except (ValueError, ArgumentError) as exc:
+                raise ValueError(f"{name} is invalid ({type(exc).__name__})") from None
     raise ValueError(f"none of {', '.join(names)} is set")
 
 
@@ -104,7 +110,11 @@ def main(argv: Sequence[str] | None = None, environ: Mapping[str, str] | None = 
     try:
         dsn = resolve_dsn(args.url_env, os.environ if environ is None else environ)
     except ValueError as exc:
-        print(f"postgres readiness gate misconfigured: {exc}", file=sys.stderr)
+        names = ", ".join(args.url_env)
+        print(
+            f"postgres readiness gate misconfigured ({type(exc).__name__}); check {names}",
+            file=sys.stderr,
+        )
         return 2
     if wait_for_postgres(dsn, timeout=args.timeout, interval=args.interval):
         return 0

@@ -7,6 +7,7 @@ the wait is a bounded ExecStartPre and the restart policy must never latch at th
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 import pytest
 from scripts.wait_for_postgres import MAX_WAIT_SECONDS
@@ -18,12 +19,7 @@ LONG_RUNNING = {
     "brain-v42-automation.service.tmpl": ("BRAIN_POSTGRES_URL", "POSTGRES_URL"),
     "brain-v42-delivery-observer.service.tmpl": ("BRAIN_DELIVERY_POSTGRES_URL", "POSTGRES_URL"),
 }
-SHORT_LIVED = (
-    "brain-v42-dream.service.tmpl",
-    "brain-v42-graph-recon.service.tmpl",
-    "brain-v42-embedding-backfill.service.tmpl",
-    "brain-mcp-http-watchdog.service.tmpl",
-)
+TEMPLATE_DIR = Path(__file__).resolve().parents[3] / "deploy" / "systemd"
 BACKOFF_CEILING_SECONDS = 60
 
 
@@ -86,9 +82,15 @@ def test_start_limit_cannot_latch_a_long_running_unit(unit: str) -> None:
     assert not [k for k, _ in _section_directives(unit, "Unit") if k == "StartLimitBurst"]
 
 
-@pytest.mark.parametrize("unit", SHORT_LIVED)
-def test_oneshot_and_timer_driven_units_keep_their_semantics(unit: str) -> None:
-    keys = {key for key, _ in _directives(unit)}
+def test_oneshot_and_timer_driven_units_keep_their_semantics() -> None:
+    templates = sorted(TEMPLATE_DIR.glob("*.service.tmpl"))
+    units = [path.name for path in templates if _single(path.name, "Type") == "oneshot"]
 
-    assert keys.isdisjoint({"RestartSteps", "RestartMaxDelaySec"})
-    assert not any("wait_for_postgres" in v for v in _values(unit, "ExecStartPre"))
+    assert units
+    for unit in units:
+        assert _single(unit, "Type") == "oneshot", unit
+        keys = {key for key, _ in _directives(unit)}
+        assert keys.isdisjoint(
+            {"Restart", "RestartSteps", "RestartMaxDelaySec", "StartLimitIntervalSec"}
+        ), unit
+        assert not any("wait_for_postgres" in v for v in _values(unit, "ExecStartPre")), unit

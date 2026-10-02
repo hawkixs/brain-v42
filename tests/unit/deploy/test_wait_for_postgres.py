@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from scripts import wait_for_postgres as readiness
 from scripts.wait_for_postgres import (
     MAX_WAIT_SECONDS,
     resolve_dsn,
@@ -54,6 +55,16 @@ def test_the_earlier_variable_wins_when_both_are_set() -> None:
 def test_no_variable_set_is_a_configuration_error() -> None:
     with pytest.raises(ValueError, match="BRAIN_POSTGRES_URL, POSTGRES_URL"):
         resolve_dsn(["BRAIN_POSTGRES_URL", "POSTGRES_URL"], {"POSTGRES_URL": "  "})
+
+
+def test_unexpected_url_parser_errors_are_not_reclassified(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail_unexpectedly(_value: str) -> None:
+        raise RuntimeError("unexpected parser failure")
+
+    monkeypatch.setattr(readiness, "make_url", fail_unexpectedly)
+
+    with pytest.raises(RuntimeError, match="unexpected parser failure"):
+        resolve_dsn(["POSTGRES_URL"], {"POSTGRES_URL": "postgresql://host/db"})
 
 
 def test_returns_as_soon_as_postgres_answers() -> None:
@@ -147,6 +158,22 @@ def test_unreachable_postgres_fails_within_the_bound_without_leaking_the_passwor
     assert "not ready" in completed.stderr
 
 
+def test_probe_failure_does_not_leak_url_or_password() -> None:
+    url = f"postgresql+asyncpg://u:{PASSWORD}@127.0.0.1:1/db"
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--url-env", "X", "--timeout", "1", "--interval", "0.2"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+        env={"X": url},
+    )
+
+    assert completed.returncode == 1
+    assert PASSWORD not in completed.stdout + completed.stderr
+    assert url not in completed.stdout + completed.stderr
+
+
 def test_missing_configuration_fails_fast_with_a_distinct_exit_code() -> None:
     completed = subprocess.run(
         [sys.executable, str(SCRIPT), "--url-env", "X"],
@@ -158,3 +185,27 @@ def test_missing_configuration_fails_fast_with_a_distinct_exit_code() -> None:
     )
 
     assert completed.returncode == 2
+    assert "X" in completed.stderr
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        f"postgresql+asyncpg://u:{PASSWORD}@host:abc{PASSWORD}/db",
+        f"postgresql+asyncpg://u:{PASSWORD}@host:999999/db",
+    ],
+)
+def test_malformed_configuration_does_not_leak_url_or_password(url: str) -> None:
+    completed = subprocess.run(
+        [sys.executable, str(SCRIPT), "--url-env", "X", "--timeout", "1"],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=20,
+        env={"X": url},
+    )
+
+    assert completed.returncode == 2
+    assert PASSWORD not in completed.stdout + completed.stderr
+    assert url not in completed.stdout + completed.stderr
+    assert "X" in completed.stderr
