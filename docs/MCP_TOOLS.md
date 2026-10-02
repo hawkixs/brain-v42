@@ -1077,6 +1077,8 @@ brain_delete(entity_type, entity_id)
 ```
 Hard delete; no soft-delete here — use `brain_merge_entities` if you want audit + archive. Raises `Invalid UUID: <value>` if `entity_id` is malformed.
 
+Refuses to delete knowledge that a session captured (any row in the capture ledger `brain_session_artifacts`, whatever its type, `legacy` included). The error names the capturing session and, for every type except `plan`, gives the call that archives the entry instead: `brain_update(entity_type=..., entity_id=..., fields={"freshness_status": "archived"})`. Plans are immutable, so no archive call is offered. The Dream project scope is refused the same way.
+
 ---
 
 ## Decay & consolidation — 4 tools (`decay_tools.py`)
