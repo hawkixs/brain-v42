@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Literal
@@ -65,7 +66,16 @@ class PgDeliveryQueue:
         project_key: str | None = None,
         limit: int = 100,
         exclude: set[str] | frozenset[str] = frozenset(),
+        on_undecodable: Callable[[str, str], None] | None = None,
     ) -> tuple[ObservationJob, ...]:
+        """Return the due jobs, oldest first.
+
+        A row whose stored JSON cannot be decoded poisons only itself: with
+        ``on_undecodable`` it is skipped and reported as ``(identity, error
+        type name)`` -- never the message, which may echo stored content --
+        so one bad row cannot hide the others. Without the listener the
+        decoding error propagates, as before.
+        """
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("observer queue limit must be between 1 and 100")
         w, r, b = workflows, revisions, bindings
@@ -152,31 +162,42 @@ class PgDeliveryQueue:
         ).limit(limit)
         jobs: list[ObservationJob] = []
         for row in (await session.execute(query)).mappings():
-            contract = _contract_from_json(row["contract"])
-            binding = None
-            if row["binding_row"] is not None:
-                raw = row["binding_row"]
-                binding = ArtifactBinding.model_validate_json(
-                    json.dumps(
-                        {
-                            key: raw[key]
-                            for key in (
-                                "id",
-                                "ticket_id",
-                                "contract_revision",
-                                "attempt",
-                                "deliverable_key",
-                                "repository_id",
-                                "pr_number",
-                                "state",
-                                "head_sha",
-                                "base_sha",
-                                "integration_sha",
-                            )
-                        }
-                        | {"binding_version": raw["row_version"]}
+            try:
+                contract = _contract_from_json(row["contract"])
+                binding = None
+                if row["binding_row"] is not None:
+                    raw = row["binding_row"]
+                    binding = ArtifactBinding.model_validate_json(
+                        json.dumps(
+                            {
+                                key: raw[key]
+                                for key in (
+                                    "id",
+                                    "ticket_id",
+                                    "contract_revision",
+                                    "attempt",
+                                    "deliverable_key",
+                                    "repository_id",
+                                    "pr_number",
+                                    "state",
+                                    "head_sha",
+                                    "base_sha",
+                                    "integration_sha",
+                                )
+                            }
+                            | {"binding_version": raw["row_version"]}
+                        )
                     )
+                previous = (
+                    None
+                    if row["previous"] is None
+                    else PullRequestEvidence.model_validate_json(json.dumps(row["previous"]))
                 )
+            except (ValueError, KeyError, TypeError) as error:
+                if on_undecodable is None:
+                    raise
+                on_undecodable(f"{row['kind']}:{row['subject_id']}", type(error).__name__)
+                continue
             failed = sa.select(confirmations.c.id).where(confirmations.c.outcome == "error")
             if binding is not None:
                 failed = failed.where(confirmations.c.binding_id == binding.id)
@@ -208,9 +229,7 @@ class PgDeliveryQueue:
                     project_key=row["project_key"],
                     context_set_digest=row["context_set_digest"],
                     binding=binding,
-                    previous=None
-                    if row["previous"] is None
-                    else PullRequestEvidence.model_validate_json(json.dumps(row["previous"])),
+                    previous=previous,
                     failure_count=int(failure_count or 0),
                 )
             )

@@ -45,7 +45,7 @@ class _Outcome:
 
 
 def _diagnose(
-    job: ObservationJob, code: str, *, provider_code: str | None, diagnostic: str | None
+    subject: str, code: str, *, provider_code: str | None, diagnostic: str | None
 ) -> None:
     """One JSON line on stderr per failed observation.
 
@@ -56,7 +56,7 @@ def _diagnose(
     """
     line = {
         "event": "observation_error",
-        "subject": job.identity,
+        "subject": subject,
         "error_code": code,
         "provider_code": provider_code,
         "diagnostic": diagnostic,
@@ -168,19 +168,36 @@ class DeliveryObserverRuntime:
         latest: datetime | None = None
         lag = 0.0
         seen: set[str] = set()
+        undecodable: list[tuple[str, str]] = []
         watcher = asyncio.create_task(self._watch_ownership())
         try:
             # Bound a one-shot pass under continuously arriving work. Older due
             # rows stay ahead of completed/rescheduled rows on the next pass.
             while len(seen) < 100 and not stop_event.is_set():
+                undecodable.clear()
                 async with self.owner.transaction() as session:
                     jobs = await self.queue.due(
                         session,
                         project_key=project_key,
                         limit=min(2, 100 - len(seen)),
                         exclude=seen,
+                        on_undecodable=lambda identity, error_type: undecodable.append(
+                            (identity, error_type)
+                        ),
+                    )
+                for identity, error_type in undecodable:
+                    # The row stays due: excluding it keeps this pass moving past it.
+                    seen.add(identity)
+                    failed += 1
+                    _diagnose(
+                        identity,
+                        "observer_undecodable_row",
+                        provider_code=None,
+                        diagnostic=error_type,
                     )
                 if not jobs:
+                    if undecodable:
+                        continue
                     break
                 seen.update(job.identity for job in jobs)
                 lag = max(
@@ -302,7 +319,7 @@ class DeliveryObserverRuntime:
                 # After the attempt is persisted and rescheduled: stderr is
                 # synchronous, and a journal that stalls may delay only what
                 # comes next, never the record of this attempt.
-                _diagnose(job, code, provider_code=provider_code, diagnostic=diagnostic)
+                _diagnose(job.identity, code, provider_code=provider_code, diagnostic=diagnostic)
             return _Outcome(
                 "collected" if code is None else "failed", finished_at if code is None else None
             )
@@ -314,4 +331,14 @@ class DeliveryObserverRuntime:
                 "repository_context_superseded",
             }:
                 return _Outcome("deferred")
-            raise
+            # Any other domain error is confined to this one job: re-raising
+            # would end the process, and the oldest due job being retried
+            # first, every restart would die on the same one (ticket b78b5144).
+            # The code is internal and never persisted; the message is dropped.
+            _diagnose(
+                job.identity,
+                "observer_persist_error",
+                provider_code=None,
+                diagnostic=type(error).__name__,
+            )
+            return _Outcome("failed")
