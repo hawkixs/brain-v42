@@ -375,6 +375,10 @@ class Measured:
         )
         if not isinstance(self.source, (SourceIdentity, ReleaseIdentity, HostIdentity)):
             raise ValueError("source must be an identity")
+        if isinstance(self.source, SourceIdentity) and self.source.server_addr is None:
+            # Only a DECLARATION may omit the address; a measurement records the
+            # address it read, or it records nothing.
+            raise ValueError("a measured source must carry the server_addr it read")
         if not isinstance(self.value_json, str):
             raise ValueError("value_json must be canonical JSON")
         try:

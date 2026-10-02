@@ -49,9 +49,16 @@ def test_the_briefing_says_nothing_was_observed_and_does_not_call_it_unreadable(
 
 
 class _BrokenReadSession:
-    """A database read that fails: the probe must not mistake it for an empty answer."""
+    """The wet-run read itself fails: the probe must not mistake it for an empty answer.
+
+    The clock read succeeds, so the failure lands on the very query whose empty
+    result means `no_observation` (review of #265, round 2).
+    """
 
     async def scalar(self, statement: object) -> object:
+        return datetime(2026, 10, 2, tzinfo=UTC)
+
+    async def execute(self, statement: object, parameters: object = None) -> object:
         raise OSError("connection reset by peer")
 
 

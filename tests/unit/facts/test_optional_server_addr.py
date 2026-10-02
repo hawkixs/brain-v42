@@ -197,3 +197,10 @@ async def test_the_registry_refuses_an_addressless_observation_and_names_the_fie
     result = await _registry(addressless, FakeProbe("who")).measure("who")
     assert isinstance(result, Unreadable)
     assert (result.error_code, result.where) == ("target_mismatch", "server_addr")
+
+
+def test_a_measurement_never_records_an_addressless_source() -> None:
+    """The `Measured` contract itself refuses it, whatever path built the identity."""
+    addressless = SourceIdentity("7612696091383607335", "brain", None, 5432)
+    with pytest.raises(ValueError, match="server_addr"):
+        _measured(addressless)
