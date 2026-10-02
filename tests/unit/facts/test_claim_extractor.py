@@ -437,10 +437,61 @@ def test_extract_claims_overflow_counts_only_candidate_sentences() -> None:
 
 def test_extract_claims_many_bounded_french_sentences_full_of_ne_stay_fast() -> None:
     """60 KiB of bounded French sentences with a cue and many "ne" stays linear."""
-    sentence = "Le schéma de production est 058 " + "ne " * 150 + "fin. "
+    sentence = "Le schéma de production est 058, " + "ne " * 150 + "fin. "
     text = sentence * (60 * 1024 // len(sentence.encode()))
     start = time.perf_counter()
     result = _extract("learning", {"insight": text})
     duration = time.perf_counter() - start
     assert duration < 0.5
     assert [c.expected["value"] for c in result.candidates] == ["058"]
+
+
+@pytest.mark.parametrize(
+    "insight",
+    [
+        "The note says 'It's measured: the production schema is 056.' today.",
+        "The note says 'Start.\nThe production schema is 056.\nEnd.' today.",
+        "The note says ‘It’s measured: the production schema is 056.’ today.",
+        "The note says “Start.\nThe production schema is 056.\nEnd.” today.",
+        "The note says `Start.\nThe production schema is 056.\nEnd.` today.",
+        "```\n```python\nThe production schema is 056.\n```",
+        "The production schema is expected to be 056.",
+        "The production schema is likely 056.",
+        "Le schéma de production est censé être 056.",
+        'The production schema is "not" 056.',
+        "The production schema is “not” 056.",
+        "The production schema is `not` 056.",
+        "The production schema is stable; ticket 056 is open.",
+        "The pre production schema is 056.",
+        "The non production schema is 056.",
+        "The production schema is 057; ticket 056 is open.",
+    ],
+)
+def test_extract_claims_rejects_sentences_outside_the_closed_grammar(insight: str) -> None:
+    """Quotes, code, hedges and stray words around the cue or value yield no claim."""
+    assert _extract("learning", {"insight": insight}).candidates == ()
+
+
+def test_extract_claims_unclosed_fence_variant_keeps_text_after_real_closer() -> None:
+    """An info-string line never closes a fence, so only the later sentence counts."""
+    text = "```\n```python\nThe production schema is 056.\n```\nThe production schema is 058."
+    result = _extract("learning", {"insight": text})
+    assert [c.expected["value"] for c in result.candidates] == ["058"]
+    assert result.reasons == frozenset()
+
+
+@pytest.mark.parametrize(
+    "insight",
+    [
+        "The production schema is now 057.",
+        "The production schema is currently 057.",
+        "Le schéma de production est actuellement 057.",
+        "Production schema: 057.",
+        f"The live release sha is {_SHA_40}.",
+    ],
+)
+def test_extract_claims_accepts_grammar_adverbs_and_colon_copula(insight: str) -> None:
+    """An optional adverb or a colon copula still yields exactly one claim."""
+    result = _extract("learning", {"insight": insight})
+    assert [c.expected["value"] for c in result.candidates] in (["057"], [_SHA_40])
+    assert result.reasons == frozenset()
