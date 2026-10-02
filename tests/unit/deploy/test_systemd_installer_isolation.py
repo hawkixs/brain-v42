@@ -142,6 +142,7 @@ def _install_tool_wrappers(fake_bin: Path, *, include_analyzer: bool) -> None:
         "readlink",
         "realpath",
         "rm",
+        "rmdir",
         "sort",
         "tr",
     ):
@@ -413,6 +414,9 @@ def _make_fixture(tmp_path: Path, *, include_analyzer: bool = True) -> Installer
             "MCP_HTTP_TOKEN": SECRET_SENTINEL,
             "MKTEMP_LOG": str(logs["mktemp"]),
             "MV_LOG": str(logs["mv"]),
+            # Pin the host probe to an absent file: the developer's own machine must never
+            # decide whether the compat drop-in is rendered.
+            "BRAIN_APPARMOR_USERNS_SYSCTL": str(tmp_path / "apparmor_restrict_unprivileged_userns"),
             "PATH": str(fake_bin),
             "PREFLIGHT_LOG": str(logs["preflight"]),
             "SYSTEMCTL_LOG": str(logs["systemctl"]),
@@ -1444,3 +1448,84 @@ def test_dry_run_rejects_permissive_user_unit_ancestor(tmp_path: Path) -> None:
     assert not fixture.logs["analyze"].exists()
     _assert_no_systemctl(fixture)
     _assert_secret_redacted(result)
+
+
+USERNS_COMPAT_FILE = "zz-apparmor-userns-compat.conf"
+USERNS_COMPAT_SOURCE = SYSTEMD_DIR / USERNS_COMPAT_FILE
+LIVE_INSTALL_UPDATES = {"ALLOW_LIVE_ACCESS": "1", "ANALYZE_REQUIRE_ISOLATION": "0"}
+
+
+def _sandboxed_managed_services() -> set[str]:
+    """Services whose template drops every capability under PrivateUsers=true.
+
+    Derived from the templates, restricted to what install.sh publishes: the observer
+    template qualifies too but is rendered by its own installer.
+    """
+    sandboxed: set[str] = set()
+    for template in SYSTEMD_DIR.glob("*.service.tmpl"):
+        lines = template.read_text(encoding="utf-8").splitlines()
+        if "PrivateUsers=true" in lines and "CapabilityBoundingSet=" in lines:
+            sandboxed.add(template.name.removesuffix(".tmpl"))
+    return sandboxed & EXPECTED_UNITS
+
+
+def _compat_dropin(fixture: InstallerFixture, unit: str) -> Path:
+    return fixture.user_unit_dir / f"{unit}.d" / USERNS_COMPAT_FILE
+
+
+def _set_userns_restriction(fixture: InstallerFixture, value: str | None) -> None:
+    sysctl = Path(fixture.environment["BRAIN_APPARMOR_USERNS_SYSCTL"])
+    if value is None:
+        sysctl.unlink(missing_ok=True)
+    else:
+        sysctl.write_text(value, encoding="utf-8")
+
+
+def test_restricted_host_gets_the_userns_compat_dropin_on_every_sandboxed_unit(
+    tmp_path: Path,
+) -> None:
+    fixture = _make_fixture(tmp_path)
+    _set_userns_restriction(fixture, "1\n")
+    sandboxed = _sandboxed_managed_services()
+    assert sandboxed, "no sandboxed template derived: the derivation is vacuous"
+
+    result = _run_installer(fixture, "--dry-run", environment_updates=LIVE_INSTALL_UPDATES)
+
+    assert result.returncode == 0, result.stderr
+    expected = USERNS_COMPAT_SOURCE.read_text(encoding="utf-8")
+    for unit in sandboxed:
+        assert _compat_dropin(fixture, unit).read_text(encoding="utf-8") == expected
+    assert {path.name for path in fixture.user_unit_dir.glob("*.d")} == {
+        f"{unit}.d" for unit in sandboxed
+    }
+    _assert_no_systemctl(fixture)
+    _assert_secret_redacted(result)
+
+
+@pytest.mark.parametrize("sysctl_value", ["0\n", None], ids=["unrestricted", "absent"])
+def test_unrestricted_host_keeps_the_full_sandbox(tmp_path: Path, sysctl_value: str | None) -> None:
+    fixture = _make_fixture(tmp_path)
+    _set_userns_restriction(fixture, sysctl_value)
+
+    result = _run_installer(fixture, "--dry-run", environment_updates=LIVE_INSTALL_UPDATES)
+
+    assert result.returncode == 0, result.stderr
+    assert not list(fixture.user_unit_dir.glob("*.d"))
+
+
+def test_unrestricted_host_removes_a_previously_installed_compat_dropin(tmp_path: Path) -> None:
+    fixture = _make_fixture(tmp_path)
+    sandboxed = sorted(_sandboxed_managed_services())
+    for unit in sandboxed:
+        make_directory(_compat_dropin(fixture, unit).parent, parents=True)
+        write_file(_compat_dropin(fixture, unit), "stale\n")
+    keep = fixture.user_unit_dir / f"{sandboxed[0]}.d" / "killswitches.conf"
+    write_file(keep, "[Service]\nEnvironment=KEEP=1\n")
+    _set_userns_restriction(fixture, "0\n")
+
+    result = _run_installer(fixture, "--dry-run", environment_updates=LIVE_INSTALL_UPDATES)
+
+    assert result.returncode == 0, result.stderr
+    assert not any(_compat_dropin(fixture, unit).exists() for unit in sandboxed)
+    assert keep.read_text(encoding="utf-8") == "[Service]\nEnvironment=KEEP=1\n"
+    assert [path.name for path in fixture.user_unit_dir.glob("*.d")] == [f"{sandboxed[0]}.d"]

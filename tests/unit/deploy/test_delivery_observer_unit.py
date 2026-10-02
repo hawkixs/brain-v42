@@ -32,6 +32,9 @@ def _fixture_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     systemd.mkdir(parents=True)
     shutil.copy2(TEMPLATE, systemd / TEMPLATE.name)
     shutil.copy2(INSTALLER, systemd / INSTALLER.name)
+    shutil.copy2(
+        SYSTEMD_DIR / "zz-apparmor-userns-compat.conf", systemd / "zz-apparmor-userns-compat.conf"
+    )
     (systemd / INSTALLER.name).chmod(0o755)
     python = repo / ".venv" / "bin" / "python"
     _write(python, "#!/bin/sh\nexit 0\n", mode=0o755)
@@ -98,6 +101,7 @@ def _environment(tmp_path: Path, python: Path, private: Path) -> tuple[dict[str,
             "PATH": f"{fake_bin}:{env['PATH']}",
             "SYSTEMD_ANALYZE_LOG": str(analyzer_log),
             "SYSTEMCTL_LOG": str(tmp_path / "systemctl.log"),
+            "BRAIN_APPARMOR_USERNS_SYSCTL": str(tmp_path / "apparmor_restrict_unprivileged_userns"),
             "BRAIN_DELIVERY_OBSERVER_PYTHON": str(python),
             "BRAIN_DELIVERY_OBSERVER_ENV_FILE": str(private),
         }
@@ -376,3 +380,27 @@ def test_verifier_mutation_of_configured_paths_refuses_check_only_success(
     assert result.returncode != 0
     assert "check-only: verified" not in result.stdout
     assert SECRET not in result.stdout + result.stderr
+
+
+USERNS_COMPAT = SYSTEMD_DIR / "zz-apparmor-userns-compat.conf"
+
+
+def test_render_dir_adds_the_userns_compat_dropin_only_on_a_restricted_host(
+    tmp_path: Path,
+) -> None:
+    repo, python, private = _fixture_repo(tmp_path)
+    env, _ = _environment(tmp_path, python, private)
+    sysctl = Path(env["BRAIN_APPARMOR_USERNS_SYSCTL"])
+    parent = tmp_path / "render-root"
+    parent.mkdir(mode=0o700)
+    sysctl.write_text("1\n", encoding="utf-8")
+
+    restricted = _run(repo, env, "--render-dir", str(parent / "restricted"))
+    sysctl.write_text("0\n", encoding="utf-8")
+    unrestricted = _run(repo, env, "--render-dir", str(parent / "unrestricted"))
+
+    assert restricted.returncode == 0, restricted.stderr
+    assert unrestricted.returncode == 0, unrestricted.stderr
+    dropin = parent / "restricted" / f"{UNIT}.d" / USERNS_COMPAT.name
+    assert dropin.read_text(encoding="utf-8") == USERNS_COMPAT.read_text(encoding="utf-8")
+    assert {path.name for path in (parent / "unrestricted").iterdir()} == {UNIT}

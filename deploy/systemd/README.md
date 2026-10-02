@@ -47,6 +47,17 @@ replacement is restored or left in a flagged staging for recovery. This defense 
 mistakes and other UIDs; a hostile process sharing the same UID stays within the same
 trust boundary and would need a dedicated `dirfd` helper.
 
+### Hosts that restrict unprivileged user namespaces
+
+When `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` reads `1` (Ubuntu 24.04+),
+a unit combining `PrivateUsers=true` with an empty `CapabilityBoundingSet=` dies with
+`status=218/CAPABILITIES`. On such a host `install.sh` (legacy install and `--dry-run`)
+publishes `zz-apparmor-userns-compat.conf` as a drop-in of every managed unit with that
+combination (derived from the templates), and `install-delivery-observer.sh` renders it next to
+the observer unit. On any other host a later `install.sh` run removes the drop-in, so the
+installed state follows the host. `--check-only` and `--render-dir` of `install.sh` do not
+render it. No sudo is involved.
+
 ## Preflight
 
 This block first verifies all managed units without publishing, produces an artifact inspectable outside

@@ -257,3 +257,28 @@ def test_user_services_do_not_reference_system_network_online_target(
     }
 
     assert "network-online.target" not in ordering_targets
+
+
+USERNS_COMPAT = SYSTEMD_DIR / "zz-apparmor-userns-compat.conf"
+
+# Only the directives that need a capability to be dropped or a device/kernel namespace
+# to be set up may be relaxed; the user-namespace and no-new-privileges boundary stays.
+RELAXABLE_UNDER_RESTRICTED_USERNS = {
+    "CapabilityBoundingSet": "~",
+    "PrivateDevices": "false",
+    "ProtectClock": "false",
+    "ProtectKernelLogs": "false",
+    "ProtectKernelModules": "false",
+}
+
+
+def test_userns_compat_dropin_only_relaxes_the_capability_dependent_directives() -> None:
+    lines = [
+        line.strip()
+        for line in USERNS_COMPAT.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    ]
+
+    assert lines[0] == "[Service]"
+    assert dict(line.split("=", 1) for line in lines[1:]) == RELAXABLE_UNDER_RESTRICTED_USERNS
+    assert len(lines) - 1 == len(RELAXABLE_UNDER_RESTRICTED_USERNS)
