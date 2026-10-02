@@ -33,6 +33,8 @@ from typing import Any
 
 import structlog
 
+from brain_v42.safe_logging import safe_console_renderer
+
 try:
     from neo4j import AsyncGraphDatabase
 
@@ -46,7 +48,7 @@ except ImportError:
 structlog.configure(
     processors=[
         structlog.stdlib.add_log_level,
-        structlog.dev.ConsoleRenderer(),
+        safe_console_renderer(),
     ],
     wrapper_class=structlog.stdlib.BoundLogger,
     context_class=dict,
