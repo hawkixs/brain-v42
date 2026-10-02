@@ -111,11 +111,17 @@ def _validate_measurement_fields(
 
 @dataclass(frozen=True, slots=True)
 class SourceIdentity:
-    """PostgreSQL source fields needed to reject a probe pointed at the wrong cluster."""
+    """PostgreSQL source fields needed to reject a probe pointed at the wrong cluster.
+
+    ``server_addr`` is ``None`` only in a declaration that chose not to pin it
+    (Q134 = c): Docker reassigns a container's address across restarts, while
+    the cluster identifier, the database and the port do not move. An observed
+    identity always carries the address it read.
+    """
 
     system_identifier: str
     database: str
-    server_addr: str
+    server_addr: str | None
     server_port: int
 
     def __post_init__(self) -> None:
@@ -137,6 +143,10 @@ class SourceIdentity:
             or _POSTGRES_IDENTIFIER.fullmatch(self.database) is None
         ):
             raise ValueError("database must be a lowercase PostgreSQL identifier")
+        if type(self.server_port) is not int or not 1 <= self.server_port <= 65535:
+            raise ValueError("server_port must be between 1 and 65535")
+        if self.server_addr is None:
+            return
         if not isinstance(self.server_addr, str):
             raise ValueError("server_addr must be an IP address literal")
         address = self.server_addr
@@ -148,28 +158,35 @@ class SourceIdentity:
             parsed = ipaddress.ip_address(address)
         except ValueError as exc:
             raise ValueError("server_addr must be an IP address literal") from exc
-        if type(self.server_port) is not int or not 1 <= self.server_port <= 65535:
-            raise ValueError("server_port must be between 1 and 65535")
         # Canonical spelling: `::1`, `0:0:0:0:0:0:0:1` and the zero-padded form
         # are one address and must compare equal.
         object.__setattr__(self, "server_addr", str(parsed))
 
     def as_dict(self) -> dict[str, str | int]:
-        """Return plain scalar data for comparison and JSON API serialization."""
-        return {
+        """Return plain scalar data for comparison and JSON API serialization.
+
+        An undeclared address is absent, not ``None``: absence is what tells
+        `identity_matches` not to compare it.
+        """
+        fields: dict[str, str | int] = {
             "system_identifier": self.system_identifier,
             "database": self.database,
-            "server_addr": self.server_addr,
-            "server_port": self.server_port,
         }
+        if self.server_addr is not None:
+            fields["server_addr"] = self.server_addr
+        fields["server_port"] = self.server_port
+        return fields
 
     @classmethod
     def from_mapping(cls, mapping: Mapping[str, object]) -> SourceIdentity:
-        """Require every identity field so omitted evidence cannot silently compare equal."""
-        expected = frozenset({"system_identifier", "database", "server_addr", "server_port"})
+        """Require every mandatory field so omitted evidence cannot silently compare equal.
+
+        Only ``server_addr`` may be omitted (Q134 = c); the other three stay mandatory.
+        """
+        expected = frozenset({"system_identifier", "database", "server_port"})
         actual = frozenset(mapping)
         missing = expected - actual
-        extra = actual - expected
+        extra = actual - expected - {"server_addr"}
         if missing:
             raise ValueError(f"source identity has missing keys: {sorted(missing)!r}")
         if extra:
@@ -177,7 +194,7 @@ class SourceIdentity:
         return cls(
             system_identifier=cast(str, mapping["system_identifier"]),
             database=cast(str, mapping["database"]),
-            server_addr=cast(str, mapping["server_addr"]),
+            server_addr=cast("str | None", mapping.get("server_addr")),
             server_port=cast(int, mapping["server_port"]),
         )
 
@@ -286,6 +303,19 @@ IDENTITY_FIELD_NAMES: frozenset[str] = frozenset(
 )
 
 
+def identity_matches(observed: Identity, expected: Identity) -> bool:
+    """Whether an observed identity satisfies the declared one.
+
+    Every field the declaration carries must be observed with the same value; a
+    field the declaration omits (only ``SourceIdentity.server_addr`` may be) is
+    not compared. Identities of different kinds never match.
+    """
+    if type(observed) is not type(expected):
+        return False
+    seen = observed.as_dict()
+    return all(name in seen and seen[name] == value for name, value in expected.as_dict().items())
+
+
 def differing_identity_fields(observed: Identity, expected: Identity) -> str | None:
     """Name the fields on which two identities differ, in declaration order.
 
@@ -296,7 +326,7 @@ def differing_identity_fields(observed: Identity, expected: Identity) -> str | N
     if type(observed) is not type(expected):
         return None
     seen, wanted = observed.as_dict(), expected.as_dict()
-    names = [name for name in wanted if seen[name] != wanted[name]]
+    names = [name for name in wanted if seen.get(name) != wanted[name]]
     return ", ".join(names) if names else None
 
 

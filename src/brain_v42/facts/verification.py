@@ -14,7 +14,14 @@ import structlog
 
 from brain_v42.facts.claims import ResolvedClaim
 from brain_v42.facts.compare import Comparison, compare
-from brain_v42.facts.model import FactTarget, Measured, Measurement, Unreadable, measurement_to_json
+from brain_v42.facts.model import (
+    FactTarget,
+    Measured,
+    Measurement,
+    Unreadable,
+    identity_matches,
+    measurement_to_json,
+)
 from brain_v42.facts.registry import FactRegistry, UnknownFactError
 from brain_v42.facts.verdict_fingerprints import outcome_fingerprint, request_fingerprint
 from brain_v42.models.claim_verdict import ClaimVerificationError, validate_caller_string
@@ -114,7 +121,7 @@ def _comparison(
         return Comparison("unreadable", "definition_changed")
     if isinstance(measurement, Measured):
         expected = registry.expected_identity(measurement.target)
-        if expected is None or measurement.source != expected:
+        if expected is None or not identity_matches(measurement.source, expected):
             return Comparison("unreadable", "target_mismatch")
     return compare(expected_resolved, measurement)
 

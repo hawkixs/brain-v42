@@ -124,6 +124,12 @@ Seven facts, in registration order, each bound to a target the operator declared
 start, named in the journal and in the briefing, and absent from
 `brain_fact_list`.
 
+The production identity requires `system_identifier`, `database` and
+`server_port`; `server_addr` is optional. When it is omitted, the address is not
+compared, so a container whose address Docker reassigns stays measurable; when it
+is declared, it must match the observed address exactly. The observed identity
+always carries the address it read.
+
 | Fact | Target | TTL / timeout | Briefing | Value |
 | --- | --- | --- | --- | --- |
 | `graph_projection_lag` | production | 15 s / 3 s | yes | outbox counts, `lag_seconds`, lease state, `healthy` |
