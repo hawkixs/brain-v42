@@ -3447,6 +3447,7 @@ artifact_source_matches AS (
  SELECT
      artifact_record.knowledge_id,
      artifact_record.knowledge_type,
+     artifact_record.captured_at,
      session_record.project_key,
      count(source_record.knowledge_id) AS source_matches,
      count(source_record.knowledge_id) FILTER (
@@ -3465,6 +3466,7 @@ artifact_source_matches AS (
      artifact_record.session_id,
      artifact_record.knowledge_id,
      artifact_record.knowledge_type,
+     artifact_record.captured_at,
      session_record.project_key
 ),
 artifact_source_mismatches AS (
@@ -3482,9 +3484,15 @@ artifact_source_mismatches AS (
            FROM public.brain_entities AS entity_record
            WHERE entity_record.source_uuid = match_record.knowledge_id
              AND entity_record.lifecycle = 'deleted'
+             AND entity_record.deleted_at >= match_record.captured_at
              AND entity_record.project_key = match_record.project_key
              AND (
-                 entity_record.entity_type = match_record.knowledge_type
+                 (
+                     match_record.knowledge_type IN (
+                         'decision', 'learning', 'snippet', 'runbook', 'adr'
+                     )
+                     AND entity_record.entity_type = match_record.knowledge_type
+                 )
                  OR (
                      match_record.knowledge_type = 'indexed_plan'
                      AND entity_record.entity_type = 'plan'

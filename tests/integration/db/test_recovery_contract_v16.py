@@ -184,13 +184,30 @@ def _artifact(url: str, knowledge_id: uuid.UUID, knowledge_type: str) -> tuple[s
 
 
 def _tombstone(
-    knowledge_id: uuid.UUID, entity_type: str, *, lifecycle: str = "deleted", project: str = PROJECT
+    knowledge_id: uuid.UUID,
+    entity_type: str,
+    *,
+    lifecycle: str = "deleted",
+    project: str = PROJECT,
+    deleted_minutes_ago: int = 0,
 ) -> tuple[str, tuple]:
+    """A graph entity for the knowledge; `deleted_at` is set only for a deleted one.
+
+    Artifacts are captured ten minutes ago, so the default tombstone (deleted now)
+    records a deletion AFTER the capture.
+    """
     return (
         "INSERT INTO brain_entities (entity_type, entity_key, source_uuid, project_key, "
         "scope_kind, lifecycle, deleted_at) VALUES ($1, $2, $3, $4, 'project', $5::varchar, "
-        "CASE WHEN $5::varchar = 'deleted' THEN now() END)",
-        (entity_type, f"dr-v16:{knowledge_id}", knowledge_id, project, lifecycle),
+        "CASE WHEN $5::varchar = 'deleted' THEN now() - make_interval(mins => $6) END)",
+        (
+            entity_type,
+            f"dr-v16:{knowledge_id}",
+            knowledge_id,
+            project,
+            lifecycle,
+            deleted_minutes_ago,
+        ),
     )
 
 
@@ -212,7 +229,12 @@ async def _artifact_mismatches(url: str, asset: Path) -> int:
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "knowledge_type,entity_type",
-    [("decision", "decision"), ("learning", "learning"), ("legacy", "decision")],
+    [
+        ("decision", "decision"),
+        ("learning", "learning"),
+        ("legacy", "decision"),
+        ("indexed_plan", "plan"),
+    ],
 )
 async def test_an_artifact_whose_knowledge_was_deleted_is_tolerated(
     seeded_head_db_url: str, knowledge_type: str, entity_type: str
@@ -255,6 +277,11 @@ def _still_exists_elsewhere(knowledge_id: uuid.UUID) -> list[tuple[str, tuple]]:
     return [_tombstone(knowledge_id, "decision"), _decision(knowledge_id, OTHER_PROJECT)]
 
 
+def _deleted_before_capture(knowledge_id: uuid.UUID) -> list[tuple[str, tuple]]:
+    """Knowledge deleted before the capture was never there to capture."""
+    return [_tombstone(knowledge_id, "decision", deleted_minutes_ago=20)]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "near_miss",
@@ -265,6 +292,7 @@ def _still_exists_elsewhere(knowledge_id: uuid.UUID) -> list[tuple[str, tuple]]:
         _wrong_type,
         _other_project,
         _still_exists_elsewhere,
+        _deleted_before_capture,
     ],
 )
 async def test_every_near_miss_stays_a_mismatch(seeded_head_db_url: str, near_miss: Any) -> None:
@@ -286,3 +314,24 @@ async def test_a_live_captured_artifact_is_still_matched(seeded_head_db_url: str
         [_decision(knowledge_id, PROJECT), _artifact(seeded_head_db_url, knowledge_id, "decision")],
     )
     assert await _artifact_mismatches(seeded_head_db_url, V16_SQL) == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "knowledge_type,entity_type",
+    [("legacy", "legacy"), ("indexed_plan", "indexed_plan"), ("decision", "plan")],
+)
+async def test_a_tombstone_of_a_non_knowledge_or_mismatched_type_stays_a_mismatch(
+    seeded_head_db_url: str, knowledge_type: str, entity_type: str
+) -> None:
+    """`legacy` and `indexed_plan` are artifact labels, never graph entity types."""
+    knowledge_id = uuid.uuid4()
+    await _execute(
+        seeded_head_db_url,
+        [
+            _artifact(seeded_head_db_url, knowledge_id, knowledge_type),
+            _tombstone(knowledge_id, entity_type),
+        ],
+    )
+    assert await _artifact_mismatches(seeded_head_db_url, V16_SQL) == 1
+    assert await _artifact_mismatches(seeded_head_db_url, V16_PGRESTORE) == 1

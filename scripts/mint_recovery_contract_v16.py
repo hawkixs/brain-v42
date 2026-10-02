@@ -14,8 +14,10 @@ red-backup's DR-v7 drill found in the attestation itself (operator decisions
    ``brain_session_artifacts`` row whose knowledge was deleted after capture
    (decision ``a301034b``, red-arena, deleted 2026-09-30). v16 tolerates that
    case, and only that case: the knowledge row is absent from EVERY knowledge
-   table, and ``brain_entities`` carries its entity, of the matching type, in the
-   artifact's session project, with ``lifecycle = 'deleted'``. An absent row
+   table, and ``brain_entities`` carries its entity, of the matching knowledge
+   type, in the artifact's session project, with ``lifecycle = 'deleted'`` and a
+   ``deleted_at`` no earlier than the capture: knowledge deleted BEFORE it was
+   captured was never there to capture. An absent row
    without that tombstone, a tombstone of another type or project, or a row that
    still exists elsewhere stays a mismatch.
 
@@ -55,6 +57,7 @@ MATCHES_SELECT = (
     " SELECT\n"
     "     artifact_record.knowledge_id,\n"
     "     artifact_record.knowledge_type,\n"
+    "     artifact_record.captured_at,\n"
     "     session_record.project_key,\n",
 )
 MATCHES_GROUP = (
@@ -63,6 +66,7 @@ MATCHES_GROUP = (
     "     artifact_record.session_id,\n"
     "     artifact_record.knowledge_id,\n"
     "     artifact_record.knowledge_type,\n"
+    "     artifact_record.captured_at,\n"
     "     session_record.project_key\n"
     "),\n",
 )
@@ -90,9 +94,15 @@ MISMATCH_FILTER = (
     "           FROM public.brain_entities AS entity_record\n"
     "           WHERE entity_record.source_uuid = match_record.knowledge_id\n"
     "             AND entity_record.lifecycle = 'deleted'\n"
+    "             AND entity_record.deleted_at >= match_record.captured_at\n"
     "             AND entity_record.project_key = match_record.project_key\n"
     "             AND (\n"
-    "                 entity_record.entity_type = match_record.knowledge_type\n"
+    "                 (\n"
+    "                     match_record.knowledge_type IN (\n"
+    "                         'decision', 'learning', 'snippet', 'runbook', 'adr'\n"
+    "                     )\n"
+    "                     AND entity_record.entity_type = match_record.knowledge_type\n"
+    "                 )\n"
     "                 OR (\n"
     "                     match_record.knowledge_type = 'indexed_plan'\n"
     "                     AND entity_record.entity_type = 'plan'\n"

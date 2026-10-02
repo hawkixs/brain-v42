@@ -41,8 +41,8 @@ V15_ASSETS = {
 #: The SHA-256 of the three v16 assets, pinned after the mint.
 V16_ASSETS = {
     "brain-v42-v16.json": "59e867bc906be76727e5ce803282e712a2ec965ed06ff1a6deca5ff16b5f0833",
-    "brain-v42-v16.sql": "d00ddbc45366267ec7a8e41b5929a116f0c4ad40c01c08f8b58efeb7ab8d6c96",
-    "brain-v42-v16-pgrestore.sql": "c30e889a4d20a3b0630602179fa4cbf7a092dd990c1a9b03d6a6b0219aa996d7",
+    "brain-v42-v16.sql": "76ee746cccbac61481fd0f14182edd34db242ec1e90659e80d119cfb4e61eda9",
+    "brain-v42-v16-pgrestore.sql": "7b4d384ffec0426408ad9fccedb3933c0c599bae388dd97f3190582601dcb0d2",
 }
 
 V15_SQL = RECOVERY / "brain-v42-v15.sql"
@@ -65,11 +65,13 @@ REMOVED_LINES = {
 #: Every line v16 adds, identical in both variants, in order.
 ADDED_LINES = [
     "     artifact_record.knowledge_type,",
+    "     artifact_record.captured_at,",
     "     session_record.project_key,",
     " GROUP BY",
     "     artifact_record.session_id,",
     "     artifact_record.knowledge_id,",
     "     artifact_record.knowledge_type,",
+    "     artifact_record.captured_at,",
     "     session_record.project_key",
     " FROM artifact_source_matches AS match_record",
     " WHERE (match_record.source_matches <> 1 OR match_record.typed_matches <> 1)",
@@ -84,9 +86,15 @@ ADDED_LINES = [
     "           FROM public.brain_entities AS entity_record",
     "           WHERE entity_record.source_uuid = match_record.knowledge_id",
     "             AND entity_record.lifecycle = 'deleted'",
+    "             AND entity_record.deleted_at >= match_record.captured_at",
     "             AND entity_record.project_key = match_record.project_key",
     "             AND (",
-    "                 entity_record.entity_type = match_record.knowledge_type",
+    "                 (",
+    "                     match_record.knowledge_type IN (",
+    "                         'decision', 'learning', 'snippet', 'runbook', 'adr'",
+    "                     )",
+    "                     AND entity_record.entity_type = match_record.knowledge_type",
+    "                 )",
     "                 OR (",
     "                     match_record.knowledge_type = 'indexed_plan'",
     "                     AND entity_record.entity_type = 'plan'",
