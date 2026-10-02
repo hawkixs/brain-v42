@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
+import time
+
 import pytest
 
 from brain_v42.facts.claim_extractor import ClaimCandidate, extract_candidates
@@ -285,3 +290,157 @@ def test_extracted_candidate_matches_claim_input_contract() -> None:
     )
     assert claim.expected == {"path": "/revision", "op": "eq", "value": "056"}
     assert claim.measure is False
+
+
+def test_extract_claims_deterministic_output_order() -> None:
+    """The output order of candidates is independent of PYTHONHASHSEED."""
+    code = (
+        "from brain_v42.facts.claim_extractor import extract_candidates\n"
+        "result = extract_candidates(entity='decision', project_key='brain-v42', "
+        "fields={'description': 'The live release is 1111111111111111111111111111111111111111. The production schema is 056.'})\n"
+        "print([c.fact_name for c in result.candidates])\n"
+    )
+    env1 = dict(os.environ, PYTHONHASHSEED="1")
+    env2 = dict(os.environ, PYTHONHASHSEED="2")
+
+    out1 = subprocess.run(
+        [sys.executable, "-c", code], env=env1, capture_output=True, text=True, check=True
+    ).stdout
+    out2 = subprocess.run(
+        [sys.executable, "-c", code], env=env2, capture_output=True, text=True, check=True
+    ).stdout
+    assert out1 == out2
+    assert out1.strip() == "['live_release_sha', 'alembic_head']"
+
+
+def test_extract_claims_strips_fences_correctly() -> None:
+    """A matching fence requires the same character and at least the same length."""
+    text = "~~~\n```\nThe production schema is 056.\n```\n~~~\nThe production schema is 058."
+    result = _extract("learning", {"insight": text})
+    assert result.candidates == (
+        ClaimCandidate(
+            statement="The production schema is 058.",
+            fact_name="alembic_head",
+            expected={"path": "/revision", "op": "eq", "value": "058"},
+        ),
+    )
+    assert result.reasons == frozenset()
+
+
+def test_extract_claims_strips_real_single_quoted_span_with_punctuation() -> None:
+    """Quotes with punctuation are still stripped."""
+    quoted = _extract(
+        "learning",
+        {"insight": "The note says 'The production schema is 056.' today."},
+    )
+    assert quoted.candidates == ()
+    assert quoted.reasons == frozenset()
+
+    typo_quoted = _extract(
+        "learning",
+        {"insight": "The note says ‘The production schema is 056.’ today."},
+    )
+    assert typo_quoted.candidates == ()
+    assert typo_quoted.reasons == frozenset()
+
+
+@pytest.mark.parametrize(
+    "insight",
+    [
+        "The production schema is going to be 056.",
+        "The production schema is possibly 056.",
+        "The production schema is probably 056.",
+        "The production schema maybe 056.",
+        "The production schema might be 056.",
+        "The production schema should be 056.",
+        "The production schema is never 056.",
+        "The production schema is no longer 056.",
+        "Le schéma de production va être 056.",
+        "Le schéma de production sera 056.",
+        "Le schéma de production devrait être 056.",
+        "Le schéma de production est peut-être 056.",
+        "Le schéma de production est probablement 056.",
+        "Le schéma de production n'est jamais 056.",
+    ],
+)
+def test_extract_claims_rejects_uncertainty_and_future(insight: str) -> None:
+    """Future, uncertainty and negation markers reject an assertion."""
+    result = _extract("learning", {"insight": insight})
+    assert result.candidates == ()
+
+
+def test_extract_claims_cue_word_boundaries() -> None:
+    """Cues must match at word boundaries to avoid preproduction or non-production."""
+    for insight in (
+        "The preproduction schema is 056.",
+        "The non-production schema is 056.",
+        "The pre-production schema is 056.",
+    ):
+        result = _extract("learning", {"insight": insight})
+        assert result.candidates == ()
+        assert result.reasons == frozenset()
+
+
+def test_extract_claims_rejects_revision_embedded_in_paths_or_dates() -> None:
+    """Revision tokens embedded in paths or date-like sequences are rejected."""
+    for insight in (
+        "The production schema is /056.",
+        "The production schema is 056/.",
+        "The production schema is 2026-10-056.",
+        "The production schema is 10-056.",
+        "The production schema is 056.1.",
+        "The production schema is 056_rev.",
+    ):
+        result = _extract("learning", {"insight": insight})
+        assert result.candidates == ()
+
+
+def test_extract_claims_performance_linear_negation() -> None:
+    """A 60 KiB candidate sentence full of "ne" overflows before any regex runs."""
+    text = "Le schéma de production est 058 " + "ne " * 20000
+    start = time.perf_counter()
+    result = _extract("learning", {"insight": text})
+    duration = time.perf_counter() - start
+    assert duration < 0.5
+    assert result.candidates == ()
+    assert result.reasons == frozenset({"sentence_overflow"})
+
+
+def test_extract_claims_sentence_naming_two_different_facts_yields_none() -> None:
+    """One sentence that asserts two different facts is ambiguous for both."""
+    result = _extract(
+        "learning",
+        {"insight": f"The production schema is 056 and the live release is {_SHA_40}."},
+    )
+    assert result.candidates == ()
+    assert result.reasons == frozenset({"ambiguous"})
+
+
+def test_extract_claims_rejects_distant_french_negation() -> None:
+    """A French "ne ... plus" refuses the sentence however far apart its two words are."""
+    result = _extract(
+        "learning",
+        {
+            "insight": "Le schéma de production ne tourne, d'après toutes les mesures "
+            "relevées par l'équipe d'exploitation cette semaine, plus en 056."
+        },
+    )
+    assert result.candidates == ()
+
+
+def test_extract_claims_overflow_counts_only_candidate_sentences() -> None:
+    """A long sentence without any target cue is not a candidate, so it is not an overflow."""
+    result = _extract("learning", {"insight": "word " * 200 + "end."})
+    assert result.candidates == ()
+    assert result.reasons == frozenset()
+
+
+def test_extract_claims_many_bounded_french_sentences_full_of_ne_stay_fast() -> None:
+    """60 KiB of bounded French sentences with a cue and many "ne" stays linear."""
+    sentence = "Le schéma de production est 058 " + "ne " * 150 + "fin. "
+    text = sentence * (60 * 1024 // len(sentence.encode()))
+    start = time.perf_counter()
+    result = _extract("learning", {"insight": text})
+    duration = time.perf_counter() - start
+    assert duration < 0.5
+    assert [c.expected["value"] for c in result.candidates] == ["058"]

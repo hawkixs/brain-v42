@@ -89,22 +89,38 @@ _CUES: Mapping[str, tuple[str, ...]] = {
     "live_release_sha": _LIVE_RELEASE_CUES,
 }
 
+_CUE_REGEXES: Mapping[str, re.Pattern[str]] = MappingProxyType(
+    {
+        fact: re.compile(r"(?<![\w-])(?:" + "|".join(re.escape(c) for c in cues) + r")(?![\w-])")
+        for fact, cues in _CUES.items()
+    }
+)
+
 # All regexes are single-character classes plus a fixed-length quantifier, with
 # at most single-character lookarounds and no nested quantifiers: none can
 # backtrack catastrophically on a bounded sentence.
 _NEGATION = re.compile(
     r"\b(?:not|no\s+longer|isn['’]t|aren['’]t|doesn['’]t|don['’]t|hasn['’]t|"
-    r"haven['’]t|shouldn['’]t|wouldn['’]t|can['’]t|cannot|won['’]t)\b"
+    r"haven['’]t|shouldn['’]t|wouldn['’]t|can['’]t|cannot|won['’]t|never|"
+    r"going\s+to\s+be|possibly|probably|maybe|might|should\s+be|"
+    r"va\s+être|sera|devrait|peut[- ]être|probablement|jamais)\b"
     r"|n['’]est"
-    r"|\b(?:ne\s+|n['’])\w+\b[^.!?]*\b(?:pas|plus)\b"
 )
+# A French "ne ... pas/plus/jamais" may span most of a sentence. Matching it as
+# one regex with a free middle rescans the rest of the sentence for every "ne";
+# two forward searches (the first opener, then any closer after it) stay linear.
+_FRENCH_NEGATION_OPENER = re.compile(r"\b(?:ne\s|n['’])")
+_FRENCH_NEGATION_CLOSER = re.compile(r"\b(?:pas|plus|jamais)\b")
 _HISTORY = re.compile(
     r"\b(?:was|were|had|previously|formerly|before|used\s+to|will|planned|example|"
     r"était|anciennement|avant|sera)\b"
 )
 _PRESENT = re.compile(r"\b(?:is|runs|uses|at|est|tourne)\b|=")
 
-_REVISION_TOKEN = re.compile(r"(?<![0-9A-Za-z])([0-9]{3})(?![0-9A-Za-z])")
+# A path ("/056", "056/"), a date-like run ("2026-10-056"), a dotted version
+# ("056.1") or an identifier ("056_rev") is not a revision; a sentence-ending
+# dot still is.
+_REVISION_TOKEN = re.compile(r"(?<![\w./-])([0-9]{3})(?![\w/-]|\.\w)")
 _SHA_TOKEN = re.compile(r"(?<![0-9a-fA-F])([0-9a-f]{40})(?![0-9a-fA-F])")
 
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
@@ -117,12 +133,14 @@ _STRAIGHT_DQUOTE = re.compile(r'"[^"]*"')
 # A straight apostrophe sits between two letters (a contraction, a possessive or
 # a French elision) and is never a quote. A quoted span opens only after a
 # start, whitespace or punctuation, closes only before a whitespace,
-# punctuation or end, and never spans a sentence end or a newline.
-_STRAIGHT_SQUOTE = re.compile(r"(?<![\w])'[^'.!?\n]*'(?![\w])")
+# punctuation or end, and never spans a newline. It may span a sentence end so
+# that a quoted sentence keeps its own final punctuation: stripping too much only
+# ever removes prose, which is silence rather than a false assertion.
+_STRAIGHT_SQUOTE = re.compile(r"(?<![\w])'[^'\n]*'(?![\w])")
 _TYPO_DQUOTE = re.compile(r"“[^”]*”")
 # The typographic opener is unambiguous, but its closer doubles as a French
 # typographic apostrophe: only close before a non-word character.
-_TYPO_SQUOTE = re.compile(r"‘[^’.!?\n]*’(?![\w])")
+_TYPO_SQUOTE = re.compile(r"‘[^’\n]*’(?![\w])")
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,14 +175,20 @@ def _strip_non_assertion_regions(text: str) -> str:
     """
     kept: list[str] = []
     in_fence = False
+    fence_char = ""
+    fence_len = 0
     in_blockquote = False
     for line in text.splitlines():
         if in_fence:
-            if _FENCE_START.match(line):
+            m = _FENCE_START.match(line)
+            if m and m.group(1)[0] == fence_char and len(m.group(1)) >= fence_len:
                 in_fence = False
             continue
-        if _FENCE_START.match(line):
+        m = _FENCE_START.match(line)
+        if m:
             in_fence = True
+            fence_char = m.group(1)[0]
+            fence_len = len(m.group(1))
             in_blockquote = False
             continue
         if not line.strip():
@@ -191,23 +215,32 @@ def _strip_non_assertion_regions(text: str) -> str:
     return joined
 
 
-def _qualifying_facts(sentence: str, folded: str) -> frozenset[str]:
+def _has_french_negation(folded: str) -> bool:
+    """Whether a French "ne"/"n'" is followed anywhere later by pas, plus or jamais."""
+    opener = _FRENCH_NEGATION_OPENER.search(folded)
+    return opener is not None and _FRENCH_NEGATION_CLOSER.search(folded, opener.end()) is not None
+
+
+def _has_any_cue(folded: str) -> bool:
+    """A plain substring test, cheap enough to run before the sentence bound."""
+    return any(cue in folded for cues in _CUES.values() for cue in cues)
+
+
+def _qualifying_facts(sentence: str, folded: str) -> tuple[str, ...]:
     """Return the allowlisted facts whose cue, tense and certainty all pass.
 
     A fact only qualifies when the sentence carries its cue, a present-tense
     marker, and no negation or history marker. Everything else is silence, not a
     candidate: favouring silence over a false assertion.
     """
-    cues = frozenset(
-        fact for fact, cue_list in _CUES.items() if any(cue in folded for cue in cue_list)
-    )
-    if not cues:
-        return frozenset()
-    if _NEGATION.search(folded) or _HISTORY.search(folded):
-        return frozenset()
+    facts_found = [fact for fact, pattern in _CUE_REGEXES.items() if pattern.search(folded)]
+    if not facts_found:
+        return ()
+    if _NEGATION.search(folded) or _HISTORY.search(folded) or _has_french_negation(folded):
+        return ()
     if not _PRESENT.search(folded):
-        return frozenset()
-    return cues
+        return ()
+    return tuple(facts_found)
 
 
 def _token_values(fact: str, sentence: str) -> frozenset[str]:
@@ -256,14 +289,18 @@ def extract_candidates(
             trimmed = sentence.strip()
             if not trimmed:
                 continue
-            facts = _qualifying_facts(trimmed, trimmed.casefold())
+            folded = trimmed.casefold()
+            if len(trimmed) > _SENTENCE_LIMIT_CHARS:
+                # Only a sentence that could have been a candidate is an overflow;
+                # the bound is checked before any regex runs on the sentence.
+                if _has_any_cue(folded):
+                    reasons.add("sentence_overflow")
+                continue
+            facts = _qualifying_facts(trimmed, folded)
             if not facts:
                 continue
-            if len(trimmed) > _SENTENCE_LIMIT_CHARS:
-                reasons.add("sentence_overflow")
-                continue
-            if "alembic_head" in facts and "alembic_head_shipped" in facts:
-                fact_ambiguous.update({"alembic_head", "alembic_head_shipped"})
+            if len(facts) > 1:
+                fact_ambiguous.update(facts)
             for fact in facts:
                 if fact in fact_ambiguous:
                     continue
