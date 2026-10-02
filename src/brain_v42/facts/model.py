@@ -182,7 +182,11 @@ class SourceIdentity:
         """Require every mandatory field so omitted evidence cannot silently compare equal.
 
         Only ``server_addr`` may be omitted (Q134 = c); the other three stay mandatory.
+        An explicit ``None`` is refused rather than read as an omission: absence is a
+        declaration's choice, a null is evidence nobody can vouch for.
         """
+        if "server_addr" in mapping and mapping["server_addr"] is None:
+            raise ValueError("server_addr must be an IP address literal when present")
         expected = frozenset({"system_identifier", "database", "server_port"})
         actual = frozenset(mapping)
         missing = expected - actual
@@ -308,9 +312,13 @@ def identity_matches(observed: Identity, expected: Identity) -> bool:
 
     Every field the declaration carries must be observed with the same value; a
     field the declaration omits (only ``SourceIdentity.server_addr`` may be) is
-    not compared. Identities of different kinds never match.
+    not compared. Identities of different kinds never match, and an observed
+    PostgreSQL identity without an address never matches: an observation must say
+    where it was read, whatever the declaration chose to pin.
     """
     if type(observed) is not type(expected):
+        return False
+    if isinstance(observed, SourceIdentity) and observed.server_addr is None:
         return False
     seen = observed.as_dict()
     return all(name in seen and seen[name] == value for name, value in expected.as_dict().items())
@@ -327,6 +335,13 @@ def differing_identity_fields(observed: Identity, expected: Identity) -> str | N
         return None
     seen, wanted = observed.as_dict(), expected.as_dict()
     names = [name for name in wanted if seen.get(name) != wanted[name]]
+    if isinstance(observed, SourceIdentity) and observed.server_addr is None:
+        # An observation without its address never matches (see `identity_matches`),
+        # even when the declaration omits it: name the missing field in that case too.
+        if "server_addr" not in names:
+            names.append("server_addr")
+        order = ("system_identifier", "database", "server_addr", "server_port")
+        names.sort(key=order.index)
     return ", ".join(names) if names else None
 
 

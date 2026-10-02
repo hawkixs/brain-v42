@@ -178,3 +178,22 @@ def test_settings_still_type_check_a_declared_server_addr(
     else:
         with pytest.raises(ValueError, match="BRAIN_FACTS_PRODUCTION_IDENTITY"):
             settings.facts_production_identity()
+
+
+def test_an_observation_without_an_address_never_matches_even_an_addressless_declaration() -> None:
+    """Fail closed: an observed identity must say where it was read (review of #265)."""
+    addressless = SourceIdentity("7612696091383607335", "brain", None, 5432)
+    assert not identity_matches(addressless, _declared_without_addr())
+
+
+def test_an_explicit_null_address_is_refused_not_read_as_an_omission() -> None:
+    with pytest.raises(ValueError, match="server_addr"):
+        SourceIdentity.from_mapping({**_DECLARED, "server_addr": None})
+
+
+@pytest.mark.asyncio
+async def test_the_registry_refuses_an_addressless_observation_and_names_the_field() -> None:
+    addressless = SourceIdentity("7612696091383607335", "brain", None, 5432)
+    result = await _registry(addressless, FakeProbe("who")).measure("who")
+    assert isinstance(result, Unreadable)
+    assert (result.error_code, result.where) == ("target_mismatch", "server_addr")
