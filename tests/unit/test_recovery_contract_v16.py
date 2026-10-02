@@ -41,8 +41,8 @@ V15_ASSETS = {
 #: The SHA-256 of the three v16 assets, pinned after the mint.
 V16_ASSETS = {
     "brain-v42-v16.json": "59e867bc906be76727e5ce803282e712a2ec965ed06ff1a6deca5ff16b5f0833",
-    "brain-v42-v16.sql": "76ee746cccbac61481fd0f14182edd34db242ec1e90659e80d119cfb4e61eda9",
-    "brain-v42-v16-pgrestore.sql": "7b4d384ffec0426408ad9fccedb3933c0c599bae388dd97f3190582601dcb0d2",
+    "brain-v42-v16.sql": "957460544eb68335b690ce7f911e7a45b16f3a65cec07d8c94cacc2e581c63f8",
+    "brain-v42-v16-pgrestore.sql": "fbb2bf78e763f8adf898c948b0abaaa47fe41301e78bbbc70054961063b4ef69",
 }
 
 V15_SQL = RECOVERY / "brain-v42-v15.sql"
@@ -67,12 +67,14 @@ ADDED_LINES = [
     "     artifact_record.knowledge_type,",
     "     artifact_record.captured_at,",
     "     session_record.project_key,",
+    "     session_record.started_at,",
     " GROUP BY",
     "     artifact_record.session_id,",
     "     artifact_record.knowledge_id,",
     "     artifact_record.knowledge_type,",
     "     artifact_record.captured_at,",
-    "     session_record.project_key",
+    "     session_record.project_key,",
+    "     session_record.started_at",
     " FROM artifact_source_matches AS match_record",
     " WHERE (match_record.source_matches <> 1 OR match_record.typed_matches <> 1)",
     "   AND NOT (",
@@ -86,6 +88,8 @@ ADDED_LINES = [
     "           FROM public.brain_entities AS entity_record",
     "           WHERE entity_record.source_uuid = match_record.knowledge_id",
     "             AND entity_record.lifecycle = 'deleted'",
+    "             AND entity_record.created_at >= match_record.started_at",
+    "             AND entity_record.created_at <= match_record.captured_at",
     "             AND entity_record.deleted_at >= match_record.captured_at",
     "             AND entity_record.project_key = match_record.project_key",
     "             AND (",

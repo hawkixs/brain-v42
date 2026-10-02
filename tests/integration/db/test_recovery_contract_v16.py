@@ -190,15 +190,18 @@ def _tombstone(
     lifecycle: str = "deleted",
     project: str = PROJECT,
     deleted_minutes_ago: int = 0,
+    created_minutes_ago: int = 30,
 ) -> tuple[str, tuple]:
     """A graph entity for the knowledge; `deleted_at` is set only for a deleted one.
 
-    Artifacts are captured ten minutes ago, so the default tombstone (deleted now)
-    records a deletion AFTER the capture.
+    The session starts an hour ago and artifacts are captured ten minutes ago, so
+    the default tombstone (created thirty minutes ago, deleted now) records
+    knowledge that existed at capture and was deleted after it.
     """
     return (
         "INSERT INTO brain_entities (entity_type, entity_key, source_uuid, project_key, "
-        "scope_kind, lifecycle, deleted_at) VALUES ($1, $2, $3, $4, 'project', $5::varchar, "
+        "scope_kind, lifecycle, created_at, deleted_at) VALUES ($1, $2, $3, $4, 'project', "
+        "$5::varchar, now() - make_interval(mins => $7), "
         "CASE WHEN $5::varchar = 'deleted' THEN now() - make_interval(mins => $6) END)",
         (
             entity_type,
@@ -207,6 +210,7 @@ def _tombstone(
             project,
             lifecycle,
             deleted_minutes_ago,
+            created_minutes_ago,
         ),
     )
 
@@ -282,6 +286,16 @@ def _deleted_before_capture(knowledge_id: uuid.UUID) -> list[tuple[str, tuple]]:
     return [_tombstone(knowledge_id, "decision", deleted_minutes_ago=20)]
 
 
+def _created_after_capture(knowledge_id: uuid.UUID) -> list[tuple[str, tuple]]:
+    """Knowledge created after the capture was not there to capture either."""
+    return [_tombstone(knowledge_id, "decision", created_minutes_ago=5)]
+
+
+def _created_before_the_session(knowledge_id: uuid.UUID) -> list[tuple[str, tuple]]:
+    """A session captures only what it created: v15's own source window."""
+    return [_tombstone(knowledge_id, "decision", created_minutes_ago=120)]
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "near_miss",
@@ -293,6 +307,8 @@ def _deleted_before_capture(knowledge_id: uuid.UUID) -> list[tuple[str, tuple]]:
         _other_project,
         _still_exists_elsewhere,
         _deleted_before_capture,
+        _created_after_capture,
+        _created_before_the_session,
     ],
 )
 async def test_every_near_miss_stays_a_mismatch(seeded_head_db_url: str, near_miss: Any) -> None:
