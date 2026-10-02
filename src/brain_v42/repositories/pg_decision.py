@@ -454,6 +454,8 @@ class PgDecisionRepo(BasePgRepository):
         old_id: UUID,
         new_data: DecisionCreate,
         new_embedding: list[float] | None = None,
+        *,
+        session: AsyncSession | None = None,
     ) -> Decision:
         """Create a new decision and mark old_id as superseded — single transaction.
 
@@ -461,6 +463,10 @@ class PgDecisionRepo(BasePgRepository):
         1. INSERT new decision row via super().create(session=s)
         2. UPDATE old decision: status='superseded', superseded_by=new_id
         3. COMMIT once (via transaction() context manager exit)
+
+        With a caller-owned ``session`` both writes run in a savepoint of the
+        caller's transaction and the caller commits: the new decision, the
+        supersession and any claim the caller adds then stand or fall together.
 
         Returns the newly created Decision.
         """
@@ -475,7 +481,7 @@ class PgDecisionRepo(BasePgRepository):
                 updated_at=sa.text("NOW()"),
             )
         )
-        async with self.transaction() as sess:
+        async with self.transaction(session) as sess:
             row = await super().create(payload, session=sess)
             await sess.execute(update_stmt)
             logger.debug("pg_decision.supersede", old_id=str(old_id), new_id=str(new_id))

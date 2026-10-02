@@ -259,6 +259,9 @@ async def test_extraction_disabled_preserves_write_paths(monkeypatch: pytest.Mon
 
     assert extract_calls == []
     assert session_factory.calls == 0
+    # The two special creates keep their own private transactions while off.
+    assert services["decision_svc"].supersede.call_args.kwargs == {}
+    assert "session" not in services["adr_svc"].create_with_promotion.call_args.kwargs
 
 
 async def test_five_ordinary_writers_extract_without_claims_argument(

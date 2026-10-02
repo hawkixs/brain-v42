@@ -66,6 +66,7 @@ if TYPE_CHECKING:
 
     from brain_v42.facts.registry import FactRegistry
     from brain_v42.facts.verification import ClaimVerificationService
+    from brain_v42.models.adr import ADR
     from brain_v42.models.brain import SearchResponse, WhatDoIKnowResponse
     from brain_v42.services.access_logger import AccessLogger
     from brain_v42.services.adr_service import ADRService
@@ -336,7 +337,33 @@ def register_tools(
         old_uid = parse_uuid(old_decision_id)
         if old_uid is None:
             return format_error(f"Invalid UUID: {old_decision_id}")
-        new_decision = await decision_svc.supersede(old_uid, data)
+        if not extraction_available:
+            new_decision = await decision_svc.supersede(old_uid, data)
+        else:
+            registry, claim_session_factory = claim_write_dependencies()
+            candidates = extract_candidates(
+                entity="decision",
+                project_key=project_key,
+                fields={"description": data.description, "reasoning": data.reasoning},
+            ).candidates
+            # Embed BEFORE the transaction opens: the GPU call must not hold it.
+            new_embedding = await decision_svc.embed_supersession(data)
+            async with gated_claim_session(
+                claim_session_factory, claim_verification_svc, []
+            ) as session:
+                new_decision = await decision_svc.supersede(
+                    old_uid, data, session=session, new_embedding=new_embedding
+                )
+                if candidates:
+                    await persist_extracted_claims(
+                        session,
+                        registry,
+                        entry_id=new_decision.id,
+                        entity_type="decision",
+                        project_key=project_key,
+                        candidates=candidates,
+                    )
+            await decision_svc.enrich_superseded(old_uid, new_decision, data)
         logger.info(
             "mcp.brain_supersede_decision",
             old_id=old_decision_id,
@@ -837,22 +864,61 @@ def register_tools(
         )
         scope = get_dream_project_scope()
 
-        try:
+        async def promote(session: AsyncSession | None) -> ADR:
+            """One promotion call; the session kwarg exists only on the caller-owned path."""
+            extra: dict[str, Any] = {} if session is None else {"session": session}
             if scope is None:
-                adr = await adr_svc.create_with_promotion(
+                return await adr_svc.create_with_promotion(
                     data=data,
                     source_learning_id=src_uid,
                     auto_accept=True,
                     dream_run_id=dream_run_id,
+                    **extra,
                 )
+            return await adr_svc.create_with_promotion(
+                data=data,
+                source_learning_id=src_uid,
+                auto_accept=True,
+                dream_run_id=dream_run_id,
+                project_key=scope.project_key,
+                authorization=cast("RelationAuthorization", scope),
+                **extra,
+            )
+
+        try:
+            if not extraction_available:
+                adr = await promote(None)
             else:
-                adr = await adr_svc.create_with_promotion(
-                    data=data,
-                    source_learning_id=src_uid,
-                    auto_accept=True,
-                    dream_run_id=dream_run_id,
-                    project_key=scope.project_key,
-                    authorization=cast("RelationAuthorization", scope),
+                registry, claim_session_factory = claim_write_dependencies()
+                candidates = extract_candidates(
+                    entity="adr",
+                    project_key=project_key,
+                    fields={
+                        "context": data.context,
+                        "decision": data.decision,
+                        "consequences": data.consequences,
+                    },
+                ).candidates
+                async with gated_claim_session(
+                    claim_session_factory, claim_verification_svc, []
+                ) as session:
+                    adr = await promote(session)
+                    if candidates:
+                        await persist_extracted_claims(
+                            session,
+                            registry,
+                            entry_id=adr.id,
+                            entity_type="adr",
+                            project_key=project_key,
+                            candidates=candidates,
+                        )
+                adr = await adr_svc.enrich_created(
+                    adr,
+                    data,
+                    adr_embedding_text(data.title, data.context, data.decision),
+                    authorization=cast("RelationAuthorization", scope)
+                    if scope is not None
+                    else None,
                 )
         except SourceLearningNotFound:
             if scope is None:
