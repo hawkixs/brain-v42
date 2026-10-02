@@ -32,6 +32,10 @@ from brain_v42.services.dream_run_service import (
 )
 
 if TYPE_CHECKING:
+    from brain_v42.services.claim_inventory_service import (
+        ClaimInventoryReport,
+        ClaimInventoryService,
+    )
     from brain_v42.services.claim_read_service import ClaimReadService
 
 logger = structlog.get_logger(__name__)
@@ -436,6 +440,42 @@ def _focus_margin_line(focus_length: int, focus_octets: int | None = None) -> st
     )
 
 
+def _claim_inventory_line(report: ClaimInventoryReport | None, *, extraction_enabled: bool) -> str:
+    """The `CLAIMS` line of the technical state: a count of stored rows, never a verdict.
+
+    Loud at zero on purpose: `0 active` is the whole signal while extraction is
+    being rolled out, so it is rendered, never omitted. A failed read
+    (`report is None`) says `unavailable` instead of a zero that would read as
+    "nothing is stored". Only the non-zero counter totals are shown, and they
+    are in-process: they restart from zero with the server.
+    """
+    state = "on" if extraction_enabled else "off"
+    if report is None:
+        return f"- CLAIMS: unavailable (inventory read failed); extraction {state}"
+    inventory = report.inventory
+    split = (
+        f" ({inventory.extracted} extracted, {inventory.declared} declared, "
+        f"{inventory.measured} measured)"
+        if inventory.active
+        else ""
+    )
+    line = (
+        f"- CLAIMS: {inventory.active} active{split}; extraction {state}; "
+        f"{inventory.created_7d} created in 7d"
+    )
+    totals = [
+        f"{total} {label}"
+        for total, label in (
+            (sum(report.extraction.skipped.values()), "skipped"),
+            (sum(report.extraction.failed.values()), "failed"),
+        )
+        if total
+    ]
+    if totals:
+        line += f"; {', '.join(totals)} since restart"
+    return line
+
+
 def _section_technical_state(
     revision: str | None,
     *,
@@ -446,6 +486,7 @@ def _section_technical_state(
     focus_octets: int | None = None,
     now: datetime | None = None,
     fact_lines: Sequence[str] = (),
+    claim_inventory_line: str | None = None,
 ) -> str:
     """The ``### État technique (mesuré)`` briefing section.
 
@@ -484,6 +525,8 @@ def _section_technical_state(
     # The registry's facts, already rendered (brain_v42.facts.render): one line
     # each, right after the schema, before the focus prose they may contradict.
     lines.extend(fact_lines)
+    if claim_inventory_line is not None:
+        lines.append(claim_inventory_line)
     if focus_tracked:
         age = (
             _format_focus_age(focus_updated_at, now or datetime.now(UTC))
@@ -521,6 +564,7 @@ def _format_session_briefing(
     delivery_briefing: str = "",
     fact_lines: Sequence[str] = (),
     claim_suffixes: Mapping[tuple[str, UUID], str] | None = None,
+    claim_inventory_line: str | None = None,
 ) -> str:
     blockers = list(getattr(ctx, "blockers", []) or []) if ctx else []
     sections = [
@@ -545,6 +589,7 @@ def _format_session_briefing(
                 len(ctx.current_focus.encode("utf-8")) if ctx and ctx.current_focus else None
             ),
             fact_lines=fact_lines,
+            claim_inventory_line=claim_inventory_line,
         ),
         _section_focus(ctx),
         _section_blockers(blockers),
@@ -638,6 +683,8 @@ def make_session_briefing_loader(
     delivery_svc: Any | None = None,
     fact_registry: Any | None = None,
     claim_read_svc: ClaimReadService | None = None,
+    claim_inventory_svc: ClaimInventoryService | None = None,
+    claim_extraction_enabled: bool = False,
 ) -> BriefingLoader:
     """Build the shared, read-only session briefing loader without lifecycle effects."""
 
@@ -771,6 +818,19 @@ def make_session_briefing_loader(
                 claim_read_svc, claim_entries, trusted_project_key=project_key
             )
 
+        # Never omitted once the service exists: a failed read renders
+        # `unavailable`, the same explicit state as the schema line above.
+        claim_inventory_line: str | None = None
+        if claim_inventory_svc is not None:
+            try:
+                report: ClaimInventoryReport | None = await claim_inventory_svc.get()
+            except Exception as exc:
+                logger.warning("brain_session_briefing_claim_inventory_failed", error=str(exc))
+                report = None
+            claim_inventory_line = _claim_inventory_line(
+                report, extraction_enabled=claim_extraction_enabled
+            )
+
         delivery_briefing = ""
         if delivery_svc is not None:
             try:
@@ -802,6 +862,7 @@ def make_session_briefing_loader(
             delivery_briefing=delivery_briefing,
             fact_lines=fact_lines,
             claim_suffixes=claim_suffixes,
+            claim_inventory_line=claim_inventory_line,
         )
 
     return load_briefing
@@ -822,6 +883,8 @@ def register_session_tools(
     delivery_svc: Any | None = None,
     fact_registry: Any | None = None,
     claim_read_svc: ClaimReadService | None = None,
+    claim_inventory_svc: ClaimInventoryService | None = None,
+    claim_extraction_enabled: bool = False,
 ) -> None:
     """Register explicit lifecycle tools with the shared action-forward loader."""
     load_briefing = make_session_briefing_loader(
@@ -837,5 +900,7 @@ def register_session_tools(
         delivery_svc=delivery_svc,
         fact_registry=fact_registry,
         claim_read_svc=claim_read_svc,
+        claim_inventory_svc=claim_inventory_svc,
+        claim_extraction_enabled=claim_extraction_enabled,
     )
     register_session_lifecycle_tools(mcp, brain_session_svc, load_briefing)
