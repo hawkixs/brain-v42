@@ -437,8 +437,8 @@ def test_extract_claims_overflow_counts_only_candidate_sentences() -> None:
 
 def test_extract_claims_many_bounded_french_sentences_full_of_ne_stay_fast() -> None:
     """60 KiB of bounded French sentences with a cue and many "ne" stays linear."""
-    sentence = "Le schéma de production est 058, " + "ne " * 150 + "fin. "
-    text = sentence * (60 * 1024 // len(sentence.encode()))
+    sentence = "Le schéma de production est 058 " + "ne " * 150 + "fin. "
+    text = sentence * (60 * 1024 // len(sentence.encode())) + "Le schéma de production est 058."
     start = time.perf_counter()
     result = _extract("learning", {"insight": text})
     duration = time.perf_counter() - start
@@ -494,4 +494,65 @@ def test_extract_claims_accepts_grammar_adverbs_and_colon_copula(insight: str) -
     """An optional adverb or a colon copula still yields exactly one claim."""
     result = _extract("learning", {"insight": insight})
     assert [c.expected["value"] for c in result.candidates] in (["057"], [_SHA_40])
+    assert result.reasons == frozenset()
+
+
+@pytest.mark.parametrize(
+    "insight",
+    [
+        # Lead-ins: conditions, labels, hedges and examples are not measurement attributions.
+        "If the migration ran, the production schema is 058.",
+        "When the release is live, the production schema is 058.",
+        "Once deployed, the production schema is 058.",
+        "After the migration, the production schema is 058.",
+        "Si la migration passe, le schéma de production est 058.",
+        "Une fois déployé, le schéma de production est 058.",
+        "Après la migration, le schéma de production est 058.",
+        "Expected: the production schema is 058.",
+        "Target: the production schema is 058.",
+        "TODO: the production schema is 058.",
+        "Objectif : le schéma de production est 058.",
+        "Attendu : le schéma de production est 058.",
+        "In staging, the production schema is 058.",
+        "Par exemple, le schéma de production est 058.",
+        "Wrong: the production schema is 058.",
+        "Faux : le schéma de production est 058.",
+        "Suppose that, the production schema is 058.",
+        # Trailers: only a short confirmation may follow the value.
+        "The production schema is 058, once the release is live.",
+        "The production schema is 058, if the migration ran.",
+        "Le schéma de production est 058, si la migration passe.",
+        "The production schema is 058, unless the rollback happened.",
+        "The production schema is 058, I think.",
+        "The production schema is 058, je crois.",
+        "Le schéma de production est 058, à vérifier.",
+        "The production schema is 058, to be confirmed.",
+        "The production schema is 058, or higher.",
+        "The production schema is 058, at least.",
+        "The production schema is 058, right?",
+        "The production schema is 058, according to the old runbook.",
+        "La base de production est 058, sauf erreur.",
+        "The production schema is 058, nope.",
+    ],
+)
+def test_extract_claims_lead_in_and_trailer_are_closed_lists(insight: str) -> None:
+    """A free clause around the assertion can carry a condition, a label or a hedge."""
+    result = _extract("learning", {"insight": insight})
+    assert result.candidates == ()
+    assert result.reasons == frozenset()
+
+
+@pytest.mark.parametrize(
+    "insight",
+    [
+        "Measured on 2026-10-02, the production schema is 058.",
+        "Le schéma de production est 058, vérifié.",
+        "Mesuré le 02/10, le schéma de production est 058.",
+        "It\u2019s measured today: the production schema is 058, that\u2019s all!",
+    ],
+)
+def test_extract_claims_accepts_measurement_attributions(insight: str) -> None:
+    """The closed lead-in and trailer lists still let a measured assertion through."""
+    result = _extract("learning", {"insight": insight})
+    assert [c.expected["value"] for c in result.candidates] == ["058"]
     assert result.reasons == frozenset()

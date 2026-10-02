@@ -17,10 +17,15 @@ and trimmed, it has this exact shape::
 
 Nothing else may sit between those parts, so hedges ("likely", "expected to
 be"), qualifiers ("pre production") and a value that is not the cue's own
-predicate ("stable; ticket 056") are refused by construction. The negation,
-history and uncertainty blacklists stay as an extra filter on the whole
-sentence. Quotes and code are rejected, never stripped: stripping can delete the
-very word ("not") that changes the meaning of what is left.
+predicate ("stable; ticket 056") are refused by construction. The LEAD-IN and
+the TRAILER are closed lists of measurement attributions ("d'après la mesure,
+...", "..., vérifié"), not free clauses: a free clause around the assertion can
+carry a condition ("if the migration ran"), a label ("TODO:"), a scope ("in
+staging") or a hedge ("I think"), and enumerating those is the blacklist this
+grammar replaced. The negation, history and uncertainty blacklists stay as an
+extra filter on the whole sentence. Quotes and code are rejected, never
+stripped: stripping can delete the very word ("not") that changes the meaning
+of what is left.
 """
 
 from __future__ import annotations
@@ -141,7 +146,20 @@ _HISTORY = re.compile(
 # lead-in and the cue ("pre", "non", "old") refuses the sentence.
 _DETERMINERS = frozenset({"the", "our", "le", "la"})
 _ELIDED_DETERMINERS = ("l'", "l\u2019")
-_LEAD_IN_MAX_CHARS = 120
+# Closed lists of measurement attributions. A free clause is never accepted
+# before the cue or after the value (see the module docstring for why). Both
+# apostrophes are accepted where one appears.
+_LEAD_IN = re.compile(
+    r"(?:d['\u2019]apr\u00e8s la mesure|selon la mesure|mesur\u00e9|it['\u2019]s measured|"
+    r"measured|as measured|per the measurement)"
+    r"(?:\s+today|\s+aujourd['\u2019]hui|\s+(?:on|le)\s+[0-9]{4}-[0-9]{2}-[0-9]{2}|"
+    r"\s+le\s+[0-9]{2}/[0-9]{2}(?:/[0-9]{4})?)?"
+    r"[,:]\s+"
+)
+_TRAILER = re.compile(
+    r"[,;]\s+(?:c['\u2019]est v\u00e9rifi\u00e9|v\u00e9rifi\u00e9|mesur\u00e9|confirm\u00e9|"
+    r"that['\u2019]s all|verified|measured|confirmed|as measured)[.!]?"
+)
 _COPULA = re.compile(r"\s+(?:is|est)(?![\w-])|\s*[=:]")
 _ADVERB = re.compile(r"\s+(?:now|currently|actuellement|maintenant|d\u00e9sormais)(?![\w-])")
 
@@ -286,11 +304,11 @@ def _qualifying_facts(folded: str) -> tuple[str, ...]:
 
 
 def _is_valid_lead(prefix: str) -> bool:
-    """Whether the text before the cue is empty, a determiner, or a lead-in clause.
+    """Whether the text before the cue is empty, a determiner, or a closed lead-in.
 
     The determiner is the last word before the cue and must be one of a closed
-    list; whatever precedes it must be empty or a short clause ending in a comma
-    or a colon followed by whitespace ("D'après la mesure, ", "It's measured: ").
+    list; whatever precedes it must be empty or one of the measurement
+    attributions of ``_LEAD_IN`` ("D'après la mesure, ", "It's measured: ").
     """
     remainder = prefix
     if prefix.endswith(_ELIDED_DETERMINERS) and (len(prefix) == 2 or prefix[-3].isspace()):
@@ -300,10 +318,7 @@ def _is_valid_lead(prefix: str) -> bool:
         words = stripped.split()
         if len(stripped) < len(prefix) and words and words[-1] in _DETERMINERS:
             remainder = stripped[: len(stripped) - len(words[-1])]
-    if not remainder:
-        return True
-    clause = remainder.rstrip()
-    return len(clause) < len(remainder) and clause[-1] in ",:" and len(clause) <= _LEAD_IN_MAX_CHARS
+    return not remainder or _LEAD_IN.fullmatch(remainder) is not None
 
 
 def _anchored_value(fact: str, folded: str) -> tuple[str, int] | None:
@@ -332,21 +347,12 @@ def _anchored_value(fact: str, folded: str) -> tuple[str, int] | None:
 
 
 def _is_clean_trailer(rest: str) -> bool:
-    """Whether what follows the value is nothing, or a comma/semicolon aside.
+    """Whether what follows the value is nothing, or a closed confirmation.
 
-    The aside must not carry a revision, a SHA or a cue: it may comment on the
-    value, never assert a second one.
+    Only a short attribution ("c'est vérifié", "that's all") may follow a comma
+    or a semicolon: anything freer can hedge or condition the value.
     """
-    if rest in ("", ".", "!"):
-        return True
-    if rest[0] not in ",;":
-        return False
-    clause = rest[1:]
-    if clause[-1:] in (".", "!"):
-        clause = clause[:-1]
-    if not clause.strip():
-        return False
-    return not (_has_any_cue(clause) or _REVISION_TOKEN.search(clause) or _SHA_TOKEN.search(clause))
+    return rest in ("", ".", "!") or _TRAILER.fullmatch(rest) is not None
 
 
 def _token_values(fact: str, sentence: str) -> frozenset[str]:
