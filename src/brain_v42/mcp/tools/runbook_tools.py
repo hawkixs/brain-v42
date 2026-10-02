@@ -17,6 +17,8 @@ from brain_v42.mcp.tools.claim_writes import (
     claims_confirmation,
     gated_claim_session,
     persist_claims,
+    persist_extracted_claims,
+    plan_extracted_claims,
     resolve_claim_inputs,
 )
 from brain_v42.mcp.tools.formatters import (
@@ -59,8 +61,13 @@ def register_runbook_tools(
     fact_registry: FactRegistry | None = None,
     session_factory: async_sessionmaker[AsyncSession] | None = None,
     claim_verification_svc: ClaimVerificationService | None = None,
+    extraction_enabled: bool = False,
 ) -> None:
     """Register the runbook MCP tools on the FastMCP server."""
+
+    extraction_available = (
+        extraction_enabled and fact_registry is not None and session_factory is not None
+    )
 
     def _runbook_create(
         title: str,
@@ -140,7 +147,7 @@ def register_runbook_tools(
         )
         scope = get_dream_project_scope()
 
-        if not claims:
+        if not claims and not extraction_available:
             if scope is None:
                 runbook = await runbook_svc.create(data)
             else:
@@ -159,22 +166,43 @@ def register_runbook_tools(
 
         if fact_registry is None or session_factory is None:
             raise RuntimeError("declared claims require the fact registry and a session factory")
-        resolved = await resolve_claim_inputs(fact_registry, claims)
+        resolved = await resolve_claim_inputs(fact_registry, claims) if claims else []
+        candidates = (
+            plan_extracted_claims(
+                entity="runbook",
+                project_key=project_key,
+                fields={"description": data.description, "trigger": data.trigger},
+                reserved=len(resolved),
+            )
+            if extraction_available
+            else ()
+        )
         declared_at = datetime.now(UTC)
         async with gated_claim_session(
             session_factory, claim_verification_svc, resolved
         ) as session:
             runbook = await runbook_svc.create(data, session=session)
-            outcomes = await persist_claims(
-                session,
-                entry_id=runbook.id,
-                entity_type="runbook",
-                project_key=project_key,
-                resolved=resolved,
-                declared_by=get_current_actor(),
-                declared_at=declared_at,
-                verification=claim_verification_svc,
-            )
+            outcomes: list[Any] = []
+            if resolved:
+                outcomes = await persist_claims(
+                    session,
+                    entry_id=runbook.id,
+                    entity_type="runbook",
+                    project_key=project_key,
+                    resolved=resolved,
+                    declared_by=get_current_actor(),
+                    declared_at=declared_at,
+                    verification=claim_verification_svc,
+                )
+            if candidates:
+                await persist_extracted_claims(
+                    session,
+                    fact_registry,
+                    entry_id=runbook.id,
+                    entity_type="runbook",
+                    project_key=project_key,
+                    candidates=candidates,
+                )
         runbook = await runbook_svc.enrich_created(
             runbook,
             data,
@@ -187,12 +215,19 @@ def register_runbook_tools(
             step_count=len(runbook.steps),
             **claim_write_log_fields(outcomes),
         )
+        if claims:
+            return format_confirmation(
+                "Runbook created",
+                runbook.title,
+                id=str(runbook.id),
+                steps=len(runbook.steps),
+                claims=claims_confirmation(outcomes),
+            )
         return format_confirmation(
             "Runbook created",
             runbook.title,
             id=str(runbook.id),
             steps=len(runbook.steps),
-            claims=claims_confirmation(outcomes),
         )
 
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)

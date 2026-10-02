@@ -14,6 +14,7 @@ import structlog
 from pydantic import BaseModel, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from brain_v42.facts.claim_extractor import SELECTED_FIELDS
 from brain_v42.mcp.dream_project_authorization import (
     DreamProjectAuthorizationError,
     get_dream_project_scope,
@@ -23,6 +24,8 @@ from brain_v42.mcp.tools.claim_writes import (
     ClaimMutationError,
     describe_claim_outcome,
     gated_claim_session,
+    plan_extracted_claims,
+    reconcile_extracted_claims,
     replace_claims,
     resolve_claim_inputs,
 )
@@ -206,6 +209,7 @@ def register_crud_tools(
     fact_registry: FactRegistry | None = None,
     claim_verification_svc: ClaimVerificationService | None = None,
     claim_read_svc: ClaimReadService | None = None,
+    extraction_enabled: bool = False,
 ) -> None:
     """Register generic CRUD MCP tools (brain_get, brain_delete, brain_update, brain_list).
 
@@ -476,12 +480,56 @@ def register_crud_tools(
                 [uid, *(UUID(relation["id"]) for relation in validated_relations)]
             )
 
+        # Automatic extraction needs the flag and both claim dependencies; off (or a
+        # missing registry) keeps today's path exactly, with no session opened.
+        extraction_available = extraction_enabled and fact_registry is not None
+        # The selected prose fields this call writes: reconciliation is skipped
+        # outright when it writes none of them.
+        prose_written = extraction_available and any(
+            name in update_data.model_dump(exclude_none=True)
+            for name in SELECTED_FIELDS[entity_type]
+        )
+
+        async def reconcile_prose(session: AsyncSession, persisted: Any) -> None:
+            """Reconcile automatic claims from the PERSISTED entry, never from the request."""
+            assert fact_registry is not None
+            names = SELECTED_FIELDS[entity_type]
+            candidates = plan_extracted_claims(
+                entity=entity_type,
+                project_key=persisted.project_key,
+                fields={name: getattr(persisted, name) for name in names},
+            )
+            if candidates is None:  # the parser failed: leave every claim as it is
+                return
+            await reconcile_extracted_claims(
+                session,
+                fact_registry,
+                entry_id=persisted.id,
+                entity_type=entity_type,
+                project_key=persisted.project_key,
+                candidates=candidates,
+            )
+
         claim_replacement = None
-        if claims is None:
+        if claims is None and not extraction_available:
             if scope is None:
                 updated = await svc.update(uid, update_data)
             else:
                 updated = await svc.update(uid, update_data, project_key=scope.project_key)
+        elif claims is None:
+            # Caller-owned transaction: the edit and its claim reconciliation commit
+            # together, and only the automatic part can fail without taking the edit.
+            async with gated_claim_session(session_factory, claim_verification_svc, []) as session:
+                if scope is None:
+                    updated = await svc.update(uid, update_data, session=session)
+                else:
+                    updated = await svc.update(
+                        uid, update_data, project_key=scope.project_key, session=session
+                    )
+                if updated is None:
+                    return format_error(f"{entity_type} {entity_id} not found")
+                if prose_written:
+                    await reconcile_prose(session, updated)
         else:
             if fact_registry is None:
                 return format_error("claims unavailable: fact registry is not configured")
@@ -512,6 +560,10 @@ def register_crud_tools(
                         declared_by=get_current_actor(),
                         verification=claim_verification_svc,
                     )
+                    # `claims=[]` clears for THIS call with no re-addition; a non-empty
+                    # replacement is followed by the edited prose, explicit facts first.
+                    if prose_written and claims:
+                        await reconcile_prose(session, updated)
             except (ClaimMutationError, ValueError) as exc:
                 return format_error(str(exc))
 

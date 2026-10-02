@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
@@ -13,9 +13,10 @@ import sqlalchemy as sa
 
 from brain_v42.db.tables import brain_entities
 from brain_v42.facts import ResolvedClaim, resolve_claim
+from brain_v42.facts.claim_extractor import ClaimCandidate, EntityKind, extract_candidates
 from brain_v42.facts.registry import UnknownFactError
 from brain_v42.mcp.tools.claim_tools import _issuer
-from brain_v42.models.claim_input import ClaimInput, validate_claim_inputs
+from brain_v42.models.claim_input import MAX_CLAIMS_PER_WRITE, ClaimInput, validate_claim_inputs
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.provenance import is_human_actor
 from brain_v42.repositories.pg_knowledge_claims import (
@@ -24,12 +25,22 @@ from brain_v42.repositories.pg_knowledge_claims import (
     latest_retired,
     retire_claims,
 )
+from brain_v42.services.claim_extraction_counters import (
+    FailureReason,
+    record_failure,
+    record_skip,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from brain_v42.facts.registry import FactRegistry
     from brain_v42.facts.verification import ClaimVerificationService
+
+
+#: The fixed server attribution stamped on every automatic, extracted claim.
+#: The entry author remains in the entry's own provenance, never forged here.
+EXTRACTED_DECLARED_BY = "server:claim-extractor:v1"
 
 
 class ClaimMutationError(ValueError):
@@ -270,6 +281,250 @@ async def persist_claims(
     return outcomes
 
 
+def plan_extracted_claims(
+    *,
+    entity: EntityKind,
+    project_key: str | None,
+    fields: Mapping[str, str | None],
+    reserved: int = 0,
+) -> tuple[ClaimCandidate, ...] | None:
+    """Parse selected prose into automatic candidates, accounting for every refusal.
+
+    Returns `None` -- not an empty tuple -- when the parser itself failed, so a
+    reconciling caller can tell "the prose asserts nothing" (retire what is
+    obsolete) from "the prose could not be read" (leave every claim alone).
+
+    Runs BEFORE the entry transaction opens, so a parser error must be caught
+    here: left alone it would fail an entry write that has nothing wrong with it.
+    The quota is the one claim batch an entry write may carry
+    (`MAX_CLAIMS_PER_WRITE`) after `reserved` slots go to explicit claims, which
+    always win; each candidate that no longer fits is counted, never silently
+    dropped. Only a parser failure is swallowed -- explicit input was already
+    validated by the caller and is not touched here.
+    """
+    try:
+        result = extract_candidates(entity=entity, project_key=project_key, fields=fields)
+    except Exception:
+        record_failure(entity, "parser_error")
+        return None
+    for reason in sorted(result.reasons):
+        record_skip(entity, reason)
+    slots = max(MAX_CLAIMS_PER_WRITE - reserved, 0)
+    for _ in result.candidates[slots:]:
+        record_skip(entity, "quota_full")
+    return result.candidates[:slots]
+
+
+def _resolve_candidate(
+    registry: FactRegistry,
+    candidate: ClaimCandidate,
+    *,
+    entity_type: EntityKind,
+    entry: str,
+) -> ResolvedClaim | None:
+    """Resolve one candidate, or count why the registry cannot serve it right now."""
+    try:
+        descriptor = registry.describe(candidate.fact_name)
+    except UnknownFactError:
+        record_skip(entity_type, "unregistered_fact", entity_id=entry)
+        return None
+    if candidate.fact_name in registry.disabled():
+        record_skip(entity_type, "disabled_fact", entity_id=entry)
+        return None
+    return resolve_claim(
+        ClaimInput(
+            statement=candidate.statement,
+            fact_name=candidate.fact_name,
+            expected=dict(candidate.expected),
+            measure=False,
+        ),
+        descriptor,
+    )
+
+
+def _is_unservable(registry: FactRegistry, fact_name: str) -> bool:
+    """Whether the registry cannot serve this fact right now (unregistered or disabled)."""
+    try:
+        registry.describe(fact_name)
+    except UnknownFactError:
+        return True
+    return fact_name in registry.disabled()
+
+
+async def _insert_extracted(
+    session: AsyncSession,
+    *,
+    entity_ref_id: UUID,
+    entity_type: EntityKind,
+    project_key: str,
+    resolved: ResolvedClaim,
+    replaces_id: UUID | None = None,
+) -> ClaimWriteOutcome:
+    """Insert one automatic occurrence; provenance and attribution are fixed here, not by callers."""
+    row = await insert_claim(
+        session,
+        entity_ref_id=entity_ref_id,
+        entity_type=entity_type,
+        project_key=project_key,
+        claim_key=resolved.claim_key,
+        statement=resolved.statement,
+        fact_name=resolved.fact_name,
+        definition_version=resolved.definition_version,
+        target=resolved.target.value,
+        expected=resolved.expected,
+        expected_resolved=resolved.expected_resolved,
+        validity_seconds=resolved.validity_seconds,
+        provenance="extracted",
+        declared_by=EXTRACTED_DECLARED_BY,
+        declared_at=datetime.now(UTC),
+        replaces_id=replaces_id,
+    )
+    return ClaimWriteOutcome(claim_id=row.id, provenance="extracted", detail=None)
+
+
+async def persist_extracted_claims(
+    session: AsyncSession,
+    registry: FactRegistry,
+    *,
+    entry_id: UUID,
+    entity_type: EntityKind,
+    project_key: str | None,
+    candidates: Sequence[ClaimCandidate],
+) -> list[ClaimWriteOutcome]:
+    """Persist automatic candidates in one savepoint that failure cannot poison.
+
+    Automatic extraction is best-effort and server-owned: an unregistered or
+    disabled fact skips its candidate, and any resolver or insert error rolls
+    back only this savepoint, is counted under a fixed reason, and lets the
+    entry write commit. Explicit claims and the outer commit belong to the
+    caller and are never touched here -- only the automatic part is caught. This
+    function only ever inserts: it never retires an occurrence, so an automatic
+    claim cannot displace an explicit one.
+    """
+    if project_key is None or not candidates:
+        return []
+    entry = str(entry_id)
+    stage: FailureReason = "persistence_error"
+    outcomes: list[ClaimWriteOutcome] = []
+    try:
+        async with session.begin_nested():
+            entity_ref_id = await _claim_anchor_id(session, entry_id, entity_type)
+            # An explicit claim for a fact wins whatever its value or statement: it is
+            # read here, in the writer's own transaction, so it covers a claim persisted
+            # moments ago by this very write as well as one that was already active.
+            explicit_facts = {
+                claim.fact_name
+                for claim in await active_claims(session, entity_ref_id)
+                if claim.provenance != "extracted"
+            }
+            for candidate in candidates:
+                if candidate.fact_name in explicit_facts:
+                    record_skip(entity_type, "explicit_precedence", entity_id=entry)
+                    continue
+                stage = "resolver_error"
+                resolved = _resolve_candidate(
+                    registry, candidate, entity_type=entity_type, entry=entry
+                )
+                stage = "persistence_error"
+                if resolved is None:
+                    continue
+                outcomes.append(
+                    await _insert_extracted(
+                        session,
+                        entity_ref_id=entity_ref_id,
+                        entity_type=entity_type,
+                        project_key=project_key,
+                        resolved=resolved,
+                    )
+                )
+    except Exception:
+        record_failure(entity_type, stage, entity_id=entry)
+        return []
+    return outcomes
+
+
+async def reconcile_extracted_claims(
+    session: AsyncSession,
+    registry: FactRegistry,
+    *,
+    entry_id: UUID,
+    entity_type: EntityKind,
+    project_key: str | None,
+    candidates: Sequence[ClaimCandidate],
+) -> None:
+    """Make an entry's AUTOMATIC claims match what its current prose asserts, in one savepoint.
+
+    Identical occurrences are kept (so a retry writes nothing and cannot reach the
+    unique index), obsolete ones are retired, changed ones are inserted naming the
+    latest retired same-key occurrence as predecessor, as the 055 trigger requires.
+    Only `extracted` rows are ever read as candidates for retirement: an explicit
+    occurrence is never retired here, and a fact it covers stays blocked. The
+    entry's active set is capped at `MAX_CLAIMS_PER_WRITE`, explicit claims
+    reserving their slots first.
+
+    A fact the registry cannot serve right now (unregistered or disabled) leaves its
+    claim rows unchanged -- including when the edited prose no longer asserts it,
+    which is why this looks at every active automatic claim and not only at the new
+    candidates. Such a kept claim still occupies a slot of the cap.
+    """
+    if project_key is None:
+        return
+    entry = str(entry_id)
+    stage: FailureReason = "persistence_error"
+    try:
+        async with session.begin_nested():
+            entity_ref_id = await _claim_anchor_id(session, entry_id, entity_type)
+            active = await active_claims(session, entity_ref_id)
+            explicit = [claim for claim in active if claim.provenance != "extracted"]
+            explicit_facts = {claim.fact_name for claim in explicit}
+            extracted_by_key = {
+                claim.claim_key: claim for claim in active if claim.provenance == "extracted"
+            }
+            kept_unservable = {
+                key: claim
+                for key, claim in extracted_by_key.items()
+                if _is_unservable(registry, claim.fact_name)
+            }
+            slots = max(MAX_CLAIMS_PER_WRITE - len(explicit) - len(kept_unservable), 0)
+            desired: dict[str, ResolvedClaim] = {}
+            for candidate in candidates:
+                if candidate.fact_name in explicit_facts:
+                    record_skip(entity_type, "explicit_precedence", entity_id=entry)
+                    continue
+                stage = "resolver_error"
+                resolved = _resolve_candidate(
+                    registry, candidate, entity_type=entity_type, entry=entry
+                )
+                stage = "persistence_error"
+                if resolved is None:
+                    continue
+                if len(desired) >= slots:
+                    record_skip(entity_type, "quota_full", entity_id=entry)
+                else:
+                    desired[resolved.claim_key] = resolved
+            await retire_claims(
+                session,
+                [
+                    claim.id
+                    for key, claim in extracted_by_key.items()
+                    if key not in desired and key not in kept_unservable
+                ],
+                retired_at=datetime.now(UTC),
+            )
+            for key, resolved in desired.items():
+                if key not in extracted_by_key:
+                    await _insert_extracted(
+                        session,
+                        entity_ref_id=entity_ref_id,
+                        entity_type=entity_type,
+                        project_key=project_key,
+                        resolved=resolved,
+                        replaces_id=await latest_retired(session, entity_ref_id, key),
+                    )
+    except Exception:
+        record_failure(entity_type, stage, entity_id=entry)
+
+
 async def replace_claims(
     session: AsyncSession,
     *,
@@ -304,10 +559,32 @@ async def replace_claims(
 
     active_by_key = {claim.claim_key: claim for claim in active}
     input_keys = set(resolved_by_key)
-    new_claims = [claim for claim in resolved if claim.claim_key not in active_by_key]
+    # An identical content key does not mean "keep" when the active occurrence is
+    # automatic: the explicit claim takes it over as a new `declared` occurrence
+    # (migration 055 forbids changing provenance in place), naming the retired
+    # one as its predecessor. A caller-supplied `replaces` must agree with that.
+    takeover_keys = {
+        key
+        for key in input_keys.intersection(active_by_key)
+        if active_by_key[key].provenance == "extracted"
+    }
+    for key in takeover_keys:
+        supplied = resolved_by_key[key].replaces
+        if supplied is not None and supplied != active_by_key[key].id:
+            raise ClaimMutationError(
+                f"replacement_required: claim key {key} must replace {active_by_key[key].id}"
+            )
+    new_claims = [
+        claim
+        for claim in resolved
+        if claim.claim_key not in active_by_key or claim.claim_key in takeover_keys
+    ]
     retired_ids = [claim.id for key, claim in active_by_key.items() if key not in input_keys]
+    retired_ids.extend(active_by_key[key].id for key in takeover_keys)
 
     for claim in new_claims:
+        if claim.claim_key in takeover_keys:
+            continue
         predecessor = await latest_retired(session, entity_ref_id, claim.claim_key)
         if predecessor is None:
             if claim.replaces is not None:
@@ -325,6 +602,15 @@ async def replace_claims(
     retired = await retire_claims(session, retired_ids, retired_at=datetime.now(UTC))
     created: list[ClaimWriteOutcome] = []
     for claim in new_claims:
+        if claim.claim_key in takeover_keys:
+            # Checked after retirement, before insertion: the trigger accepts only the
+            # latest retired occurrence of the key, which must be the one just retired.
+            predecessor = await latest_retired(session, entity_ref_id, claim.claim_key)
+            if predecessor != active_by_key[claim.claim_key].id:
+                raise ClaimMutationError(
+                    f"replacement_required: claim key {claim.claim_key} must replace {predecessor}"
+                )
+            claim = replace(claim, replaces=predecessor)
         created.append(
             await _write_claim(
                 session,
@@ -339,7 +625,7 @@ async def replace_claims(
         )
 
     return ClaimReplacement(
-        kept=len(input_keys.intersection(active_by_key)),
+        kept=len(input_keys.intersection(active_by_key)) - len(takeover_keys),
         created=tuple(created),
         retired=retired,
     )

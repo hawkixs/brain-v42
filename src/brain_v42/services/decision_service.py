@@ -323,7 +323,24 @@ class DecisionService:
 
     # ── Supersession ─────────────────────────────────────────────────────────
 
-    async def supersede(self, old_id: UUID, new_data: DecisionCreate) -> Decision:
+    async def embed_supersession(self, new_data: DecisionCreate) -> list[float]:
+        """Embed the replacement decision text, for a caller that opens its own transaction.
+
+        The GPU call must finish BEFORE the caller's PostgreSQL transaction opens;
+        pass the vector back as ``supersede(new_embedding=...)``.
+        """
+        text = self._build_embed_text(new_data.title, new_data.description, new_data.reasoning)
+        embedding: list[float] = await self._embedding_svc.embed(text)
+        return embedding
+
+    async def supersede(
+        self,
+        old_id: UUID,
+        new_data: DecisionCreate,
+        *,
+        session: AsyncSession | None = None,
+        new_embedding: list[float] | None = None,
+    ) -> Decision:
         """Supersede an existing decision with a new one.
 
         Generates embedding for the new decision text, then delegates to
@@ -332,12 +349,29 @@ class DecisionService:
         After PG write, upserts the new node in Neo4j and creates a SUPERSEDES
         relation from the new decision to the old one. Graph failures are caught
         and logged.
+
+        With a caller-owned ``session`` the caller owns the transaction and the
+        embedding (``embed_supersession``, computed before that transaction
+        opened): only the authoritative PostgreSQL writes run here, and the caller
+        runs ``enrich_superseded`` once its transaction has committed.
         """
-        text = self._build_embed_text(new_data.title, new_data.description, new_data.reasoning)
-        new_embedding = await self._embedding_svc.embed(text)
-        result = await self._repo.supersede(old_id, new_data, new_embedding=new_embedding)
+        if session is None:
+            new_embedding = await self.embed_supersession(new_data)
+            result = await self._repo.supersede(old_id, new_data, new_embedding=new_embedding)
+        else:
+            result = await self._repo.supersede(
+                old_id, new_data, new_embedding=new_embedding, session=session
+            )
         logger.info("decision.superseded", old_id=str(old_id), new_id=str(result.id))
 
+        if session is None:
+            await self.enrich_superseded(old_id, result, new_data)
+        return result
+
+    async def enrich_superseded(
+        self, old_id: UUID, result: Decision, new_data: DecisionCreate
+    ) -> None:
+        """Mirror a committed supersession to Neo4j; graph failures never break PG state."""
         if self._graph:
             try:
                 await self._graph.upsert_node(
@@ -354,8 +388,6 @@ class DecisionService:
                 )
             # Surfaces a WARN if Neo4j reports the SUPERSEDES write did not land.
             await graph_create_relation_logged(self._graph, result.id, old_id, "SUPERSEDES")
-
-        return result
 
     async def get_supersession_chain(self, decision_id: UUID) -> list[Decision]:
         """Walk the supersession chain from decision_id.

@@ -333,6 +333,7 @@ class PgADRRepo(BasePgRepository):
         dream_run_id: int | None,
         *,
         project_key: str | None = None,
+        session: AsyncSession | None = None,
     ) -> ADR:
         """Insert an ADR + update learning.metadata + insert dream_promotions row,
         all in ONE transaction.
@@ -349,92 +350,96 @@ class PgADRRepo(BasePgRepository):
         were reached, PostgreSQL would raise ForeignKeyViolationError instead of
         allowing the caller to detect a missing learning via rowcount.
 
+        With a caller-owned ``session`` the same statements run, in the same order,
+        inside a savepoint of the caller's transaction, and the caller commits: the
+        ADR, the source stamp, the audit row and any claim the caller adds then
+        stand or fall together.
+
         Raises:
             SourceLearningNotFound: source_learning_id doesn't exist in learnings.
             IntegrityError: learning already materialized (partial unique index on
                 dream_promotions).  Caller translates into a typed message (T6).
         """
-        async with self.get_session() as session:
-            async with session.begin():
-                number = await self._next_number(session, data.project_key)
-                status = "accepted" if auto_accept else "proposed"
+        async with self.transaction(session) as sess:
+            number = await self._next_number(sess, data.project_key)
+            status = "accepted" if auto_accept else "proposed"
 
-                if project_key is not None:
-                    source_exists = await lock_source_learning(
-                        session,
-                        source_learning_id=source_learning_id,
-                        project_key=project_key,
-                    )
-                    if not source_exists:
-                        raise SourceLearningNotFound("source learning not found")
-
-                # 1) Insert the ADR — numbered, statused, embedded.
-                result = await session.execute(
-                    adrs.insert()
-                    .values(
-                        number=number,
-                        title=data.title,
-                        context=data.context,
-                        decision=data.decision,
-                        consequences=data.consequences,
-                        alternatives_considered=[
-                            alt.model_dump() for alt in data.alternatives_considered
-                        ],
-                        project_key=data.project_key,
-                        tags=data.tags,
-                        status=status,
-                        decided_at=sa.func.now() if auto_accept else None,
-                        embedding=embedding,
-                        metadata=data.metadata,
-                    )
-                    .returning(*adrs.c)
-                )
-                adr_row = result.fetchone()
-                assert adr_row is not None
-                adr = self._row_to_model(adr_row)
-
-                # 2) Stamp learning metadata — returns rowcount (1 if found, 0 if not).
-                if project_key is None:
-                    rowcount = await stamp_learning(
-                        session,
-                        source_learning_id=source_learning_id,
-                        target_entity_id=adr.id,
-                    )
-                else:
-                    rowcount = await stamp_learning(
-                        session,
-                        source_learning_id=source_learning_id,
-                        target_entity_id=adr.id,
-                        project_key=project_key,
-                    )
-
-                # 3) Eagerly raise BEFORE the dream_promotions INSERT so the FK
-                #    (source_learning_id → learnings.id, non-deferrable) cannot
-                #    obscure the "missing learning" failure mode as IntegrityError.
-                if rowcount != 1:
-                    if project_key is not None:
-                        raise SourceLearningNotFound("source learning not found")
-                    raise SourceLearningNotFound(
-                        f"learning {source_learning_id} not found; cannot promote"
-                    )
-
-                # 4) Insert the dream_promotions audit row.
-                await insert_promotion_audit(
-                    session,
+            if project_key is not None:
+                source_exists = await lock_source_learning(
+                    sess,
                     source_learning_id=source_learning_id,
-                    target_type="adr",
-                    dream_run_id=dream_run_id,
-                    target_adr_id=adr.id,
-                    target_runbook_id=None,
+                    project_key=project_key,
+                )
+                if not source_exists:
+                    raise SourceLearningNotFound("source learning not found")
+
+            # 1) Insert the ADR — numbered, statused, embedded.
+            result = await sess.execute(
+                adrs.insert()
+                .values(
+                    number=number,
+                    title=data.title,
+                    context=data.context,
+                    decision=data.decision,
+                    consequences=data.consequences,
+                    alternatives_considered=[
+                        alt.model_dump() for alt in data.alternatives_considered
+                    ],
+                    project_key=data.project_key,
+                    tags=data.tags,
+                    status=status,
+                    decided_at=sa.func.now() if auto_accept else None,
+                    embedding=embedding,
+                    metadata=data.metadata,
+                )
+                .returning(*adrs.c)
+            )
+            adr_row = result.fetchone()
+            assert adr_row is not None
+            adr = self._row_to_model(adr_row)
+
+            # 2) Stamp learning metadata — returns rowcount (1 if found, 0 if not).
+            if project_key is None:
+                rowcount = await stamp_learning(
+                    sess,
+                    source_learning_id=source_learning_id,
+                    target_entity_id=adr.id,
+                )
+            else:
+                rowcount = await stamp_learning(
+                    sess,
+                    source_learning_id=source_learning_id,
+                    target_entity_id=adr.id,
+                    project_key=project_key,
                 )
 
-                logger.info(
-                    "adr.created_with_promotion",
-                    adr_id=str(adr.id),
-                    source_learning_id=str(source_learning_id),
-                    auto_accept=auto_accept,
+            # 3) Eagerly raise BEFORE the dream_promotions INSERT so the FK
+            #    (source_learning_id → learnings.id, non-deferrable) cannot
+            #    obscure the "missing learning" failure mode as IntegrityError.
+            if rowcount != 1:
+                if project_key is not None:
+                    raise SourceLearningNotFound("source learning not found")
+                raise SourceLearningNotFound(
+                    f"learning {source_learning_id} not found; cannot promote"
                 )
-                return adr
+
+            # 4) Insert the dream_promotions audit row.
+            await insert_promotion_audit(
+                sess,
+                source_learning_id=source_learning_id,
+                target_type="adr",
+                dream_run_id=dream_run_id,
+                target_adr_id=adr.id,
+                target_runbook_id=None,
+            )
+
+            logger.info(
+                "adr.created_with_promotion",
+                adr_id=str(adr.id),
+                source_learning_id=str(source_learning_id),
+                auto_accept=auto_accept,
+            )
+            return adr
 
     # -------------------------------------------------------------------------
     # List / Search

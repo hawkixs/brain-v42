@@ -132,6 +132,7 @@ class ADRService:
         *,
         project_key: str | None = None,
         authorization: RelationAuthorization | None = None,
+        session: AsyncSession | None = None,
     ) -> ADR:
         """Create an ADR + atomically record promotion from a source learning.
 
@@ -139,26 +140,26 @@ class ADRService:
         rows commit together). Graph upsert + feature-link + auto-link run
         post-commit via graph_helpers, which swallow their own exceptions — a
         Neo4j outage never rolls back the PG writes.
+
+        With a caller-owned ``session`` the caller owns the transaction: the three
+        PostgreSQL writes join it, the derived work is NOT run here, and the caller
+        calls ``enrich_created`` after its commit (the same contract as ``create``).
         """
         embed_text = adr_embedding_text(data.title, data.context, data.decision)
 
-        if project_key is None:
-            adr = await self._repo.create_with_promotion(
-                data=data,
-                embedding=None,
-                source_learning_id=source_learning_id,
-                auto_accept=auto_accept,
-                dream_run_id=dream_run_id,
-            )
-        else:
-            adr = await self._repo.create_with_promotion(
-                data=data,
-                embedding=None,
-                source_learning_id=source_learning_id,
-                auto_accept=auto_accept,
-                dream_run_id=dream_run_id,
-                project_key=project_key,
-            )
+        repo_kwargs: dict[str, Any] = {}
+        if project_key is not None:
+            repo_kwargs["project_key"] = project_key
+        if session is not None:
+            repo_kwargs["session"] = session
+        adr = await self._repo.create_with_promotion(
+            data=data,
+            embedding=None,
+            source_learning_id=source_learning_id,
+            auto_accept=auto_accept,
+            dream_run_id=dream_run_id,
+            **repo_kwargs,
+        )
         logger.info(
             "adr_service.create_with_promotion",
             adr_id=str(adr.id),
@@ -166,6 +167,8 @@ class ADRService:
             auto_accept=auto_accept,
         )
 
+        if session is not None:
+            return adr
         return await self.enrich_created(
             adr,
             data,

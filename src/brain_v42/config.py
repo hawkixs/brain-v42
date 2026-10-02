@@ -464,6 +464,14 @@ class Settings(BaseSettings):
     # widen or narrow the nightly cap without a code change.
     brain_dream_verify_max_claims: int = Field(default=200, ge=1, le=5000)
 
+    # ADR 27 claim extraction: deterministic, server-owned claims produced at
+    # knowledge write time. Shipped CLOSED, like every new capability here: a
+    # merge must never arm a write path the operator has not decided to switch
+    # on. Arming it is an operator gesture (`BRAIN_CLAIM_EXTRACTION_ENABLED=true`
+    # on the live MCP service), and switching it off stops NEW extraction
+    # immediately without touching already stored claims.
+    brain_claim_extraction_enabled: bool = Field(default=False)
+
     @field_validator("client_activity_url")
     @classmethod
     def _client_activity_loopback_only(cls, v: str) -> str:

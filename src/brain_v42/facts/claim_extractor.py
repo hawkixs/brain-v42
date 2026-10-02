@@ -56,7 +56,7 @@ ExtractionReason = Literal[
 _PROSE_LIMIT_BYTES = 64 * 1024
 _SENTENCE_LIMIT_CHARS = 500
 
-_SELECTED_FIELDS: Mapping[EntityKind, tuple[str, ...]] = {
+SELECTED_FIELDS: Mapping[EntityKind, tuple[str, ...]] = {
     "learning": ("insight",),
     "decision": ("description", "reasoning"),
     "snippet": ("intention", "gotchas"),
@@ -493,7 +493,7 @@ def extract_candidates(
 
     prose: list[str] = []
     total_bytes = 0
-    for name in _SELECTED_FIELDS[entity]:
+    for name in SELECTED_FIELDS[entity]:
         value = fields.get(name)
         if value:
             total_bytes += len(value.encode("utf-8"))

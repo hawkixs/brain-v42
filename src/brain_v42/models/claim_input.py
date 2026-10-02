@@ -133,10 +133,14 @@ class ClaimInput(BaseModel):
             raise ValueError("value rule requires scalars and refuses floats")
 
 
+#: Claims one entry write may carry, explicit and automatic together.
+MAX_CLAIMS_PER_WRITE = 10
+
+
 def validate_claim_inputs(inputs: Sequence[ClaimInput]) -> None:
     """Reject oversized or duplicate request input before any writer starts work."""
-    if len(inputs) > 10:
-        raise ValueError("input count rule allows at most 10 inputs")
+    if len(inputs) > MAX_CLAIMS_PER_WRITE:
+        raise ValueError(f"input count rule allows at most {MAX_CLAIMS_PER_WRITE} inputs")
     seen: list[ClaimInput] = []
     for claim in inputs:
         if claim in seen:
