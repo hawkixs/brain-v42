@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from brain_v42.db.engine import get_session_factory
 from brain_v42.db.session_derived_capture import derive_capture
 from brain_v42.db.tables import MIN_COMPARABLE_EMBEDDING_NORM
+from brain_v42.repositories.capture_guard import lock_unless_captured
 
 logger = structlog.get_logger(__name__)
 
@@ -99,6 +100,9 @@ class BasePgRepository:
 
     table: Table  # Must be overridden by subclass
     fts_columns: list[str] = []  # Override if table lacks DB-generated search_vector
+    # Opt-in: knowledge repos refuse deleting rows a session captured. Left False
+    # for every other table, which has no capture ledger entry to honour.
+    guard_captured_deletes: bool = False
 
     def __init__(
         self,
@@ -422,6 +426,8 @@ class BasePgRepository:
         """Delete a row by id. Returns True if deleted, False if not found."""
 
         async def _execute(sess: AsyncSession) -> bool:
+            if self.guard_captured_deletes and not await lock_unless_captured(sess, self.table, id):
+                return False
             stmt = self.table.delete().where(self.table.c.id == id).returning(self.table.c.id)
             result = await sess.execute(stmt)
             deleted = result.one_or_none()

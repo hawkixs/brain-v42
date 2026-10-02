@@ -52,6 +52,7 @@ from brain_v42.mcp.tools.tool_annotations import (
 )
 from brain_v42.models.adr import ADRUpdate
 from brain_v42.models.brain import ALL_TYPES, KnowledgeType, MutableKnowledgeType
+from brain_v42.models.brain_session import KnowledgeCapturedError
 from brain_v42.models.decision import DecisionUpdate
 from brain_v42.models.indexed_plan import IndexedPlan
 from brain_v42.models.indexed_plan_chunk import IndexedPlanChunk
@@ -194,6 +195,22 @@ HUMAN_FRESHNESS_SOURCE = "manual_update"
 
 #: The field the SERVER sets and the caller cannot forge.
 _SERVER_ONLY_UPDATE_FIELDS = frozenset({"freshness_source"})
+
+
+def _captured_refusal(entity_type: str, entity_id: str, session_id: UUID) -> str:
+    """Explain a refused delete and, where one exists, the reversible alternative.
+
+    Plans are immutable and `brain_update` refuses them, so pointing at it
+    would send the caller into a second refusal.
+    """
+    refusal = f"{entity_type} {entity_id} was captured by session {session_id}; deletion refused."
+    if entity_type == "plan":
+        return refusal
+    return (
+        f"{refusal} Archive it instead: "
+        f'brain_update(entity_type="{entity_type}", entity_id="{entity_id}", '
+        'fields={"freshness_status": "archived"})'
+    )
 
 
 def register_crud_tools(
@@ -348,27 +365,32 @@ def register_crud_tools(
 
         scope = get_dream_project_scope()
 
-        if entity_type == "plan":
-            from brain_v42.repositories.pg_indexed_plan_repo import (
-                PgIndexedPlanRepo,  # noqa: PLC0415
-            )
+        try:
+            if entity_type == "plan":
+                from brain_v42.repositories.pg_indexed_plan_repo import (
+                    PgIndexedPlanRepo,  # noqa: PLC0415
+                )
 
-            async with session_factory() as session:
-                repo = PgIndexedPlanRepo(session)
+                async with session_factory() as session:
+                    repo = PgIndexedPlanRepo(session)
+                    if scope is None:
+                        deleted = await repo.delete(uid)
+                    else:
+                        deleted = await repo.delete(uid, project_key=scope.project_key)
+            else:
+                svc = _services[entity_type]
                 if scope is None:
-                    deleted = await repo.delete(uid)
+                    deleted = await svc.delete(uid)
                 else:
-                    deleted = await repo.delete(uid, project_key=scope.project_key)
-            if not deleted:
-                return format_error(f"plan {entity_id} not found")
-            logger.info("brain_delete", entity_type="plan", entity_id=entity_id)
-            return format_confirmation("Deleted", "", id=str(entity_id), type="plan")
-
-        svc = _services[entity_type]
-        if scope is None:
-            deleted = await svc.delete(uid)
-        else:
-            deleted = await svc.delete(uid, project_key=scope.project_key)
+                    deleted = await svc.delete(uid, project_key=scope.project_key)
+        except KnowledgeCapturedError as refused:
+            logger.warning(
+                "brain_delete_refused_captured",
+                entity_type=entity_type,
+                entity_id=entity_id,
+                session_id=str(refused.session_id),
+            )
+            return format_error(_captured_refusal(entity_type, entity_id, refused.session_id))
 
         if not deleted:
             return format_error(f"{entity_type} {entity_id} not found")

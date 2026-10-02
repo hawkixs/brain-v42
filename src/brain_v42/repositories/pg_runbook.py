@@ -27,6 +27,7 @@ from brain_v42.models.runbook import (
     RunbookStep,
     RunbookUpdate,
 )
+from brain_v42.repositories.capture_guard import lock_unless_captured
 from brain_v42.repositories.pg_base import BasePgRepository, Row
 from brain_v42.repositories.promotion import (
     SourceLearningNotFound,
@@ -101,6 +102,7 @@ class PgRunbookRepo(BasePgRepository):
     """
 
     table = runbooks
+    guard_captured_deletes = True
 
     # -------------------------------------------------------------------------
     # CRUD — Pydantic-level API
@@ -272,6 +274,8 @@ class PgRunbookRepo(BasePgRepository):
             .returning(runbooks.c.id)
         )
         async with self._maybe_session(session, write=True) as sess:
+            if not await lock_unless_captured(sess, runbooks, id, project_key=project_key):
+                return False
             return (await sess.execute(stmt)).one_or_none() is not None
 
     # -------------------------------------------------------------------------

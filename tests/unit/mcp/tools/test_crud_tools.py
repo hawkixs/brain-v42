@@ -12,6 +12,7 @@ import pytest
 import sqlalchemy as sa
 
 from brain_v42.models.adr import ADR
+from brain_v42.models.brain_session import KnowledgeCapturedError
 from brain_v42.models.decision import Decision
 from brain_v42.models.indexed_plan import IndexedPlan
 from brain_v42.models.learning import Learning
@@ -416,6 +417,54 @@ class TestBrainDelete:
             services[svc_key].delete.return_value = True
             result = await tools["brain_delete"](entity_type=entity_type, entity_id=str(uuid4()))
             assert result.startswith("ok Deleted"), f"Failed for {entity_type}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("entity_type", "svc_key"),
+        [
+            ("decision", "decision_svc"),
+            ("learning", "learning_svc"),
+            ("snippet", "snippet_svc"),
+            ("runbook", "runbook_svc"),
+            ("adr", "adr_svc"),
+        ],
+    )
+    async def test_delete_of_captured_knowledge_names_session_and_archive_call(
+        self,
+        tools: dict[str, Any],
+        services: dict[str, Any],
+        entity_type: str,
+        svc_key: str,
+    ) -> None:
+        """A captured row is refused with the capturing session and the archive call."""
+        entity_id, session_id = uuid4(), uuid4()
+        services[svc_key].delete.side_effect = KnowledgeCapturedError(entity_id, session_id)
+
+        result = await tools["brain_delete"](entity_type=entity_type, entity_id=str(entity_id))
+
+        assert result == (
+            f"{entity_type} {entity_id} was captured by session {session_id}; "
+            "deletion refused. Archive it instead: "
+            f'brain_update(entity_type="{entity_type}", entity_id="{entity_id}", '
+            'fields={"freshness_status": "archived"})'
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_of_captured_plan_does_not_suggest_brain_update(
+        self, tools: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Plans are immutable, so the archive hint would itself be refused."""
+        plan_id, session_id = uuid4(), uuid4()
+        repo = MagicMock()
+        repo.delete = AsyncMock(side_effect=KnowledgeCapturedError(plan_id, session_id))
+        monkeypatch.setattr(
+            "brain_v42.repositories.pg_indexed_plan_repo.PgIndexedPlanRepo",
+            MagicMock(return_value=repo),
+        )
+
+        result = await tools["brain_delete"](entity_type="plan", entity_id=str(plan_id))
+
+        assert result == (f"plan {plan_id} was captured by session {session_id}; deletion refused.")
 
 
 # ===========================================================================
