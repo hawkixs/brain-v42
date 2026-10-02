@@ -42,6 +42,7 @@ from brain_v42.db.tables import (
     runbooks,
     snippets,
 )
+from brain_v42.facts.claim_extractor import ClaimCandidate
 from brain_v42.facts.definitions_startup import register_fact_definitions
 from brain_v42.facts.model import FactTarget, SourceIdentity
 from brain_v42.facts.probes.alembic_head import AlembicHeadProbe
@@ -49,6 +50,7 @@ from brain_v42.facts.probes.alembic_head_shipped import AlembicHeadShippedProbe
 from brain_v42.facts.registry import FactRegistry
 from brain_v42.mcp.tools import claim_writes
 from brain_v42.mcp.tools.brain_tools import register_tools
+from brain_v42.mcp.tools.crud_tools import register_crud_tools
 from brain_v42.models.decision import DecisionCreate
 from brain_v42.models.learning import LearningCreate
 from brain_v42.repositories.pg_adr import PgADRRepo
@@ -742,3 +744,165 @@ async def test_extraction_failure_commits_entry_without_claim(
     assert await _count_project_claims(session_factory, project_key) == 0
     failures = {key: n for key, n in _delta(before).items() if key[0] == "failed"}
     assert failures == {("failed", writer.entity_type, stage): 1}
+
+
+# ---------------------------------------------------------------------------
+# Explicit precedence over an automatic claim
+# ---------------------------------------------------------------------------
+
+
+def _explicit_head(value: str = "058", statement: str = _ASSERTION) -> dict[str, object]:
+    """An explicit `alembic_head` claim; the defaults are content-identical to the extracted one."""
+    return {
+        "statement": statement,
+        "fact_name": "alembic_head",
+        "expected": {"path": "/revision", "op": "eq", "value": value},
+    }
+
+
+async def _learning_with_extracted_claim(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> tuple[dict[str, Any], UUID, Any]:
+    """A learning whose only active claim is the automatic one, plus the update tool."""
+    tools = await _tools(session_factory)
+    project_key = f"claim-same-key-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    title = f"Same key {uuid4()}"
+    await tools["brain_learn"](topic=title, insight=_ASSERTION, project_key=project_key)
+    learning_id = await _new_entity_id(session_factory, _WRITERS["learning"], title)
+    mcp = _MCP()
+    register_crud_tools(
+        mcp,  # type: ignore[arg-type]
+        decision_svc=MagicMock(),
+        learning_svc=LearningService(
+            PgLearningRepo(session_factory),
+            embedding_svc=_EmbeddingService(),
+            project_context_repo=PgProjectContextRepo(session_factory),
+        ),
+        snippet_svc=MagicMock(),
+        runbook_svc=MagicMock(),
+        adr_svc=MagicMock(),
+        session_factory=session_factory,
+        fact_registry=_registry(),
+    )
+    return tools, learning_id, mcp.registered["brain_update"]
+
+
+async def _topic(session_factory: async_sessionmaker[AsyncSession], learning_id: UUID) -> str:
+    async with session_factory() as session:
+        return str(
+            await session.scalar(sa.select(learnings.c.topic).where(learnings.c.id == learning_id))
+        )
+
+
+@pytest.mark.parametrize("supply_predecessor", [False, True])
+async def test_explicit_same_key_retires_extracted_and_inserts_declared_with_replaces_id(
+    supply_predecessor: bool, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """An identical explicit claim replaces the automatic occurrence; the explicit one wins."""
+    _tools_, learning_id, update = await _learning_with_extracted_claim(session_factory)
+    [extracted] = await _claims_of(session_factory, learning_id)
+    assert extracted["provenance"] == "extracted"
+    explicit = _explicit_head()
+    if supply_predecessor:
+        explicit["replaces"] = str(extracted["id"])
+
+    result = await update(
+        entity_type="learning",
+        entity_id=str(learning_id),
+        fields={"topic": "Renamed with an explicit claim"},
+        claims=[explicit],
+        expected_active_claim_ids=[str(extracted["id"])],
+    )
+
+    assert "kept:0" in result and "created:1" in result and "retired:1" in result
+    old, new = sorted(await _claims_of(session_factory, learning_id), key=lambda c: c["seq"])
+    assert (old["id"], old["provenance"]) == (extracted["id"], "extracted")
+    assert old["retired_at"] is not None
+    assert new["retired_at"] is None
+    assert (new["provenance"], new["claim_key"], new["replaces_id"]) == (
+        "declared",
+        old["claim_key"],
+        old["id"],
+    )
+
+
+async def test_explicit_same_key_wrong_replaces_fails_without_mutation(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A conflicting predecessor is refused before anything is retired, inserted or edited."""
+    _tools_, learning_id, update = await _learning_with_extracted_claim(session_factory)
+    topic_before = await _topic(session_factory, learning_id)
+    [extracted] = await _claims_of(session_factory, learning_id)
+    explicit = _explicit_head()
+    explicit["replaces"] = str(uuid4())
+
+    with pytest.raises(ToolError, match="replacement_required"):
+        await update(
+            entity_type="learning",
+            entity_id=str(learning_id),
+            fields={"topic": "Must not be applied"},
+            claims=[explicit],
+            expected_active_claim_ids=[str(extracted["id"])],
+        )
+
+    assert await _topic(session_factory, learning_id) == topic_before
+    assert await _claims_of(session_factory, learning_id) == [extracted]
+
+
+async def test_explicit_claim_blocks_automatic_candidate_of_the_same_fact(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """An explicit claim for a fact, new or already active, keeps the automatic one out."""
+    tools = await _tools(session_factory)
+    registry = _registry()
+    project_key = f"claim-precedence-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+
+    # (a) The same create carries an explicit claim for the fact its prose would extract:
+    #     a DIFFERENT value, so nothing but precedence keeps the second claim out.
+    before = counters.snapshot()
+    title = f"Precedence create {uuid4()}"
+    await tools["brain_learn"](
+        topic=title,
+        insight=_ASSERTION,
+        project_key=project_key,
+        claims=[_explicit_head(value="061", statement="Declared head.")],
+    )
+    claims = await _claims_of(
+        session_factory, await _new_entity_id(session_factory, _WRITERS["learning"], title)
+    )
+    assert [(c["provenance"], c["claim_key"] is not None) for c in claims] == [("declared", True)]
+    assert _delta(before) == {("skipped", "learning", "explicit_precedence"): 1}
+
+    # (b) The entry already holds an active declared claim of IDENTICAL content; a later
+    #     automatic candidate must neither duplicate it, retire it, nor fail as a conflict.
+    title = f"Precedence existing {uuid4()}"
+    await tools["brain_learn"](
+        topic=title,
+        insight="Nothing to extract.",
+        project_key=project_key,
+        claims=[_explicit_head()],
+    )
+    learning_id = await _new_entity_id(session_factory, _WRITERS["learning"], title)
+    [declared] = await _claims_of(session_factory, learning_id)
+    before = counters.snapshot()
+    async with session_factory() as session, session.begin():
+        outcomes = await claim_writes.persist_extracted_claims(
+            session,
+            registry,
+            entry_id=learning_id,
+            entity_type="learning",
+            project_key=project_key,
+            candidates=(
+                ClaimCandidate(
+                    statement=_ASSERTION,
+                    fact_name="alembic_head",
+                    expected={"path": "/revision", "op": "eq", "value": "058"},
+                ),
+            ),
+        )
+    assert outcomes == []
+    assert await _claims_of(session_factory, learning_id) == [declared]
+    assert declared["retired_at"] is None
+    assert _delta(before) == {("skipped", "learning", "explicit_precedence"): 1}

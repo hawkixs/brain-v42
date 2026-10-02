@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Literal
 from uuid import UUID
@@ -326,7 +326,9 @@ async def persist_extracted_claims(
     disabled fact skips its candidate, and any resolver or insert error rolls
     back only this savepoint, is counted under a fixed reason, and lets the
     entry write commit. Explicit claims and the outer commit belong to the
-    caller and are never touched here -- only the automatic part is caught.
+    caller and are never touched here -- only the automatic part is caught. This
+    function only ever inserts: it never retires an occurrence, so an automatic
+    claim cannot displace an explicit one.
     """
     if project_key is None or not candidates:
         return []
@@ -336,7 +338,18 @@ async def persist_extracted_claims(
     try:
         async with session.begin_nested():
             entity_ref_id = await _claim_anchor_id(session, entry_id, entity_type)
+            # An explicit claim for a fact wins whatever its value or statement: it is
+            # read here, in the writer's own transaction, so it covers a claim persisted
+            # moments ago by this very write as well as one that was already active.
+            explicit_facts = {
+                claim.fact_name
+                for claim in await active_claims(session, entity_ref_id)
+                if claim.provenance != "extracted"
+            }
             for candidate in candidates:
+                if candidate.fact_name in explicit_facts:
+                    record_skip(entity_type, "explicit_precedence", entity_id=entry)
+                    continue
                 try:
                     descriptor = registry.describe(candidate.fact_name)
                 except UnknownFactError:
@@ -416,10 +429,32 @@ async def replace_claims(
 
     active_by_key = {claim.claim_key: claim for claim in active}
     input_keys = set(resolved_by_key)
-    new_claims = [claim for claim in resolved if claim.claim_key not in active_by_key]
+    # An identical content key does not mean "keep" when the active occurrence is
+    # automatic: the explicit claim takes it over as a new `declared` occurrence
+    # (migration 055 forbids changing provenance in place), naming the retired
+    # one as its predecessor. A caller-supplied `replaces` must agree with that.
+    takeover_keys = {
+        key
+        for key in input_keys.intersection(active_by_key)
+        if active_by_key[key].provenance == "extracted"
+    }
+    for key in takeover_keys:
+        supplied = resolved_by_key[key].replaces
+        if supplied is not None and supplied != active_by_key[key].id:
+            raise ClaimMutationError(
+                f"replacement_required: claim key {key} must replace {active_by_key[key].id}"
+            )
+    new_claims = [
+        claim
+        for claim in resolved
+        if claim.claim_key not in active_by_key or claim.claim_key in takeover_keys
+    ]
     retired_ids = [claim.id for key, claim in active_by_key.items() if key not in input_keys]
+    retired_ids.extend(active_by_key[key].id for key in takeover_keys)
 
     for claim in new_claims:
+        if claim.claim_key in takeover_keys:
+            continue
         predecessor = await latest_retired(session, entity_ref_id, claim.claim_key)
         if predecessor is None:
             if claim.replaces is not None:
@@ -437,6 +472,15 @@ async def replace_claims(
     retired = await retire_claims(session, retired_ids, retired_at=datetime.now(UTC))
     created: list[ClaimWriteOutcome] = []
     for claim in new_claims:
+        if claim.claim_key in takeover_keys:
+            # Checked after retirement, before insertion: the trigger accepts only the
+            # latest retired occurrence of the key, which must be the one just retired.
+            predecessor = await latest_retired(session, entity_ref_id, claim.claim_key)
+            if predecessor != active_by_key[claim.claim_key].id:
+                raise ClaimMutationError(
+                    f"replacement_required: claim key {claim.claim_key} must replace {predecessor}"
+                )
+            claim = replace(claim, replaces=predecessor)
         created.append(
             await _write_claim(
                 session,
@@ -451,7 +495,7 @@ async def replace_claims(
         )
 
     return ClaimReplacement(
-        kept=len(input_keys.intersection(active_by_key)),
+        kept=len(input_keys.intersection(active_by_key)) - len(takeover_keys),
         created=tuple(created),
         retired=retired,
     )

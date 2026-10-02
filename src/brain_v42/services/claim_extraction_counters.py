@@ -38,6 +38,7 @@ SkipReason = Literal[
     "unregistered_fact",
     "disabled_fact",
     "quota_full",
+    "explicit_precedence",
 ]
 
 #: Where an automatic failure was caught; the entry write itself still committed.
