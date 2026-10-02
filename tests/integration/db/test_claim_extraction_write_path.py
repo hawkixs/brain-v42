@@ -11,7 +11,8 @@ failed automatic claim costs only the claim.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from dataclasses import dataclass
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
@@ -38,10 +39,13 @@ from brain_v42.db.tables import (
     knowledge_claims,
     learnings,
     project_contexts,
+    runbooks,
+    snippets,
 )
 from brain_v42.facts.definitions_startup import register_fact_definitions
 from brain_v42.facts.model import FactTarget, SourceIdentity
 from brain_v42.facts.probes.alembic_head import AlembicHeadProbe
+from brain_v42.facts.probes.alembic_head_shipped import AlembicHeadShippedProbe
 from brain_v42.facts.registry import FactRegistry
 from brain_v42.mcp.tools import claim_writes
 from brain_v42.mcp.tools.brain_tools import register_tools
@@ -51,9 +55,14 @@ from brain_v42.repositories.pg_adr import PgADRRepo
 from brain_v42.repositories.pg_decision import PgDecisionRepo
 from brain_v42.repositories.pg_learning import PgLearningRepo
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
+from brain_v42.repositories.pg_runbook import PgRunbookRepo
+from brain_v42.repositories.pg_snippet import PgSnippetRepo
+from brain_v42.services import claim_extraction_counters as counters
 from brain_v42.services.adr_service import ADRService
 from brain_v42.services.decision_service import DecisionService
 from brain_v42.services.learning_service import LearningService
+from brain_v42.services.runbook_service import RunbookService
+from brain_v42.services.snippet_service import SnippetService
 from tests.integration.conftest import _get_integration_db_url_or_skip
 from tests.integration.disposable_db import fresh_head_database
 
@@ -111,20 +120,24 @@ class _MCP:
 
 
 def _registry() -> FactRegistry:
-    """The real `alembic_head` descriptor, which the extractor allowlists; never measured."""
+    """Two allowlisted descriptors, one of them disabled; `live_release_sha` is left unregistered.
+
+    Nothing is ever measured, so the sources are never opened.
+    """
+    identity = SourceIdentity(
+        system_identifier="1", database="brain_test", server_addr="127.0.0.1", server_port=5432
+    )
     registry = FactRegistry(
-        sources={FactTarget.PRODUCTION: lambda: None},  # type: ignore[arg-type]
-        expected={
-            FactTarget.PRODUCTION: SourceIdentity(
-                system_identifier="1",
-                database="brain_test",
-                server_addr="127.0.0.1",
-                server_port=5432,
-            )
+        sources={
+            FactTarget.PRODUCTION: lambda: None,  # type: ignore[dict-item,return-value]
+            FactTarget.LIVE_RELEASE: lambda: None,  # type: ignore[dict-item,return-value]
         },
+        expected={FactTarget.PRODUCTION: identity, FactTarget.LIVE_RELEASE: identity},
     )
     registry.register(AlembicHeadProbe())
+    registry.register(AlembicHeadShippedProbe())
     registry.freeze()
+    registry.disable("alembic_head_shipped", "definition_drift")
     return registry
 
 
@@ -141,11 +154,18 @@ async def _seed_project(
         )
 
 
-async def _tools(session_factory: async_sessionmaker[AsyncSession]) -> dict[str, Any]:
-    """Register the real supersede/promote closures over real services, extraction armed."""
+async def _tools(
+    session_factory: async_sessionmaker[AsyncSession], *, guarded: bool = True
+) -> dict[str, Any]:
+    """Register the real tool closures over real services, extraction armed.
+
+    Production wires the unknown-project guard, which already refuses a write
+    with no project key. `guarded=False` removes it so the extractor's own
+    `no_project_key` skip -- the second line of defence -- can be observed.
+    """
     registry = _registry()
     await register_fact_definitions(registry, session_factory)
-    project_guard = PgProjectContextRepo(session_factory)
+    project_guard = PgProjectContextRepo(session_factory) if guarded else None
     mcp = _MCP()
     register_tools(
         mcp,  # type: ignore[arg-type]
@@ -154,9 +174,21 @@ async def _tools(session_factory: async_sessionmaker[AsyncSession]) -> dict[str,
             _EmbeddingService(),
             project_context_repo=project_guard,
         ),
-        learning_svc=MagicMock(),
-        snippet_svc=MagicMock(),
-        runbook_svc=MagicMock(),
+        learning_svc=LearningService(
+            PgLearningRepo(session_factory),
+            embedding_svc=_EmbeddingService(),
+            project_context_repo=project_guard,
+        ),
+        snippet_svc=SnippetService(
+            PgSnippetRepo(session_factory),
+            _EmbeddingService(),
+            project_context_repo=project_guard,
+        ),
+        runbook_svc=RunbookService(
+            PgRunbookRepo(session_factory),
+            _EmbeddingService(),
+            project_context_repo=project_guard,
+        ),
         adr_svc=ADRService(
             PgADRRepo(session_factory),
             embedding_svc=_EmbeddingService(),
@@ -175,11 +207,7 @@ async def _old_decision(
     session_factory: async_sessionmaker[AsyncSession], project_key: str
 ) -> UUID:
     """An existing decision in an already-seeded project."""
-    service = DecisionService(
-        PgDecisionRepo(session_factory),
-        _EmbeddingService(),
-        project_context_repo=PgProjectContextRepo(session_factory),
-    )
+    service = DecisionService(PgDecisionRepo(session_factory), _EmbeddingService())
     old = await service.create(
         DecisionCreate(
             title=f"Old decision {uuid4()}",
@@ -195,11 +223,7 @@ async def _source_learning(
     session_factory: async_sessionmaker[AsyncSession], project_key: str
 ) -> UUID:
     """An existing promotion source learning in an already-seeded project."""
-    service = LearningService(
-        PgLearningRepo(session_factory),
-        embedding_svc=_EmbeddingService(),
-        project_context_repo=PgProjectContextRepo(session_factory),
-    )
+    service = LearningService(PgLearningRepo(session_factory), embedding_svc=_EmbeddingService())
     learning = await service.create(
         LearningCreate(
             topic=f"Promotion source {uuid4()}",
@@ -487,3 +511,234 @@ async def test_promote_adr_extracts_from_new_adr_with_promotion_audit_atomically
         )
     assert await _claims_of(session_factory, promoted[0]["id"]) == []
     assert await _count_project_claims(session_factory, project_key) == claims_before
+
+
+# ---------------------------------------------------------------------------
+# Seven writers, one accounting contract
+# ---------------------------------------------------------------------------
+
+#: One paragraph of three plain assertions: a registered fact, a disabled fact and
+#: a fact the test registry does not register. The 40-character SHA is a literal.
+_THREE_FACTS = (
+    "The production Alembic head is 058. "
+    "The shipped Alembic head is 058. "
+    f"The live release is {'a' * 40}."
+)
+
+type _Delta = dict[tuple[str, str, str], int]
+
+
+@dataclass(frozen=True)
+class _Writer:
+    """How to drive one of the seven tools and where its NEW entity lands."""
+
+    entity_type: str
+    call: Callable[..., Awaitable[Any]]
+    table: sa.Table
+    title_column: str
+    unscoped: bool = True
+
+
+async def _write_learning(
+    tools: dict[str, Any], sf: Any, pk: str | None, title: str, prose: str
+) -> Any:
+    return await tools["brain_learn"](topic=title, insight=prose, project_key=pk)
+
+
+async def _write_decision(
+    tools: dict[str, Any], sf: Any, pk: str | None, title: str, prose: str
+) -> Any:
+    return await tools["brain_log_decision"](
+        title=title, context="c", decision_made="d", reasoning=prose, project_key=pk
+    )
+
+
+async def _write_adr(tools: dict[str, Any], sf: Any, pk: str | None, title: str, prose: str) -> Any:
+    return await tools["brain_propose_adr"](
+        title=title, context=prose, decision="d", consequences="c", project_key=pk
+    )
+
+
+async def _write_snippet(
+    tools: dict[str, Any], sf: Any, pk: str | None, title: str, prose: str
+) -> Any:
+    return await tools["brain_save_snippet"](
+        title=title, intention=prose, code="pass", language="python", project_key=pk
+    )
+
+
+async def _write_runbook(
+    tools: dict[str, Any], sf: Any, pk: str | None, title: str, prose: str
+) -> Any:
+    return await tools["brain_create_runbook"](
+        title=title,
+        description=prose,
+        project_key=pk,
+        trigger="t",
+        steps=[{"title": "s"}],
+    )
+
+
+async def _write_supersede(
+    tools: dict[str, Any], sf: Any, pk: str | None, title: str, prose: str
+) -> Any:
+    old = await _old_decision(sf, pk)
+    return await tools["brain_supersede_decision"](
+        old_decision_id=str(old),
+        title=title,
+        context="c",
+        decision_made="d",
+        reasoning=prose,
+        project_key=pk,
+    )
+
+
+async def _write_promote(
+    tools: dict[str, Any], sf: Any, pk: str | None, title: str, prose: str
+) -> Any:
+    source = await _source_learning(sf, pk)
+    return await tools["brain_promote_adr"](
+        title=title,
+        context="c",
+        decision="d",
+        consequences=prose,
+        project_key=pk,
+        source_learning_id=str(source),
+    )
+
+
+_WRITERS = {
+    "learning": _Writer("learning", _write_learning, learnings, "topic"),
+    "decision": _Writer("decision", _write_decision, decisions, "title"),
+    "adr": _Writer("adr", _write_adr, adrs, "title", unscoped=False),
+    "snippet": _Writer("snippet", _write_snippet, snippets, "title"),
+    "runbook": _Writer("runbook", _write_runbook, runbooks, "title", unscoped=False),
+    "supersede": _Writer("decision", _write_supersede, decisions, "title"),
+    "promote": _Writer("adr", _write_promote, adrs, "title", unscoped=False),
+}
+
+
+async def _new_entity_id(sf: async_sessionmaker[AsyncSession], writer: _Writer, title: str) -> UUID:
+    async with sf() as session:
+        entity_id = await session.scalar(
+            sa.select(writer.table.c.id).where(writer.table.c[writer.title_column] == title)
+        )
+    assert isinstance(entity_id, UUID), f"{writer.entity_type} {title!r} was not committed"
+    return entity_id
+
+
+def _delta(before: counters.ClaimExtractionSnapshot) -> _Delta:
+    """Every counter that moved since `before`, as {(kind, entity, reason): increase}."""
+    after = counters.snapshot()
+    moved: _Delta = {}
+    for kind, now, then in (
+        ("skipped", after.skipped, before.skipped),
+        ("failed", after.failed, before.failed),
+    ):
+        for (entity, reason), count in now.items():
+            if count != then[(entity, reason)]:
+                moved[(kind, entity, reason)] = count - then[(entity, reason)]
+    return moved
+
+
+@pytest.mark.parametrize("name", list(_WRITERS))
+async def test_seven_knowledge_writers_extract_without_claims_argument(
+    name: str, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    """Each writer emits one claim per eligible fact, from the NEW entity, and accounts for the rest."""
+    writer = _WRITERS[name]
+    tools = await _tools(session_factory)
+    project_key = f"claim-seven-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+
+    before = counters.snapshot()
+    title = f"Seven {name} {uuid4()}"
+    await writer.call(tools, session_factory, project_key, title, _THREE_FACTS)
+
+    entity_id = await _new_entity_id(session_factory, writer, title)
+    claims = await _claims_of(session_factory, entity_id)
+    assert [(c["provenance"], c["fact_name"], c["declared_by"]) for c in claims] == [
+        ("extracted", "alembic_head", "server:claim-extractor:v1")
+    ]
+    # Only the new entity owns a claim: neither the superseded decision nor the source learning.
+    assert await _count_project_claims(session_factory, project_key) == 1
+    assert _delta(before) == {
+        ("skipped", writer.entity_type, "disabled_fact"): 1,
+        ("skipped", writer.entity_type, "unregistered_fact"): 1,
+    }
+
+    if not writer.unscoped:
+        return
+    before = counters.snapshot()
+    title = f"Seven unscoped {name} {uuid4()}"
+    await writer.call(
+        await _tools(session_factory, guarded=False), session_factory, None, title, _THREE_FACTS
+    )
+    assert (
+        await _claims_of(session_factory, await _new_entity_id(session_factory, writer, title))
+        == []
+    )
+    assert _delta(before) == {("skipped", writer.entity_type, "no_project_key"): 1}
+
+
+async def test_full_claim_quota_skips_extraction_with_a_bounded_reason(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Ten explicit claims fill the entry cap, so the automatic candidate is skipped and counted."""
+    tools = await _tools(session_factory)
+    project_key = f"claim-quota-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    explicit = [
+        {
+            "statement": f"Explicit declaration {index}.",
+            "fact_name": "alembic_head",
+            "expected": {"path": "/revision", "op": "eq", "value": f"{index:03d}"},
+        }
+        for index in range(10)
+    ]
+
+    before = counters.snapshot()
+    title = f"Quota {uuid4()}"
+    await tools["brain_learn"](
+        topic=title, insight=_THREE_FACTS, project_key=project_key, claims=explicit
+    )
+
+    learning_id = await _new_entity_id(session_factory, _WRITERS["learning"], title)
+    claims = await _claims_of(session_factory, learning_id)
+    assert sorted(c["provenance"] for c in claims) == ["declared"] * 10
+    assert _delta(before) == {("skipped", "learning", "quota_full"): 3}
+
+
+@pytest.mark.parametrize("stage", ["parser_error", "resolver_error", "persistence_error"])
+@pytest.mark.parametrize("name", list(_WRITERS))
+async def test_extraction_failure_commits_entry_without_claim(
+    name: str,
+    stage: str,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A parser, resolver or SQL failure costs only the automatic claim, once, under a fixed label."""
+    writer = _WRITERS[name]
+    tools = await _tools(session_factory)
+    project_key = f"claim-failure-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+
+    def boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("forced automatic failure")
+
+    if stage == "parser_error":
+        monkeypatch.setattr(claim_writes, "extract_candidates", boom)
+    elif stage == "resolver_error":
+        monkeypatch.setattr(claim_writes, "resolve_claim", boom)
+    else:
+        _fail_automatic_claim_insert(monkeypatch)
+
+    before = counters.snapshot()
+    title = f"Failure {name} {stage} {uuid4()}"
+    await writer.call(tools, session_factory, project_key, title, _THREE_FACTS)
+
+    entity_id = await _new_entity_id(session_factory, writer, title)
+    assert await _claims_of(session_factory, entity_id) == []
+    assert await _count_project_claims(session_factory, project_key) == 0
+    failures = {key: n for key, n in _delta(before).items() if key[0] == "failed"}
+    assert failures == {("failed", writer.entity_type, stage): 1}

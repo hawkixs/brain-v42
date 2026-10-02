@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
-from brain_v42.facts.claim_extractor import extract_candidates
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.claim_writes import (
     claim_write_log_fields,
@@ -18,6 +17,7 @@ from brain_v42.mcp.tools.claim_writes import (
     gated_claim_session,
     persist_claims,
     persist_extracted_claims,
+    plan_extracted_claims,
     resolve_claim_inputs,
 )
 from brain_v42.mcp.tools.formatters import (
@@ -127,11 +127,12 @@ def register_snippet_tools(
             raise ValueError("declared claims require project_key")
         resolved = await resolve_claim_inputs(fact_registry, claims) if claims else []
         candidates = (
-            extract_candidates(
+            plan_extracted_claims(
                 entity="snippet",
                 project_key=project_key,
                 fields={"intention": data.intention, "gotchas": data.gotchas},
-            ).candidates
+                reserved=len(resolved),
+            )
             if extraction_available
             else ()
         )

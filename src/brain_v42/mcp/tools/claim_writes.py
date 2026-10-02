@@ -10,14 +10,13 @@ from typing import TYPE_CHECKING, Literal
 from uuid import UUID
 
 import sqlalchemy as sa
-import structlog
 
 from brain_v42.db.tables import brain_entities
 from brain_v42.facts import ResolvedClaim, resolve_claim
-from brain_v42.facts.claim_extractor import ClaimCandidate
+from brain_v42.facts.claim_extractor import ClaimCandidate, EntityKind, extract_candidates
 from brain_v42.facts.registry import UnknownFactError
 from brain_v42.mcp.tools.claim_tools import _issuer
-from brain_v42.models.claim_input import ClaimInput, validate_claim_inputs
+from brain_v42.models.claim_input import MAX_CLAIMS_PER_WRITE, ClaimInput, validate_claim_inputs
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.provenance import is_human_actor
 from brain_v42.repositories.pg_knowledge_claims import (
@@ -26,6 +25,11 @@ from brain_v42.repositories.pg_knowledge_claims import (
     latest_retired,
     retire_claims,
 )
+from brain_v42.services.claim_extraction_counters import (
+    FailureReason,
+    record_failure,
+    record_skip,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -33,8 +37,6 @@ if TYPE_CHECKING:
     from brain_v42.facts.registry import FactRegistry
     from brain_v42.facts.verification import ClaimVerificationService
 
-
-logger = structlog.get_logger(__name__)
 
 #: The fixed server attribution stamped on every automatic, extracted claim.
 #: The entry author remains in the entry's own provenance, never forged here.
@@ -279,25 +281,57 @@ async def persist_claims(
     return outcomes
 
 
+def plan_extracted_claims(
+    *,
+    entity: EntityKind,
+    project_key: str | None,
+    fields: Mapping[str, str | None],
+    reserved: int = 0,
+) -> tuple[ClaimCandidate, ...]:
+    """Parse selected prose into automatic candidates, accounting for every refusal.
+
+    Runs BEFORE the entry transaction opens, so a parser error must be caught
+    here: left alone it would fail an entry write that has nothing wrong with it.
+    The quota is the one claim batch an entry write may carry
+    (`MAX_CLAIMS_PER_WRITE`) after `reserved` slots go to explicit claims, which
+    always win; each candidate that no longer fits is counted, never silently
+    dropped. Only a parser failure is swallowed -- explicit input was already
+    validated by the caller and is not touched here.
+    """
+    try:
+        result = extract_candidates(entity=entity, project_key=project_key, fields=fields)
+    except Exception:
+        record_failure(entity, "parser_error")
+        return ()
+    for reason in sorted(result.reasons):
+        record_skip(entity, reason)
+    slots = max(MAX_CLAIMS_PER_WRITE - reserved, 0)
+    for _ in result.candidates[slots:]:
+        record_skip(entity, "quota_full")
+    return result.candidates[:slots]
+
+
 async def persist_extracted_claims(
     session: AsyncSession,
     registry: FactRegistry,
     *,
     entry_id: UUID,
-    entity_type: str,
+    entity_type: EntityKind,
     project_key: str | None,
     candidates: Sequence[ClaimCandidate],
 ) -> list[ClaimWriteOutcome]:
     """Persist automatic candidates in one savepoint that failure cannot poison.
 
     Automatic extraction is best-effort and server-owned: an unregistered or
-    disabled fact skips its candidate, and any parser, resolver or insert error
-    rolls back only this savepoint, reports a bounded reason code, and lets the
+    disabled fact skips its candidate, and any resolver or insert error rolls
+    back only this savepoint, is counted under a fixed reason, and lets the
     entry write commit. Explicit claims and the outer commit belong to the
-    caller and are never touched here — only the automatic part is caught.
+    caller and are never touched here -- only the automatic part is caught.
     """
     if project_key is None or not candidates:
         return []
+    entry = str(entry_id)
+    stage: FailureReason = "persistence_error"
     outcomes: list[ClaimWriteOutcome] = []
     try:
         async with session.begin_nested():
@@ -306,23 +340,12 @@ async def persist_extracted_claims(
                 try:
                     descriptor = registry.describe(candidate.fact_name)
                 except UnknownFactError:
-                    logger.warning(
-                        "claim_extraction_skip",
-                        reason="unregistered_fact",
-                        fact=candidate.fact_name,
-                        entity_type=entity_type,
-                        entity_id=str(entry_id),
-                    )
+                    record_skip(entity_type, "unregistered_fact", entity_id=entry)
                     continue
                 if candidate.fact_name in registry.disabled():
-                    logger.warning(
-                        "claim_extraction_skip",
-                        reason="disabled_fact",
-                        fact=candidate.fact_name,
-                        entity_type=entity_type,
-                        entity_id=str(entry_id),
-                    )
+                    record_skip(entity_type, "disabled_fact", entity_id=entry)
                     continue
+                stage = "resolver_error"
                 resolved = resolve_claim(
                     ClaimInput(
                         statement=candidate.statement,
@@ -332,6 +355,7 @@ async def persist_extracted_claims(
                     ),
                     descriptor,
                 )
+                stage = "persistence_error"
                 row = await insert_claim(
                     session,
                     entity_ref_id=entity_ref_id,
@@ -352,14 +376,9 @@ async def persist_extracted_claims(
                 outcomes.append(
                     ClaimWriteOutcome(claim_id=row.id, provenance="extracted", detail=None)
                 )
-    except Exception as exc:
-        logger.warning(
-            "claim_extraction_failed",
-            reason="extraction_error",
-            entity_type=entity_type,
-            entity_id=str(entry_id),
-            where=type(exc).__name__,
-        )
+    except Exception:
+        record_failure(entity_type, stage, entity_id=entry)
+        return []
     return outcomes
 
 

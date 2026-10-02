@@ -17,7 +17,7 @@ from uuid import UUID
 import pytest
 
 from brain_v42.facts.claim_extractor import ClaimCandidate, ExtractionResult
-from brain_v42.mcp.tools import brain_tools, runbook_tools, snippet_tools
+from brain_v42.mcp.tools import brain_tools, claim_writes, runbook_tools, snippet_tools
 from brain_v42.mcp.tools.brain_tools import register_tools
 from brain_v42.mcp.tools.claim_writes import ClaimWriteOutcome
 from brain_v42.mcp.tools.crud_tools import register_crud_tools
@@ -192,9 +192,7 @@ async def test_extraction_disabled_preserves_write_paths(monkeypatch: pytest.Mon
         extract_calls.append(str(kwargs.get("entity", "")))
         return ExtractionResult((), frozenset())
 
-    monkeypatch.setattr(brain_tools, "extract_candidates", fake_extract, raising=False)
-    monkeypatch.setattr(snippet_tools, "extract_candidates", fake_extract, raising=False)
-    monkeypatch.setattr(runbook_tools, "extract_candidates", fake_extract, raising=False)
+    monkeypatch.setattr(claim_writes, "extract_candidates", fake_extract)
     monkeypatch.setattr(brain_tools, "persist_extracted_claims", AsyncMock(), raising=False)
     monkeypatch.setattr(snippet_tools, "persist_extracted_claims", AsyncMock(), raising=False)
     monkeypatch.setattr(runbook_tools, "persist_extracted_claims", AsyncMock(), raising=False)
@@ -284,9 +282,7 @@ async def test_five_ordinary_writers_extract_without_claims_argument(
             return ExtractionResult((), frozenset({"no_project_key"}))
         return ExtractionResult((_CANDIDATE,), frozenset())
 
-    monkeypatch.setattr(brain_tools, "extract_candidates", fake_extract, raising=False)
-    monkeypatch.setattr(snippet_tools, "extract_candidates", fake_extract, raising=False)
-    monkeypatch.setattr(runbook_tools, "extract_candidates", fake_extract, raising=False)
+    monkeypatch.setattr(claim_writes, "extract_candidates", fake_extract)
 
     persist_calls: list[tuple[str, object, str | None, UUID]] = []
 

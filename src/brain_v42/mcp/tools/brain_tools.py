@@ -33,7 +33,6 @@ from uuid import UUID
 import structlog
 from sqlalchemy.exc import IntegrityError
 
-from brain_v42.facts.claim_extractor import extract_candidates
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.claim_rendering import claim_suffix_map
 from brain_v42.mcp.tools.claim_writes import (
@@ -42,6 +41,7 @@ from brain_v42.mcp.tools.claim_writes import (
     gated_claim_session,
     persist_claims,
     persist_extracted_claims,
+    plan_extracted_claims,
     resolve_claim_inputs,
 )
 from brain_v42.mcp.tools.tool_annotations import (
@@ -255,11 +255,12 @@ def register_tools(
             raise ValueError("declared claims require project_key")
         resolved = await resolve_claim_inputs(registry, claims) if claims else []
         candidates = (
-            extract_candidates(
+            plan_extracted_claims(
                 entity="decision",
                 project_key=project_key,
                 fields={"description": data.description, "reasoning": data.reasoning},
-            ).candidates
+                reserved=len(resolved),
+            )
             if extraction_available
             else ()
         )
@@ -341,11 +342,11 @@ def register_tools(
             new_decision = await decision_svc.supersede(old_uid, data)
         else:
             registry, claim_session_factory = claim_write_dependencies()
-            candidates = extract_candidates(
+            candidates = plan_extracted_claims(
                 entity="decision",
                 project_key=project_key,
                 fields={"description": data.description, "reasoning": data.reasoning},
-            ).candidates
+            )
             # Embed BEFORE the transaction opens: the GPU call must not hold it.
             new_embedding = await decision_svc.embed_supersession(data)
             async with gated_claim_session(
@@ -587,11 +588,12 @@ def register_tools(
         resolved = await resolve_claim_inputs(registry, claims) if claims else []
         scope = get_dream_project_scope()
         candidates = (
-            extract_candidates(
+            plan_extracted_claims(
                 entity="learning",
                 project_key=project_key,
                 fields={"insight": data.insight},
-            ).candidates
+                reserved=len(resolved),
+            )
             if extraction_available
             else ()
         )
@@ -744,7 +746,7 @@ def register_tools(
         registry, claim_session_factory = claim_write_dependencies()
         resolved = await resolve_claim_inputs(registry, claims) if claims else []
         candidates = (
-            extract_candidates(
+            plan_extracted_claims(
                 entity="adr",
                 project_key=project_key,
                 fields={
@@ -752,7 +754,8 @@ def register_tools(
                     "decision": data.decision,
                     "consequences": data.consequences,
                 },
-            ).candidates
+                reserved=len(resolved),
+            )
             if extraction_available
             else ()
         )
@@ -890,7 +893,7 @@ def register_tools(
                 adr = await promote(None)
             else:
                 registry, claim_session_factory = claim_write_dependencies()
-                candidates = extract_candidates(
+                candidates = plan_extracted_claims(
                     entity="adr",
                     project_key=project_key,
                     fields={
@@ -898,7 +901,7 @@ def register_tools(
                         "decision": data.decision,
                         "consequences": data.consequences,
                     },
-                ).candidates
+                )
                 async with gated_claim_session(
                     claim_session_factory, claim_verification_svc, []
                 ) as session:
