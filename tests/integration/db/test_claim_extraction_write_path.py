@@ -148,8 +148,11 @@ def _lag_claim(index: int) -> dict[str, object]:
     }
 
 
-def _registry() -> FactRegistry:
+def _registry(*, disable_head: bool = False, enable_shipped: bool = False) -> FactRegistry:
     """Two allowlisted descriptors, one of them disabled; `live_release_sha` is left unregistered.
+
+    The flags flip which of the two is served, to model a registry that changed after
+    claims were written.
 
     Nothing is ever measured, so the sources are never opened.
     """
@@ -167,7 +170,10 @@ def _registry() -> FactRegistry:
     registry.register(_LagProbe())
     registry.register(AlembicHeadShippedProbe())
     registry.freeze()
-    registry.disable("alembic_head_shipped", "definition_drift")
+    if not enable_shipped:
+        registry.disable("alembic_head_shipped", "definition_drift")
+    if disable_head:
+        registry.disable("alembic_head", "definition_drift")
     return registry
 
 
@@ -788,19 +794,8 @@ def _explicit_head(value: str = "058", statement: str = _ASSERTION) -> dict[str,
     }
 
 
-async def _learning_with_extracted_claim(
-    session_factory: async_sessionmaker[AsyncSession],
-    *,
-    insight: str = _ASSERTION,
-    claims: list[dict[str, object]] | None = None,
-) -> tuple[dict[str, Any], UUID, Any]:
-    """A learning created with extraction armed, plus the update tool over the same services."""
-    tools = await _tools(session_factory)
-    project_key = f"claim-same-key-{uuid4().hex[:12]}"
-    await _seed_project(session_factory, project_key)
-    title = f"Same key {uuid4()}"
-    await tools["brain_learn"](topic=title, insight=insight, project_key=project_key, claims=claims)
-    learning_id = await _new_entity_id(session_factory, _WRITERS["learning"], title)
+def _update_tool(session_factory: async_sessionmaker[AsyncSession], registry: FactRegistry) -> Any:
+    """`brain_update` over real services, extraction armed, against the given registry."""
     mcp = _MCP()
     register_crud_tools(
         mcp,  # type: ignore[arg-type]
@@ -814,10 +809,26 @@ async def _learning_with_extracted_claim(
         runbook_svc=MagicMock(),
         adr_svc=MagicMock(),
         session_factory=session_factory,
-        fact_registry=_registry(),
+        fact_registry=registry,
         extraction_enabled=True,
     )
-    return tools, learning_id, mcp.registered["brain_update"]
+    return mcp.registered["brain_update"]
+
+
+async def _learning_with_extracted_claim(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    insight: str = _ASSERTION,
+    claims: list[dict[str, object]] | None = None,
+) -> tuple[dict[str, Any], UUID, Any]:
+    """A learning created with extraction armed, plus the update tool over the same services."""
+    tools = await _tools(session_factory)
+    project_key = f"claim-same-key-{uuid4().hex[:12]}"
+    await _seed_project(session_factory, project_key)
+    title = f"Same key {uuid4()}"
+    await tools["brain_learn"](topic=title, insight=insight, project_key=project_key, claims=claims)
+    learning_id = await _new_entity_id(session_factory, _WRITERS["learning"], title)
+    return tools, learning_id, _update_tool(session_factory, _registry())
 
 
 async def _topic(session_factory: async_sessionmaker[AsyncSession], learning_id: UUID) -> str:
@@ -1138,3 +1149,37 @@ async def test_update_parser_failure_commits_the_edit_and_keeps_claims(
     assert await _insight(session_factory, learning_id) == "Nothing to assert any more."
     assert await _claims_of(session_factory, learning_id) == [original]
     assert _delta(before) == {("failed", "learning", "parser_error"): 1}
+
+
+async def test_update_keeps_an_extracted_claim_whose_fact_the_registry_cannot_serve(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A disabled fact leaves its claim rows alone even when the prose stops asserting it."""
+    _tools_, learning_id, _update = await _learning_with_extracted_claim(session_factory)
+    [original] = await _claims_of(session_factory, learning_id)
+    update = _update_tool(session_factory, _registry(disable_head=True))
+
+    await _edit(update, learning_id, "Nothing to assert any more.")
+
+    assert await _insight(session_factory, learning_id) == "Nothing to assert any more."
+    assert await _claims_of(session_factory, learning_id) == [original]
+    assert original["retired_at"] is None
+
+
+async def test_update_quota_reserves_slots_for_claims_kept_for_an_unservable_fact(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Nine explicit claims plus one kept automatic claim fill the cap: no eleventh is admitted."""
+    _tools_, learning_id, _update = await _learning_with_extracted_claim(
+        session_factory, claims=[_lag_claim(index) for index in range(9)]
+    )
+    assert len(await _claims_of(session_factory, learning_id)) == 10  # 9 declared + 1 extracted
+    update = _update_tool(session_factory, _registry(disable_head=True, enable_shipped=True))
+
+    before = counters.snapshot()
+    await _edit(update, learning_id, "The shipped Alembic head is 058.")
+
+    active = [c for c in await _claims_of(session_factory, learning_id) if c["retired_at"] is None]
+    assert len(active) == 10
+    assert {c["fact_name"] for c in active if c["provenance"] == "extracted"} == {"alembic_head"}
+    assert _delta(before) == {("skipped", "learning", "quota_full"): 1}

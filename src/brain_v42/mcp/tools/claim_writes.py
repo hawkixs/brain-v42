@@ -342,6 +342,15 @@ def _resolve_candidate(
     )
 
 
+def _is_unservable(registry: FactRegistry, fact_name: str) -> bool:
+    """Whether the registry cannot serve this fact right now (unregistered or disabled)."""
+    try:
+        registry.describe(fact_name)
+    except UnknownFactError:
+        return True
+    return fact_name in registry.disabled()
+
+
 async def _insert_extracted(
     session: AsyncSession,
     *,
@@ -453,8 +462,10 @@ async def reconcile_extracted_claims(
     entry's active set is capped at `MAX_CLAIMS_PER_WRITE`, explicit claims
     reserving their slots first.
 
-    A fact the registry cannot serve right now (unregistered or disabled) is left
-    as it is rather than retired: a registry outage must not erase claims.
+    A fact the registry cannot serve right now (unregistered or disabled) leaves its
+    claim rows unchanged -- including when the edited prose no longer asserts it,
+    which is why this looks at every active automatic claim and not only at the new
+    candidates. Such a kept claim still occupies a slot of the cap.
     """
     if project_key is None:
         return
@@ -469,9 +480,13 @@ async def reconcile_extracted_claims(
             extracted_by_key = {
                 claim.claim_key: claim for claim in active if claim.provenance == "extracted"
             }
-            slots = max(MAX_CLAIMS_PER_WRITE - len(explicit), 0)
+            kept_unservable = {
+                key: claim
+                for key, claim in extracted_by_key.items()
+                if _is_unservable(registry, claim.fact_name)
+            }
+            slots = max(MAX_CLAIMS_PER_WRITE - len(explicit) - len(kept_unservable), 0)
             desired: dict[str, ResolvedClaim] = {}
-            unservable_facts: set[str] = set()
             for candidate in candidates:
                 if candidate.fact_name in explicit_facts:
                     record_skip(entity_type, "explicit_precedence", entity_id=entry)
@@ -482,8 +497,8 @@ async def reconcile_extracted_claims(
                 )
                 stage = "persistence_error"
                 if resolved is None:
-                    unservable_facts.add(candidate.fact_name)
-                elif len(desired) >= slots:
+                    continue
+                if len(desired) >= slots:
                     record_skip(entity_type, "quota_full", entity_id=entry)
                 else:
                     desired[resolved.claim_key] = resolved
@@ -492,7 +507,7 @@ async def reconcile_extracted_claims(
                 [
                     claim.id
                     for key, claim in extracted_by_key.items()
-                    if key not in desired and claim.fact_name not in unservable_facts
+                    if key not in desired and key not in kept_unservable
                 ],
                 retired_at=datetime.now(UTC),
             )
