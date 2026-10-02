@@ -40,6 +40,7 @@ ERROR_CODES = frozenset(
         "refresh_budget",
         "target_mismatch",
         "probe_error",
+        "no_observation",
         "value_too_large",
         "value_not_canonical",
         "identity_unreadable",
@@ -58,6 +59,17 @@ class IdentityUnreadableError(ValueError):
     A bare ``ValueError`` could instead be a probe failure; this dedicated
     type lets the registry report ``identity_unreadable`` even when a probe's
     value is the identity itself.
+    """
+
+
+class NoObservationError(ValueError):
+    """Signal that there is nothing to observe yet, which is an expected state.
+
+    A bare ``ValueError`` reads as a probe failure; a fact whose subject has not
+    happened (a verify step never armed, a night that did not run) raises this
+    so the registry reports ``no_observation`` and the briefing says so without
+    calling it an error. The target identity is still checked first: an empty
+    answer from the wrong database proves nothing.
     """
 
 

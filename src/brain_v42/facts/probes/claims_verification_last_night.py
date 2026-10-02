@@ -8,7 +8,7 @@ from typing import cast
 
 import sqlalchemy as sa
 
-from brain_v42.facts.model import FactTarget
+from brain_v42.facts.model import FactTarget, NoObservationError
 from brain_v42.facts.nightly import ISSUER_PREFIX, KEY_PREFIX
 from brain_v42.facts.probe import SourceSession, ValueType
 from brain_v42.facts.sources import PostgresSourceSession
@@ -44,7 +44,7 @@ class ClaimsVerificationLastNightProbe:
             raise ValueError("database transaction clock is unavailable")
         run = await read_last_wet_verify_run(session, ISSUER_PREFIX, KEY_PREFIX, now)
         if run is None:
-            raise ValueError("dream_runs has no wet verify run")
+            raise NoObservationError("dream_runs has no wet verify run")
         return {
             "run_date": run.run_date.isoformat(),
             "run_id": run.run_id,

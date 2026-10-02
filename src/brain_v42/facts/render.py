@@ -229,6 +229,11 @@ def _names_identity_fields(where: str | None) -> bool:
 
 
 def _render_unreadable(unreadable: Unreadable, descriptor: FactDescriptor) -> str:
+    if unreadable.error_code == "no_observation":
+        # Nothing has happened yet: an expected state, so neither "illisible" nor a code.
+        return (
+            f"- {_SUBJECTS.get(descriptor.name, descriptor.name)} : aucune observation enregistrée"
+        )
     label = _UNREADABLE_LABELS.get(unreadable.error_code, unreadable.error_code)
     if unreadable.error_code == "target_mismatch" and _names_identity_fields(unreadable.where):
         label = f"{label} : {unreadable.where}"

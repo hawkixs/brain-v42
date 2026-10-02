@@ -25,7 +25,7 @@ from brain_v42.db.tables import (
     knowledge_fact_definitions,
     project_contexts,
 )
-from brain_v42.facts.model import FactTarget, SourceIdentity, Unreadable
+from brain_v42.facts.model import FactTarget, NoObservationError, Unreadable
 from brain_v42.facts.nightly import issuer_for, key_for
 from brain_v42.facts.probes.claims_verification_last_night import ClaimsVerificationLastNightProbe
 from brain_v42.facts.registry import FactRegistry
@@ -183,16 +183,14 @@ async def _measure(engine: AsyncEngine) -> dict[str, object]:
 
 
 async def _measure_via_registry(engine: AsyncEngine) -> Unreadable:
+    factory = PostgresSourceFactory(async_sessionmaker(engine))
+    # The declared identity is the disposable database's own: a made-up one would
+    # be a target_mismatch, which an empty probe used to hide behind probe_error.
+    async with factory() as source:
+        declared = await source.identity()
     registry = FactRegistry(
-        sources={FactTarget.PRODUCTION: PostgresSourceFactory(async_sessionmaker(engine))},
-        expected={
-            FactTarget.PRODUCTION: SourceIdentity(
-                system_identifier="1",
-                database="disposable",
-                server_addr="127.0.0.1",
-                server_port=5432,
-            )
-        },
+        sources={FactTarget.PRODUCTION: factory},
+        expected={FactTarget.PRODUCTION: declared},
     )
     registry.register(ClaimsVerificationLastNightProbe())
     registry.freeze()
@@ -204,17 +202,17 @@ async def _measure_via_registry(engine: AsyncEngine) -> Unreadable:
     return result
 
 
-async def test_no_wet_run_is_unreadable_even_when_a_dry_run_exists(
+async def test_no_wet_run_is_no_observation_even_when_a_dry_run_exists(
     fact_engine: AsyncEngine,
 ) -> None:
-    with pytest.raises(ValueError, match="no wet verify run"):
+    with pytest.raises(NoObservationError, match="no wet verify run"):
         await _measure(fact_engine)
-    assert (await _measure_via_registry(fact_engine)).error_code == "probe_error"
+    assert (await _measure_via_registry(fact_engine)).error_code == "no_observation"
     async with AsyncSession(fact_engine) as session, session.begin():
         await _run(session, date(2026, 9, 28), dry=True, status="done")
-    with pytest.raises(ValueError, match="no wet verify run"):
+    with pytest.raises(NoObservationError, match="no wet verify run"):
         await _measure(fact_engine)
-    assert (await _measure_via_registry(fact_engine)).error_code == "probe_error"
+    assert (await _measure_via_registry(fact_engine)).error_code == "no_observation"
 
 
 async def test_wet_done_run_with_no_claims_reports_measured_zeroes(

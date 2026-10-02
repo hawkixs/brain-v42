@@ -9,6 +9,7 @@ import traceback
 from collections.abc import Awaitable, Callable, Hashable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any, Final, TypeVar, cast
 from uuid import uuid4
 
@@ -21,6 +22,7 @@ from brain_v42.facts.model import (
     IdentityUnreadableError,
     Measured,
     Measurement,
+    NoObservationError,
     Unreadable,
     differing_identity_fields,
     validate_fact_name,
@@ -532,6 +534,11 @@ class FactRegistry:
             )
             self._record_failure(result, identity=identity)
             return result
+        if value is _NOTHING_OBSERVED:
+            # An expected empty state, not a failure: nothing is logged as one.
+            return self._unreadable(
+                descriptor, "no_observation", duration_ms=self._duration_ms(started_mono)
+            )
         try:
             check_value_schema(value, descriptor.value_schema)
         except ValueError:
@@ -574,9 +581,16 @@ class FactRegistry:
     async def _measure_and_identify(
         self, probe: Probe, source: SourceSession
     ) -> tuple[Mapping[str, object], Identity]:
-        """Run identity after the value so both remain inside the source's transaction."""
+        """Run identity after the value so both remain inside the source's transaction.
+
+        `_NOTHING_OBSERVED` stands for a probe that found nothing to observe yet;
+        identity is still read so the caller can refuse an empty answer from the
+        wrong target.
+        """
         try:
             value = await probe.measure(source)
+        except NoObservationError:
+            value = _NOTHING_OBSERVED
         except IdentityUnreadableError as exc:
             raise _IdentityFailure(exc) from exc
         except Exception as exc:
@@ -678,6 +692,9 @@ def _exc_info() -> tuple[type[BaseException] | None, BaseException | None, Any]:
     import sys
 
     return sys.exc_info()
+
+
+_NOTHING_OBSERVED: Mapping[str, object] = MappingProxyType({})
 
 
 class _SourceOpenFailure(Exception):
