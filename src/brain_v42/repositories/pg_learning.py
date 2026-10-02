@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from brain_v42.db.project_group_scope import project_key_in_group
 from brain_v42.db.tables import learnings
 from brain_v42.models.learning import Learning, LearningCreate, LearningUpdate
+from brain_v42.repositories.capture_guard import lock_unless_captured
 from brain_v42.repositories.pg_base import BasePgRepository, Row, project_scope
 
 logger = structlog.get_logger(__name__)
@@ -55,6 +56,7 @@ class PgLearningRepo(BasePgRepository):
 
     table = learnings
     fts_columns: list[str] = []  # search_vector is DB-generated STORED column
+    guard_captured_deletes = True
 
     # -------------------------------------------------------------------------
     # Row → Model conversion
@@ -201,7 +203,9 @@ class PgLearningRepo(BasePgRepository):
                 .returning(learnings.c.id)
             )
             async with self._maybe_session(session, write=True) as sess:
-                deleted = (await sess.execute(stmt)).one_or_none() is not None
+                deleted = await lock_unless_captured(
+                    sess, learnings, learning_id, project_key=project_key
+                ) and ((await sess.execute(stmt)).one_or_none() is not None)
         if deleted:
             logger.info("learning deleted", id=str(learning_id))
         return deleted

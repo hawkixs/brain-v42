@@ -38,6 +38,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.tables import adrs
 from brain_v42.models.adr import ADR, ADRCreate, ADRUpdate
+from brain_v42.repositories.capture_guard import lock_unless_captured
 from brain_v42.repositories.pg_base import BasePgRepository, project_scope
 from brain_v42.repositories.promotion import (
     SourceLearningNotFound,
@@ -64,6 +65,7 @@ class PgADRRepo(BasePgRepository):
 
     table = adrs
     fts_columns: list[str] = []  # search_vector is DB-generated STORED column
+    guard_captured_deletes = True
 
     # -------------------------------------------------------------------------
     # Private helpers
@@ -320,7 +322,9 @@ class PgADRRepo(BasePgRepository):
                 .returning(adrs.c.id)
             )
             async with self._maybe_session(session, write=True) as sess:
-                deleted = (await sess.execute(stmt)).one_or_none() is not None
+                deleted = await lock_unless_captured(
+                    sess, adrs, adr_id, project_key=project_key
+                ) and ((await sess.execute(stmt)).one_or_none() is not None)
         logger.info("adr.deleted", adr_id=str(adr_id), found=deleted)
         return deleted
 
