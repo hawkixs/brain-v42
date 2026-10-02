@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -307,6 +308,24 @@ def test_unreadable_renders_and_names_the_one_case_that_is_never_transient(
     code: str, expected: str
 ) -> None:
     assert render_fact_line(_unreadable(code), _DESCRIPTOR, age_seconds=None) == expected
+
+
+@pytest.mark.parametrize(
+    "where,expected",
+    [
+        ("server_addr", "- Projection graphe : illisible (cible inattendue : server_addr)"),
+        (
+            "system_identifier, server_port",
+            "- Projection graphe : illisible (cible inattendue : system_identifier, server_port)",
+        ),
+        # Anything but closed identity field names never reaches the briefing.
+        ("172.31.0.3", "- Projection graphe : illisible (cible inattendue)"),
+        ("server_addr, 172.31.0.3", "- Projection graphe : illisible (cible inattendue)"),
+    ],
+)
+def test_a_target_mismatch_names_only_closed_identity_fields(where: str, expected: str) -> None:
+    unreadable = replace(_unreadable("target_mismatch"), where=where)
+    assert render_fact_line(unreadable, _DESCRIPTOR, age_seconds=None) == expected
 
 
 def test_a_cached_reading_older_than_a_minute_says_its_age() -> None:

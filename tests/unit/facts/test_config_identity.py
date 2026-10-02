@@ -57,7 +57,7 @@ def test_production_identity_is_parsed_into_the_four_declared_keys(
     [
         "not json",
         json.dumps({**_IDENTITY, "server_port": "5432"}),
-        json.dumps({k: v for k, v in _IDENTITY.items() if k != "server_addr"}),
+        json.dumps({k: v for k, v in _IDENTITY.items() if k != "server_port"}),
         json.dumps({**_IDENTITY, "extra": 1}),
         json.dumps({**_IDENTITY, "server_port": True}),
         json.dumps([1, 2, 3]),
