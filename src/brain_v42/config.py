@@ -64,7 +64,8 @@ PGVECTOR_HNSW_MAX_DIMENSIONS = 2000
 _UnstrippedStr = Annotated[str, StringConstraints(strip_whitespace=False)]
 
 
-#: The four keys of a declared PostgreSQL identity and the JSON type of each.
+#: The keys of a declared PostgreSQL identity and the JSON type of each;
+#: `server_addr` may be omitted (Q134 = c), the other three may not.
 #: Only the SHAPE is checked here: the deep validation (a 64-bit identifier, an
 #: IP literal, a port range) belongs to `brain_v42.facts.model.SourceIdentity`,
 #: which the composition root builds from this mapping. `config` must not import
@@ -76,6 +77,7 @@ _PRODUCTION_IDENTITY_KEYS: dict[str, type] = {
     "server_addr": str,
     "server_port": int,
 }
+_PRODUCTION_IDENTITY_OPTIONAL_KEYS: frozenset[str] = frozenset({"server_addr"})
 _LIVE_RELEASE_IDENTITY_KEYS: dict[str, type] = {
     "release_sha": str,
     "package_version": str,
@@ -83,8 +85,18 @@ _LIVE_RELEASE_IDENTITY_KEYS: dict[str, type] = {
 _HOST_IDENTITY_KEYS: dict[str, type] = {"hostname": str}
 
 
-def _parse_identity_json(raw: str, keys: Mapping[str, type], *, label: str) -> dict[str, object]:
-    """Parse exactly the identity shape declared for one independently verified target."""
+def _parse_identity_json(
+    raw: str,
+    keys: Mapping[str, type],
+    *,
+    label: str,
+    optional: frozenset[str] = frozenset(),
+) -> dict[str, object]:
+    """Parse exactly the identity shape declared for one independently verified target.
+
+    A key named in ``optional`` may be absent; when present it is type-checked
+    like any other.
+    """
     try:
         payload = json.loads(raw)
     except ValueError as exc:
@@ -93,11 +105,13 @@ def _parse_identity_json(raw: str, keys: Mapping[str, type], *, label: str) -> d
         raise ValueError(f"{label} must be a JSON object with {len(keys)} keys")
     actual = set(payload)
     expected = set(keys)
-    if actual != expected:
-        raise ValueError(
-            f"missing keys {sorted(expected - actual)!r}, extra keys {sorted(actual - expected)!r}"
-        )
+    missing = expected - actual - optional
+    extra = actual - expected
+    if missing or extra:
+        raise ValueError(f"missing keys {sorted(missing)!r}, extra keys {sorted(extra)!r}")
     for key, kind in keys.items():
+        if key not in payload:
+            continue
         value = payload[key]
         if type(value) is not kind:  # bool is not an int here, on purpose
             raise ValueError(f"{key} must be a JSON {kind.__name__}")
@@ -106,7 +120,12 @@ def _parse_identity_json(raw: str, keys: Mapping[str, type], *, label: str) -> d
 
 def _parse_production_identity(raw: str) -> dict[str, object]:
     """Keep the production parser stable while the generic declaration parser expands."""
-    return _parse_identity_json(raw, _PRODUCTION_IDENTITY_KEYS, label="production identity")
+    return _parse_identity_json(
+        raw,
+        _PRODUCTION_IDENTITY_KEYS,
+        label="production identity",
+        optional=_PRODUCTION_IDENTITY_OPTIONAL_KEYS,
+    )
 
 
 def _brain_alias(legacy_env: str) -> AliasChoices:
