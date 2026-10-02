@@ -12,6 +12,7 @@ subprocess: the test process's own configuration is never touched.
 
 from __future__ import annotations
 
+import ast
 import os
 import subprocess
 import sys
@@ -26,14 +27,7 @@ _SRC = _ROOT / "src"
 _PACKAGE = _SRC / "brain_v42"
 _SENTINEL = "s3cret-sentinel"
 _TIMEOUT_SECONDS = 60
-
-# Rooted scripts named by the ticket: they call ``structlog.configure`` without
-# ``processors`` (inside ``main``), so they keep whatever the package installed.
-_ROOT_SCRIPTS = (
-    "scripts/plan_index_inventory.py",
-    "scripts/check_embedding_model_drift.py",
-    "scripts/refresh_plan_embeddings.py",
-)
+_MIN_SCRIPTS_PROBED = 38
 
 # module -> why it cannot be imported in a probe subprocess.
 _NOT_IMPORTABLE: dict[str, str] = {}
@@ -115,6 +109,48 @@ assert installed[-1] is not default[-1]
     _run(code)
 
 
+def _imports_brain_v42(tree: ast.AST) -> bool:
+    return any(
+        (
+            isinstance(node, ast.Import)
+            and any(a.name.split(".")[0] == "brain_v42" for a in node.names)
+        )
+        or (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 0
+            and (node.module or "").split(".")[0] == "brain_v42"
+        )
+        for node in ast.walk(tree)
+    )
+
+
+def _has_main_guard(tree: ast.AST) -> bool:
+    return any(
+        isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and isinstance(node.test.left, ast.Name)
+        and node.test.left.id == "__name__"
+        and any(
+            isinstance(c, ast.Constant) and c.value == "__main__" for c in node.test.comparators
+        )
+        for node in ast.walk(tree)
+    )
+
+
+def _runnable_brain_scripts() -> list[str]:
+    """Scripts under ``scripts/`` that run as programs and import brain_v42.
+
+    Runnable means: carries an ``if __name__ == "__main__"`` guard. Those that
+    never import brain_v42 are out of scope -- they cannot reach its logging.
+    """
+    found = []
+    for path in sorted((_ROOT / "scripts").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if _has_main_guard(tree) and _imports_brain_v42(tree):
+            found.append(path.relative_to(_ROOT).as_posix())
+    return found
+
+
 def _entry_point_targets() -> dict[str, str]:
     """Map every discovered entry point to the way a probe imports it."""
     targets: set[str] = set()
@@ -130,7 +166,7 @@ def _entry_point_targets() -> dict[str, str]:
     for target in scripts["project"]["scripts"].values():
         targets.add(target.partition(":")[0])
     discovered = {f"module:{module}": module for module in sorted(targets)}
-    discovered.update({f"file:{path}": path for path in _ROOT_SCRIPTS})
+    discovered.update({f"file:{path}": path for path in _runnable_brain_scripts()})
     return discovered
 
 
@@ -145,6 +181,7 @@ def _probe_entry_point(key: str) -> str:
         load = (
             "spec = importlib.util.spec_from_file_location('probe_script', "
             f"{str(_ROOT / target)!r}); module = importlib.util.module_from_spec(spec); "
+            f"sys.path.insert(0, {str((_ROOT / target).parent)!r}); "
             "sys.modules['probe_script'] = module; spec.loader.exec_module(module)"
         )
     code = f"import importlib, importlib.util, sys\n{load}\n{_LOG_FAILURE}"
@@ -166,6 +203,15 @@ def test_the_discovery_finds_the_known_entry_points() -> None:
     assert "module:brain_v42.automation.__main__" in _ENTRY_POINTS
     assert "module:brain_v42.scripts.domain_backfill" in _ENTRY_POINTS
     assert "file:scripts/refresh_plan_embeddings.py" in _ENTRY_POINTS
+    assert "file:scripts/dream/cross_project_resonance.py" in _ENTRY_POINTS
+
+
+def test_the_discovery_cannot_silently_shrink() -> None:
+    # Measured when the guard was written: 38 runnable scripts import brain_v42.
+    # A lower count almost always means the discovery broke; if scripts were
+    # really removed, lower the floor in the same change.
+    scripts = [key for key in _ENTRY_POINTS if key.startswith("file:")]
+    assert len(scripts) >= _MIN_SCRIPTS_PROBED, scripts
 
 
 @pytest.mark.parametrize("key", sorted(_ENTRY_POINTS))

@@ -27,7 +27,9 @@ from brain_v42.mcp import server as mcp_server
 from brain_v42.metrics.runtime import build_sidecar_structlog_processors
 
 _SECRET = f"s3cr3t-{uuid.uuid4().hex}"
-_SRC = Path(__file__).resolve().parents[2] / "src" / "brain_v42"
+_ROOT = Path(__file__).resolve().parents[2]
+_SRC = _ROOT / "src" / "brain_v42"
+_SCRIPTS = _ROOT / "scripts"
 
 
 def _connect() -> None:
@@ -156,6 +158,15 @@ def test_src_builds_no_console_renderer_outside_the_safe_helper() -> None:
         f"{path.relative_to(_SRC)}:{lineno}"
         for path in sorted(_SRC.rglob("*.py"))
         if path.name != "safe_logging.py"
+        for lineno in _console_renderer_calls(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == []
+
+
+def test_scripts_build_no_console_renderer() -> None:
+    offenders = [
+        f"{path.relative_to(_ROOT)}:{lineno}"
+        for path in sorted(_SCRIPTS.rglob("*.py"))
         for lineno in _console_renderer_calls(path.read_text(encoding="utf-8"))
     ]
     assert offenders == []
