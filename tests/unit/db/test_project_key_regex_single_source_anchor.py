@@ -122,6 +122,12 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # was: one occurrence each, byte-identical to v13's. Tenth reddening.
         "brain-v42-v14.sql",
         "brain-v42-v14-pgrestore.sql",
+        # Added on 2026-09-30 by the v15 mint (058): measured from v14 by a delta
+        # that touches only the `knowledge_claims_provenance_valid` constraint
+        # fingerprint -- no column, index or trigger. The predicate line is
+        # untouched: one occurrence each, byte-identical to v14's. Eleventh reddening.
+        "brain-v42-v15.sql",
+        "brain-v42-v15-pgrestore.sql",
     }
 )
 
@@ -209,10 +215,10 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     """Non-vacuity guard: count the surfaces, so none escapes in silence.
 
-    TWENTY-EIGHT guardians besides `_KEBAB` (1 metadata + 2 migrations + 25 assets) since
-    the v14 mint of 2026-09-24 — it was eight when this anchor was written, fourteen at
+    THIRTY guardians besides `_KEBAB` (1 metadata + 2 migrations + 27 assets) since
+    the v15 mint of 2026-09-30 — it was eight when this anchor was written, fourteen at
     the v7 mint, eighteen at the v9 mint, twenty at the v10 mint, twenty-two at the v11
-    mint, twenty-four at the v12 mint and twenty-six at the v13 mint. This count
+    mint, twenty-four at the v12 mint, twenty-six at the v13 mint and twenty-eight at the v14 mint. This count
     deliberately includes NO document:
     `docs/design/` is not tracked, and a test counting prose would fail depending on the
     working tree.
@@ -232,7 +238,7 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 25), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 27), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
         f"attestation={recovery_sites} ; attendu 1/2/25). Recenser avant de corriger le "

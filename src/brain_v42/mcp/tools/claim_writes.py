@@ -47,7 +47,7 @@ class ClaimWriteOutcome:
     """
 
     claim_id: UUID
-    provenance: Literal["measured", "declared"]
+    provenance: Literal["measured", "declared", "extracted"]
     detail: str | None
 
 

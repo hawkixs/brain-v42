@@ -1,6 +1,8 @@
 """Current claim validity is derived from immutable observation times."""
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from typing import get_args, get_type_hints
 from uuid import uuid4
 
 import pytest
@@ -58,6 +60,20 @@ def test_no_verdict_is_unverified() -> None:
     state = evaluate_claim(_claim(), NOW)
     assert state.status == "unverified"
     assert state.valid_until is None
+
+
+def test_extracted_claim_without_verdict_is_unverified() -> None:
+    """Server extraction is an assertion, not a write-time observation."""
+    assert set(get_args(get_type_hints(ClaimRead)["provenance"])) == {
+        "measured",
+        "declared",
+        "extracted",
+    }
+    claim = replace(_claim(), provenance="extracted")
+    state = evaluate_claim(claim, NOW)
+    assert state.status == "unverified"
+    assert state.latest is None
+    assert state.conclusive is None
 
 
 def test_unreadable_without_conclusive_is_unreadable() -> None:

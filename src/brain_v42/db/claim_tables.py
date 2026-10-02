@@ -150,7 +150,7 @@ def register_claim_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
             name="knowledge_claims_validity_seconds_valid",
         ),
         sa.CheckConstraint(
-            "provenance IN ('measured', 'declared')",
+            "provenance IN ('measured', 'declared', 'extracted')",
             name="knowledge_claims_provenance_valid",
         ),
         sa.Index(
