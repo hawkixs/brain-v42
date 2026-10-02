@@ -3430,11 +3430,10 @@ knowledge_sources(knowledge_id, knowledge_type, project_key, created_at) AS (
 ),
 artifact_source_matches AS (
  SELECT
+     artifact_record.session_id,
      artifact_record.knowledge_id,
      artifact_record.knowledge_type,
      artifact_record.captured_at,
-     session_record.project_key,
-     session_record.started_at,
      count(source_record.knowledge_id) AS source_matches,
      count(source_record.knowledge_id) FILTER (
          WHERE artifact_record.knowledge_type = 'legacy'
@@ -3452,48 +3451,40 @@ artifact_source_matches AS (
      artifact_record.session_id,
      artifact_record.knowledge_id,
      artifact_record.knowledge_type,
-     artifact_record.captured_at,
-     session_record.project_key,
-     session_record.started_at
+     artifact_record.captured_at
+),
+tolerated_orphan_artifacts(knowledge_id, session_id, knowledge_type, captured_at) AS (
+ VALUES
+     (
+         'a301034b-079a-4961-b613-5256a017a519'::uuid,
+         '2923d3c2-ef29-417d-ad52-a31d9c08bfe8'::uuid,
+         'decision'::text,
+         '2026-09-26 20:21:39.223113+00'::timestamptz
+     )
 ),
 artifact_source_mismatches AS (
  SELECT count(*) AS value
  FROM artifact_source_matches AS match_record
  WHERE (match_record.source_matches <> 1 OR match_record.typed_matches <> 1)
-   AND NOT (
-       NOT EXISTS (
-           SELECT 1
-           FROM knowledge_sources AS any_source
-           WHERE any_source.knowledge_id = match_record.knowledge_id
-       )
-       AND EXISTS (
-           SELECT 1
-           FROM public.brain_entities AS entity_record
-           WHERE entity_record.source_uuid = match_record.knowledge_id
-             AND entity_record.lifecycle = 'deleted'
-             AND entity_record.created_at >= match_record.started_at
-             AND entity_record.created_at <= match_record.captured_at
-             AND entity_record.deleted_at >= match_record.captured_at
-             AND entity_record.project_key = match_record.project_key
-             AND (
-                 (
-                     match_record.knowledge_type IN (
-                         'decision', 'learning', 'snippet', 'runbook', 'adr'
-                     )
-                     AND entity_record.entity_type = match_record.knowledge_type
-                 )
-                 OR (
-                     match_record.knowledge_type = 'indexed_plan'
-                     AND entity_record.entity_type = 'plan'
-                 )
-                 OR (
-                     match_record.knowledge_type = 'legacy'
-                     AND entity_record.entity_type IN (
-                         'decision', 'learning', 'snippet', 'runbook', 'adr', 'plan'
-                     )
-                 )
-             )
-       )
+   AND NOT EXISTS (
+       SELECT 1
+       FROM tolerated_orphan_artifacts AS tolerated
+       WHERE tolerated.knowledge_id = match_record.knowledge_id
+         AND tolerated.session_id = match_record.session_id
+         AND tolerated.knowledge_type = match_record.knowledge_type
+         AND tolerated.captured_at = match_record.captured_at
+         AND NOT EXISTS (
+             SELECT 1
+             FROM knowledge_sources AS any_source
+             WHERE any_source.knowledge_id = match_record.knowledge_id
+         )
+         AND EXISTS (
+             SELECT 1
+             FROM public.brain_entities AS entity_record
+             WHERE entity_record.source_uuid = match_record.knowledge_id
+               AND entity_record.entity_type = tolerated.knowledge_type
+               AND entity_record.lifecycle = 'deleted'
+         )
    )
 ),
 artifact_lifecycle_violations AS (

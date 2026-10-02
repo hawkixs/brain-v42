@@ -6,9 +6,9 @@ found in the attestation itself (decisions 7d2f7fe8 and ee26407b):
 
 * the final ``jsonb_agg`` orders checks by ``id COLLATE "C"``, so a locale-collated
   server returns them in byte order;
-* ``artifact_project_mismatches`` tolerates a captured artifact whose knowledge
-  row is gone everywhere and is tombstoned ``lifecycle = 'deleted'`` in
-  ``brain_entities``, with the matching type, in the session's project.
+* ``artifact_project_mismatches`` tolerates ONE named historical artifact
+  (decision a301034b) by its exact ledger row, while its knowledge row is gone
+  everywhere and ``brain_entities`` tombstones it as ``deleted`` (a00bdf68).
 
 These tests pin the delta line by line: anything else that moves is a mistake.
 The behaviour is proven on disposable databases by
@@ -41,8 +41,8 @@ V15_ASSETS = {
 #: The SHA-256 of the three v16 assets, pinned after the mint.
 V16_ASSETS = {
     "brain-v42-v16.json": "59e867bc906be76727e5ce803282e712a2ec965ed06ff1a6deca5ff16b5f0833",
-    "brain-v42-v16.sql": "957460544eb68335b690ce7f911e7a45b16f3a65cec07d8c94cacc2e581c63f8",
-    "brain-v42-v16-pgrestore.sql": "fbb2bf78e763f8adf898c948b0abaaa47fe41301e78bbbc70054961063b4ef69",
+    "brain-v42-v16.sql": "4055f270058a781428f6f67e189964d2b0cd18f09a889392aeb5cc960b4071e1",
+    "brain-v42-v16-pgrestore.sql": "17ca4c51f0c57d65911d574b448ad771488f9463ee6ac599af130dcbf506d6ba",
 }
 
 V15_SQL = RECOVERY / "brain-v42-v15.sql"
@@ -64,53 +64,44 @@ REMOVED_LINES = {
 
 #: Every line v16 adds, identical in both variants, in order.
 ADDED_LINES = [
+    "     artifact_record.session_id,",
     "     artifact_record.knowledge_type,",
     "     artifact_record.captured_at,",
-    "     session_record.project_key,",
-    "     session_record.started_at,",
     " GROUP BY",
     "     artifact_record.session_id,",
     "     artifact_record.knowledge_id,",
     "     artifact_record.knowledge_type,",
-    "     artifact_record.captured_at,",
-    "     session_record.project_key,",
-    "     session_record.started_at",
+    "     artifact_record.captured_at",
+    "),",
+    "tolerated_orphan_artifacts(knowledge_id, session_id, knowledge_type, captured_at) AS (",
+    " VALUES",
+    "     (",
+    "         'a301034b-079a-4961-b613-5256a017a519'::uuid,",
+    "         '2923d3c2-ef29-417d-ad52-a31d9c08bfe8'::uuid,",
+    "         'decision'::text,",
+    "         '2026-09-26 20:21:39.223113+00'::timestamptz",
+    "     )",
     " FROM artifact_source_matches AS match_record",
     " WHERE (match_record.source_matches <> 1 OR match_record.typed_matches <> 1)",
-    "   AND NOT (",
-    "       NOT EXISTS (",
-    "           SELECT 1",
-    "           FROM knowledge_sources AS any_source",
-    "           WHERE any_source.knowledge_id = match_record.knowledge_id",
-    "       )",
-    "       AND EXISTS (",
-    "           SELECT 1",
-    "           FROM public.brain_entities AS entity_record",
-    "           WHERE entity_record.source_uuid = match_record.knowledge_id",
-    "             AND entity_record.lifecycle = 'deleted'",
-    "             AND entity_record.created_at >= match_record.started_at",
-    "             AND entity_record.created_at <= match_record.captured_at",
-    "             AND entity_record.deleted_at >= match_record.captured_at",
-    "             AND entity_record.project_key = match_record.project_key",
-    "             AND (",
-    "                 (",
-    "                     match_record.knowledge_type IN (",
-    "                         'decision', 'learning', 'snippet', 'runbook', 'adr'",
-    "                     )",
-    "                     AND entity_record.entity_type = match_record.knowledge_type",
-    "                 )",
-    "                 OR (",
-    "                     match_record.knowledge_type = 'indexed_plan'",
-    "                     AND entity_record.entity_type = 'plan'",
-    "                 )",
-    "                 OR (",
-    "                     match_record.knowledge_type = 'legacy'",
-    "                     AND entity_record.entity_type IN (",
-    "                         'decision', 'learning', 'snippet', 'runbook', 'adr', 'plan'",
-    "                     )",
-    "                 )",
-    "             )",
-    "       )",
+    "   AND NOT EXISTS (",
+    "       SELECT 1",
+    "       FROM tolerated_orphan_artifacts AS tolerated",
+    "       WHERE tolerated.knowledge_id = match_record.knowledge_id",
+    "         AND tolerated.session_id = match_record.session_id",
+    "         AND tolerated.knowledge_type = match_record.knowledge_type",
+    "         AND tolerated.captured_at = match_record.captured_at",
+    "         AND NOT EXISTS (",
+    "             SELECT 1",
+    "             FROM knowledge_sources AS any_source",
+    "             WHERE any_source.knowledge_id = match_record.knowledge_id",
+    "         )",
+    "         AND EXISTS (",
+    "             SELECT 1",
+    "             FROM public.brain_entities AS entity_record",
+    "             WHERE entity_record.source_uuid = match_record.knowledge_id",
+    "               AND entity_record.entity_type = tolerated.knowledge_type",
+    "               AND entity_record.lifecycle = 'deleted'",
+    "         )",
     "   )",
     '     ORDER BY id COLLATE "C"',
     " 'contract_id', 'brain-v42/postgresql-recovery/v16',",

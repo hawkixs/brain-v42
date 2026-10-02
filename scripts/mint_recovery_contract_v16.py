@@ -13,16 +13,12 @@ red-backup's DR-v7 drill found in the attestation itself (operator decisions
 2. ``artifact_project_mismatches`` counted an append-only
    ``brain_session_artifacts`` row whose knowledge was deleted after capture
    (decision ``a301034b``, red-arena, deleted 2026-09-30). v16 tolerates that
-   case, and only that case: the knowledge row is absent from EVERY knowledge
-   table, and ``brain_entities`` carries its entity, of the matching knowledge
-   type, in the artifact's session project, with ``lifecycle = 'deleted'`` and a
-   creation inside v15's own source window (no earlier than the session start,
-   no later than the capture: the entity's ``created_at`` carries the knowledge
-   row's, measured equal on all 1084 live captured artifacts on 2026-10-02) and
-   a ``deleted_at`` no earlier than the capture. Knowledge created after its
-   capture, or deleted before it, was never there to capture. An absent row
-   without that tombstone, a tombstone of another type or project, or a row that
-   still exists elsewhere stays a mismatch.
+   row, and only that row, by an exact named exception (decision a00bdf68,
+   Q136): its knowledge_id, session_id, type and capture instant, while the
+   knowledge is absent from every knowledge table and ``brain_entities``
+   tombstones it as ``deleted``. Three general rules were tried and each was
+   fail-open on some history the tombstone does not keep; the server now
+   refuses deleting captured knowledge, so the list is closed.
 
 Both variants (base and ``-pgrestore`` twin) receive the identical edits: the
 regions touched carry no fingerprint, so no measurement is needed and none is
@@ -51,18 +47,17 @@ RECOVERY = Path("ops/recovery")
 #: 1. The final aggregate's ordering, byte order whatever the server collation.
 FINAL_ORDER = ("     ORDER BY id\n )", '     ORDER BY id COLLATE "C"\n )')
 
-#: 2a. `artifact_source_matches` also carries the artifact's declared type and
-#: its session's project: the tolerance below needs both. `knowledge_id` is the
-#: ledger's primary key, so grouping by them adds no row.
+#: 2a. `artifact_source_matches` also carries the artifact's session, declared
+#: type and capture instant: the exception below matches on all four. The
+#: `knowledge_id` is the ledger's primary key, so grouping by them adds no row.
 MATCHES_SELECT = (
     "artifact_source_matches AS (\n SELECT\n     artifact_record.knowledge_id,\n",
     "artifact_source_matches AS (\n"
     " SELECT\n"
+    "     artifact_record.session_id,\n"
     "     artifact_record.knowledge_id,\n"
     "     artifact_record.knowledge_type,\n"
-    "     artifact_record.captured_at,\n"
-    "     session_record.project_key,\n"
-    "     session_record.started_at,\n",
+    "     artifact_record.captured_at,\n",
 )
 MATCHES_GROUP = (
     " GROUP BY artifact_record.session_id, artifact_record.knowledge_id\n),\n",
@@ -70,58 +65,55 @@ MATCHES_GROUP = (
     "     artifact_record.session_id,\n"
     "     artifact_record.knowledge_id,\n"
     "     artifact_record.knowledge_type,\n"
-    "     artifact_record.captured_at,\n"
-    "     session_record.project_key,\n"
-    "     session_record.started_at\n"
+    "     artifact_record.captured_at\n"
     "),\n",
 )
 
-#: 2b. The narrow tolerance. `legacy` artifacts predate typed capture: their
-#: tombstone may be any knowledge entity type, never a project or a domain.
+#: 2b. The exception list (decision a00bdf68, Q136): every tolerated artifact is
+#: named by its exact ledger row, and is tolerated only while its knowledge is
+#: absent from every knowledge table and `brain_entities` tombstones it as
+#: `deleted` with the same type. A general rule cannot prove that the knowledge
+#: existed at the capture (the tombstone keeps only its last state); the
+#: server refuses deleting captured knowledge since Q132, so the list is closed.
+#: Adding an entry is a new contract generation.
 MISMATCH_FILTER = (
     "artifact_source_mismatches AS (\n"
     " SELECT count(*) AS value\n"
     " FROM artifact_source_matches\n"
     " WHERE source_matches <> 1 OR typed_matches <> 1\n"
     "),\n",
+    "tolerated_orphan_artifacts(knowledge_id, session_id, knowledge_type, captured_at) AS (\n"
+    " VALUES\n"
+    "     (\n"
+    "         'a301034b-079a-4961-b613-5256a017a519'::uuid,\n"
+    "         '2923d3c2-ef29-417d-ad52-a31d9c08bfe8'::uuid,\n"
+    "         'decision'::text,\n"
+    "         '2026-09-26 20:21:39.223113+00'::timestamptz\n"
+    "     )\n"
+    "),\n"
     "artifact_source_mismatches AS (\n"
     " SELECT count(*) AS value\n"
     " FROM artifact_source_matches AS match_record\n"
     " WHERE (match_record.source_matches <> 1 OR match_record.typed_matches <> 1)\n"
-    "   AND NOT (\n"
-    "       NOT EXISTS (\n"
-    "           SELECT 1\n"
-    "           FROM knowledge_sources AS any_source\n"
-    "           WHERE any_source.knowledge_id = match_record.knowledge_id\n"
-    "       )\n"
-    "       AND EXISTS (\n"
-    "           SELECT 1\n"
-    "           FROM public.brain_entities AS entity_record\n"
-    "           WHERE entity_record.source_uuid = match_record.knowledge_id\n"
-    "             AND entity_record.lifecycle = 'deleted'\n"
-    "             AND entity_record.created_at >= match_record.started_at\n"
-    "             AND entity_record.created_at <= match_record.captured_at\n"
-    "             AND entity_record.deleted_at >= match_record.captured_at\n"
-    "             AND entity_record.project_key = match_record.project_key\n"
-    "             AND (\n"
-    "                 (\n"
-    "                     match_record.knowledge_type IN (\n"
-    "                         'decision', 'learning', 'snippet', 'runbook', 'adr'\n"
-    "                     )\n"
-    "                     AND entity_record.entity_type = match_record.knowledge_type\n"
-    "                 )\n"
-    "                 OR (\n"
-    "                     match_record.knowledge_type = 'indexed_plan'\n"
-    "                     AND entity_record.entity_type = 'plan'\n"
-    "                 )\n"
-    "                 OR (\n"
-    "                     match_record.knowledge_type = 'legacy'\n"
-    "                     AND entity_record.entity_type IN (\n"
-    "                         'decision', 'learning', 'snippet', 'runbook', 'adr', 'plan'\n"
-    "                     )\n"
-    "                 )\n"
-    "             )\n"
-    "       )\n"
+    "   AND NOT EXISTS (\n"
+    "       SELECT 1\n"
+    "       FROM tolerated_orphan_artifacts AS tolerated\n"
+    "       WHERE tolerated.knowledge_id = match_record.knowledge_id\n"
+    "         AND tolerated.session_id = match_record.session_id\n"
+    "         AND tolerated.knowledge_type = match_record.knowledge_type\n"
+    "         AND tolerated.captured_at = match_record.captured_at\n"
+    "         AND NOT EXISTS (\n"
+    "             SELECT 1\n"
+    "             FROM knowledge_sources AS any_source\n"
+    "             WHERE any_source.knowledge_id = match_record.knowledge_id\n"
+    "         )\n"
+    "         AND EXISTS (\n"
+    "             SELECT 1\n"
+    "             FROM public.brain_entities AS entity_record\n"
+    "             WHERE entity_record.source_uuid = match_record.knowledge_id\n"
+    "               AND entity_record.entity_type = tolerated.knowledge_type\n"
+    "               AND entity_record.lifecycle = 'deleted'\n"
+    "         )\n"
     "   )\n"
     "),\n",
 )
