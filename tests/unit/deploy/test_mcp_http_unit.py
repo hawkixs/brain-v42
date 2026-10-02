@@ -54,8 +54,11 @@ class TestMcpHttpServiceTemplate:
     def test_restart_always(self) -> None:
         assert "Restart=always" in _read("brain-mcp-http.service.tmpl")
 
-    def test_start_limit_burst(self) -> None:
-        assert "StartLimitBurst=5" in _read("brain-mcp-http.service.tmpl")
+    def test_start_limit_is_disabled_because_the_backoff_bounds_the_restart_rate(self) -> None:
+        lines = _read("brain-mcp-http.service.tmpl").splitlines()
+
+        assert "StartLimitIntervalSec=0" in lines
+        assert not [line for line in lines if line.startswith("StartLimitBurst")]
 
     def test_timeout_stop(self) -> None:
         assert "TimeoutStopSec=" in _read("brain-mcp-http.service.tmpl")

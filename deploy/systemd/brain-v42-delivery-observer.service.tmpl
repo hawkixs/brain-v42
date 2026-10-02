@@ -1,13 +1,13 @@
 [Unit]
 Description=Brain v42 delivery observer
 Documentation=file:__REPO_ROOT__/deploy/systemd/README.md
-StartLimitIntervalSec=300
-StartLimitBurst=5
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 WorkingDirectory=__REPO_ROOT__
 EnvironmentFile=__ENV_FILE__
+ExecStartPre=__PYTHON__ __REPO_ROOT__/scripts/wait_for_postgres.py --url-env BRAIN_DELIVERY_POSTGRES_URL --url-env POSTGRES_URL --timeout 90
 ExecStart=__PYTHON__ -m brain_v42.delivery_observer --env-file __ENV_FILE__
 UMask=0077
 NoNewPrivileges=true
@@ -35,6 +35,9 @@ SyslogIdentifier=brain-v42-delivery-observer
 KillSignal=SIGTERM
 Restart=on-failure
 RestartSec=5
+RestartSteps=6
+RestartMaxDelaySec=60
+TimeoutStartSec=120
 TimeoutStopSec=30
 
 [Install]
