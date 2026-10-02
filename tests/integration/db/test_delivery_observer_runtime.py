@@ -293,8 +293,6 @@ async def test_twenty_changed_prs_visible_within_budget_without_future_pg_eviden
 async def test_fatal_publication_joins_and_cancels_sibling_http_task(
     engine, session_factory, monkeypatch
 ):
-    from brain_v42.models.delivery import DeliveryError
-
     case = ObserverCase(engine, session_factory)
     await case.create(number=41)
     await case.create(number=42)
@@ -315,13 +313,17 @@ async def test_fatal_publication_joins_and_cancels_sibling_http_task(
 
     async def fail_publication(*args, **kwargs):
         await asyncio.wait_for(slow_started.wait(), 3)
-        raise DeliveryError("injected_publication_failure", "safe injected failure")
+        # Not a DeliveryError: those are confined to their own job (b78b5144).
+        # A bare RuntimeError is what still ends the pass, and so must join
+        # the sibling task. SQLAlchemyError would not do: the owner maps it to
+        # ownership loss and returns exit code 2 instead of raising.
+        raise RuntimeError("injected_publication_failure")
 
     case.handle = handle
     async with case.runtime() as runtime:
         monkeypatch.setattr(runtime.evidence_repository, "publish_observation", fail_publication)
         try:
-            with pytest.raises(DeliveryError, match="injected_publication_failure"):
+            with pytest.raises(RuntimeError, match="injected_publication_failure"):
                 await runtime.run_once()
             assert slow_cancelled.is_set(), "fatal publication returned with an orphaned HTTP task"
             assert sibling[0].done()
@@ -329,6 +331,37 @@ async def test_fatal_publication_joins_and_cancels_sibling_http_task(
             for task in sibling:
                 task.cancel()
             await asyncio.gather(*sibling, return_exceptions=True)
+
+
+async def test_unexpected_delivery_error_on_one_job_does_not_end_the_pass(
+    engine, session_factory, monkeypatch, capsys
+):
+    from brain_v42.models.delivery import DeliveryError
+
+    case = ObserverCase(engine, session_factory)
+    _, poisoned, _ = await case.create(number=41)
+    _, healthy, _ = await case.create(number=42)
+
+    async with case.runtime() as runtime:
+        repo = runtime.evidence_repository
+        publish = repo.publish_observation
+
+        async def publish_or_fail(session, binding_id, *args, **kwargs):
+            if binding_id == poisoned.id:
+                raise DeliveryError("unforeseen_code", "message-that-must-not-leak")
+            return await publish(session, binding_id, *args, **kwargs)
+
+        monkeypatch.setattr(repo, "publish_observation", publish_or_fail)
+        result = await runtime.run_once()
+
+    assert (result.collected, result.failed, result.deferred, result.exit_code) == (1, 1, 0, 1)
+    _, _, healthy_snapshots, _ = await case.state(healthy)
+    assert healthy_snapshots == 1
+    err = capsys.readouterr().err
+    line = json.loads(err.splitlines()[-1])
+    assert line["subject"] == f"artifact_binding:{poisoned.id}"
+    assert (line["error_code"], line["diagnostic"]) == ("observer_persist_error", "DeliveryError")
+    assert "message-that-must-not-leak" not in err and "unforeseen_code" not in err
 
 
 @pytest.mark.parametrize("action", ["refresh", "amend"])
