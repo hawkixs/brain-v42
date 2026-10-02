@@ -978,9 +978,14 @@ def build_server() -> BuiltServer:
     # Shared claim reads (spec 2026-09-19, lot B4): one SELECT-only service,
     # injected into the claim tools and every knowledge reader that appends
     # the compact claim suffix (brain_get, brain_search, the session briefing).
+    from brain_v42.services.claim_inventory_service import (  # noqa: PLC0415
+        ClaimInventoryService,
+    )
     from brain_v42.services.claim_read_service import ClaimReadService  # noqa: PLC0415
 
     claim_read_svc = ClaimReadService(get_session_factory())
+    # One cached aggregate behind the briefing's CLAIMS line (spec 2026-09-30, section 8).
+    claim_inventory_svc = ClaimInventoryService(get_session_factory())
 
     register_tools(
         mcp,
@@ -1038,6 +1043,8 @@ def build_server() -> BuiltServer:
         delivery_svc=services["delivery_svc"],
         fact_registry=services.get("fact_registry"),
         claim_read_svc=claim_read_svc,
+        claim_inventory_svc=claim_inventory_svc,
+        claim_extraction_enabled=settings.brain_claim_extraction_enabled,
     )
 
     # Roadmap tools
