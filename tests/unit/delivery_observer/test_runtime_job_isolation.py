@@ -65,10 +65,19 @@ class FakeQueue:
         self.undecodable = list(undecodable)
 
     async def due(self, session, *, limit, exclude, project_key=None, on_undecodable=None):
-        for identity, error_type in self.undecodable:
-            on_undecodable(identity, error_type)
-        self.undecodable = []
-        return tuple(j for j in self.jobs if j.identity not in exclude)[:limit]
+        rows = [
+            (identity, error_type, None)
+            for identity, error_type in self.undecodable
+            if identity not in exclude
+        ] + [(job.identity, None, job) for job in self.jobs if job.identity not in exclude]
+        decoded = []
+        for identity, error_type, job in rows[:limit]:
+            if error_type is not None:
+                if on_undecodable is not None:
+                    on_undecodable(identity, error_type)
+            else:
+                decoded.append(job)
+        return tuple(decoded)
 
     async def schedule_after(self, session, job, **_):
         return True
@@ -218,6 +227,18 @@ async def test_pass_continues_past_a_batch_made_only_of_undecodable_rows():
     result = await runtime.run_once()
 
     assert (result.collected, result.failed) == (1, 1)
+
+
+async def test_hundred_twenty_old_undecodable_rows_do_not_starve_healthy_work(capsys):
+    healthy = make_job("healthy")
+    bad = [(f"artifact_binding:{uuid4()}", "ValueError") for _ in range(120)]
+    repo = FakeEvidenceRepo()
+
+    result = await runtime_for([healthy], repo, undecodable=bad).run_once()
+
+    assert (result.collected, result.failed) == (1, 120)
+    assert repo.published == [healthy.binding.id]
+    assert len(stderr_lines(capsys)) == 120
 
 
 class _Rows:

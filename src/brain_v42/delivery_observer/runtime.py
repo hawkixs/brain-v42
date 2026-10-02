@@ -44,6 +44,14 @@ class _Outcome:
     finished_at: datetime | None = None
 
 
+_MAX_DECODED_JOBS_PER_PASS = 100
+_MAX_UNDECODABLE_ROWS_PER_PASS = 1000
+
+
+class _UndecodableScanLimitReached(Exception):
+    pass
+
+
 def _diagnose(
     subject: str, code: str, *, provider_code: str | None, diagnostic: str | None
 ) -> None:
@@ -168,26 +176,36 @@ class DeliveryObserverRuntime:
         latest: datetime | None = None
         lag = 0.0
         seen: set[str] = set()
+        undecodable_seen: set[str] = set()
+        decoded = 0
         undecodable: list[tuple[str, str]] = []
         watcher = asyncio.create_task(self._watch_ownership())
         try:
             # Bound a one-shot pass under continuously arriving work. Older due
             # rows stay ahead of completed/rescheduled rows on the next pass.
-            while len(seen) < 100 and not stop_event.is_set():
+            while decoded < _MAX_DECODED_JOBS_PER_PASS and not stop_event.is_set():
                 undecodable.clear()
+
+                def report_undecodable(identity: str, error_type: str) -> None:
+                    if len(undecodable_seen) >= _MAX_UNDECODABLE_ROWS_PER_PASS:
+                        raise _UndecodableScanLimitReached
+                    undecodable.append((identity, error_type))
+
                 async with self.owner.transaction() as session:
-                    jobs = await self.queue.due(
-                        session,
-                        project_key=project_key,
-                        limit=min(2, 100 - len(seen)),
-                        exclude=seen,
-                        on_undecodable=lambda identity, error_type: undecodable.append(
-                            (identity, error_type)
-                        ),
-                    )
+                    try:
+                        jobs = await self.queue.due(
+                            session,
+                            project_key=project_key,
+                            limit=min(2, _MAX_DECODED_JOBS_PER_PASS - decoded),
+                            exclude=seen,
+                            on_undecodable=report_undecodable,
+                        )
+                    except _UndecodableScanLimitReached:
+                        jobs = ()
                 for identity, error_type in undecodable:
                     # The row stays due: excluding it keeps this pass moving past it.
                     seen.add(identity)
+                    undecodable_seen.add(identity)
                     failed += 1
                     _diagnose(
                         identity,
@@ -195,11 +213,20 @@ class DeliveryObserverRuntime:
                         provider_code=None,
                         diagnostic=error_type,
                     )
+                if len(undecodable_seen) >= _MAX_UNDECODABLE_ROWS_PER_PASS:
+                    _diagnose(
+                        "delivery_observer",
+                        "observer_undecodable_scan_limit",
+                        provider_code=None,
+                        diagnostic=None,
+                    )
+                    break
                 if not jobs:
                     if undecodable:
                         continue
                     break
                 seen.update(job.identity for job in jobs)
+                decoded += len(jobs)
                 lag = max(
                     lag, *(max(0.0, (job.captured_at - job.due_at).total_seconds()) for job in jobs)
                 )
