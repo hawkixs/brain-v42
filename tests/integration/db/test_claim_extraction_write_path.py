@@ -11,8 +11,9 @@ failed automatic claim costs only the claim.
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
@@ -36,6 +37,7 @@ from brain_v42.db.tables import (
     brain_entities,
     decisions,
     dream_promotions,
+    knowledge_claim_verdicts,
     knowledge_claims,
     learnings,
     project_contexts,
@@ -121,6 +123,31 @@ class _MCP:
         return decorator
 
 
+class _LagProbe:
+    """An enabled fact the extractor never allowlists, to hold explicit claims beside automatic ones."""
+
+    name = "claim_write_lag"
+    definition_version = 1
+    target = FactTarget.PRODUCTION
+    ttl = timedelta(seconds=15)
+    timeout = timedelta(seconds=3)
+    briefing = False
+    policies: Mapping[str, int] = {"late_after_seconds": 300}
+    value_schema = {"lag_seconds": "int"}
+
+    async def measure(self, source: object) -> Mapping[str, object]:
+        raise AssertionError("claim resolution must not measure a fact")
+
+
+def _lag_claim(index: int) -> dict[str, object]:
+    """One explicit claim on the unrelated fact; each index is a distinct content key."""
+    return {
+        "statement": f"Lag declaration {index}.",
+        "fact_name": "claim_write_lag",
+        "expected": {"path": "/lag_seconds", "op": "lte", "value": 300 + index},
+    }
+
+
 def _registry() -> FactRegistry:
     """Two allowlisted descriptors, one of them disabled; `live_release_sha` is left unregistered.
 
@@ -137,6 +164,7 @@ def _registry() -> FactRegistry:
         expected={FactTarget.PRODUCTION: identity, FactTarget.LIVE_RELEASE: identity},
     )
     registry.register(AlembicHeadProbe())
+    registry.register(_LagProbe())
     registry.register(AlembicHeadShippedProbe())
     registry.freeze()
     registry.disable("alembic_head_shipped", "definition_drift")
@@ -762,13 +790,16 @@ def _explicit_head(value: str = "058", statement: str = _ASSERTION) -> dict[str,
 
 async def _learning_with_extracted_claim(
     session_factory: async_sessionmaker[AsyncSession],
+    *,
+    insight: str = _ASSERTION,
+    claims: list[dict[str, object]] | None = None,
 ) -> tuple[dict[str, Any], UUID, Any]:
-    """A learning whose only active claim is the automatic one, plus the update tool."""
+    """A learning created with extraction armed, plus the update tool over the same services."""
     tools = await _tools(session_factory)
     project_key = f"claim-same-key-{uuid4().hex[:12]}"
     await _seed_project(session_factory, project_key)
     title = f"Same key {uuid4()}"
-    await tools["brain_learn"](topic=title, insight=_ASSERTION, project_key=project_key)
+    await tools["brain_learn"](topic=title, insight=insight, project_key=project_key, claims=claims)
     learning_id = await _new_entity_id(session_factory, _WRITERS["learning"], title)
     mcp = _MCP()
     register_crud_tools(
@@ -784,6 +815,7 @@ async def _learning_with_extracted_claim(
         adr_svc=MagicMock(),
         session_factory=session_factory,
         fact_registry=_registry(),
+        extraction_enabled=True,
     )
     return tools, learning_id, mcp.registered["brain_update"]
 
@@ -906,3 +938,203 @@ async def test_explicit_claim_blocks_automatic_candidate_of_the_same_fact(
     assert await _claims_of(session_factory, learning_id) == [declared]
     assert declared["retired_at"] is None
     assert _delta(before) == {("skipped", "learning", "explicit_precedence"): 1}
+
+
+# ---------------------------------------------------------------------------
+# Reconciliation on update
+# ---------------------------------------------------------------------------
+
+
+def _asserting(value: str) -> str:
+    return f"The production Alembic head is {value}."
+
+
+async def _insight(session_factory: async_sessionmaker[AsyncSession], learning_id: UUID) -> str:
+    async with session_factory() as session:
+        return str(
+            await session.scalar(
+                sa.select(learnings.c.insight).where(learnings.c.id == learning_id)
+            )
+        )
+
+
+def _edit(update: Any, learning_id: UUID, insight: str, **kwargs: Any) -> Any:
+    return update(
+        entity_type="learning", entity_id=str(learning_id), fields={"insight": insight}, **kwargs
+    )
+
+
+async def _by_seq(session_factory: async_sessionmaker[AsyncSession], entity_id: UUID) -> list[Any]:
+    return sorted(await _claims_of(session_factory, entity_id), key=lambda c: c["seq"])
+
+
+async def test_update_without_claims_uses_outer_transaction_and_savepoint(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A poisoned automatic insert costs only the claim change, never the prose edit."""
+    _tools_, learning_id, update = await _learning_with_extracted_claim(session_factory)
+    [original] = await _claims_of(session_factory, learning_id)
+
+    _fail_automatic_claim_insert(monkeypatch)
+    before = counters.snapshot()
+    await _edit(update, learning_id, _asserting("059"))
+
+    assert await _insight(session_factory, learning_id) == _asserting("059")
+    assert await _claims_of(session_factory, learning_id) == [original]  # still active, unretired
+    assert _delta(before) == {("failed", "learning", "persistence_error"): 1}
+
+
+async def test_update_reconciles_only_extracted_claims(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Keep what is identical, retire what is obsolete, insert what changed, spare explicit claims."""
+    _tools_, learning_id, update = await _learning_with_extracted_claim(session_factory)
+    [first] = await _by_seq(session_factory, learning_id)
+
+    # Identical assertion in a larger text: the same occurrence is kept, nothing is written.
+    await _edit(update, learning_id, f"{_asserting('058')}\n\nA second paragraph.")
+    assert await _by_seq(session_factory, learning_id) == [first]
+
+    # A changed value: the old key is retired, a new one inserted (no retired same-key yet).
+    await _edit(update, learning_id, _asserting("059"))
+    old, new = await _by_seq(session_factory, learning_id)
+    assert old["id"] == first["id"] and old["retired_at"] is not None
+    assert new["retired_at"] is None and new["replaces_id"] is None
+
+    # Back to the first value: its key was retired before, so it must name that predecessor.
+    await _edit(update, learning_id, _asserting("058"))
+    rows = await _by_seq(session_factory, learning_id)
+    assert [r["retired_at"] is None for r in rows] == [False, False, True]
+    assert rows[2]["replaces_id"] == first["id"] and rows[2]["claim_key"] == first["claim_key"]
+
+    # An assertion that disappears retires its automatic claim and inserts nothing.
+    await _edit(update, learning_id, "Nothing to assert any more.")
+    rows = await _by_seq(session_factory, learning_id)
+    assert len(rows) == 3 and all(r["retired_at"] is not None for r in rows)
+
+    # An explicit claim for the fact is never retired by reconciliation, and blocks extraction.
+    _tools_, explicit_id, update = await _learning_with_extracted_claim(
+        session_factory, insight="Nothing to assert.", claims=[_explicit_head("061", "Declared.")]
+    )
+    [declared] = await _claims_of(session_factory, explicit_id)
+    before = counters.snapshot()
+    await _edit(update, explicit_id, _asserting("058"))
+    await _edit(update, explicit_id, "Nothing to assert any more.")
+    assert await _claims_of(session_factory, explicit_id) == [declared]
+    assert declared["retired_at"] is None
+    assert _delta(before) == {("skipped", "learning", "explicit_precedence"): 1}
+
+
+async def test_update_claims_clear_keeps_cas_and_skips_extraction(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """`claims=[]` clears under CAS with no re-addition; a stale CAS rolls the edit back."""
+    _tools_, learning_id, update = await _learning_with_extracted_claim(session_factory)
+    [extracted] = await _claims_of(session_factory, learning_id)
+
+    with pytest.raises(ToolError, match="claims_conflict"):
+        await _edit(update, learning_id, _asserting("059"), claims=[], expected_active_claim_ids=[])
+    assert await _insight(session_factory, learning_id) == _ASSERTION
+    assert await _claims_of(session_factory, learning_id) == [extracted]
+
+    before = counters.snapshot()
+    result = await _edit(
+        update,
+        learning_id,
+        _asserting("059"),
+        claims=[],
+        expected_active_claim_ids=[str(extracted["id"])],
+    )
+    assert "retired:1" in result and "created:0" in result
+    assert await _insight(session_factory, learning_id) == _asserting("059")
+    [only] = await _claims_of(session_factory, learning_id)
+    assert only["id"] == extracted["id"] and only["retired_at"] is not None
+    assert _delta(before) == {}
+
+    # A later prose edit extracts again.
+    await _edit(update, learning_id, _asserting("060"))
+    assert [c["retired_at"] is None for c in await _by_seq(session_factory, learning_id)] == [
+        False,
+        True,
+    ]
+
+
+async def test_update_with_claims_merges_automatic_candidates_after_explicit_precedence(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A non-empty `claims` replaces the set first; the edited prose is then reconciled against it."""
+    _tools_, learning_id, update = await _learning_with_extracted_claim(session_factory)
+    [extracted] = await _claims_of(session_factory, learning_id)
+
+    before = counters.snapshot()
+    await _edit(
+        update,
+        learning_id,
+        _asserting("059"),
+        claims=[_explicit_head("061", "Declared head.")],
+        expected_active_claim_ids=[str(extracted["id"])],
+    )
+
+    old, declared = await _by_seq(session_factory, learning_id)
+    assert old["retired_at"] is not None
+    assert (declared["provenance"], declared["retired_at"]) == ("declared", None)
+    assert _delta(before) == {("skipped", "learning", "explicit_precedence"): 1}
+
+
+async def test_update_quota_counts_the_whole_active_set(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Ten active explicit claims leave no slot: the edited assertion is counted, not stored."""
+    _tools_, learning_id, update = await _learning_with_extracted_claim(
+        session_factory,
+        insight="Nothing to assert.",
+        claims=[_lag_claim(index) for index in range(10)],
+    )
+    before = counters.snapshot()
+    await _edit(update, learning_id, _asserting("058"))
+
+    assert len(await _claims_of(session_factory, learning_id)) == 10
+    assert _delta(before) == {("skipped", "learning", "quota_full"): 1}
+
+
+async def test_extracted_claim_retry_is_idempotent(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The same edit twice adds no occurrence, no verdict and never reaches the unique violation."""
+    _tools_, learning_id, update = await _learning_with_extracted_claim(session_factory)
+    [original] = await _claims_of(session_factory, learning_id)
+
+    before = counters.snapshot()
+    for _ in range(2):
+        await _edit(update, learning_id, _ASSERTION)
+
+    assert await _claims_of(session_factory, learning_id) == [original]
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                sa.select(sa.func.count())
+                .select_from(knowledge_claim_verdicts)
+                .where(knowledge_claim_verdicts.c.claim_id == original["id"])
+            )
+            == 0
+        )
+    assert _delta(before) == {}  # in particular no persistence_error
+
+
+async def test_update_parser_failure_commits_the_edit_and_keeps_claims(
+    session_factory: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A parser error is counted, the edit commits, and no claim is retired on a failed read."""
+    _tools_, learning_id, update = await _learning_with_extracted_claim(session_factory)
+    [original] = await _claims_of(session_factory, learning_id)
+
+    def boom(*args: object, **kwargs: object) -> object:
+        raise RuntimeError("forced parser failure")
+
+    monkeypatch.setattr(claim_writes, "extract_candidates", boom)
+    before = counters.snapshot()
+    await _edit(update, learning_id, "Nothing to assert any more.")
+
+    assert await _insight(session_factory, learning_id) == "Nothing to assert any more."
+    assert await _claims_of(session_factory, learning_id) == [original]
+    assert _delta(before) == {("failed", "learning", "parser_error"): 1}

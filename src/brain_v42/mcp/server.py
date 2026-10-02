@@ -1079,6 +1079,7 @@ def build_server() -> BuiltServer:
         fact_registry=services.get("fact_registry"),
         claim_verification_svc=claim_verification_svc,
         claim_read_svc=claim_read_svc,
+        extraction_enabled=settings.brain_claim_extraction_enabled,
     )
 
     # Dream tools (backfill links, clusters)
