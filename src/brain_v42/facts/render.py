@@ -19,7 +19,7 @@ from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from typing import cast
 
-from brain_v42.facts.model import Measured, Measurement, Unreadable
+from brain_v42.facts.model import IDENTITY_FIELD_NAMES, Measured, Measurement, Unreadable
 from brain_v42.facts.probe import FactDescriptor
 
 #: A cached reading older than this says its age; younger ones stay quiet.
@@ -220,8 +220,18 @@ def _render_generic(measured: Measured, descriptor: FactDescriptor) -> str:
     return f"- {descriptor.name} : {text}"
 
 
+def _names_identity_fields(where: str | None) -> bool:
+    """Only closed identity field names may follow the label: nothing else is trusted to print."""
+    if where is None:
+        return False
+    names = where.split(", ")
+    return all(name in IDENTITY_FIELD_NAMES for name in names)
+
+
 def _render_unreadable(unreadable: Unreadable, descriptor: FactDescriptor) -> str:
     label = _UNREADABLE_LABELS.get(unreadable.error_code, unreadable.error_code)
+    if unreadable.error_code == "target_mismatch" and _names_identity_fields(unreadable.where):
+        label = f"{label} : {unreadable.where}"
     subject = _SUBJECTS.get(descriptor.name, descriptor.name)
     return f"- {subject} : illisible ({label})"
 

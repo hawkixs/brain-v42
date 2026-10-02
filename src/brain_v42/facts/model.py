@@ -259,6 +259,34 @@ class HostIdentity:
 
 Identity = SourceIdentity | ReleaseIdentity | HostIdentity
 
+#: Every field name an identity can carry: the closed vocabulary a mismatch may
+#: name. Names only — a value (address, identifier, port) never leaves the comparison.
+IDENTITY_FIELD_NAMES: frozenset[str] = frozenset(
+    {
+        "system_identifier",
+        "database",
+        "server_addr",
+        "server_port",
+        "release_sha",
+        "package_version",
+        "hostname",
+    }
+)
+
+
+def differing_identity_fields(observed: Identity, expected: Identity) -> str | None:
+    """Name the fields on which two identities differ, in declaration order.
+
+    Returns field names only, comma-separated, so an operator can tell a moved
+    address from a swapped cluster without any observed or declared value being
+    published. `None` when the two identities are not even of the same kind.
+    """
+    if type(observed) is not type(expected):
+        return None
+    seen, wanted = observed.as_dict(), expected.as_dict()
+    names = [name for name in wanted if seen[name] != wanted[name]]
+    return ", ".join(names) if names else None
+
 
 @dataclass(frozen=True, slots=True)
 class Measured:

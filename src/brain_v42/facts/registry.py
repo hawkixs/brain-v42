@@ -22,6 +22,7 @@ from brain_v42.facts.model import (
     Measured,
     Measurement,
     Unreadable,
+    differing_identity_fields,
     validate_fact_name,
     with_source_kind,
 )
@@ -524,7 +525,10 @@ class FactRegistry:
 
         if identity != self._expected[descriptor.target]:
             result = self._unreadable(
-                descriptor, "target_mismatch", duration_ms=self._duration_ms(started_mono)
+                descriptor,
+                "target_mismatch",
+                where=differing_identity_fields(identity, self._expected[descriptor.target]),
+                duration_ms=self._duration_ms(started_mono),
             )
             self._record_failure(result, identity=identity)
             return result
