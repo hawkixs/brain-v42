@@ -49,14 +49,13 @@ def _run_alembic(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_057_follows_056_and_precedes_058() -> None:
-    """The 057 round trip still targets its predecessor after 058 lands."""
+def test_057_follows_056_and_is_an_ancestor_of_the_head() -> None:
+    """The 057 round trip still targets its predecessor as later revisions land."""
     script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
-    head = script.get_current_head()
 
-    assert head == "058"
     assert script.get_revision("057").down_revision == "056"
     assert script.get_revision("058").down_revision == "057"
+    assert any(revision.revision == "057" for revision in script.iterate_revisions("head", "base"))
 
 
 class TestTheColumnLandsOnTheTable:

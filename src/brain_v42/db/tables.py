@@ -1580,6 +1580,7 @@ tickets = Table(
     Column("extraction_status", String(10), nullable=True),
     Column("resolved_at", DateTime(timezone=True), nullable=True),
     Column("closed_at", DateTime(timezone=True), nullable=True),
+    Column("target_release", Text, nullable=True),
     Column(
         "created_at",
         DateTime(timezone=True),
@@ -1601,6 +1602,16 @@ tickets = Table(
         "extraction_status IS NULL OR "
         "extraction_status IN ('pending', 'proposed', 'skipped', 'done')",
         name="tickets_extraction_status_valid",
+    ),
+    sa.CheckConstraint(
+        r"target_release ~ '^[0-9]+\.[0-9]+\.[0-9]+$'",
+        name="tickets_target_release_valid",
+    ),
+    Index(
+        "idx_tickets_to_project_target_release",
+        "to_project",
+        "target_release",
+        postgresql_where=sa.text("target_release IS NOT NULL"),
     ),
     Index("idx_tickets_to_project_status", "to_project", "status"),
     Index("idx_tickets_from_project_status", "from_project", "status"),

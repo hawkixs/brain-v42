@@ -1705,7 +1705,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_058_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_059_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1715,7 +1715,10 @@ def test_repository_head_058_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 058 on 2026-09-30 — the `knowledge_claims` provenance
+    silently. Bumped to 059 on 2026-10-03 — nullable `tickets.target_release`, checked
+    as a bare X.Y.Z version and indexed for per-project lot reads; its downgrade
+    refuses to erase plans without the named opt-in. Bumped to 058 on 2026-09-30 —
+    the `knowledge_claims` provenance
     CHECK also accepts `extracted`; the migration refuses downgrade while such
     rows exist. Previously bumped to 057 on 2026-09-24 — `search_log.embedding_model`, text,
     nullable, no default, no backfill: a prerequisite for judging the codestral
@@ -1775,7 +1778,7 @@ def test_repository_head_058_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     head = _repository_head()
-    assert head == "058"
+    assert head == "059"
 
     # Everything below is DERIVED from that measured head. It used to be COPIED,
     # and that is precisely how `SCHEMA.md` came to announce 049 while the chain

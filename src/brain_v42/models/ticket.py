@@ -12,6 +12,7 @@ as a note-to-next-session; both roles then collapse onto the same project.
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
@@ -53,6 +54,32 @@ class ExtractionStatus(StrEnum):
     PROPOSED = "proposed"
     SKIPPED = "skipped"
     DONE = "done"
+
+
+TARGET_RELEASE_PATTERN = r"^[0-9]+\.[0-9]+\.[0-9]+$"
+_TARGET_RELEASE_RE = re.compile(TARGET_RELEASE_PATTERN)
+
+
+def parse_target_release(value: str) -> str:
+    """Accept exactly `X.Y.Z`; name the `v0.6.3` mistake rather than strip it.
+
+    Silently stripping a `v` or whitespace would make the stored plan differ
+    from what the caller typed, and the thread message would then report a
+    value nobody wrote.
+    """
+    if _TARGET_RELEASE_RE.fullmatch(value) and value == value.strip():
+        return value
+    if value.startswith("v") and _TARGET_RELEASE_RE.fullmatch(value[1:]):
+        raise ValueError(
+            f"target_release is a version, not a tag: write {value[1:]}, without the v"
+        )
+    raise ValueError(f"target_release must be X.Y.Z (digits only), got {value!r}")
+
+
+def release_key(value: str) -> tuple[int, int, int]:
+    """Numeric order: 0.6.10 sorts after 0.6.9, which text order gets wrong."""
+    major, minor, patch = (int(part) for part in value.split("."))
+    return major, minor, patch
 
 
 TERMINAL_STATUSES: frozenset[TicketStatus] = frozenset({TicketStatus.CLOSED, TicketStatus.ACKED})
@@ -194,6 +221,7 @@ class Ticket(TicketBase, TimestampMixin):
     extraction_status: ExtractionStatus | None = None
     resolved_at: datetime | None = None
     closed_at: datetime | None = None
+    target_release: str | None = None
 
     model_config = {"from_attributes": True}
 

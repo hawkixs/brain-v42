@@ -15,6 +15,8 @@ from brain_v42.models.ticket import (
     TicketMessage,
     TicketStatus,
     allowed_actions,
+    parse_target_release,
+    release_key,
 )
 
 
@@ -85,6 +87,7 @@ class TestTicketDefaults:
         assert t.extraction_status is None
         assert t.resolved_at is None
         assert t.closed_at is None
+        assert t.target_release is None
 
     def test_message_status_to_optional(self):
         m = TicketMessage(
@@ -99,6 +102,31 @@ class TestTicketDefaults:
             body="hello",
         )
         assert m.status_to is None
+
+
+@pytest.mark.parametrize("value", ["0.6.3", "0.10.0", "12.0.1"])
+def test_parse_target_release_accepts_bare_versions(value: str) -> None:
+    assert parse_target_release(value) == value
+
+
+def test_parse_target_release_names_the_v_mistake() -> None:
+    with pytest.raises(ValueError, match="write 0.6.3, without the v"):
+        parse_target_release("v0.6.3")
+
+
+@pytest.mark.parametrize("value", ["0.6", " 0.6.3", "0.6.3-rc1", "", "0.6.3\n"])
+def test_parse_target_release_refuses_other_shapes(value: str) -> None:
+    with pytest.raises(ValueError, match="X.Y.Z"):
+        parse_target_release(value)
+
+
+def test_release_key_orders_numerically() -> None:
+    assert sorted(["0.6.10", "0.6.9", "0.10.0", "0.9.9"], key=release_key) == [
+        "0.6.9",
+        "0.6.10",
+        "0.9.9",
+        "0.10.0",
+    ]
 
 
 class TestTransitionTable:
