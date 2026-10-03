@@ -628,6 +628,13 @@ class MetricsServer:
         if tickets_block:
             metrics["tickets"] = tickets_block
 
+        # Read-only slot and operator-session state for red-cockpit (ADR #34 D12).
+        slots_block = await self._slow_block_cache.get(
+            "session_slots", lambda: self._collector.collect_session_slots()
+        )
+        if slots_block:
+            metrics["session_slots"] = slots_block
+
         # Deprecated top-level alias (ticket 3a4ed612): re-synced here, after any
         # cross-process override above, so it never drifts from the field it
         # mirrors -- get_metrics() only had the sidecar's own pre-override value.

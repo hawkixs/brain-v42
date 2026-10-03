@@ -18,6 +18,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.focus_slots import (
+    AnchorState,
     anchor_states,
     close_slot,
     load_anchors,
@@ -38,9 +39,8 @@ from brain_v42.db.tables import (
     project_contexts,
     tickets,
 )
-from brain_v42.models.brain_session import BrainSessionCheckpoint
+from brain_v42.models.brain_session import SESSION_STALE_AFTER, BrainSessionCheckpoint
 from brain_v42.models.focus_slot import (
-    SLOT_STALE_AFTER,
     FocusSlot,
     FocusSlotCloseResult,
     FocusSlotError,
@@ -51,6 +51,7 @@ from brain_v42.models.focus_slot import (
     SlotAnchor,
     SlotBriefing,
     SlotStatusFilter,
+    slot_is_stale,
 )
 from brain_v42.repositories.pg_base import BasePgRepository
 
@@ -349,18 +350,19 @@ class PgFocusSlotRepo(BasePgRepository):
         for row in rows:
             slot_id = row["id"]
             is_open = row["closed_at"] is None
-            activity = max(
-                [moment for moment in (row["body_updated_at"], last_ended.get(slot_id)) if moment]
-            )
             views.append(
                 FocusSlotView.model_validate(
                     {
                         **dict(row),
                         "anchors": anchors[slot_id],
                         "bound_session_id": bound.get(slot_id),
-                        "is_stale": is_open
-                        and bound.get(slot_id) is None
-                        and activity < reference - SLOT_STALE_AFTER,
+                        "is_stale": slot_is_stale(
+                            is_open=is_open,
+                            bound=bound.get(slot_id) is not None,
+                            body_updated_at=row["body_updated_at"],
+                            last_bound_ended_at=last_ended.get(slot_id),
+                            now=reference,
+                        ),
                         "receipt_pending": is_open and slot_satisfied(states[slot_id]),
                     }
                 )
@@ -460,3 +462,144 @@ async def _require_project(session: AsyncSession, project_key: str) -> None:
     )
     if known is None:
         raise FocusSlotError("project_not_found", f"project {project_key!r} was not found")
+
+
+def session_slots_statements() -> dict[str, sa.Select[Any]]:
+    """The four read-only sidecar queries (S13)."""
+    s, b, p = focus_slots, brain_sessions, project_contexts
+    operator = sa.or_(b.c.nature.is_(None), b.c.nature != "agent")
+    bound = (
+        sa.select(b.c.id)
+        .where(b.c.slot_id == s.c.id, b.c.status == "open")
+        .limit(1)
+        .scalar_subquery()
+    )
+    last_bound_end = (
+        sa.select(sa.func.max(b.c.ended_at)).where(b.c.slot_id == s.c.id).scalar_subquery()
+    )
+    return {
+        "slots": sa.select(
+            s.c.id,
+            s.c.project_key,
+            s.c.title,
+            s.c.revision,
+            s.c.opened_at,
+            s.c.body_updated_at,
+            bound.label("bound_session_id"),
+            last_bound_end.label("last_bound_ended_at"),
+        )
+        .where(s.c.closed_at.is_(None))
+        .order_by(s.c.project_key, s.c.opened_at, s.c.id),
+        "sessions": sa.select(
+            b.c.id,
+            b.c.project_key,
+            b.c.slot_id,
+            b.c.started_at,
+            b.c.last_heartbeat_at,
+            b.c.last_observed_at,
+        )
+        .where(b.c.status == "open", operator)
+        .order_by(b.c.project_key, b.c.started_at, b.c.id),
+        "traces": sa.select(b.c.project_key, sa.func.count().label("open_traces"))
+        .where(b.c.status == "open", b.c.nature == "agent")
+        .group_by(b.c.project_key),
+        "bases": sa.select(
+            p.c.project_key,
+            p.c.focus_revision,
+            p.c.focus_updated_at,
+            sa.func.coalesce(sa.func.char_length(p.c.current_focus), 0).label("chars"),
+        ),
+    }
+
+
+def _iso(value: datetime | None) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+def assemble_session_slots_block(
+    *,
+    bases: Sequence[Mapping[str, Any]],
+    slots: Sequence[Mapping[str, Any]],
+    states: Mapping[UUID, Sequence[AnchorState]],
+    sessions: Sequence[Mapping[str, Any]],
+    traces: Sequence[Mapping[str, Any]],
+    now: datetime,
+) -> dict[str, Any]:
+    """Build the D12 public shape without exposing private slot or session text."""
+    by_project = {row["project_key"]: row for row in bases}
+    trace_counts = {row["project_key"]: int(row["open_traces"]) for row in traces}
+    projects = sorted(
+        {row["project_key"] for row in slots} | {row["project_key"] for row in sessions}
+    )
+    out: builtins.list[dict[str, Any]] = []
+    for project in projects:
+        base = by_project.get(project)
+        project_slots = [row for row in slots if row["project_key"] == project]
+        project_sessions = [row for row in sessions if row["project_key"] == project]
+        out.append(
+            {
+                "project": project,
+                "base": {
+                    "revision": int(base["focus_revision"]) if base else 0,
+                    "focus_updated_at": _iso(base["focus_updated_at"]) if base else None,
+                    "chars": int(base["chars"]) if base else 0,
+                },
+                "slots": [
+                    {
+                        "slot_id": str(row["id"]),
+                        "title": row["title"],
+                        "revision": int(row["revision"]),
+                        "opened_at": _iso(row["opened_at"]),
+                        "body_updated_at": _iso(row["body_updated_at"]),
+                        "anchors": [
+                            {"kind": state.kind, "ref": state.ref}
+                            for state in states.get(row["id"], [])
+                        ],
+                        "bound_session_id": str(row["bound_session_id"])
+                        if row["bound_session_id"]
+                        else None,
+                        "is_stale": slot_is_stale(
+                            is_open=True,
+                            bound=row["bound_session_id"] is not None,
+                            body_updated_at=row["body_updated_at"],
+                            last_bound_ended_at=row["last_bound_ended_at"],
+                            now=now,
+                        ),
+                        "receipt_pending": slot_satisfied(states.get(row["id"], [])),
+                    }
+                    for row in project_slots
+                ],
+                "sessions": [
+                    {
+                        "session_id": str(row["id"]),
+                        "slot_id": str(row["slot_id"]) if row["slot_id"] else None,
+                        "started_at": _iso(row["started_at"]),
+                        "last_heartbeat_at": _iso(row["last_heartbeat_at"]),
+                        "last_observed_at": _iso(row["last_observed_at"]),
+                        "is_stale": row["last_heartbeat_at"] <= now - SESSION_STALE_AFTER,
+                    }
+                    for row in project_sessions
+                ],
+                "agent_traces_open": trace_counts.get(project, 0),
+            }
+        )
+    return {"projects": out}
+
+
+async def session_slots_block(
+    session: AsyncSession, *, now: datetime | None = None
+) -> dict[str, Any]:
+    """Read the D12 sidecar block; the cache adds generated_at."""
+    rows = {
+        name: [dict(row) for row in (await session.execute(statement)).mappings()]
+        for name, statement in session_slots_statements().items()
+    }
+    states = await anchor_states(session, [row["id"] for row in rows["slots"]])
+    return assemble_session_slots_block(
+        bases=rows["bases"],
+        slots=rows["slots"],
+        states=states,
+        sessions=rows["sessions"],
+        traces=rows["traces"],
+        now=now or datetime.now(UTC),
+    )

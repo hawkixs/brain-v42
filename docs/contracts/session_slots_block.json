@@ -1,0 +1,43 @@
+{
+  "block": "session_slots",
+  "source": "ADR #34 D12; GET http://127.0.0.1:9200/metrics, key session_slots",
+  "rules": [
+    "read-only: the block writes nothing and reads no access counter",
+    "open slots and open operator sessions only; agent traces are counted, never listed",
+    "no slot body, no session summary, no client_key",
+    "a type written a|b admits both; null means the value is not known"
+  ],
+  "shape": {
+    "generated_at": "string",
+    "projects": [
+      {
+        "project": "string",
+        "base": {"revision": "integer", "focus_updated_at": "string|null", "chars": "integer"},
+        "slots": [
+          {
+            "slot_id": "string",
+            "title": "string",
+            "revision": "integer",
+            "opened_at": "string",
+            "body_updated_at": "string",
+            "anchors": [{"kind": "string", "ref": "string"}],
+            "bound_session_id": "string|null",
+            "is_stale": "boolean",
+            "receipt_pending": "boolean"
+          }
+        ],
+        "sessions": [
+          {
+            "session_id": "string",
+            "slot_id": "string|null",
+            "started_at": "string",
+            "last_heartbeat_at": "string",
+            "last_observed_at": "string|null",
+            "is_stale": "boolean"
+          }
+        ],
+        "agent_traces_open": "integer"
+      }
+    ]
+  }
+}

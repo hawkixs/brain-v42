@@ -18,6 +18,7 @@ from brain_v42.config import get_settings
 from brain_v42.metrics.collector_db import _DbCollectorsMixin
 from brain_v42.metrics.collector_dream import _DreamCollectorsMixin
 from brain_v42.metrics.collector_nightly import _NightlyCollectorsMixin
+from brain_v42.metrics.collector_session_slots import _SessionSlotCollectorsMixin
 from brain_v42.metrics.collector_tickets import _TicketCollectorsMixin
 from brain_v42.repositories.pg_graph_ledger import projection_health, read_projection_state
 
@@ -49,7 +50,11 @@ def _endpoint_host(url: str) -> str:
 
 
 class MetricsCollector(
-    _DbCollectorsMixin, _DreamCollectorsMixin, _NightlyCollectorsMixin, _TicketCollectorsMixin
+    _DbCollectorsMixin,
+    _DreamCollectorsMixin,
+    _NightlyCollectorsMixin,
+    _TicketCollectorsMixin,
+    _SessionSlotCollectorsMixin,
 ):
     """Accumulates metrics counters in memory (asyncio-safe, single-threaded).
 

@@ -106,6 +106,19 @@ def validate_anchor_shape(anchor: SlotAnchor) -> SlotAnchor:
     return anchor
 
 
+def slot_is_stale(
+    *,
+    is_open: bool,
+    bound: bool,
+    body_updated_at: datetime,
+    last_bound_ended_at: datetime | None,
+    now: datetime,
+) -> bool:
+    """ADR D6: open, unbound slots untouched for seven days are stale."""
+    activity = max(body_updated_at, last_bound_ended_at) if last_bound_ended_at else body_updated_at
+    return is_open and not bound and activity < now - SLOT_STALE_AFTER
+
+
 class FocusSlot(BaseModel):
     id: UUID
     project_key: str

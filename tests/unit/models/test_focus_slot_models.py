@@ -1,3 +1,4 @@
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 import pytest
@@ -14,6 +15,7 @@ from brain_v42.models.focus_slot import (
     BrainSessionRelayResult,
     FocusSlotError,
     SlotAnchor,
+    slot_is_stale,
     validate_anchor_shape,
 )
 
@@ -26,6 +28,20 @@ def test_bounds_are_the_spec_values() -> None:
     )
     assert MAX_SLOT_ANCHORS == 10
     assert SLOT_STALE_AFTER.days == 7
+
+
+def test_slot_staleness_uses_body_and_bound_session_activity() -> None:
+    now = datetime(2026, 10, 3, tzinfo=UTC)
+    old = now - timedelta(days=8)
+    assert slot_is_stale(
+        is_open=True, bound=False, body_updated_at=old, last_bound_ended_at=None, now=now
+    )
+    assert not slot_is_stale(
+        is_open=True, bound=True, body_updated_at=old, last_bound_ended_at=None, now=now
+    )
+    assert not slot_is_stale(
+        is_open=True, bound=False, body_updated_at=old, last_bound_ended_at=now, now=now
+    )
 
 
 def test_error_carries_a_code_and_the_delivery_error_shape() -> None:
