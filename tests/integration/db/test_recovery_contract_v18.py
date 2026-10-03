@@ -1,4 +1,4 @@
-"""Prove v17 against a fresh 059 head and a real restored 058 source."""
+"""Prove v18 against a fresh 060 head and a real restored 059 source."""
 
 from __future__ import annotations
 
@@ -15,9 +15,11 @@ from typing import Any
 import pytest
 
 from tests.integration.disposable_db import (
+    alembic_upgrade_head,
     asyncpg_dsn,
     create_database,
     drop_database,
+    fresh_head_database,
     replay_attestation,
     run_sql,
     swap_database,
@@ -25,10 +27,9 @@ from tests.integration.disposable_db import (
 
 pytestmark = pytest.mark.integration
 PROJECT_ROOT = Path(__file__).parents[3]
-CONTRACT_HEAD = "059"  # Each recovery contract must be checked against its own schema head.
-V17_SQL = PROJECT_ROOT / "ops/recovery/brain-v42-v17.sql"
-V17_JSON = PROJECT_ROOT / "ops/recovery/brain-v42-v17.json"
-V17_PGRESTORE = PROJECT_ROOT / "ops/recovery/brain-v42-v17-pgrestore.sql"
+V18_SQL = PROJECT_ROOT / "ops/recovery/brain-v42-v18.sql"
+V18_JSON = PROJECT_ROOT / "ops/recovery/brain-v42-v18.json"
+V18_PGRESTORE = PROJECT_ROOT / "ops/recovery/brain-v42-v18-pgrestore.sql"
 DATA_CHECK_KINDS = frozenset({"row_count_sum_min"})
 RESTORE_BUILD_VECTOR_VERSIONS = frozenset(
     json.loads(
@@ -117,33 +118,26 @@ def _restore(target_url: str, archive: Path) -> None:
 
 @pytest.fixture(scope="module")
 def fresh_head_db_url() -> Iterator[str]:
-    admin_url = _database_url_or_skip()
-    name = f"brain_v17_fresh_{uuid.uuid4().hex[:12]}"
-    create_database(admin_url, name)
-    url = swap_database(admin_url, name)
-    try:
-        _upgrade(url, CONTRACT_HEAD)
+    with fresh_head_database(_database_url_or_skip(), prefix="brain_v18_fresh") as url:
         yield url
-    finally:
-        drop_database(admin_url, name)
 
 
 @pytest.fixture(scope="module")
 def restored_head_db_url() -> Iterator[str]:
     _require_pg_tools()
     admin_url = _database_url_or_skip()
-    archive = PROJECT_ROOT / f"brain_v17_restore_{uuid.uuid4().hex}.dump"
-    source = f"brain_v17_src_{uuid.uuid4().hex[:12]}"
-    target = f"brain_v17_tgt_{uuid.uuid4().hex[:12]}"
+    archive = PROJECT_ROOT / f"brain_v18_restore_{uuid.uuid4().hex}.dump"
+    source = f"brain_v18_src_{uuid.uuid4().hex[:12]}"
+    target = f"brain_v18_tgt_{uuid.uuid4().hex[:12]}"
     create_database(admin_url, source)
     create_database(admin_url, target)
     source_url, target_url = swap_database(admin_url, source), swap_database(admin_url, target)
     try:
-        _upgrade(source_url, "058")
+        _upgrade(source_url, "059")
         _dump(source_url, archive)
         run_sql(asyncpg_dsn(target_url), ["CREATE EXTENSION IF NOT EXISTS vector"])
         _restore(target_url, archive)
-        _upgrade(target_url, CONTRACT_HEAD)
+        alembic_upgrade_head(target_url)
         yield target_url
     finally:
         archive.unlink(missing_ok=True)
@@ -152,7 +146,7 @@ def restored_head_db_url() -> Iterator[str]:
 
 
 def _assert_contract(failures: dict[str, dict[str, Any]], *, restored: bool) -> None:
-    contract = json.loads(V17_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V18_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         key: value
@@ -176,8 +170,8 @@ def _assert_contract(failures: dict[str, dict[str, Any]], *, restored: bool) -> 
 
 
 @pytest.mark.asyncio
-async def test_recovery_contract_v17_matches_fresh_and_restored_head(
+async def test_recovery_contract_v18_matches_fresh_and_restored_head(
     fresh_head_db_url: str, restored_head_db_url: str
 ) -> None:
-    _assert_contract(await replay_attestation(fresh_head_db_url, V17_SQL), restored=False)
-    _assert_contract(await replay_attestation(restored_head_db_url, V17_PGRESTORE), restored=True)
+    _assert_contract(await replay_attestation(fresh_head_db_url, V18_SQL), restored=False)
+    _assert_contract(await replay_attestation(restored_head_db_url, V18_PGRESTORE), restored=True)

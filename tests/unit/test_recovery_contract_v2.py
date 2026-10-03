@@ -37,7 +37,8 @@ def _expected_checks() -> list[dict[str, Any]]:
             # `project_focus_history` arrives with 050, `brain_session_checkpoints`
             # with 051, `access_log_daily` with 052, the eight `delivery_*` tables
             # with 053, `delivery_attestations` with 054 and the three
-            # `knowledge_*` claim ledgers with 055 — all long after the 035
+            # `knowledge_*` claim ledgers with 055 and the three `focus_slot*`
+            # tables with 060 — all long after the 035
             # this asset describes. See the revision-by-revision review in
             # test_recovery_contract.py.
             if name
@@ -57,6 +58,9 @@ def _expected_checks() -> list[dict[str, Any]]:
                 "delivery_receipts",
                 "delivery_snapshots",
                 "delivery_workflows",
+                "focus_slot_anchors",
+                "focus_slot_history",
+                "focus_slots",
                 "project_focus_history",
                 "ticket_extraction_attempts",
             }

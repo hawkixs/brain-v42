@@ -245,13 +245,21 @@ if TYPE_CHECKING:
 # Measured the same way as the entries above: 059 contains zero references to
 # `indexed_plans`, `indexed_plan_chunks` or `project_contexts` (`grep -c` → 0).
 #
+# Bumped to 060 after reviewing the complete migration. 060 names
+# `project_contexts` once, as the target of the new `focus_slots.project_key`
+# foreign key (ON DELETE RESTRICT). The repair's two UPDATEs set `plan_scan_paths`
+# and `updated_at`, never `project_key` (immutable since 039 anyway) and never a
+# row deletion, so a referencing RESTRICT key cannot fire on anything it issues.
+# 060 adds no trigger, no CHECK and no column on `project_contexts`,
+# `indexed_plans` or `indexed_plan_chunks` (`grep -c` → 0 for the latter two).
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "059"
+_REQUIRED_ALEMBIC_HEAD = "060"
 
 
 class RepairStore:

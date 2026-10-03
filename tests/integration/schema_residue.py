@@ -69,6 +69,13 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     "tests/integration/db/test_migration_059_ticket_target_release.py",
 )
 
+# Files that contain the word downgrade but only ever run it on a PRIVATE database: slot
+# rows can never be deleted, so a 060 downgrade on the shared head would be refused.
+# They declare themselves so the tree census still sees them, and they need no fence.
+PRIVATE_HEAD_DOWNGRADING_FILES: tuple[str, ...] = (
+    "tests/integration/db/test_migration_060_focus_slots.py",
+)
+
 # Tables probed for leftover rows, in the order the message lists them.
 # Restricted to tables that exist across the revisions those tests downgrade to.
 RESIDUE_TABLES: tuple[str, ...] = ("brain_sessions", "project_contexts")

@@ -136,10 +136,7 @@ and migration 048 records in `attribution_mode` which key attributed each artifa
 
 **Inactivity sweep** (`src/brain_v42/maintenance/session_sweep.py`, flag
 `BRAIN_SESSION_INACTIVE_SWEEP_ENABLED`). The same Dream `sweep` phase carries a second, narrower rule: its predicate selects only open `nature = 'agent'` traces whose `last_observed_at` is more than four hours old and moves them to `closed_inactive`.
-The CHECK on `brain_sessions` fixes the terminal fields of `closed_inactive` (`next_focus IS NULL`, no summary, no abandonment reason) and refuses it for `nature = 'operator'`, but it accepts it for `nature IS NULL`, so only the sweep's predicate keeps an operator row out of that state.
-Migration 046 presents that guarantee as a database constraint; for `nature IS NULL`
-rows it is not one, and the gap is tracked as an open defect (ticket `16314b31`,
-"brain_sessions CHECK accepts closed_inactive with nature IS NULL").
+The CHECK on `brain_sessions` fixes the terminal fields of `closed_inactive` (`next_focus IS NULL`, no summary, no abandonment reason) and, since migration 060, refuses it for every operator row, whether its `nature` is `operator` or `NULL` (ticket `16314b31`, closed).
 Four hours is an eligibility threshold evaluated once a night, not a closing delay:
 a trace that goes idle just after a pass waits for the next one, about 28 hours in
 the worst case. Both rules run in one statement, and the seven-day rule wins when

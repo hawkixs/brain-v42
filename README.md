@@ -326,7 +326,7 @@ Details: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
 
 ## Production state
 
-The repository migration target is migration 059. No page in this repository proves a
+The repository migration target is migration 060. No page in this repository proves a
 live schema head — **measure it, do not read it here**:
 
 ```bash
@@ -442,7 +442,9 @@ migrations, and attaches both to the GitHub release.
   once a delivery attestation exists, **055** refuses once a claim, a verdict or a fact
   definition exists, **056** refuses while a project is archived (those two accept a
   named operator opt-in), **058** refuses once a server-extracted claim exists, and
-  **059** refuses while a ticket carries a target_release (named operator opt-in).
+  **059** refuses while a ticket carries a target_release, and **060** refuses while a
+  focus slot, a slot history row or a slot-bound session exists (both accept a named
+  operator opt-in).
 - Follow the release's operator runbook for recovery. For **0.6.3** (as for 0.6.2, 0.6.1, 0.6.0 and 0.5.0), use the
   compatible forward rollback section of that runbook (`docs/runbooks/2026-09-07-observable-
   delivery-workflows.md` in the private brain-v42-internal repository)

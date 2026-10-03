@@ -1707,7 +1707,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_059_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_060_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1717,9 +1717,13 @@ def test_repository_head_059_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 059 on 2026-10-03 — nullable `tickets.target_release`, checked
-    as a bare X.Y.Z version and indexed for per-project lot reads; its downgrade
-    refuses to erase plans without the named opt-in. Bumped to 058 on 2026-09-30 —
+    silently. Bumped to 060 on 2026-10-03 — focus slots (ADR #34): three tables, two
+    nullable brain_sessions columns with their CHECKs and partial unique indexes, and
+    the 16314b31 fix of the closed_inactive branch; its downgrade refuses to destroy
+    slots without the named opt-in. Bumped to 059 on 2026-10-03 — nullable
+    `tickets.target_release`, checked as a bare X.Y.Z version and indexed for
+    per-project lot reads; its downgrade refuses to erase plans without the named
+    opt-in. Bumped to 058 on 2026-09-30 —
     the `knowledge_claims` provenance
     CHECK also accepts `extracted`; the migration refuses downgrade while such
     rows exist. Previously bumped to 057 on 2026-09-24 — `search_log.embedding_model`, text,
@@ -1780,7 +1784,7 @@ def test_repository_head_059_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     head = _repository_head()
-    assert head == "059"
+    assert head == "060"
 
     # Everything below is DERIVED from that measured head. It used to be COPIED,
     # and that is precisely how `SCHEMA.md` came to announce 049 while the chain
@@ -2457,24 +2461,23 @@ _TWO_NATURES_SCOPE = (
     "The explicit-command rule governs the operator nature; the agent nature is a "
     "server-owned trace that grants no right to an agent, a hook or a client."
 )
-# The second rule of the Dream `sweep` phase. What bounds it to `agent` traces is
-# the sweep's own predicate (`session_sweep.py`), NOT the database: the CHECK of
-# migration 046 reads `nature = 'agent'` inside an OR branch, which is NULL, not
-# false, for a row whose `nature IS NULL`, and a CHECK accepts NULL. An earlier
-# wording said the CHECK "reserves" `closed_inactive` to agent rows, which is
-# false for exactly the rows explicit sessions are stored as. It is the only
-# other server-side closure, so it is sanctioned here by name rather than left
-# for the anti-widening scan to reject.
+# The second rule of the Dream `sweep` phase. It is the only other server-side
+# closure, so it is sanctioned here by name rather than left for the anti-widening
+# scan to reject.
 _INACTIVITY_SWEEP_RULE = (
     "The same Dream `sweep` phase carries a second, narrower rule: its predicate selects only "
     "open `nature = 'agent'` traces whose `last_observed_at` is more than four hours old and "
     "moves them to `closed_inactive`."
 )
+# Since migration 060 the database bounds it too: the `closed_inactive` branch reads
+# `nature IS NOT NULL AND nature = 'agent'`, so a NULL nature is refused rather than
+# accepted as NULL (16314b31). The sentence avoids the word "agent" on purpose: with
+# it, the anti-widening scan would read a CHECK description as a closure grant.
 _CLOSED_INACTIVE_CHECK_SCOPE = (
     "The CHECK on `brain_sessions` fixes the terminal fields of `closed_inactive` "
-    "(`next_focus IS NULL`, no summary, no abandonment reason) and refuses it for "
-    "`nature = 'operator'`, but it accepts it for `nature IS NULL`, so only the sweep's "
-    "predicate keeps an operator row out of that state."
+    "(`next_focus IS NULL`, no summary, no abandonment reason) and, since migration 060, "
+    "refuses it for every operator row, whether its `nature` is `operator` or `NULL` "
+    "(ticket `16314b31`, closed)."
 )
 
 # Each statement is anchored to the section that governs its reader, not the file.
