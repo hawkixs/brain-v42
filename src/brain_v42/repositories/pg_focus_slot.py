@@ -1,0 +1,329 @@
+"""PostgreSQL persistence of focus slots: open, list, close (ADR #34, spec §3).
+
+Every write goes through `brain_v42.db.focus_slots`; this module validates,
+orders and reads. Nothing here touches `project_contexts` except to check that
+a project exists (S1).
+"""
+
+from __future__ import annotations
+
+import builtins
+from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
+from typing import Any
+from uuid import UUID
+
+import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from brain_v42.db.focus_slots import (
+    anchor_states,
+    close_slot,
+    load_anchors,
+    lock_slot,
+    received_anchor,
+    record_slot_history,
+    slot_satisfied,
+    to_focus_slot,
+)
+from brain_v42.db.tables import (
+    brain_sessions,
+    delivery_artifact_bindings,
+    focus_slot_anchors,
+    focus_slots,
+    project_contexts,
+    tickets,
+)
+from brain_v42.models.focus_slot import (
+    SLOT_STALE_AFTER,
+    FocusSlot,
+    FocusSlotCloseResult,
+    FocusSlotError,
+    FocusSlotListResult,
+    FocusSlotOpenResult,
+    FocusSlotView,
+    SlotAnchor,
+    SlotBriefing,
+    SlotStatusFilter,
+)
+from brain_v42.repositories.pg_base import BasePgRepository
+
+
+class PgFocusSlotRepo(BasePgRepository):
+    """Own the slot rows; the session rows stay with `PgBrainSessionRepo`."""
+
+    table = focus_slots
+    fts_columns: builtins.list[str] = []
+
+    async def open(
+        self, project_key: str, title: str, body: str, anchors: Sequence[SlotAnchor]
+    ) -> FocusSlotOpenResult:
+        async with self.transaction() as session:
+            await _require_project(session, project_key)
+            existing = await self._open_by_title(session, project_key, title)
+            if existing is not None:
+                return self._replay_open(existing, body, anchors)
+            for anchor in anchors:
+                await self._admit_anchor(session, project_key, anchor)
+            inserted = (
+                (
+                    await session.execute(
+                        pg_insert(focus_slots)
+                        .values(project_key=project_key, title=title, body=body)
+                        .on_conflict_do_nothing(
+                            index_elements=[focus_slots.c.project_key, focus_slots.c.title],
+                            index_where=focus_slots.c.closed_at.is_(None),
+                        )
+                        .returning(focus_slots)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if inserted is None:  # a concurrent open committed the same title first
+                raced = await self._open_by_title(session, project_key, title)
+                if raced is None:
+                    raise FocusSlotError(
+                        "slot_title_conflict", f"an open slot titled {title!r} changed concurrently"
+                    )
+                return self._replay_open(raced, body, anchors)
+            slot_id = inserted["id"]
+            await session.execute(
+                focus_slot_anchors.insert(),
+                [
+                    {
+                        "slot_id": slot_id,
+                        "kind": anchor.kind,
+                        "ticket_id": anchor.ticket_id,
+                        "target_release": anchor.target_release,
+                        "repository_id": anchor.repository_id,
+                        "pr_number": anchor.pr_number,
+                    }
+                    for anchor in anchors
+                ],
+            )
+            await record_slot_history(
+                session, slot_id=slot_id, revision=0, body=body, source="slot_open"
+            )
+            return FocusSlotOpenResult(slot=to_focus_slot(inserted, anchors), replayed=False)
+
+    async def list(
+        self,
+        project_key: str,
+        status: SlotStatusFilter,
+        *,
+        limit: int,
+        offset: int,
+        now: datetime | None = None,
+    ) -> FocusSlotListResult:
+        filters: builtins.list[Any] = [focus_slots.c.project_key == project_key]
+        if status == "open":
+            filters.append(focus_slots.c.closed_at.is_(None))
+        elif status == "closed":
+            filters.append(focus_slots.c.closed_at.is_not(None))
+        async with self.get_session() as session:
+            await _require_project(session, project_key)
+            total = int(
+                await session.scalar(
+                    sa.select(sa.func.count()).select_from(focus_slots).where(*filters)
+                )
+                or 0
+            )
+            rows = (
+                (
+                    await session.execute(
+                        sa.select(focus_slots)
+                        .where(*filters)
+                        .order_by(focus_slots.c.opened_at.desc(), focus_slots.c.id)
+                        .limit(limit)
+                        .offset(offset)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            views = await self.views(session, rows, now=now)
+        return FocusSlotListResult(slots=views, total=total, limit=limit, offset=offset)
+
+    async def close(self, slot_id: UUID, expected_revision: int, note: str) -> FocusSlotCloseResult:
+        async with self.transaction() as session:
+            slot = await lock_slot(session, slot_id)
+            if slot is None:
+                raise FocusSlotError("slot_not_found", f"slot {slot_id} was not found")
+            if slot["closed_at"] is not None:
+                raise FocusSlotError("slot_closed", f"slot {slot_id} is already closed")
+            if slot["revision"] != expected_revision:
+                raise FocusSlotError(
+                    "slot_revision_conflict",
+                    f"slot {slot_id} is at revision {slot['revision']}, not {expected_revision}",
+                )
+            holder = await session.scalar(
+                sa.select(brain_sessions.c.id).where(
+                    brain_sessions.c.slot_id == slot_id, brain_sessions.c.status == "open"
+                )
+            )
+            if holder is not None:
+                raise FocusSlotError(
+                    "slot_bound",
+                    f"session {holder} is bound to slot {slot_id}: end, relay or abandon it first",
+                )
+            closed = await close_slot(session, slot_id=slot_id, reason="explicit", note=note)
+            anchors = await load_anchors(session, [slot_id])
+            return FocusSlotCloseResult(slot=to_focus_slot(closed, anchors[slot_id]))
+
+    async def briefing_view(self, project_key: str, session_id: UUID) -> SlotBriefing:
+        """Implemented with the briefing in Task 14; an empty view until then."""
+        return SlotBriefing()
+
+    async def views(
+        self,
+        session: AsyncSession,
+        rows: Sequence[Mapping[Any, Any]],
+        *,
+        now: datetime | None = None,
+    ) -> builtins.list[FocusSlotView]:
+        """Derive bound session, staleness (ADR D6) and receipt_pending; mutate nothing."""
+        ids = [row["id"] for row in rows]
+        if not ids:
+            return []
+        anchors = await load_anchors(session, ids)
+        states = await anchor_states(session, ids)
+        bound: dict[UUID, UUID] = dict(
+            (
+                await session.execute(
+                    sa.select(brain_sessions.c.slot_id, brain_sessions.c.id).where(
+                        brain_sessions.c.slot_id.in_(ids), brain_sessions.c.status == "open"
+                    )
+                )
+            )
+            .tuples()
+            .all()
+        )
+        last_ended: dict[UUID, datetime | None] = dict(
+            (
+                await session.execute(
+                    sa.select(brain_sessions.c.slot_id, sa.func.max(brain_sessions.c.ended_at))
+                    .where(brain_sessions.c.slot_id.in_(ids))
+                    .group_by(brain_sessions.c.slot_id)
+                )
+            )
+            .tuples()
+            .all()
+        )
+        reference = now or datetime.now(UTC)
+        views: builtins.list[FocusSlotView] = []
+        for row in rows:
+            slot_id = row["id"]
+            is_open = row["closed_at"] is None
+            activity = max(
+                [moment for moment in (row["body_updated_at"], last_ended.get(slot_id)) if moment]
+            )
+            views.append(
+                FocusSlotView.model_validate(
+                    {
+                        **dict(row),
+                        "anchors": anchors[slot_id],
+                        "bound_session_id": bound.get(slot_id),
+                        "is_stale": is_open
+                        and bound.get(slot_id) is None
+                        and activity < reference - SLOT_STALE_AFTER,
+                        "receipt_pending": is_open and slot_satisfied(states[slot_id]),
+                    }
+                )
+            )
+        return views
+
+    async def _open_by_title(
+        self, session: AsyncSession, project_key: str, title: str
+    ) -> FocusSlot | None:
+        row = (
+            (
+                await session.execute(
+                    sa.select(focus_slots).where(
+                        focus_slots.c.project_key == project_key,
+                        focus_slots.c.title == title,
+                        focus_slots.c.closed_at.is_(None),
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            return None
+        anchors = await load_anchors(session, [row["id"]])
+        return to_focus_slot(row, anchors[row["id"]])
+
+    @staticmethod
+    def _replay_open(
+        existing: FocusSlot, body: str, anchors: Sequence[SlotAnchor]
+    ) -> FocusSlotOpenResult:
+        same = existing.body == body and {a.key() for a in existing.anchors} == {
+            a.key() for a in anchors
+        }
+        if not same:
+            raise FocusSlotError(
+                "slot_title_conflict",
+                f"an open slot titled {existing.title!r} exists ({existing.id}) with another "
+                "body or anchor set",
+            )
+        return FocusSlotOpenResult(slot=existing, replayed=True)
+
+    @staticmethod
+    async def _admit_anchor(session: AsyncSession, project_key: str, anchor: SlotAnchor) -> None:
+        if anchor.kind == "ticket":
+            owner = await session.scalar(
+                sa.select(tickets.c.to_project).where(tickets.c.id == anchor.ticket_id)
+            )
+            if owner != project_key:
+                raise FocusSlotError(
+                    "anchor_ticket_foreign",
+                    f"ticket {anchor.ticket_id} does not exist or does not target {project_key}",
+                )
+        elif anchor.kind == "pr":
+            b = delivery_artifact_bindings
+            bound = await session.scalar(
+                sa.select(
+                    sa.exists().where(
+                        b.c.active.is_(True),
+                        b.c.repository_id == anchor.repository_id,
+                        b.c.pr_number == anchor.pr_number,
+                        tickets.c.id == b.c.ticket_id,
+                        tickets.c.to_project == project_key,
+                    )
+                )
+            )
+            if not bound:
+                raise FocusSlotError(
+                    "anchor_unbound_pr",
+                    f"{anchor.ref} has no active binding on a ticket of {project_key}",
+                )
+        else:
+            planned = await session.scalar(
+                sa.select(
+                    sa.exists().where(
+                        tickets.c.to_project == project_key,
+                        tickets.c.target_release == anchor.target_release,
+                    )
+                )
+            )
+            if not planned:
+                raise FocusSlotError(
+                    "anchor_lot_unplanned",
+                    f"no ticket of {project_key} is planned for {anchor.target_release}",
+                )
+        if await received_anchor(session, project_key=project_key, anchor=anchor) is not None:
+            raise FocusSlotError(
+                "anchor_already_received", f"{anchor.ref} already has its closing receipt"
+            )
+
+
+async def _require_project(session: AsyncSession, project_key: str) -> None:
+    known = await session.scalar(
+        sa.select(project_contexts.c.project_key).where(
+            project_contexts.c.project_key == project_key
+        )
+    )
+    if known is None:
+        raise FocusSlotError("project_not_found", f"project {project_key!r} was not found")

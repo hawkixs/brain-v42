@@ -147,6 +147,16 @@ async def close_slot(session: AsyncSession, *, slot_id: UUID, reason: str, note:
     return dict(row)
 
 
+def _anchor_from_row(row: Mapping[Any, Any]) -> SlotAnchor:
+    return SlotAnchor(
+        kind=row["kind"],
+        ticket_id=row["ticket_id"],
+        target_release=row["target_release"],
+        repository_id=row["repository_id"],
+        pr_number=row["pr_number"],
+    )
+
+
 async def load_anchors(
     session: AsyncSession, slot_ids: Sequence[UUID]
 ) -> dict[UUID, list[SlotAnchor]]:
@@ -167,19 +177,11 @@ async def load_anchors(
         .order_by(a.c.slot_id, a.c.created_at, a.c.id)
     )
     for row in rows.mappings():
-        grouped[row["slot_id"]].append(
-            SlotAnchor(
-                kind=row["kind"],
-                ticket_id=row["ticket_id"],
-                target_release=row["target_release"],
-                repository_id=row["repository_id"],
-                pr_number=row["pr_number"],
-            )
-        )
+        grouped[row["slot_id"]].append(_anchor_from_row(row))
     return grouped
 
 
-def to_focus_slot(row: Mapping[str, Any], anchors: Sequence[SlotAnchor]) -> FocusSlot:
+def to_focus_slot(row: Mapping[Any, Any], anchors: Sequence[SlotAnchor]) -> FocusSlot:
     return FocusSlot.model_validate({**dict(row), "anchors": list(anchors)})
 
 
@@ -307,13 +309,7 @@ async def anchor_states(
     if not slot_ids:
         return states
     for row in (await session.execute(anchor_states_statement(slot_ids))).mappings():
-        anchor = SlotAnchor(
-            kind=row["kind"],
-            ticket_id=row["ticket_id"],
-            target_release=row["target_release"],
-            repository_id=row["repository_id"],
-            pr_number=row["pr_number"],
-        )
+        anchor = _anchor_from_row(row)
         states[row["slot_id"]].append(
             AnchorState(
                 kind=anchor.kind, ref=anchor.ref, completing_row_id=row["completing_row_id"]
