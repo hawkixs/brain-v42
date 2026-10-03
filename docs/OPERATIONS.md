@@ -22,7 +22,6 @@ and the inactivity sweep are described in
 [Agent traces and the inactivity sweep](#agent-traces-and-the-inactivity-sweep).
 
 `brain_session_start(project_key, client_key)` creates a persistent session identified
-
 by a UUID. `client_key` names a session the client wants: reuse the exact same key for
 every retry of that session, and give a distinct, stable key to every parallel
 session. The same `(project_key, client_key)` pair replays the opening of a still-open
@@ -171,7 +170,6 @@ it was filed (about 1,400 traces a day). These are dated observations, not the
 current state.
 
 ## Network trust boundary (detailed)
-
 
 **Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to loopback; metrics and automation default to loopback. The versioned Compose target binds the embedding host publish to loopback and the live runtime matches it — measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and non-empty in the live server process, and `POST /mcp` answers `401` both without a bearer and with a wrong one. The dedicated Docker client network exists and carries the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. Repository-managed WAN isolation remains unproven — the repository manages no firewall rule at all. What would make this paragraph false again, and is watched by no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. `METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the decision, and under that opt-in the three POST receivers stay unregistered and say so on `/healthz`. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
 
