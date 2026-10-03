@@ -20,12 +20,12 @@ uv sync --extra dev --python 3.12
 source .venv/bin/activate
 ```
 
-**Use `uv`, not pip.** `pip install -e ".[dev]"` fails here: `headless-agents`
-is a uv *workspace member* (`[tool.uv.workspace]` and `[tool.uv.sources]` in
-`pyproject.toml`), not a published distribution, so pip looks for it on PyPI
-and stops with `No matching distribution found for headless-agents`.
+**Use `uv`, not pip.** `headless-agents` is a Git dependency from
+`hawkixs/red-ha`, pinned to tag `v0.5.4` in `pyproject.toml`. Pip does not
+consume `uv.lock` or uv's Git source declaration, so use uv to resolve and
+install it.
 
-Pin `--python 3.12`: `requires-python` is `>=3.12`, so a bare `uv sync` takes the
+Pin `--python 3.12`: `requires-python` is `>=3.12.7`, so a bare `uv sync` takes the
 newest interpreter on the machine, while every CI job and `[tool.mypy]` target 3.12.
 
 The dev toolchain is pinned **exactly** in `uv.lock` — pytest, ruff, mypy and

@@ -620,8 +620,8 @@ consumer whose invariant is "no database" cannot import `brain_v42` (a dry impor
 sqlalchemy, neo4j, pgvector, fastmcp and uvicorn):
 
 ```
-packages/headless-agents/            # uv workspace member, distribution `headless-agents`
-    src/headless_agents/
+headless-agents                    # Git dependency from hawkixs/red-ha, tag v0.5.4
+    headless_agents/ package
         profile.py       # CapabilityProfile: McpServer, ToolGuard, Credentials
         capability.py    # exit codes 3/4/124, child-env allowlist, NO_PROXY, loopback, killpg
         sandbox.py       # ephemeral HOMEs from a profile, credentials (symlink | 0600 copy)
@@ -650,10 +650,7 @@ may reach no server at all: codex declares no `mcp_servers`, claude gets `{"mcpS
 under `--strict-mcp-config` and no `--allowedTools`, agy an empty `mcp_config.json`. A profile
 without a guard is refused by the agy rail: the guard is the only wall between agy and a shell.
 
-Two rules hold the boundary. `headless_agents` never imports `brain_v42` or `scripts`, and its
-dependencies are `pydantic` and `structlog` only -- `tests/unit/headless_agents/
-test_package_boundary.py` scans the AST, dry-imports every runtime module in a fresh `-I`
-interpreter and refuses the six heavy modules, and checks both `pyproject.toml` files. And the
+The upstream package test suite enforces its import boundary and dependency set. And the
 Dream's behaviour did not move: `brain_v42.agents` keeps every public name, signature, CLI
 argument, log line and exit code of lots 1 and 2, builds the profile from the phase allowlists
 and the `MCP_HTTP_DREAM_TOKENS` registry, and hands it down. `tests/unit/agents/
@@ -661,18 +658,18 @@ test_golden_commands.py` still holds the argv, the child environment and the agy
 the fixtures captured from the pre-extraction runners, byte for byte, for every provider and
 every phase; the fixtures were not touched by the split.
 
-The member installs on its own from another project:
+The package is installed as a Git dependency from its own repository:
 
 ```sh
-uv add "headless-agents @ git+https://github.com/hawkixs/brain-v42.git@headless-agents-v0.3.0#subdirectory=packages/headless-agents"
+uv add "headless-agents @ git+https://github.com/hawkixs/red-ha.git@v0.5.4"
 ```
 
-Inside this repository `uv sync` installs it editable next to `brain_v42`; `uv build` at the
-root still builds `brain_v42` alone, so the immutable release builds and installs TWO wheels
-(`uv export --no-emit-workspace` for the third-party requirements, then both wheels with
-`--no-deps`) and `scripts/check_delivery_deployment.py` attests the member under
-`workspace_wheels` exactly like the main wheel -- an installed member the manifest does not
-declare fails the preflight.
+Inside this repository `uv sync` installs the pinned Git dependency alongside `brain_v42`.
+Since the move to red-ha, `headless-agents` is a third-party dependency pinned by commit in
+`uv.lock`, like every other dependency; `scripts/check_delivery_deployment.py` no longer
+attests its files individually. The release builds only the `brain_v42` wheel and sdist.
+Deployment validation still checks any `packages/<dir>` workspace member carried by a release
+archive; brain-v42 carries none.
 
 What the runtime offers beyond what the Dream uses today, for the red-arena pilot (ticket
 e9087e13): `sandbox.sandbox_environment()` (a rebuilt `HOME`/`TMPDIR`/`PATH`/`LANG`/`LC_ALL`

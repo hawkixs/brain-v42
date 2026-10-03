@@ -1,2 +1,0 @@
-timestamp=2026-09-27T10:18:09.414Z level=ERROR run=fixture01 message="stream error" providerID=opencode-go modelID=glm-5.3-flash session.id=ses_fixture_01 small=true agent=title mode=primary error.error="AI_APICallError: Invalid API key."
-timestamp=2026-09-27T10:18:09.645Z level=ERROR run=fixture01 message="stream error" providerID=opencode-go modelID=glm-5.3-flash session.id=ses_fixture_01 small=false agent=build mode=primary error.error="AI_APICallError: Invalid API key."

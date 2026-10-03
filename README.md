@@ -389,13 +389,12 @@ mypy src/
   Pydantic 2, structlog.
 - **TDD is mandatory** — red, green, refactor; tests are never edited to make code pass.
 - **Coverage floor**: 60% (CI blocks below).
-- **Install with `uv sync --extra dev --python 3.12`, not with pip.** `pip install -e ".[dev]"`
-  fails on this layout and always has: `headless-agents` is a uv *workspace member*
-  (`[tool.uv.workspace]` + `[tool.uv.sources]` in `pyproject.toml`), not a published
-  distribution, so pip looks for it on PyPI and stops with `No matching distribution
-  found for headless-agents`. The dev toolchain is pinned exactly in `uv.lock`, so a
+- **Install with `uv sync --extra dev --python 3.12`, not with pip.**
+  `headless-agents` is a Git dependency from `hawkixs/red-ha`, pinned to `v0.5.4`
+  in `pyproject.toml`. Pip does not consume `uv.lock` or uv's Git source declaration,
+  so use uv to resolve and install it. The dev toolchain is pinned in `uv.lock`, so a
   synced environment resolves to the versions CI runs.
-- **Pin `--python 3.12` explicitly.** `requires-python` is `>=3.12`, so a bare
+- **Pin `--python 3.12` explicitly.** `requires-python` is `>=3.12.7`, so a bare
   `uv sync` on a fresh clone picks the newest interpreter it can find — measured
   3.14 — while every CI job, the release job and `[tool.mypy]` target 3.12. Matching
   CI is the whole point of the lock; an unpinned interpreter quietly gives it up.
@@ -452,9 +451,8 @@ migrations, and attaches both to the GitHub release.
   Rollback means selecting a release that supports that head or deploying a forward fix;
   it never means `alembic downgrade`, and never means restoring an older dump over a live
   database.
-- **0.6.0** ships the `headless-agents` workspace member (`packages/headless-agents/`,
-  version `0.1.0`) as a second distribution that `brain_v42` depends on; its own version
-  moves independently of this one.
+- **0.6.0** introduced the `headless-agents` dependency. It is now maintained in
+  `hawkixs/red-ha` and pinned to tag `v0.5.4` in `pyproject.toml`.
 
 ## License
 

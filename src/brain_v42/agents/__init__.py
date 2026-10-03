@@ -5,8 +5,8 @@ afd56820) moved the codex/agy/claude runners, the capability boundary and the
 phase chain from ``scripts/dream/`` into this package. Brain ticket b2a2d1a5
 then split it in two: everything generic -- the providers, the sandbox, the
 child environment, the chain state machine, the envelope parsers -- lives in
-the ``headless_agents`` workspace member (``packages/headless-agents/``),
-installable on its own; what remains here is the Dream POLICY over it. This
+the ``headless-agents`` package (``hawkixs/red-ha``, pinned in
+``pyproject.toml``); what remains here is the Dream POLICY over it. This
 package builds the ``(project, phase)`` capability profile from
 ``brain_v42.mcp.dream_capabilities`` and the registry, keeps the argv contracts
 ``dream.sh`` invokes (``python -m brain_v42.agents.{run_phase_chain,
@@ -19,8 +19,7 @@ thin ``scripts/dream/*_runner.py`` shims) and the extract rescue link
 
 This package must not import anything from the top-level ``scripts/`` tree:
 ``scripts/`` depends on it, never the reverse. ``headless_agents`` must not
-import ``brain_v42``: ``tests/unit/headless_agents/test_package_boundary.py``
-guards it.
+import ``brain_v42``; the package enforces its own boundary tests upstream.
 """
 
 from __future__ import annotations
