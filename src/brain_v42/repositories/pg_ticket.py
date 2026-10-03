@@ -52,10 +52,18 @@ def _measures_active_merge(observed: Any) -> sa.ColumnElement[bool]:
     the old release and deployment rows stay in the append-only ledger. Without this
     scope the view would present the first merge's tag or live release as the
     reopened ticket's own.
+
+    The identity label is only declared: the write side also requires the executor
+    project as issuer (``PgReleaseDerivationRepo``), so the read side does too.
     """
     binding = delivery_artifact_bindings.alias("observed_binding")
+    executor = tickets.alias("observed_ticket")
     return sa.and_(
         observed.c.issuer_identity == OBSERVER_IDENTITY,
+        sa.exists().where(
+            executor.c.id == observed.c.ticket_id,
+            executor.c.to_project == observed.c.issuer_project,
+        ),
         sa.exists().where(
             binding.c.ticket_id == observed.c.ticket_id,
             binding.c.active.is_(True),

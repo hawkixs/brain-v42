@@ -72,7 +72,7 @@ async def test_release_state_reads_only_observer_issued_attestations(session_fac
     ):
         await service.attest(
             ticket.id,
-            actor_project="requester",
+            actor_project="executor",
             caller_identity=identity,
             kind=kind,
             payload=payload,
@@ -97,11 +97,17 @@ async def _planned(session_factory, executor: str, release: str):
 
 
 async def _released(
-    service, ticket_id, tag: str, identity: str = OBSERVER_IDENTITY, *, key: str = ""
+    service,
+    ticket_id,
+    tag: str,
+    identity: str = OBSERVER_IDENTITY,
+    *,
+    key: str = "",
+    actor_project: str = "executor",
 ) -> None:
     await service.attest(
         ticket_id,
-        actor_project="requester",
+        actor_project=actor_project,
         caller_identity=identity,
         kind="released",
         payload={"repository_id": 1, "tag": tag, "tag_sha": L, "integration_sha": L},
@@ -137,7 +143,7 @@ async def test_lot_tag_is_known_only_from_this_projects_observer_rows(session_fa
     executor, other = "executor", "brain-v42"
     planned, planned_svc = await _planned(session_factory, executor, "7.2.0")
     foreign, foreign_svc = await _planned(session_factory, other, "7.2.0")
-    await _released(foreign_svc, foreign.id, "v7.2.0")
+    await _released(foreign_svc, foreign.id, "v7.2.0", actor_project=other)
     await _released(planned_svc, planned.id, "v7.2.0", identity="caller-declaration")
 
     lot = await PgTicketRepo(session_factory).shipped_by_release(executor, "7.2.0")
@@ -153,7 +159,7 @@ async def test_malformed_observer_rows_are_skipped_not_raised(session_factory):
     await _released(service, ticket.id, "latest")
     await service.attest(
         ticket.id,
-        actor_project="requester",
+        actor_project="executor",
         caller_identity=OBSERVER_IDENTITY,
         kind="deployed",
         payload={"repository_id": 1, "package_version": "0.6.3", "integration_sha": L},
@@ -171,7 +177,7 @@ async def test_rows_of_a_merge_the_ticket_no_longer_stands_on_are_not_shown(sess
     await _released(service, ticket.id, "v7.3.0")
     await service.attest(
         ticket.id,
-        actor_project="requester",
+        actor_project="executor",
         caller_identity=OBSERVER_IDENTITY,
         kind="deployed",
         payload={
@@ -200,3 +206,29 @@ async def test_rows_of_a_merge_the_ticket_no_longer_stands_on_are_not_shown(sess
             .values(active=False)
         )
     assert await repo.release_state(ticket.id) == ((), ())
+
+
+async def test_observer_rows_issued_by_the_requester_project_are_not_shown(session_factory):
+    ticket, _binding, service = await _workflow(session_factory)
+    await _merged_at(session_factory, ticket.id)
+    await _released(service, ticket.id, "v0.6.8", actor_project="requester")
+    await _released(service, ticket.id, "v0.6.9", actor_project="executor")
+    for project, key in (("requester", "deployed-requester"), ("executor", "deployed-executor")):
+        await service.attest(
+            ticket.id,
+            actor_project=project,
+            caller_identity=OBSERVER_IDENTITY,
+            kind="deployed",
+            payload={
+                "repository_id": 1,
+                "live_release_sha": L if project == "executor" else STALE,
+                "package_version": "0.6.9",
+                "integration_sha": L,
+            },
+            idempotency_key=f"{key}-{ticket.id}",
+            emitted_at=NOW,
+            contract_revision=1,
+        )
+
+    # The observer writes as the executor project; the label alone proves nothing.
+    assert await PgTicketRepo(session_factory).release_state(ticket.id) == (("v0.6.9",), (L,))
