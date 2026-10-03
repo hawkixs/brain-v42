@@ -234,7 +234,7 @@ class PgFocusSlotRepo(BasePgRepository):
         prev = (
             (
                 await session.execute(
-                    sa.select(s.c.id, s.c.ended_at, s.c.summary)
+                    sa.select(s.c.id.label("session_id"), s.c.ended_at, s.c.summary)
                     .where(s.c.slot_id == slot_id, s.c.status == "ended", s.c.id != session_id)
                     .order_by(s.c.ended_at.desc())
                     .limit(1)
@@ -254,7 +254,7 @@ class PgFocusSlotRepo(BasePgRepository):
                         brain_session_artifacts.c.knowledge_id == decisions.c.id,
                     )
                 )
-                .where(brain_session_artifacts.c.session_id == prev["id"])
+                .where(brain_session_artifacts.c.session_id == prev["session_id"])
                 .order_by(decisions.c.created_at, decisions.c.id)
             )
         ).all()
@@ -262,7 +262,7 @@ class PgFocusSlotRepo(BasePgRepository):
             (
                 await session.execute(
                     sa.select(brain_session_checkpoints)
-                    .where(brain_session_checkpoints.c.session_id == prev["id"])
+                    .where(brain_session_checkpoints.c.session_id == prev["session_id"])
                     .order_by(brain_session_checkpoints.c.seq.desc())
                     .limit(1)
                 )
@@ -270,14 +270,17 @@ class PgFocusSlotRepo(BasePgRepository):
             .mappings()
             .one_or_none()
         )
-        return PreviousSlotSession(
-            session_id=prev["id"],
-            ended_at=prev["ended_at"],
-            summary=str(prev["summary"]),
-            decisions=[(row[0], str(row[1])) for row in decided],
-            last_checkpoint=(
-                BrainSessionCheckpoint.model_validate(dict(checkpoint)) if checkpoint else None
-            ),
+        # Built from the row mapping, like every other session reader: this READS the summary an
+        # explicit `end` or `relay` stored and never produces one (the summary census in
+        # `test_end_gate_is_judgement_only` surveys the `summary=` keyword, i.e. writers).
+        return PreviousSlotSession.model_validate(
+            {
+                **prev,
+                "decisions": [(row[0], str(row[1])) for row in decided],
+                "last_checkpoint": (
+                    BrainSessionCheckpoint.model_validate(dict(checkpoint)) if checkpoint else None
+                ),
+            }
         )
 
     async def _to_distill(
