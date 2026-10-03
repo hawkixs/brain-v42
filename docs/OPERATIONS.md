@@ -47,9 +47,11 @@ attributions: their provenance stays exclusive, and an exact retry of `capture` 
 idempotent even after abandonment.
 
 `brain_session_end` no longer accepts capture identifiers directly: it reads this
-ledger and stays fail-closed. The session must have either at least one captured
-artifact or a non-empty `nothing_to_capture_reason`, never both. An identity, capture,
-or provenance error leaves the session open.
+ledger. Since migration 047 a closure no longer needs a non-empty ledger or a
+`nothing_to_capture_reason` to the exclusion of the other: the ledger may be empty or
+filled, by explicit or derived capture, with or without a reason, and a reason, once
+given, must not be blank. An identity, capture, or provenance error still leaves the
+session open.
 
 Closing then attempts a compare-and-swap of the focus with
 `expected_focus_revision`. If the revision matches, the focus updates and the
@@ -112,29 +114,44 @@ operator session. An agent trace never carries a `summary`, a `next_focus` or a 
 outcome, and `connection_id` is never set on an operator row.
 
 **Derived capture** (`src/brain_v42/db/session_derived_capture.py`, flag
-`BRAIN_SESSION_DERIVED_CAPTURE_ENABLED`, migrations 047 and 048). An artifact
-created on a connection is deposited in that connection's trace at creation time.
-The operator session absorbs the trace's ledger on its next explicit command: first
-from its own connection, then, when that transport is gone, from another trace of
-the project, but only if the operator session was the only non-agent session
-covering the artifact's creation instant. Under ambiguity the artifact stays with the
-trace. The server never promotes a trace into an operator session. Migration 047
-removed the "non-empty ledger XOR `nothing_to_capture_reason`" constraint on
-`ended`, because a ledger can now be filled without an explicit capture, and
-migration 048 records in `attribution_mode` which key attributed each artifact
+`BRAIN_SESSION_DERIVED_CAPTURE_ENABLED`, migrations 047 and 048). An artifact created on
+a connection is deposited in that connection's trace at creation time. An operator
+session absorbs what traces hold on `resume`, `capture`, `heartbeat` and `end`, in two
+stages, and only artifacts of the same project created at or after the session started,
+which is what an explicit capture would accept. Absorption is attempted only on a call
+that carries a connection identifier, so never under stdio or in stateless HTTP mode.
+The connection stage takes the artifacts held by the open trace of the current
+connection, when there is one. The window stage then runs whenever ledger capacity
+remains (100 artifacts per session, minus those already attributed), whether or not the
+current connection still has a trace. Its donors are the project's `open` or
+`closed_inactive` traces opened by a human actor, never an abandoned trace and never one
+opened by a system actor such as the Dream. It takes an artifact only if no other
+session of the project that is not an agent trace covered the instant of its creation,
+whether that session is still open or has finished since; under that ambiguity the
+artifact stays with the trace. The server never promotes a trace into an operator
+session. Migration 047 removed the "non-empty ledger XOR `nothing_to_capture_reason`"
+constraint on `ended`, because a ledger can now be filled without an explicit capture,
+and migration 048 records in `attribution_mode` which key attributed each artifact
 (`explicit`, `derived_deposit`, `derived_connection` or `derived_window`).
 
 **Inactivity sweep** (`src/brain_v42/maintenance/session_sweep.py`, flag
-`BRAIN_SESSION_INACTIVE_SWEEP_ENABLED`). The same Dream `sweep` phase carries a second, narrower rule: it moves an open `agent` trace whose `last_observed_at` is more than four hours old to `closed_inactive`, a terminal state that a CHECK reserves to sessions with `nature = 'agent'` and `next_focus IS NULL`.
+`BRAIN_SESSION_INACTIVE_SWEEP_ENABLED`). The same Dream `sweep` phase carries a second, narrower rule: its predicate selects only open `nature = 'agent'` traces whose `last_observed_at` is more than four hours old and moves them to `closed_inactive`.
+The CHECK on `brain_sessions` fixes the terminal fields of `closed_inactive` (`next_focus IS NULL`, no summary, no abandonment reason) and refuses it for `nature = 'operator'`, but it accepts it for `nature IS NULL`, so only the sweep's predicate keeps an operator row out of that state.
+Migration 046 presents that guarantee as a database constraint; for `nature IS NULL`
+rows it is not one, and the gap is tracked as an open defect (ticket `16314b31`,
+"brain_sessions CHECK accepts closed_inactive with nature IS NULL").
 Four hours is an eligibility threshold evaluated once a night, not a closing delay:
 a trace that goes idle just after a pass waits for the next one, about 28 hours in
 the worst case. Both rules run in one statement, and the seven-day rule wins when
 both match, so a trace silent for more than seven days is abandoned with
 `auto_stale_7d` rather than marked inactive. A trace never observed
-(`last_observed_at IS NULL`) is never eligible, and an operator row is out of reach,
-whether its `nature` is `NULL` or `operator`. Unlike an abandonment, `closed_inactive` keeps the
-trace's capture ledger, which stays absorbable by derived capture, and carries no
-`abandonment_reason`. The phase touches neither `project_contexts` nor the focus.
+(`last_observed_at IS NULL`) is never eligible, and an operator row is out of reach of
+the predicate, whether its `nature` is `NULL` or `operator`. Both outcomes leave the
+trace's capture ledger in place and the phase touches neither `project_contexts` nor
+the focus. What differs is donor eligibility for derived capture: an abandoned trace
+is no longer a donor, while a `closed_inactive` one stays absorbable, so artifacts
+left in it can still reach an operator session. `closed_inactive` carries no
+`abandonment_reason`.
 Each run writes its count to `dream_runs.closed_inactive_count` (migration 049),
 apart from abandonments. The four-hour rule writes only when the phase itself runs
 wet (`BRAIN_DREAM_SWEEP_ENABLED=true` and `BRAIN_DREAM_SWEEP_DRY_RUN=false`).
@@ -149,10 +166,24 @@ These commands print flag names and values only. Never dump the full environment
 which carries `MCP_HTTP_TOKEN`.
 
 ```bash
+# MCP server (auto-open, derived capture): the live process environment
 pid=$(systemctl --user show brain-mcp-http.service -p MainPID --value)
 tr '\0' '\n' < "/proc/$pid/environ" | grep -E '^BRAIN_SESSION_[A-Z_]*='
+
+# Dream unit, what the unit declares: Environment= lines, drop-ins included
 systemctl --user show brain-v42-dream.service -p Environment --value | tr ' ' '\n' | grep -E '^BRAIN_(SESSION|DREAM_SWEEP)_[A-Z_]*='
+
+# Dream unit, what the process sees: only while a night is running
+pid=$(systemctl --user show brain-v42-dream.service -p MainPID --value)
+[ "$pid" != 0 ] && tr '\0' '\n' < "/proc/$pid/environ" | grep -E '^BRAIN_(SESSION|DREAM_SWEEP)_[A-Z_]*='
 ```
+
+`systemctl show -p Environment` lists the `Environment=` lines only. A value set
+through `EnvironmentFile=` does not appear there (`-p EnvironmentFiles` lists the
+files by path, not their content), so that command shows what the unit declares, not
+what the process receives. The process environment is the measurement, and the Dream
+unit has a process only while a night runs. Do not open the private environment files
+to settle the question.
 
 pydantic-settings also reads `.env` from the working directory, below the process
 environment. If a flag is absent from the environment, check that file by key name
@@ -164,10 +195,11 @@ For context: on 2026-09-06 brain learning `823c686d` measured all three flags ar
 in the live server, while the code comments and the project prose still described
 them as shipped dormant. ADR #29 (`12f17bd2`) made reading the live process
 environment the method for any flag state, and confirmed the covenant of ADR #24
-(`f24ba872`): the server never writes a `summary`, never chooses a `next_focus` and
-never closes an operator session. Ticket `09d2b56e` reported the trace volume when
-it was filed (about 1,400 traces a day). These are dated observations, not the
-current state.
+(`f24ba872`): the server never writes a `summary`, never chooses a `next_focus`, and
+closes an operator session only through the seven-day rule that opens this section.
+Ticket `09d2b56e` measured the trace volume on 2026-09-22, over the six days before
+it: about 1,400 agent traces opened per day, almost none closed. These are dated
+observations, not the current state.
 
 ## Network trust boundary (detailed)
 

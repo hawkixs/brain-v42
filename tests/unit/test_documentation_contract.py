@@ -2455,15 +2455,24 @@ _TWO_NATURES_SCOPE = (
     "The explicit-command rule governs the operator nature; the agent nature is a "
     "server-owned trace that grants no right to an agent, a hook or a client."
 )
-# The second rule of the Dream `sweep` phase, bounded by the same CHECK as the
-# code: `closed_inactive` exists only for `nature = 'agent'` and never carries a
-# `next_focus`. It is the only other server-side closure, so it is sanctioned
-# here by name rather than left for the anti-widening scan to reject.
+# The second rule of the Dream `sweep` phase. What bounds it to `agent` traces is
+# the sweep's own predicate (`session_sweep.py`), NOT the database: the CHECK of
+# migration 046 reads `nature = 'agent'` inside an OR branch, which is NULL, not
+# false, for a row whose `nature IS NULL`, and a CHECK accepts NULL. An earlier
+# wording said the CHECK "reserves" `closed_inactive` to agent rows, which is
+# false for exactly the rows explicit sessions are stored as. It is the only
+# other server-side closure, so it is sanctioned here by name rather than left
+# for the anti-widening scan to reject.
 _INACTIVITY_SWEEP_RULE = (
-    "The same Dream `sweep` phase carries a second, narrower rule: it moves an open `agent` "
-    "trace whose `last_observed_at` is more than four hours old to `closed_inactive`, a "
-    "terminal state that a CHECK reserves to sessions with `nature = 'agent'` and "
-    "`next_focus IS NULL`."
+    "The same Dream `sweep` phase carries a second, narrower rule: its predicate selects only "
+    "open `nature = 'agent'` traces whose `last_observed_at` is more than four hours old and "
+    "moves them to `closed_inactive`."
+)
+_CLOSED_INACTIVE_CHECK_SCOPE = (
+    "The CHECK on `brain_sessions` fixes the terminal fields of `closed_inactive` "
+    "(`next_focus IS NULL`, no summary, no abandonment reason) and refuses it for "
+    "`nature = 'operator'`, but it accepts it for `nature IS NULL`, so only the sweep's "
+    "predicate keeps an operator row out of that state."
 )
 
 # Each statement is anchored to the section that governs its reader, not the file.
@@ -2512,6 +2521,7 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("thresholds-24h-vs-7d", _ENGLISH_THRESHOLD_DISAMBIGUATION),
             ("two-natures", _TWO_NATURES_SCOPE),
             ("inactivity-sweep", _INACTIVITY_SWEEP_RULE),
+            ("closed-inactive-check-scope", _CLOSED_INACTIVE_CHECK_SCOPE),
         ),
     ),
     (
