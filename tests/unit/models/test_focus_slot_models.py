@@ -76,7 +76,8 @@ def test_anchor_refs_are_stable_and_human_readable() -> None:
     assert SlotAnchor(kind="pr", repository_id=12, pr_number=3).ref == "pr:12#3"
 
 
-def test_bind_and_relay_results_add_no_field_to_brain_session() -> None:
+# S12 guard: output-schema margin baseline is in the brain_session lifecycle schema test, not here.
+def test_bind_and_relay_result_models_pin_their_field_sets() -> None:
     assert set(BrainSessionBindResult.model_fields) == {
         "session_id",
         "slot_id",
