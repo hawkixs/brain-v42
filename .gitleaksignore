@@ -1,0 +1,18 @@
+# gitleaks fingerprints of HISTORICAL findings, triaged one by one (2026-10-03).
+#
+# The CI job scans the working tree; `rail check build` scans every commit of
+# every ref. These six findings exist only in history. Each value was read and is
+# a test fixture, never a credential: a test-prefixed fake API key, an ascending
+# fixture hex token, a trace-id canary, and a placeholder key in an old plan
+# (three commits) that now lives in the private internal/ clone. The files at HEAD
+# no longer carry them. Nothing to rotate, and history is not rewritten.
+#
+# No value is quoted here on purpose: a quoted value would be a new finding.
+# An entry matches one commit, one file, one rule, one line: a new finding
+# anywhere, including the same file at a later commit, still fails the scan.
+c4be8635e3e150f30ac152c840299c2e20901449:docs/superpowers/plans/2026-07-03-domain-backfill-v1.md:generic-api-key:124
+3c0877187748711ede75db6918ea25e76451f672:docs/superpowers/plans/2026-07-03-domain-backfill-v1.md:generic-api-key:124
+f4b83c76368288356ab817d64d6782a3e3069738:docs/superpowers/plans/2026-07-03-domain-backfill-v1.md:generic-api-key:124
+7e1646e92cc1bafd361ba1e30cb55a5341f7a076:tests/unit/test_metrics_receiver_access_log.py:generic-api-key:219
+a9cfbfff92ab98cfd88fa168d3e6a26717292dc0:tests/unit/services/test_embedding_bearer_from_file.py:generic-api-key:30
+6cd5d2eac1c004d5f7f08c9f75ccc8c1009c981a:tests/unit/headless_agents/test_provider_openai_compat.py:generic-api-key:32
