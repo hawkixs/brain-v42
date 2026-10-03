@@ -21,6 +21,7 @@ from brain_v42.models.ticket import (
     TERMINAL_STATUSES,
     TRANSITIONS,
     ExtractionStatus,
+    ReleaseState,
     Ticket,
     TicketAction,
     TicketCreate,
@@ -285,9 +286,16 @@ class TicketService:
         """Resolve a git-style short id prefix to matching ticket ids."""
         return await self._repo.resolve_id_prefix(prefix_hex)
 
-    async def list_grouped(self, project_key: str) -> TicketGroups:
+    async def release_state(self, ticket_id: UUID) -> ReleaseState | None:
+        """Return no observer measurement until release observation is available."""
+        return None
+
+    async def list_grouped(
+        self, project_key: str, target_release: str | None = None
+    ) -> TicketGroups:
         key = canonicalize_project_key(project_key, strict=False)
-        return await self._repo.list_grouped(key)
+        release = None if target_release is None else parse_target_release(target_release)
+        return await self._repo.list_grouped(key, target_release=release)
 
     async def _get_or_raise(self, ticket_id: UUID) -> Ticket:
         ticket = await self._repo.get_by_id(ticket_id)

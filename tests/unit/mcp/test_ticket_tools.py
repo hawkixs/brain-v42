@@ -69,6 +69,54 @@ class TestRegistration:
             assert await mcp.get_tool(name) is not None
 
 
+class TestListByRelease:
+    async def test_filter_is_passed_and_every_continuation_keeps_it(self):
+        svc = MagicMock()
+        svc.list_grouped = AsyncMock(
+            return_value=TicketGroups(
+                a_traiter=[_ticket() for _ in range(12)], a_confirmer=[], en_attente=[]
+            )
+        )
+        tool = await _tool(_mcp_with(svc), "brain_ticket_list")
+        result = await tool.fn(project_key=TO, target_release="0.6.3")
+        svc.list_grouped.assert_awaited_once_with(TO, target_release="0.6.3")
+        assert "target_release='0.6.3'" in result
+
+    async def test_tag_shaped_filter_is_an_error(self):
+        tool = await _tool(_mcp_with(MagicMock()), "brain_ticket_list")
+        result = await tool.fn(project_key=TO, target_release="v0.6.3")
+        assert "without the v" in result
+
+    async def test_no_filter_keeps_the_old_call(self):
+        svc = MagicMock()
+        svc.list_grouped = AsyncMock(
+            return_value=TicketGroups(a_traiter=[], a_confirmer=[], en_attente=[])
+        )
+        tool = await _tool(_mcp_with(svc), "brain_ticket_list")
+        await tool.fn(project_key=TO)
+        svc.list_grouped.assert_awaited_once_with(TO, target_release=None)
+
+
+class TestThreadReleaseLine:
+    async def test_planned_ticket_shows_release_line_before_the_body(self):
+        svc = MagicMock()
+        svc.get_with_thread = AsyncMock(return_value=(_ticket(target_release="0.6.3"), []))
+        svc.resolve_id_prefix = AsyncMock(return_value=None)
+        svc.release_state = AsyncMock(return_value=None)
+        tool = await _tool(_mcp_with(svc), "brain_ticket_get")
+        result = await tool.fn(ticket_id=str(uuid4()))
+        header = result.split("\n\n", 1)[0]
+        assert "release: planned 0.6.3" in header
+
+    async def test_unplanned_ticket_has_no_release_line(self):
+        svc = MagicMock()
+        svc.get_with_thread = AsyncMock(return_value=(_ticket(), []))
+        svc.resolve_id_prefix = AsyncMock(return_value=None)
+        svc.release_state = AsyncMock(return_value=None)
+        tool = await _tool(_mcp_with(svc), "brain_ticket_get")
+        assert "release:" not in await tool.fn(ticket_id=str(uuid4()))
+
+
 class TestCreate:
     async def test_description_documents_note_to_self_tickets(self):
         tool = await _tool(_mcp_with(MagicMock()), "brain_ticket_create")
@@ -369,6 +417,7 @@ class TestListAndGet:
                 ],
             )
         )
+        svc.release_state = AsyncMock(return_value=None)
         tool = await _tool(_mcp_with(svc), "brain_ticket_get")
         result = await tool.fn(ticket_id=str(t.id))
         assert "je regarde" in result
@@ -387,6 +436,7 @@ class TestListAndGet:
         t = _ticket(from_project="brain-v42", to_project="brain-v42")
         svc = MagicMock()
         svc.get_with_thread = AsyncMock(return_value=(t, []))
+        svc.release_state = AsyncMock(return_value=None)
         tool = await _tool(_mcp_with(svc), "brain_ticket_get")
         result = await tool.fn(ticket_id=str(t.id))
         assert "resolve_pending" in result
@@ -398,6 +448,7 @@ class TestIdPrefixResolution:
         svc = MagicMock()
         svc.resolve_id_prefix = AsyncMock(return_value=[t.id])
         svc.get_with_thread = AsyncMock(return_value=(t, []))
+        svc.release_state = AsyncMock(return_value=None)
         tool = await _tool(_mcp_with(svc), "brain_ticket_get")
 
         result = await tool.fn(ticket_id=t.id.hex[:8])

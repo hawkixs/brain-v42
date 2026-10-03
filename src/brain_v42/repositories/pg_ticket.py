@@ -304,18 +304,19 @@ class PgTicketRepo(BasePgRepository):
                 )
                 return Ticket.model_validate(dict(row))
 
-    async def list_grouped(self, project_key: str) -> TicketGroups:
+    async def list_grouped(
+        self, project_key: str, target_release: str | None = None
+    ) -> TicketGroups:
         async with self.get_session() as session:
 
             def _q(col: sa.Column, statuses: tuple[str, ...]) -> sa.Select:
-                return (
-                    sa.select(tickets)
-                    .where(col == project_key, tickets.c.status.in_(statuses))
-                    .order_by(
-                        tickets.c.updated_at.desc(),
-                        tickets.c.created_at.desc(),
-                        tickets.c.id.asc(),
-                    )
+                stmt = sa.select(tickets).where(col == project_key, tickets.c.status.in_(statuses))
+                if target_release is not None:
+                    stmt = stmt.where(tickets.c.target_release == target_release)
+                return stmt.order_by(
+                    tickets.c.updated_at.desc(),
+                    tickets.c.created_at.desc(),
+                    tickets.c.id.asc(),
                 )
 
             a_traiter = (

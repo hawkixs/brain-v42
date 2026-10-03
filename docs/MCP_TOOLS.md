@@ -1214,7 +1214,7 @@ Write a `BELONGS_TO_DOMAIN` edge from an entity to a Domain node. Called by the 
 | `brain_ticket_reply` | `(ticket_id, author_project, body)` | Posts a message to the thread — any status, participants only. |
 | `brain_ticket_transition` | `(ticket_id, author_project, action, message=None)` | Changes the status via the state machine. Optional `message` is appended to the thread. |
 | `brain_ticket_plan` | `(ticket_id, author_project, target_release?)` | Plans the target release (version without the tag's `v`) as executor; null unplans. Every change is recorded in the thread. |
-| `brain_ticket_list` | `(project_key)` | Lists tickets grouped by required action: to handle / to confirm / waiting. |
+| `brain_ticket_list` | `(project_key, limit?, offset?, target_release?)` | Lists tickets grouped by required action: to handle / to confirm / waiting; optionally filters by planned release version X.Y.Z. |
 | `brain_ticket_get` | `(ticket_id)` | Full view: header, body, message thread, possible actions. |
 
 `from_project == to_project` is valid: the project then assumes both the requester and

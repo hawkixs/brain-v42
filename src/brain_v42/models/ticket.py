@@ -38,6 +38,13 @@ class TicketStatus(StrEnum):
     ACKED = "acked"
 
 
+class ReleaseState(BaseModel, frozen=True):
+    """Placeholder for observer measurements rendered beside the release plan."""
+
+    def rendered_parts(self) -> list[str]:
+        return []
+
+
 class TicketAction(StrEnum):
     START = "start"
     RESOLVE = "resolve"
