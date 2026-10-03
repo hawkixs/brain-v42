@@ -38,11 +38,16 @@ DECLARED_SUMMARY_WRITERS = frozenset(
             "src/brain_v42/mcp/tools/session_lifecycle_tools.py"
             "::register_session_lifecycle_tools.brain_session_end"
         ),
+        # `brain_session_relay` is a second explicit door that relays the operator's own
+        # text and manufactures none.
+        (
+            "src/brain_v42/mcp/tools/session_lifecycle_tools.py"
+            "::register_session_lifecycle_tools.brain_session_relay"
+        ),
         # And the only site that persists it, at the end of that same command.
         "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo._mark_ended",
-        # `brain_session_relay` is a second explicit door onto the same persistence:
-        # it hands the operator's own text to `_replay_relay` and `_mark_ended`,
-        # and manufactures none.
+        # The repository relay method that persists the operator's text passed through
+        # the tool above.
         "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo.relay",
     }
 )

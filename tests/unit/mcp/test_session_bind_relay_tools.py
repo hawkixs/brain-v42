@@ -44,6 +44,7 @@ async def test_relay_forwards_then_adds_the_successor_briefing() -> None:
     service.relay = AsyncMock(return_value=result)
     tool = await server.get_tool("brain_session_relay")
     session_id = uuid4()
+    knowledge_id = uuid4()
     outcome = await tool.fn(
         session_id=session_id,
         expected_client_key="old",
@@ -52,6 +53,8 @@ async def test_relay_forwards_then_adds_the_successor_briefing() -> None:
         expected_slot_revision=2,
         new_client_key="new",
         initiator="guard_mod",
+        knowledge_ids=[knowledge_id],
+        nothing_to_capture_reason="no findings to retain",
     )
     service.relay.assert_awaited_once_with(
         session_id=session_id,
@@ -61,8 +64,8 @@ async def test_relay_forwards_then_adds_the_successor_briefing() -> None:
         expected_slot_revision=2,
         new_client_key="new",
         initiator="guard_mod",
-        knowledge_ids=None,
-        nothing_to_capture_reason=None,
+        knowledge_ids=[knowledge_id],
+        nothing_to_capture_reason="no findings to retain",
     )
     loader.assert_awaited_once_with("brain-v42", result.session.id)
     result.model_copy.assert_called_once_with(update={"briefing": "## briefing"})
