@@ -132,6 +132,13 @@ async def test_migration_058_downgrade_refuses_extracted_rows(
     """
     migration_downgrade_fence(downgraded_to="057")
     populated_url, clean_url = migration_058_databases
+    probe = create_async_engine(populated_url, poolclass=NullPool)
+    try:
+        async with probe.connect() as conn:
+            original_head = await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+    finally:
+        await probe.dispose()
+
     engine = create_async_engine(populated_url, poolclass=NullPool)
     try:
         async with engine.begin() as conn:
@@ -145,7 +152,10 @@ async def test_migration_058_downgrade_refuses_extracted_rows(
     probe = create_async_engine(populated_url, poolclass=NullPool)
     try:
         async with probe.connect() as conn:
-            assert await conn.scalar(sa.text("SELECT version_num FROM alembic_version")) == "058"
+            assert (
+                await conn.scalar(sa.text("SELECT version_num FROM alembic_version"))
+                == original_head
+            )
     finally:
         await probe.dispose()
 

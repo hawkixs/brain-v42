@@ -30,6 +30,7 @@ import pytest
 import pytest_asyncio
 
 from tests.integration.db.test_recovery_contract_v15 import (
+    _alembic_upgrade_to,
     _assert_no_unexplained,
     _database_url_or_skip,
     _kinds,
@@ -37,7 +38,6 @@ from tests.integration.db.test_recovery_contract_v15 import (
     restored_head_db_url,  # noqa: F401 — module fixture reused as is
 )
 from tests.integration.disposable_db import (
-    alembic_upgrade_head,
     asyncpg_dsn,
     drop_database,
     replay_attestation,
@@ -56,6 +56,7 @@ V16_PGRESTORE = RECOVERY / "brain-v42-v16-pgrestore.sql"
 PROJECT = "dr-v16-project"
 OTHER_PROJECT = "dr-v16-other"
 RUNTIME_CHECK = "brain_runtime_032_036_037"
+CONTRACT_HEAD = "058"  # v16 checks the same schema contract as v15, independent of repository head.
 
 
 @pytest.mark.asyncio
@@ -90,7 +91,7 @@ def locale_head_db_url() -> Iterator[str]:
         pytest.skip(f"en_US.utf8 is not available on this server: {exc}")
     url = swap_database(admin_url, name)
     try:
-        alembic_upgrade_head(url)
+        _alembic_upgrade_to(url, CONTRACT_HEAD)
         yield url
     finally:
         drop_database(admin_url, name)

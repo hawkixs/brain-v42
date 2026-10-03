@@ -236,13 +236,22 @@ if TYPE_CHECKING:
 # writes. Measured the same way: 058 contains zero references to
 # `indexed_plans`, `indexed_plan_chunks` or `project_contexts` (`grep -c` → 0).
 #
+# Bumped to 059 after reviewing the complete migration, inert by TABLE: 059 adds
+# `tickets.target_release` (nullable, no default, no backfill), one CHECK and
+# one partial index on `tickets`, which is not one of the three tables this
+# repair reads or writes (`indexed_plans`, `indexed_plan_chunks`,
+# `project_contexts`).
+#
+# Measured the same way as the entries above: 059 contains zero references to
+# `indexed_plans`, `indexed_plan_chunks` or `project_contexts` (`grep -c` → 0).
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "058"
+_REQUIRED_ALEMBIC_HEAD = "059"
 
 
 class RepairStore:

@@ -66,6 +66,7 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     # like every other file in this list.
     "tests/integration/db/test_migration_057_search_log_embedding_model.py",
     "tests/integration/db/test_migration_058_claim_provenance.py",
+    "tests/integration/db/test_migration_059_ticket_target_release.py",
 )
 
 # Tables probed for leftover rows, in the order the message lists them.

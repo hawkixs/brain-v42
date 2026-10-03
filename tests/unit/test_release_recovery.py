@@ -26,7 +26,7 @@ import pytest
 
 from brain_v42 import release_recovery as rr
 
-SCHEMA_HEAD = "058"
+SCHEMA_HEAD = "059"
 RELEASE_SHA = "b" * 40
 #: `switch_live` validates its `sha` argument as a lowercase 40-character hex
 #: string (task c below) — the release *directory name* it names, not
@@ -253,7 +253,7 @@ def test_publish_recovery_binding_refuses_a_binding_larger_than_the_byte_limit(
 
 
 def test_publish_recovery_binding_refuses_a_stale_schema_head(tmp_path: Path) -> None:
-    release_dir = _build_release(tmp_path, schema_head=SCHEMA_HEAD, declared_schema_head="057")
+    release_dir = _build_release(tmp_path, schema_head=SCHEMA_HEAD, declared_schema_head="058")
 
     with pytest.raises(rr.RecoveryBindingError, match="schema_head"):
         rr.publish_recovery_binding(release_dir)
