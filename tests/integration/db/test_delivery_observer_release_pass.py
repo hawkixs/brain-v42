@@ -9,9 +9,11 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from brain_v42.db.tables import delivery_artifact_bindings, delivery_workflows
 from brain_v42.facts.model import ReleaseIdentity
+from brain_v42.repositories.delivery_ticket_guard import DeliveryTransitionMutation
 from brain_v42.repositories.pg_delivery_attestations import PgDeliveryAttestationsRepo
 from brain_v42.repositories.pg_release_derivation import OBSERVER_IDENTITY, PgReleaseDerivationRepo
-from tests.integration.db.delivery_observer_cases import RID, ROOT, M, ObserverCase
+from brain_v42.repositories.pg_ticket import PgTicketRepo
+from tests.integration.db.delivery_observer_cases import M2, RID, ROOT, M, ObserverCase
 from tests.integration.db.delivery_observer_cases import (
     observer_queue_isolation as observer_queue_isolation,
 )
@@ -25,6 +27,7 @@ pytestmark = [
 
 T1, T2, T3 = "1" * 40, "2" * 40, "3" * 40
 L = "a" * 40
+L2 = "e" * 40
 
 
 async def test_earliest_containing_tag_is_recorded_once_and_restart_is_idle(
@@ -332,3 +335,115 @@ async def test_two_active_contract_revisions_only_measure_the_current_binding(
     rows = await case.attestations(ticket.id, kind=kind)
     assert [row["contract_revision"] for row in rows] == [2]
     assert capsys.readouterr().err == ""
+
+
+async def _reopen_with_new_merge(case, session_factory, ticket, sha: str) -> None:
+    """Replay the guard's reopen, then bind the new attempt to a PR merged at ``sha``."""
+    async with session_factory.begin() as session:
+        await DeliveryTransitionMutation("active", reopen=True).apply(session, ticket.id)
+        version = await session.scalar(
+            sa.select(delivery_workflows.c.row_version).where(
+                delivery_workflows.c.ticket_id == ticket.id
+            )
+        )
+    binding = await case.service.bind_pr(
+        ticket.id,
+        actor_project="brain-v42",
+        deliverable_key="implementation",
+        repository_id=RID,
+        pr_number=43,
+        expected_revision=1,
+        expected_workflow_version=version,
+        idempotency_key=f"observer-rebind-{ticket.id}",
+    )
+    async with session_factory.begin() as session:
+        await session.execute(
+            delivery_artifact_bindings.update()
+            .where(delivery_artifact_bindings.c.id == binding.id)
+            .values(integration_sha=sha, due_at=None)
+        )
+
+
+async def test_reopen_hides_the_old_release_and_derives_the_new_merge_for_a_later_tag(
+    engine: AsyncEngine, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    case = ObserverCase(engine, session_factory)
+    ticket, _, _ = await case.create()
+    case.tag_dates[M2] = "2026-10-06T10:00:00Z"
+    case.tags = [("v0.6.3", T2, "2026-10-04T10:00:00Z", True)]
+    view = PgTicketRepo(session_factory)
+    async with case.runtime() as runtime:
+        assert await runtime.owner.acquire()
+        await runtime.run_once()
+        assert await view.release_state(ticket.id) == (("v0.6.3",), ())
+        await _reopen_with_new_merge(case, session_factory, ticket, M2)
+        # The old tag row measured M, not the merge the reopened ticket now stands on.
+        assert await view.release_state(ticket.id) == ((), ())
+        await runtime.run_once()
+        assert await view.release_state(ticket.id) == ((), ())
+        case.tags.append(("v0.6.4", T3, "2026-10-09T10:00:00Z", True))
+        await runtime.run_once()
+    rows = await case.attestations(ticket.id, kind="released")
+    assert [(r["payload"]["tag"], r["payload"]["integration_sha"]) for r in rows] == [
+        ("v0.6.3", M),
+        ("v0.6.4", M2),
+    ]
+    assert await view.release_state(ticket.id) == (("v0.6.4",), ())
+
+
+async def test_reopen_does_not_inherit_the_deployment_of_the_old_merge(
+    engine: AsyncEngine, session_factory: async_sessionmaker[AsyncSession]
+) -> None:
+    case = ObserverCase(engine, session_factory)
+    ticket, _, _ = await case.create()
+    case.contained[L] = True
+    case.contained_pairs[(L, M2)] = False
+    case.contained[L2] = True
+    view = PgTicketRepo(session_factory)
+    async with case.runtime(release_identity=lambda: ReleaseIdentity(L, "0.6.3")) as runtime:
+        assert await runtime.owner.acquire()
+        await runtime.run_once()
+        assert await view.release_state(ticket.id) == ((), (L,))
+        await _reopen_with_new_merge(case, session_factory, ticket, M2)
+        assert await view.release_state(ticket.id) == ((), ())
+        await runtime.run_once()
+        assert await view.release_state(ticket.id) == ((), ())
+    assert f"{ROOT}/compare/{L}...{M2}" in [path for _, path in case.requests]
+    async with case.runtime(release_identity=lambda: ReleaseIdentity(L2, "0.6.4")) as runtime:
+        await runtime.run_once()
+    rows = await case.attestations(ticket.id, kind="deployed")
+    assert [(r["payload"]["live_release_sha"], r["payload"]["integration_sha"]) for r in rows] == [
+        (L, M),
+        (L2, M2),
+    ]
+    assert await view.release_state(ticket.id) == ((), (L2,))
+
+
+@pytest.mark.parametrize("kind", ["released", "deployed"])
+async def test_reopen_into_the_same_tag_or_live_release_reuses_the_key_and_claims_nothing(
+    engine, session_factory, kind, capsys
+):
+    case = ObserverCase(engine, session_factory)
+    ticket, _, _ = await case.create()
+    case.tag_dates[M2] = "2026-10-03T00:00:00Z"
+    case.tags = [("v0.6.3", T2, "2026-10-04T10:00:00Z", True)] if kind == "released" else []
+    case.contained[L] = True
+    identity = ReleaseIdentity(L, "0.6.3") if kind == "deployed" else None
+    view = PgTicketRepo(session_factory)
+    async with case.runtime(release_identity=lambda: identity) as runtime:
+        assert await runtime.owner.acquire()
+        await runtime.run_once()
+        assert len(await case.attestations(ticket.id, kind=kind)) == 1
+        await _reopen_with_new_merge(case, session_factory, ticket, M2)
+        await runtime.run_once()
+        before = len(case.requests)
+        await runtime.run_once()
+    # The key names the tag or live release, not the merge: no second row, no claim for M2.
+    assert [
+        r["payload"]["integration_sha"] for r in await case.attestations(ticket.id, kind=kind)
+    ] == [M]
+    assert await view.release_state(ticket.id) == ((), ())
+    # The blocked key stops the retry and says why exactly once.
+    assert not any("/compare/" in path for _, path in case.requests[before:])
+    lines = [json.loads(line) for line in capsys.readouterr().err.splitlines()]
+    assert [line["error_code"] for line in lines] == ["idempotency_key_reused"]

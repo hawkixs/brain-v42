@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 import pytest
 
+from brain_v42.db.tables import delivery_artifact_bindings
 from brain_v42.repositories.pg_release_derivation import OBSERVER_IDENTITY
 from brain_v42.repositories.pg_ticket import PgTicketRepo
 from tests.integration.db.test_delivery_requester_acceptance import _workflow
@@ -11,11 +12,39 @@ from tests.integration.db.test_delivery_requester_acceptance import _workflow
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 L = "a" * 40
+STALE = "9" * 40
 NOW = datetime(2026, 10, 3, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+async def _release_the_observer_queue(session_factory):
+    """An observed, active binding is a derivation candidate for the shared observer queue.
+
+    The observer tests of this disposable database count provider requests: the
+    merges given to the bindings below must not outlive the test that made them.
+    """
+    yield
+    async with session_factory.begin() as session:
+        await session.execute(
+            delivery_artifact_bindings.update()
+            .where(delivery_artifact_bindings.c.integration_sha.in_([L, STALE]))
+            .values(integration_sha=None)
+        )
+
+
+async def _merged_at(session_factory, ticket_id, sha: str = L) -> None:
+    """Give the ticket's binding the merge the observer rows below measure."""
+    async with session_factory.begin() as session:
+        await session.execute(
+            delivery_artifact_bindings.update()
+            .where(delivery_artifact_bindings.c.ticket_id == ticket_id)
+            .values(integration_sha=sha)
+        )
 
 
 async def test_release_state_reads_only_observer_issued_attestations(session_factory):
     ticket, _binding, service = await _workflow(session_factory)
+    await _merged_at(session_factory, ticket.id)
     for kind, payload, key, identity in (
         (
             "released",
@@ -59,6 +88,7 @@ async def test_release_state_reads_only_observer_issued_attestations(session_fac
 
 async def _planned(session_factory, executor: str, release: str):
     ticket, _binding, service = await _workflow(session_factory, executor=executor)
+    await _merged_at(session_factory, ticket.id)
     message = await PgTicketRepo(session_factory).set_target_release(
         ticket.id, author_project=executor, expected=None, new=release, message="plan"
     )
@@ -119,6 +149,7 @@ async def test_lot_tag_is_known_only_from_this_projects_observer_rows(session_fa
 
 async def test_malformed_observer_rows_are_skipped_not_raised(session_factory):
     ticket, _binding, service = await _workflow(session_factory)
+    await _merged_at(session_factory, ticket.id)
     await _released(service, ticket.id, "latest")
     await service.attest(
         ticket.id,
@@ -133,3 +164,39 @@ async def test_malformed_observer_rows_are_skipped_not_raised(session_factory):
     await _released(service, ticket.id, "v0.6.4")
 
     assert await PgTicketRepo(session_factory).release_state(ticket.id) == (("v0.6.4",), ())
+
+
+async def test_rows_of_a_merge_the_ticket_no_longer_stands_on_are_not_shown(session_factory):
+    ticket, service = await _planned(session_factory, "executor", "7.3.0")
+    await _released(service, ticket.id, "v7.3.0")
+    await service.attest(
+        ticket.id,
+        actor_project="requester",
+        caller_identity=OBSERVER_IDENTITY,
+        kind="deployed",
+        payload={
+            "repository_id": 1,
+            "live_release_sha": L,
+            "package_version": "7.3.0",
+            "integration_sha": L,
+        },
+        idempotency_key=f"deployed-stale-{ticket.id}",
+        emitted_at=NOW,
+        contract_revision=1,
+    )
+    repo = PgTicketRepo(session_factory)
+    assert await repo.release_state(ticket.id) == (("v7.3.0",), (L,))
+
+    await _merged_at(session_factory, ticket.id, sha=STALE)
+    assert await repo.release_state(ticket.id) == ((), ())
+    lot = await repo.shipped_by_release("executor", "7.3.0")
+    assert (lot.tag_known, lot.not_shipped) == (True, (ticket.id,))
+
+    await _merged_at(session_factory, ticket.id)
+    async with session_factory.begin() as session:
+        await session.execute(
+            delivery_artifact_bindings.update()
+            .where(delivery_artifact_bindings.c.ticket_id == ticket.id)
+            .values(active=False)
+        )
+    assert await repo.release_state(ticket.id) == ((), ())

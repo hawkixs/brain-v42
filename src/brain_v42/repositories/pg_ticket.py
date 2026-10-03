@@ -10,7 +10,13 @@ import sqlalchemy as sa
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_v42.db.tables import delivery_attestations, delivery_workflows, ticket_messages, tickets
+from brain_v42.db.tables import (
+    delivery_artifact_bindings,
+    delivery_attestations,
+    delivery_workflows,
+    ticket_messages,
+    tickets,
+)
 from brain_v42.delivery_config import DeliverySettings
 from brain_v42.models.delivery import DeliveryError
 from brain_v42.models.ticket import (
@@ -37,6 +43,25 @@ _RELEASE_SHA_SHAPE = r"^[0-9a-f]{40}$"
 
 _ACTIONABLE = ("open", "in_progress")
 _CONFIRMABLE = ("resolved", "wontfix")
+
+
+def _measures_active_merge(observed: Any) -> sa.ColumnElement[bool]:
+    """Keep only observer facts about the merge the ticket currently stands on.
+
+    A reopen deactivates the bindings and the next attempt binds a new merge, while
+    the old release and deployment rows stay in the append-only ledger. Without this
+    scope the view would present the first merge's tag or live release as the
+    reopened ticket's own.
+    """
+    binding = delivery_artifact_bindings.alias("observed_binding")
+    return sa.and_(
+        observed.c.issuer_identity == OBSERVER_IDENTITY,
+        sa.exists().where(
+            binding.c.ticket_id == observed.c.ticket_id,
+            binding.c.active.is_(True),
+            binding.c.integration_sha == observed.c.payload["integration_sha"].astext,
+        ),
+    )
 
 
 async def count_grouped_by_project(session: AsyncSession) -> list[dict[str, Any]]:
@@ -117,7 +142,7 @@ class PgTicketRepo(BasePgRepository):
             sa.select(delivery_attestations.c.kind, tag.label("tag"), sha.label("sha"))
             .where(
                 delivery_attestations.c.ticket_id == ticket_id,
-                delivery_attestations.c.issuer_identity == OBSERVER_IDENTITY,
+                _measures_active_merge(delivery_attestations),
                 sa.or_(
                     sa.and_(
                         delivery_attestations.c.kind == "released",
@@ -160,7 +185,7 @@ class PgTicketRepo(BasePgRepository):
                     sa.and_(
                         tickets.c.id == planned_observed.c.ticket_id,
                         planned_observed.c.kind == "released",
-                        planned_observed.c.issuer_identity == OBSERVER_IDENTITY,
+                        _measures_active_merge(planned_observed),
                         planned_observed.c.payload["tag"].astext.regexp_match(_RELEASE_TAG_SHAPE),
                     ),
                 )

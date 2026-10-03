@@ -76,6 +76,8 @@ class PgReleaseDerivationRepo:
             a.c.issuer_project == t.c.to_project,
             a.c.issuer_identity == OBSERVER_IDENTITY,
             sa.func.starts_with(a.c.idempotency_key, key),
+            # A reopen binds a new merge under the same deliverable: the old row measured another one.
+            a.c.payload["integration_sha"].astext == b.c.integration_sha,
         )
         stmt = (
             sa.select(
@@ -157,6 +159,7 @@ class PgReleaseDerivationRepo:
             a.c.issuer_project == t.c.to_project,
             a.c.issuer_identity == OBSERVER_IDENTITY,
             a.c.idempotency_key == key,
+            a.c.payload["integration_sha"].astext == b.c.integration_sha,
         )
         stmt = (
             sa.select(
@@ -195,12 +198,14 @@ class PgReleaseDerivationRepo:
         a = delivery_attestations
         # The fenced owner checks again at publication so a replay preserves the
         # first observation time instead of conflicting with a fresh emitted_at.
+        # A row for another merge under the same key is no replay: attest refuses it.
         existing = await session.scalar(
             sa.select(a.c.id).where(
                 a.c.ticket_id == candidate.ticket_id,
                 a.c.issuer_project == candidate.to_project,
                 a.c.issuer_identity == OBSERVER_IDENTITY,
                 a.c.idempotency_key == key,
+                a.c.payload["integration_sha"].astext == candidate.integration_sha,
             )
         )
         if existing is not None:

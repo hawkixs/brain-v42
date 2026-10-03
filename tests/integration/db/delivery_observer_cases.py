@@ -35,6 +35,8 @@ from tests.integration.db.test_delivery_receipt_publication import _contract, _i
 from tests.unit.delivery_observer.github_cases import APP, ROOT, B, H, M, S, X, check
 
 RID = 1337360966
+# A second merge of the same ticket, produced by a reopen.
+M2 = "d" * 40
 
 
 class _MeasuredBody(httpx.AsyncByteStream):
@@ -79,6 +81,8 @@ class ObserverCase:
         self.tags: list[tuple[str, str, str, bool]] = []
         self.tag_dates: dict[str, str] = {M: "2026-10-01T00:00:00Z"}
         self.contained: dict[str, bool] = {}
+        # (release sha, merge sha) -> contained; wins over `contained` for a second merge.
+        self.contained_pairs: dict[tuple[str, str], bool] = {}
         self.compare_status = 200
 
     async def create(self, *, number=42, context=False, optional=False, bind=True):
@@ -179,11 +183,15 @@ class ObserverCase:
                 payload = [{"name": name, "commit": {"sha": sha}} for name, sha, _, _ in self.tags]
             elif path.startswith(f"{ROOT}/compare/"):
                 sha, ancestor = path.rsplit("/", 1)[1].split("...")
-                assert ancestor == M
-                contained = self.contained.get(
-                    sha,
-                    next(
-                        (contains for _, tag_sha, _, contains in self.tags if tag_sha == sha), False
+                assert ancestor in (M, M2)
+                contained = self.contained_pairs.get(
+                    (sha, ancestor),
+                    self.contained.get(
+                        sha,
+                        next(
+                            (contains for _, tag_sha, _, contains in self.tags if tag_sha == sha),
+                            False,
+                        ),
                     ),
                 )
                 ready = True
@@ -193,8 +201,10 @@ class ObserverCase:
                         self, {"status": "behind" if contained else "diverged", "behind_by": 0}
                     ),
                 )
-            elif path == f"{ROOT}/git/commits/{M}" or any(
-                path == f"{ROOT}/git/commits/{sha}" for _, sha, _, _ in self.tags
+            elif (
+                path == f"{ROOT}/git/commits/{M}"
+                or path == f"{ROOT}/git/commits/{M2}"
+                or any(path == f"{ROOT}/git/commits/{sha}" for _, sha, _, _ in self.tags)
             ):
                 sha = path.rsplit("/", 1)[1]
                 date = self.tag_dates.get(sha) or next(
