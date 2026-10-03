@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-09-22
-**Repository registry:** 72 always-on + 2 graph-gated = 74 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 73 always-on + 2 graph-gated = 75 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -555,7 +555,7 @@ Session lifecycle actions remain under exclusive user control on the agent and c
 
 ## UUID error contracts
 
-The 18 tools listed below reject a malformed UUID through the MCP error channel,
+The 19 tools listed below reject a malformed UUID through the MCP error channel,
 with this message:
 
 ```
@@ -564,11 +564,11 @@ Invalid UUID: <value>
 
 Three implementation paths produce this behaviour:
 
-- **`parse_uuid()` from `parsing.py`** (10 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`, `ticket_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_promote_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_promote_runbook` (source_learning_id path), `brain_use_snippet`, `brain_ticket_reply`, `brain_ticket_transition`.
+- **`parse_uuid()` from `parsing.py`** (11 call sites across `brain_tools.py`, `runbook_tools.py`, `snippet_tools.py`, `ticket_tools.py`): `brain_supersede_decision`, `brain_get_supersession_chain`, `brain_validate_learning`, `brain_promote_adr` (source_learning_id path), `brain_accept_adr`, `brain_deprecate_adr`, `brain_promote_runbook` (source_learning_id path), `brain_use_snippet`, `brain_ticket_reply`, `brain_ticket_transition`, `brain_ticket_plan`.
 - **Inline `UUID()` parsing**: `brain_get`, `brain_update`, `brain_delete` (`crud_tools.py`) and `brain_refresh_entity`, `brain_merge_entities` (`decay_tools.py`).
 - **`resolve_entity_id()` from `entity_ids.py`** (the git-style prefix path, which calls `parse_uuid` itself and returns the same string when the value is neither a UUID nor a usable prefix): `brain_get_runbook`, `brain_execute_runbook`, `brain_ticket_get`. `brain_get` also reaches it, on its non-plan branch, and is counted once under the inline path above.
 
-All 18 go through `format_error`, which is typed `-> Never` and **raises** `ToolError`: none of them returns a string on this path, and the message is passed through unprefixed. Seventeen emit the malformed VALUE. `brain_merge_entities` is the exception — it formats the `ValueError` instead (`Invalid UUID: badly formed hexadecimal UUID string`), naming neither the value nor which of its two ids was bad.
+All 19 go through `format_error`, which is typed `-> Never` and **raises** `ToolError`: none of them returns a string on this path, and the message is passed through unprefixed. Eighteen emit the malformed VALUE. `brain_merge_entities` is the exception — it formats the `ValueError` instead (`Invalid UUID: badly formed hexadecimal UUID string`), naming neither the value nor which of its two ids was bad.
 
 There is no `✗` in this path. The glyph appears nowhere in `src/`, and in `scripts/` only inside two Dream utilities that print their own console output; earlier versions of this page attributed it to a presentation layer that does not exist.
 
@@ -1202,17 +1202,18 @@ Write a `BELONGS_TO_DOMAIN` edge from an entity to a Domain node. Called by the 
 
 ---
 
-## Tickets (addressed coordination) — 5 tools (`ticket_tools.py`)
+## Tickets (addressed coordination) — 6 tools (`ticket_tools.py`)
 
 **Coordination** family — orthogonal to the memory family. Tickets are addressed (a sender `from_project`, a recipient `to_project`), stateful (state machine), and **excluded** from `brain_search`, embeddings, decay, domain classification, and Neo4j sync.
 
-> Note: these 5 tools do NOT participate in `brain_search` / embeddings — coordination family, not memory.
+> Note: these 6 tools do NOT participate in `brain_search` / embeddings — coordination family, not memory.
 
 | Tool | Signature | Role |
 |------|-----------|------|
 | `brain_ticket_create` | `(from_project, to_project, kind, title, body, extraction=None)` | Opens an addressed ticket. `kind` in `{'request', 'fyi'}`. Both projects must exist (`brain_set_project_context`). |
 | `brain_ticket_reply` | `(ticket_id, author_project, body)` | Posts a message to the thread — any status, participants only. |
 | `brain_ticket_transition` | `(ticket_id, author_project, action, message=None)` | Changes the status via the state machine. Optional `message` is appended to the thread. |
+| `brain_ticket_plan` | `(ticket_id, author_project, target_release?)` | Plans the target release (version without the tag's `v`) as executor; null unplans. Every change is recorded in the thread. |
 | `brain_ticket_list` | `(project_key)` | Lists tickets grouped by required action: to handle / to confirm / waiting. |
 | `brain_ticket_get` | `(ticket_id)` | Full view: header, body, message thread, possible actions. |
 
@@ -1289,9 +1290,9 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `runbook_tools.py` | runbooks | 4 |
 | `session_lifecycle_tools.py` | persistent session lifecycle | 8 |
 | `snippet_tools.py` | snippets | 2 |
-| `ticket_tools.py` | tickets cross-projet (coordination) | 5 |
+| `ticket_tools.py` | tickets cross-projet (coordination) | 6 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
 | `delivery_tools.py` | observable delivery | 11 |
 | `fact_tools.py` | measured facts (registered by later server composition) | 2 |
 | `claim_tools.py` | claim verification + reads (registered by later server composition) | 3 |
-| **Total** | | **72 always-on + 2 graph-gated = 74** |
+| **Total** | | **73 always-on + 2 graph-gated = 75** |

@@ -9,7 +9,7 @@ Initialization sequence on startup:
 3. All domain repos (PgDecisionRepo, PgLearningRepo, etc.) — injected with session_factory
 4. All domain services (DecisionService, LearningService, etc.) — injected with repo + embedding_svc
 5. BrainService — fans out semantic search across all domain services
-6. Registration roots expose 72 always-on + 2 graph-gated = 74 brain_* tools
+6. Registration roots expose 73 always-on + 2 graph-gated = 75 brain_* tools
 
 Shutdown discipline (prevents zombie children when parent Claude Code exits abruptly):
 - prctl(PR_SET_PDEATHSIG, SIGTERM) — kernel signals child on parent death (Linux only)

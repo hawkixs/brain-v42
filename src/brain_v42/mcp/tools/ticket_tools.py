@@ -1,5 +1,5 @@
 """MCP tools for cross-project tickets: brain_ticket_create / reply /
-transition / list / get.
+transition / plan / list / get.
 
 Coordination family — addressed, transient, stateful (spec 2026-07-04).
 Formatting stays local (single consumer); shared write-confirmations come
@@ -174,7 +174,7 @@ def register_ticket_tools(
     mcp: Any,
     ticket_svc: TicketService,
 ) -> None:
-    """Register the 5 brain_ticket_* MCP tools on the FastMCP server."""
+    """Register the 6 brain_ticket_* MCP tools on the FastMCP server."""
 
     @mcp.tool(version="1.1", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_ticket_create(
@@ -293,6 +293,37 @@ def register_ticket_tools(
             updated.title,
             id=format_id(ticket_id),
             status=updated.status.value,
+        )
+
+    @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    async def brain_ticket_plan(
+        ticket_id: str,
+        author_project: str,
+        target_release: str | None = None,
+    ) -> str:
+        """Plan the release a ticket should ship in — executor (to_project) only.
+
+        Records an INTENTION, never a measurement: which tag actually shipped
+        the ticket is derived by the delivery observer from GitHub tags and
+        shown next to the plan, never reconciled with it. Every change leaves
+        a thread message ("planned for 0.6.3", "moved from 0.6.3 to 0.6.4",
+        "unplanned (was 0.6.3)"). A requester asks in the thread instead.
+
+        Args:
+            ticket_id: Ticket UUID.
+            author_project: Must be the ticket's to_project.
+            target_release: Version X.Y.Z without the tag's v (e.g. "0.6.3");
+                omit or null to unplan.
+        """
+        tid = parse_uuid(ticket_id)
+        if tid is None:
+            return format_error(f"Invalid UUID: {ticket_id}")
+        try:
+            message = await ticket_svc.plan(tid, author_project, target_release)
+        except (TicketError, ValueError) as exc:
+            return format_error(str(exc))
+        return format_confirmation(
+            f"Ticket planned: {message.body}", message.body, id=format_id(ticket_id)
         )
 
     @mcp.tool(version="1.1", annotations=_READ_ANNOTATIONS)

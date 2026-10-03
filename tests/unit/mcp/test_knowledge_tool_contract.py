@@ -51,6 +51,7 @@ ADDITIVE_WRITE_TOOLS = frozenset(
         "brain_save_snippet",
         "brain_ticket_create",
         "brain_ticket_reply",
+        "brain_ticket_plan",
     }
 )
 IDEMPOTENT_DESTRUCTIVE_TOOLS = frozenset(
@@ -141,7 +142,7 @@ async def test_all_knowledge_tools_publish_exact_safety_annotations() -> None:
         DESTRUCTIVE_TOOLS,
     )
     expected_names = frozenset().union(*groups)
-    assert len(expected_names) == 50
+    assert len(expected_names) == 51
     assert sum(len(group) for group in groups) == len(expected_names)
     assert {tool.name for tool in await server.list_tools()} == expected_names
 
