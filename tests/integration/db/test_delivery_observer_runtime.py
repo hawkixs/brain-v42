@@ -42,10 +42,14 @@ async def test_actual_http_to_atomic_proof_and_receipts_then_restart_is_idle(
             )
             == 2
         )
-    requests = len(case.requests)
+    requests = sum(path != f"{ROOT}/tags" for _, path in case.requests)
+    # The release pass lists tags each cycle while the merged binding remains unreleased.
+    assert sum(path == f"{ROOT}/tags" for _, path in case.requests) == 1
     async with case.runtime() as restarted:
         result = await restarted.run_once()
-    assert result.collected == 0 and len(case.requests) == requests
+    assert result.collected == 0
+    assert sum(path != f"{ROOT}/tags" for _, path in case.requests) == requests
+    assert sum(path == f"{ROOT}/tags" for _, path in case.requests) == 2
 
 
 async def test_refresh_while_offline_survives_restart_and_reuses_snapshot(engine, session_factory):
@@ -115,7 +119,8 @@ async def test_provider_error_retains_success_records_failure_and_schedules_retr
     assert confirmations[-1]["error_code"] == code
     # Only a refused credential is forgotten; rate limiting and outages keep it.
     expected_invalidations = [{"Authorization": "Bearer fixture"}] if status in {401, 403} else []
-    assert case.invalidated == expected_invalidations
+    # The release pass encounters the same refused credential as the queue.
+    assert case.invalidated == expected_invalidations * 2
     assert row["due_at"] > datetime.now(UTC)
     assert "private fixture body" not in result.model_dump_json()
     assert (

@@ -8,6 +8,7 @@ terminal states (spec §3).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 from uuid import UUID
@@ -21,6 +22,7 @@ from brain_v42.models.ticket import (
     TERMINAL_STATUSES,
     TRANSITIONS,
     ExtractionStatus,
+    LotShipping,
     ReleaseLot,
     ReleaseState,
     Ticket,
@@ -79,9 +81,15 @@ class TicketService:
         self,
         repo: PgTicketRepo,
         project_context_repo: PgProjectContextRepo,
+        running_sha_provider: Callable[[], str | None] | None = None,
     ) -> None:
         self._repo = repo
         self._ctx_repo = project_context_repo
+        self._running_sha_provider = running_sha_provider or (lambda: None)
+
+    def set_running_sha_provider(self, provider: Callable[[], str | None]) -> None:
+        """Bind the process release probe at the MCP boundary, avoiding a layer cycle."""
+        self._running_sha_provider = provider
 
     async def create(self, data: TicketCreate) -> Ticket:
         # Refus si projet inconnu — leçon du drift brain_v42/brain-v42 :
@@ -288,8 +296,18 @@ class TicketService:
         return await self._repo.resolve_id_prefix(prefix_hex)
 
     async def release_state(self, ticket_id: UUID) -> ReleaseState | None:
-        """Return no observer measurement until release observation is available."""
-        return None
+        """Combine observer measurements with the process's measured release identity."""
+        tags, shas = await self._repo.release_state(ticket_id)
+        if not tags and not shas:
+            return None
+        return ReleaseState(
+            shipped_tags=tags, deployed_shas=shas, running_sha=self._running_sha_provider()
+        )
+
+    async def lot_shipping(self, project_key: str, target_release: str) -> LotShipping:
+        key = canonicalize_project_key(project_key, strict=False)
+        release = parse_target_release(target_release)
+        return await self._repo.shipped_by_release(key, release)
 
     async def list_grouped(
         self, project_key: str, target_release: str | None = None

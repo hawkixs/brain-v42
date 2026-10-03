@@ -23,8 +23,10 @@ from brain_v42.delivery_observer.github import GitHubClient
 from brain_v42.delivery_observer.ownership import ObserverOwnership
 from brain_v42.delivery_observer.runtime import DeliveryObserverRuntime
 from brain_v42.delivery_observer.transport import GitHubTransport
+from brain_v42.facts.sources import running_release_identity
 from brain_v42.models.delivery import ReceiptIssuerProvenance
 from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
+from brain_v42.repositories.pg_release_derivation import PgReleaseDerivationRepo
 
 
 class _SafeParser(argparse.ArgumentParser):
@@ -77,6 +79,8 @@ async def _execute(
                 settings=settings,
                 owner=owner,
                 client=GitHubClient(http, settings, auth),
+                releases=PgReleaseDerivationRepo(),
+                release_identity=running_release_identity,
                 evidence_repository=PgDeliveryEvidenceRepo(
                     async_sessionmaker(engine, expire_on_commit=False),
                     settings=settings,

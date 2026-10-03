@@ -7,9 +7,11 @@ from uuid import uuid4
 
 from fastmcp import Client, FastMCP
 
+from brain_v42.mcp.tools.formatters import format_id
 from brain_v42.mcp.tools.ticket_tools import register_ticket_tools
 from brain_v42.models.ticket import (
     ExtractionStatus,
+    LotShipping,
     Ticket,
     TicketGroups,
     TicketKind,
@@ -77,6 +79,9 @@ class TestListByRelease:
                 a_traiter=[_ticket() for _ in range(12)], a_confirmer=[], en_attente=[]
             )
         )
+        svc.lot_shipping = AsyncMock(
+            return_value=LotShipping(tag_known=False, not_shipped=(), shipped_elsewhere=())
+        )
         tool = await _tool(_mcp_with(svc), "brain_ticket_list")
         result = await tool.fn(project_key=TO, target_release="0.6.3")
         svc.list_grouped.assert_awaited_once_with(TO, target_release="0.6.3")
@@ -95,6 +100,39 @@ class TestListByRelease:
         tool = await _tool(_mcp_with(svc), "brain_ticket_list")
         await tool.fn(project_key=TO)
         svc.list_grouped.assert_awaited_once_with(TO, target_release=None)
+
+
+class TestReleaseMismatch:
+    async def test_lot_header_lists_planned_not_shipped_and_shipped_elsewhere(self):
+        a, b = _ticket(target_release="0.6.3"), _ticket(target_release="0.6.3")
+        svc = MagicMock()
+        svc.list_grouped = AsyncMock(
+            return_value=TicketGroups(a_traiter=[a, b], a_confirmer=[], en_attente=[])
+        )
+        svc.lot_shipping = AsyncMock(
+            return_value=LotShipping(
+                tag_known=True, not_shipped=(a.id,), shipped_elsewhere=((b.id, "v0.6.4"),)
+            )
+        )
+        tool = await _tool(_mcp_with(svc), "brain_ticket_list")
+        result = await tool.fn(project_key=TO, target_release="0.6.3")
+        assert "Lot 0.6.3 — tag v0.6.3 observed" in result
+        assert f"planned, not shipped: #{format_id(str(a.id))}" in result
+        assert f"planned 0.6.3, shipped v0.6.4: #{format_id(str(b.id))}" in result
+
+    async def test_tag_not_yet_observed_says_so_and_lists_no_mismatch(self):
+        ticket = _ticket(target_release="0.6.3")
+        svc = MagicMock()
+        svc.list_grouped = AsyncMock(
+            return_value=TicketGroups(a_traiter=[ticket], a_confirmer=[], en_attente=[])
+        )
+        svc.lot_shipping = AsyncMock(
+            return_value=LotShipping(tag_known=False, not_shipped=(), shipped_elsewhere=())
+        )
+        tool = await _tool(_mcp_with(svc), "brain_ticket_list")
+        result = await tool.fn(project_key=TO, target_release="0.6.3")
+        assert "Lot 0.6.3 — tag v0.6.3 not observed yet" in result
+        assert "not shipped" not in result
 
 
 class TestThreadReleaseLine:

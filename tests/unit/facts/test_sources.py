@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+import brain_v42
+from brain_v42.facts import sources
 from brain_v42.facts.model import HostIdentity, IdentityUnreadableError, ReleaseIdentity
 from brain_v42.facts.sources import (
     HostSourceFactory,
@@ -16,6 +18,7 @@ from brain_v42.facts.sources import (
     ReleaseSourceSession,
     read_text_under,
     release_sha_from_path,
+    running_release_sha,
 )
 
 
@@ -73,6 +76,47 @@ async def test_identity_inside_the_transaction_is_the_four_measured_fields() -> 
         "server_addr": "172.31.0.4",
         "server_port": 5432,
     }
+
+
+def test_running_release_sha_reads_the_release_segment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "releases" / ("a" * 40) / "venv" / "lib" / "brain_v42" / "__init__.py"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("")
+    monkeypatch.setattr(brain_v42, "__file__", str(fake))
+    assert running_release_sha() == "a" * 40
+
+
+def test_running_release_sha_is_none_in_a_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "src" / "brain_v42" / "__init__.py"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("")
+    monkeypatch.setattr(brain_v42, "__file__", str(fake))
+    assert running_release_sha() is None
+
+
+def test_running_release_identity_uses_the_imported_package_version(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "releases" / ("a" * 40) / "brain_v42" / "__init__.py"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("")
+    monkeypatch.setattr(brain_v42, "__file__", str(fake))
+    monkeypatch.setattr("brain_v42.release.package_version", lambda: "0.6.3")
+    assert sources.running_release_identity() == ReleaseIdentity("a" * 40, "0.6.3")
+
+
+def test_running_release_identity_is_none_in_a_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "src" / "brain_v42" / "__init__.py"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("")
+    monkeypatch.setattr(brain_v42, "__file__", str(fake))
+    assert sources.running_release_identity() is None
 
 
 def test_release_sha_from_path_accepts_a_release_nested_under_another_releases_directory() -> None:

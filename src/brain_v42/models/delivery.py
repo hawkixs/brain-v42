@@ -45,6 +45,22 @@ DOCUMENTED_ATTESTATION_KINDS: tuple[str, ...] = (
     "gate_passed",
 )
 RESERVED_ATTESTATION_KINDS: tuple[str, ...] = ("integrated", "fulfilled")
+OBSERVER_DERIVED_ATTESTATIONS: dict[str, object] = {
+    "issuer_identity": "brain-v42-delivery-observer",
+    "kinds": {
+        "released": {
+            "payload": ["integration_sha", "repository_id", "tag", "tag_sha"],
+            "idempotency_key": "released:<ticket>:<deliverable>:<tag>",
+            "emitted_at": "committer date of the tag's commit",
+        },
+        "deployed": {
+            "payload": ["integration_sha", "live_release_sha", "package_version", "repository_id"],
+            "idempotency_key": "deployed:<ticket>:<deliverable>:<live_release_sha>",
+            "emitted_at": "first observation",
+            "projects": ["brain-v42"],
+        },
+    },
+}
 #: Every stable code the attestation tools raise themselves; the transport adds
 #: `invalid_arguments` and `delivery_unavailable`. Published as data in
 #: `docs/contracts/delivery_attestations.json`, kept equal by test.
