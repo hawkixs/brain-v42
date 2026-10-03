@@ -34,8 +34,14 @@ from brain_v42.models.brain_session import (
     BrainSessionTerminalConflictError,
     SessionAbsorption,
 )
-from brain_v42.models.focus_slot import BrainSessionBindResult
+from brain_v42.models.focus_slot import (
+    RELAY_INITIATORS,
+    BrainSessionBindResult,
+    BrainSessionRelayResult,
+    FocusSlotError,
+)
 from brain_v42.models.project_key import canonicalize_project_key
+from brain_v42.services.focus_slot_service import slot_body
 
 __all__ = [
     "BrainSessionClientKeyConflictError",
@@ -54,6 +60,10 @@ __all__ = [
 
 logger = structlog.get_logger(__name__)
 
+#: One bound for every client key of the lifecycle (`start`, the identity pair, a
+#: relay's successor); the column is `String(128)`.
+CLIENT_KEY_MAX_LENGTH: Final = 128
+
 
 class BrainSessionRepository(Protocol):
     """Persistence contract required by the lifecycle service."""
@@ -67,6 +77,20 @@ class BrainSessionRepository(Protocol):
     async def bind(
         self, session_id: UUID, expected_client_key: str, slot_id: UUID
     ) -> BrainSessionBindResult: ...
+
+    async def relay(
+        self,
+        session_id: UUID,
+        expected_client_key: str,
+        *,
+        summary: str,
+        handover: str,
+        expected_slot_revision: int,
+        new_client_key: str,
+        initiator: str,
+        knowledge_ids: list[UUID],
+        nothing_to_capture_reason: str | None,
+    ) -> BrainSessionRelayResult: ...
 
     async def capture(
         self,
@@ -237,7 +261,7 @@ class BrainSessionService:
         except (TypeError, ValueError) as exc:
             raise BrainSessionInputError(f"invalid project_key: {exc}") from exc
         normalized_client_key = _normalize_required(
-            client_key, field_name="client_key", max_length=128
+            client_key, field_name="client_key", max_length=CLIENT_KEY_MAX_LENGTH
         )
         started = await self.repo.start(canonical_project, normalized_client_key)
         # BOTH branches, fresh and replay. The fresh one almost never absorbs
@@ -296,6 +320,60 @@ class BrainSessionService:
         """Bind an open operator session to one focus slot. Not a boundary: no absorption."""
         identity = _normalize_expected_client_key(expected_client_key)
         return await self.repo.bind(session_id, identity, slot_id)
+
+    async def relay(
+        self,
+        session_id: UUID,
+        expected_client_key: str,
+        *,
+        summary: str,
+        handover: str,
+        expected_slot_revision: int,
+        new_client_key: str,
+        initiator: str,
+        knowledge_ids: Sequence[UUID] | None = None,
+        nothing_to_capture_reason: str | None = None,
+    ) -> BrainSessionRelayResult:
+        """End a bound session and start its successor on the same slot (spec §4).
+
+        Before the transaction, in this order: the guard-mod flag (S10), the
+        inputs and the new-key rule, then derived capture absorbed into the OLD
+        session exactly as `end` does — `relay` reads the ledger to end it.
+        """
+        if initiator not in RELAY_INITIATORS:
+            raise BrainSessionInputError("initiator must be one of: operator, guard_mod")
+        if initiator == "guard_mod" and not _guard_mod_relay_enabled():
+            raise FocusSlotError(
+                "relay_guard_mod_disabled",
+                "a guard mod relays only while BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED is true",
+            )
+        identity = _normalize_expected_client_key(expected_client_key)
+        successor_key = _normalize_required(
+            new_client_key, field_name="new_client_key", max_length=CLIENT_KEY_MAX_LENGTH
+        )
+        if successor_key == identity:
+            raise FocusSlotError(
+                "relay_same_client_key", "the successor session needs a new client_key"
+            )
+        # No bound here, as in `end`: the 10,000-character summary cap is the
+        # tool argument's (`SummaryArg`), one lifecycle contract for both doors.
+        normalized_summary = _normalize_required(summary, field_name="summary")
+        normalized_handover = slot_body(handover, field_name="handover")
+        _validate_revision(expected_slot_revision, field_name="expected_slot_revision")
+        captured = _normalize_captured_ids(knowledge_ids) or []
+        reason = _normalize_capture_reason(nothing_to_capture_reason)
+        await self._absorb_derived(session_id, identity)
+        return await self.repo.relay(
+            session_id,
+            identity,
+            summary=normalized_summary,
+            handover=normalized_handover,
+            expected_slot_revision=expected_slot_revision,
+            new_client_key=successor_key,
+            initiator=initiator,
+            knowledge_ids=captured,
+            nothing_to_capture_reason=reason,
+        )
 
     async def capture(
         self,
@@ -438,13 +516,17 @@ def _normalize_required(value: str, *, field_name: str, max_length: int | None =
     return normalized
 
 
-def _validate_revision(expected_focus_revision: int) -> None:
-    if (
-        isinstance(expected_focus_revision, bool)
-        or not isinstance(expected_focus_revision, int)
-        or expected_focus_revision < 0
-    ):
-        raise BrainSessionInputError("expected_focus_revision must be a non-negative integer")
+def _validate_revision(revision: int, *, field_name: str = "expected_focus_revision") -> None:
+    if isinstance(revision, bool) or not isinstance(revision, int) or revision < 0:
+        raise BrainSessionInputError(f"{field_name} must be a non-negative integer")
+
+
+def _guard_mod_relay_enabled() -> bool:
+    """Read the flag at call time. A settings failure fails CLOSED: guard_mod refused."""
+    try:
+        return bool(get_settings().brain_session_relay_guard_mod_enabled)
+    except Exception:
+        return False
 
 
 def _normalize_captured_ids(
@@ -491,7 +573,7 @@ def _normalize_expected_client_key(value: str) -> str:
     return _normalize_required(
         value,
         field_name="expected_client_key",
-        max_length=128,
+        max_length=CLIENT_KEY_MAX_LENGTH,
     )
 
 

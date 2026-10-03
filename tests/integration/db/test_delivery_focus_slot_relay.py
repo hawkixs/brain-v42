@@ -81,6 +81,16 @@ async def open_on_slot(factory, slot_id: UUID) -> int:
         )
 
 
+async def project_sessions(factory, project: str) -> list[tuple[UUID, str]]:
+    async with factory() as session:
+        rows = await session.execute(
+            sa.select(brain_sessions.c.id, brain_sessions.c.status)
+            .where(brain_sessions.c.project_key == project)
+            .order_by(brain_sessions.c.id)
+        )
+        return [(r[0], r[1]) for r in rows]
+
+
 async def test_a_relay_ends_writes_the_slot_and_starts_the_successor_in_one_go(
     session_factory, slot_project
 ):
@@ -198,6 +208,18 @@ async def test_an_equal_replay_returns_the_same_successor_s9(session_factory, sl
     assert await successors(session_factory, session_id) == [first.session.id]
 
 
+async def test_an_identical_replay_writes_nothing(session_factory, slot_project):
+    session_id, key, slot_id = await bound(session_factory, slot_project)
+    first = await relay(session_factory, session_id, key, new_client_key="successor-w")
+    history_before = await history(session_factory, slot_id)
+    sessions_before = await project_sessions(session_factory, slot_project)
+    again = await relay(session_factory, session_id, key, new_client_key="successor-w")
+    assert (again.replayed, again.session.id) == (True, first.session.id)
+    assert await history(session_factory, slot_id) == history_before
+    assert await project_sessions(session_factory, slot_project) == sessions_before
+    assert again.slot.revision == first.slot.revision
+
+
 @pytest.mark.parametrize(
     "change",
     [
@@ -205,6 +227,7 @@ async def test_an_equal_replay_returns_the_same_successor_s9(session_factory, sl
         {"summary": "another summary"},
         {"handover": "another handover"},
         {"expected_slot_revision": 1},
+        {"knowledge_ids": [uuid4()]},  # an UNCAPTURED id: the replay must not widen the ledger
     ],
 )
 async def test_any_other_payload_on_a_relayed_session_is_terminal_conflict(
@@ -292,3 +315,47 @@ async def test_an_end_racing_a_relay_of_the_same_session_lets_exactly_one_win(
             sa.select(focus_slots.c.revision).where(focus_slots.c.id == slot_id)
         )
     assert revision == 1
+
+
+async def through_service(factory, session_id: UUID, key: str, **overrides):
+    """The service guards in front of the same transaction."""
+    values: dict[str, object] = {
+        "summary": "session summary",
+        "handover": "handover body",
+        "expected_slot_revision": 0,
+        "new_client_key": f"next-{uuid4().hex[:8]}",
+        "initiator": "operator",
+    }
+    values.update(overrides)
+    return await sessions(factory).relay(session_id, key, **values)
+
+
+@pytest.mark.parametrize("length", [4000, 4001])
+async def test_the_handover_bound_counts_non_ascii_characters_and_refuses_before_any_write(
+    session_factory, slot_project, length
+):
+    session_id, key, slot_id = await bound(session_factory, slot_project)
+    history_before = await history(session_factory, slot_id)
+    handover = "é" * length  # 8,000 bytes at the bound: a byte count would refuse it
+    if length > 4000:
+        with pytest.raises(FocusSlotError, match="^slot_body_too_long: "):
+            await through_service(session_factory, session_id, key, handover=handover)
+        assert (await row(session_factory, session_id))["status"] == "open"
+        assert await successors(session_factory, session_id) == []
+        assert await history(session_factory, slot_id) == history_before
+    else:
+        result = await through_service(session_factory, session_id, key, handover=handover)
+        assert result.slot.body == handover and result.replayed is False
+
+
+async def test_the_service_refuses_guard_mod_and_a_reused_key_before_any_write(
+    session_factory, slot_project
+):
+    session_id, key, slot_id = await bound(session_factory, slot_project)
+    history_before = await history(session_factory, slot_id)
+    with pytest.raises(FocusSlotError, match="^relay_guard_mod_disabled: "):
+        await through_service(session_factory, session_id, key, initiator="guard_mod")
+    with pytest.raises(FocusSlotError, match="^relay_same_client_key: "):
+        await through_service(session_factory, session_id, key, new_client_key=key)
+    assert (await row(session_factory, session_id))["status"] == "open"
+    assert await history(session_factory, slot_id) == history_before
