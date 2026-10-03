@@ -1009,8 +1009,10 @@ def build_server() -> BuiltServer:
 
     # Session tools
     from brain_v42.mcp.tools.session_tools import register_session_tools  # noqa: PLC0415
+    from brain_v42.repositories.pg_focus_slot import PgFocusSlotRepo  # noqa: PLC0415
     from brain_v42.services.dream_run_service import DreamRunService  # noqa: PLC0415
     from brain_v42.services.feature_service import FeatureService  # noqa: PLC0415
+    from brain_v42.services.focus_slot_service import FocusSlotService  # noqa: PLC0415
     from brain_v42.services.schema_state_service import SchemaStateService  # noqa: PLC0415
 
     _session_factory = get_session_factory()
@@ -1029,6 +1031,7 @@ def build_server() -> BuiltServer:
         )
     feature_svc = FeatureService(_session_factory)
     brain_session_svc = build_brain_session_service(_session_factory)
+    focus_slot_svc = FocusSlotService(PgFocusSlotRepo(_session_factory))
     register_session_tools(
         mcp,
         project_context_svc=services["project_context_svc"],
@@ -1045,13 +1048,11 @@ def build_server() -> BuiltServer:
         claim_read_svc=claim_read_svc,
         claim_inventory_svc=claim_inventory_svc,
         claim_extraction_enabled=settings.brain_claim_extraction_enabled,
+        focus_slot_svc=focus_slot_svc,
     )
 
     from brain_v42.mcp.tools.focus_slot_tools import register_focus_slot_tools  # noqa: PLC0415
-    from brain_v42.repositories.pg_focus_slot import PgFocusSlotRepo  # noqa: PLC0415
-    from brain_v42.services.focus_slot_service import FocusSlotService  # noqa: PLC0415
 
-    focus_slot_svc = FocusSlotService(PgFocusSlotRepo(_session_factory))
     register_focus_slot_tools(mcp, focus_slot_svc=focus_slot_svc)
 
     # Roadmap tools

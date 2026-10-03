@@ -28,13 +28,17 @@ from brain_v42.db.focus_slots import (
     to_focus_slot,
 )
 from brain_v42.db.tables import (
+    brain_session_artifacts,
+    brain_session_checkpoints,
     brain_sessions,
+    decisions,
     delivery_artifact_bindings,
     focus_slot_anchors,
     focus_slots,
     project_contexts,
     tickets,
 )
+from brain_v42.models.brain_session import BrainSessionCheckpoint
 from brain_v42.models.focus_slot import (
     SLOT_STALE_AFTER,
     FocusSlot,
@@ -43,11 +47,15 @@ from brain_v42.models.focus_slot import (
     FocusSlotListResult,
     FocusSlotOpenResult,
     FocusSlotView,
+    PreviousSlotSession,
     SlotAnchor,
     SlotBriefing,
     SlotStatusFilter,
 )
 from brain_v42.repositories.pg_base import BasePgRepository
+
+_BRIEFING_SLOT_CAP = 20
+_DISTILL_CAP = 10
 
 
 class PgFocusSlotRepo(BasePgRepository):
@@ -172,9 +180,134 @@ class PgFocusSlotRepo(BasePgRepository):
             anchors = await load_anchors(session, [slot_id])
             return FocusSlotCloseResult(slot=to_focus_slot(closed, anchors[slot_id]))
 
-    async def briefing_view(self, project_key: str, session_id: UUID) -> SlotBriefing:
-        """Implemented with the briefing in Task 14; an empty view until then."""
-        return SlotBriefing()
+    async def briefing_view(
+        self, project_key: str, session_id: UUID, *, now: datetime | None = None
+    ) -> SlotBriefing:
+        """Everything the briefing shows about slots, read-only (spec §6)."""
+        async with self.get_session() as session:
+            open_rows = (
+                (
+                    await session.execute(
+                        sa.select(focus_slots)
+                        .where(
+                            focus_slots.c.project_key == project_key,
+                            focus_slots.c.closed_at.is_(None),
+                        )
+                        .order_by(focus_slots.c.opened_at, focus_slots.c.id)
+                        .limit(_BRIEFING_SLOT_CAP)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            views = await self.views(session, open_rows, now=now)
+            bound_id = await session.scalar(
+                sa.select(brain_sessions.c.slot_id).where(brain_sessions.c.id == session_id)
+            )
+            bound: FocusSlot | None = None
+            previous: PreviousSlotSession | None = None
+            if bound_id is not None:
+                row = (
+                    (
+                        await session.execute(
+                            sa.select(focus_slots).where(focus_slots.c.id == bound_id)
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                anchors = await load_anchors(session, [bound_id])
+                bound = to_focus_slot(row, anchors[bound_id])
+                previous = await self._previous(session, bound_id, session_id)
+            to_distill = await self._to_distill(session, project_key)
+        return SlotBriefing(
+            open_slots=views, bound_slot=bound, previous=previous, to_distill=to_distill
+        )
+
+    @staticmethod
+    async def _previous(
+        session: AsyncSession, slot_id: UUID, session_id: UUID
+    ) -> PreviousSlotSession | None:
+        """The last session ended on this slot: gaps (a) and (c) of the relay test."""
+        s = brain_sessions
+        prev = (
+            (
+                await session.execute(
+                    sa.select(s.c.id, s.c.ended_at, s.c.summary)
+                    .where(s.c.slot_id == slot_id, s.c.status == "ended", s.c.id != session_id)
+                    .order_by(s.c.ended_at.desc())
+                    .limit(1)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if prev is None:
+            return None
+        decided = (
+            await session.execute(
+                sa.select(decisions.c.id, decisions.c.title)
+                .select_from(
+                    decisions.join(
+                        brain_session_artifacts,
+                        brain_session_artifacts.c.knowledge_id == decisions.c.id,
+                    )
+                )
+                .where(brain_session_artifacts.c.session_id == prev["id"])
+                .order_by(decisions.c.created_at, decisions.c.id)
+            )
+        ).all()
+        checkpoint = (
+            (
+                await session.execute(
+                    sa.select(brain_session_checkpoints)
+                    .where(brain_session_checkpoints.c.session_id == prev["id"])
+                    .order_by(brain_session_checkpoints.c.seq.desc())
+                    .limit(1)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return PreviousSlotSession(
+            session_id=prev["id"],
+            ended_at=prev["ended_at"],
+            summary=str(prev["summary"]),
+            decisions=[(row[0], str(row[1])) for row in decided],
+            last_checkpoint=(
+                BrainSessionCheckpoint.model_validate(dict(checkpoint)) if checkpoint else None
+            ),
+        )
+
+    async def _to_distill(
+        self, session: AsyncSession, project_key: str
+    ) -> builtins.list[FocusSlot]:
+        """Slots closed on a receipt since the base was last written (ADR D5)."""
+        base_written = await session.scalar(
+            sa.select(project_contexts.c.focus_updated_at).where(
+                project_contexts.c.project_key == project_key
+            )
+        )
+        filters: builtins.list[Any] = [
+            focus_slots.c.project_key == project_key,
+            focus_slots.c.close_reason.like("receipt:%"),
+        ]
+        if base_written is not None:
+            filters.append(focus_slots.c.closed_at > base_written)
+        rows = (
+            (
+                await session.execute(
+                    sa.select(focus_slots)
+                    .where(*filters)
+                    .order_by(focus_slots.c.closed_at.desc())
+                    .limit(_DISTILL_CAP)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        anchors = await load_anchors(session, [row["id"] for row in rows])
+        return [to_focus_slot(row, anchors[row["id"]]) for row in rows]
 
     async def views(
         self,
