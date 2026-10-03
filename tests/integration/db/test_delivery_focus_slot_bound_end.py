@@ -121,7 +121,7 @@ async def test_ruling_1_post_close_revision_is_slot_closed_and_the_session_stays
 ):
     session_id, key, slot_id = await bound(session_factory, slot_project)
     await _receipt_close(session_factory, slot_id)
-    with pytest.raises(FocusSlotError, match="^slot_closed: "):
+    with pytest.raises(FocusSlotError, match=r"^slot_closed: .*expected_focus_revision=0 "):
         await sessions(session_factory).end(session_id, key, "done", "after close", 1)
     assert (await sessions(session_factory).resume(session_id, key)).session.status == "open"
     abandoned = await sessions(session_factory).abandon(session_id, key, "slot closed on receipt")

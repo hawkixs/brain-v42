@@ -1508,7 +1508,8 @@ class PgBrainSessionRepo(BasePgRepository):
         whose revision equals `expected` cannot record a conflict (the ended CHECK
         requires `focus_revision_at_end <> end_expected_focus_revision`), so the
         end refuses `slot_closed` and the session stays open: end with the
-        revision you started from (recorded as `conflict`), or abandon.
+        pre-close revision (`expected - 1`, since a close bumps it by exactly 1;
+        recorded as `conflict`), or abandon.
         """
         if len(next_focus) > SLOT_BODY_MAX_LENGTH:
             raise FocusSlotError(
@@ -1523,8 +1524,9 @@ class PgBrainSessionRepo(BasePgRepository):
         if closed and slot_before["revision"] == expected:
             raise FocusSlotError(
                 "slot_closed",
-                f"slot {slot_id} closed at revision {expected}: end with the revision the "
-                "session started from to record a conflict, or abandon the session",
+                f"slot {slot_id} closed at revision {expected}: end with "
+                f"expected_focus_revision={expected - 1} (the pre-close slot revision) to "
+                "record a conflict, or abandon the session",
             )
         capture_ids = await self._load_session_artifact_ids(session, model.id)
         if capture_ids:
