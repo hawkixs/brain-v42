@@ -108,7 +108,8 @@ brain-v42
 
 > **Strict exception — session lifecycle:** call `brain_session_start`,
 > `brain_session_list`, `brain_session_resume`, `brain_session_capture`,
-> `brain_session_heartbeat`, `brain_session_end` or `brain_session_abandon` only
+> `brain_session_heartbeat`, `brain_session_bind`, `brain_session_relay`,
+> `brain_session_end` or `brain_session_abandon` only
 > after the user's corresponding explicit command.
 > No hook, auto-close, work delivery or end of response closes a session on the agent or client side.
 > **Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly enabled counts as a standing user command for one gesture only: `brain_session_relay` of an open operator session bound to a focus slot, onto that same slot — capture, end and start of its successor under a new `client_key`, in one transaction. The model makes the call and chooses its captures, summary and handover; the mod only triggers the turn and replays the result at compaction. The standing command covers nothing else: not `brain_session_abandon`, not `brain_session_end` of any session, not the relay of an unbound session, not any write of the project base, not opening, closing or changing a slot, and not `start`, `resume` or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Hooks still never capture, close or commit on their own.

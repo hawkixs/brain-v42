@@ -2436,8 +2436,8 @@ _ENGLISH_THRESHOLD_DISAMBIGUATION = (
     "command (`abandonment_reason = 'auto_stale_7d'`)."
 )
 _ARCHITECTURE_USER_CONTROLLED_BOUNDARIES = (
-    "Only an explicit user command may start, capture, heartbeat, list, resume, end, or "
-    "abandon a session on the agent and client side."
+    "Only an explicit user command may start, capture, heartbeat, list, resume, bind, relay, "
+    "end, or abandon a session on the agent and client side."
 )
 _ARCHITECTURE_BOUNDARIES_SENTENCE = (
     f"**User-controlled boundaries.** {_ARCHITECTURE_USER_CONTROLLED_BOUNDARIES}"
@@ -2480,7 +2480,7 @@ _CLOSED_INACTIVE_CHECK_SCOPE = (
     "(ticket `16314b31`, closed)."
 )
 
-# ADR #34, the D9 amendment, verbatim from the focus-slots spec §7. Its first
+# ADR #34, the slot-relay amendment, verbatim from the focus-slots spec §7. Its first
 # sentence is what the anti-widening scan sees (a session, `end`, a mod): it is
 # sanctioned by name in the three documents that carry it, and nowhere else.
 _SLOT_RELAY_FIRST_SENTENCE = (

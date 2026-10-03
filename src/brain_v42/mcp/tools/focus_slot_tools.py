@@ -2,7 +2,7 @@
 
 Reached through `brain_find_tool` under the compact profile. Opening and closing
 a slot are explicit user commands; a guard mod's standing command does not cover
-them (the D9 amendment).
+them (Amendment — slot relay (ADR #34), `docs/OPERATIONS.md` § Session lifecycle).
 """
 
 from __future__ import annotations
