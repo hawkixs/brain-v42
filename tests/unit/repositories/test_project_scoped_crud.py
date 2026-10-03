@@ -23,6 +23,12 @@ from brain_v42.repositories.pg_learning import PgLearningRepo
 from brain_v42.repositories.pg_runbook import PgRunbookRepo
 from brain_v42.repositories.pg_snippet import PgSnippetRepo
 
+
+@pytest.fixture(autouse=True)
+def _capture_ledger_is_empty() -> None:
+    """Override the conftest stub: these tests pin the capture guard's real statements."""
+
+
 ENTITY_ID = uuid.UUID("11111111-1111-4111-8111-111111111111")
 OWNED_REFERENCE_ID = uuid.UUID("22222222-2222-4222-8222-222222222222")
 FOREIGN_ID = uuid.UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -134,7 +140,7 @@ NON_DECISION_DELETE_CASES = (
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("repo_type", "table"), NON_DECISION_DELETE_CASES)
-async def test_scoped_delete_predicates_id_and_project_in_one_statement(
+async def test_scoped_delete_predicates_id_and_project_at_the_locked_lookup(
     repo_type: type[Any], table: str
 ) -> None:
     _assert_project_key_parameter(repo_type.delete)
@@ -149,9 +155,35 @@ async def test_scoped_delete_predicates_id_and_project_in_one_statement(
     assert result is False
     assert session.execute.await_count == 1
     sql = _compiled_sql(session.execute.await_args)
-    assert sql.startswith(f"delete from {table}")
+    assert sql.startswith(f"select {table}.id from {table}")
     assert f"{table}.id =" in sql
     assert f"{table}.project_key =" in sql
+    assert "for update" in sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("repo_type", "table"), NON_DECISION_DELETE_CASES)
+async def test_scoped_delete_predicates_id_and_project_in_one_statement(
+    repo_type: type[Any], table: str
+) -> None:
+    session = _session(_result(scalar=ENTITY_ID), _result(), _result(scalar=ENTITY_ID))
+
+    result = await repo_type().delete(
+        ENTITY_ID,
+        project_key=PROJECT_KEY,
+        session=session,
+    )
+
+    assert result is True
+    assert session.execute.await_count == 3
+    lock_sql, ledger_sql, delete_sql = (
+        _compiled_sql(call) for call in session.execute.await_args_list
+    )
+    assert "for update" in lock_sql
+    assert "from brain_session_artifacts" in ledger_sql
+    assert delete_sql.startswith(f"delete from {table}")
+    assert f"{table}.id =" in delete_sql
+    assert f"{table}.project_key =" in delete_sql
 
 
 NO_OP_CASES = (
@@ -233,6 +265,7 @@ async def test_scoped_decision_delete_foreign_reference_stops_before_mutation(
 ) -> None:
     session = _session(
         _result(scalar=ENTITY_ID),
+        _result(),
         _result(
             rows=[
                 {"id": OWNED_REFERENCE_ID, "project_key": PROJECT_KEY},
@@ -249,8 +282,8 @@ async def test_scoped_decision_delete_foreign_reference_stops_before_mutation(
     )
 
     assert deleted is False
-    assert session.execute.await_count == 2
-    target_lock_sql, reference_locks_sql = (
+    assert session.execute.await_count == 3
+    target_lock_sql, _ledger_sql, reference_locks_sql = (
         _compiled_sql(call) for call in session.execute.await_args_list
     )
     assert "for update" in target_lock_sql
@@ -267,6 +300,7 @@ async def test_scoped_decision_delete_keeps_lock_clear_and_delete_in_one_transac
     _assert_project_key_parameter(PgDecisionRepo.delete)
     session = _session(
         _result(scalar=ENTITY_ID),
+        _result(),
         _result(
             rows=[{"id": OWNED_REFERENCE_ID, "project_key": PROJECT_KEY}],
         ),
@@ -281,8 +315,8 @@ async def test_scoped_decision_delete_keeps_lock_clear_and_delete_in_one_transac
     )
 
     assert deleted is True
-    assert session.execute.await_count == 4
-    lock_sql, reference_locks_sql, clear_sql, delete_sql = (
+    assert session.execute.await_count == 5
+    lock_sql, _ledger_sql, reference_locks_sql, clear_sql, delete_sql = (
         _compiled_sql(call) for call in session.execute.await_args_list
     )
     assert "for update" in lock_sql
@@ -350,6 +384,7 @@ async def test_scoped_plan_delete_predicates_id_and_project() -> None:
     _assert_project_key_parameter(PgIndexedPlanRepo.delete)
     session = _session(
         _result(scalar=ENTITY_ID),
+        _result(),
         _result(
             rows=[{"id": OWNED_REFERENCE_ID, "project_key": PROJECT_KEY}],
         ),
@@ -362,17 +397,18 @@ async def test_scoped_plan_delete_predicates_id_and_project() -> None:
     )
 
     assert deleted is True
-    assert session.execute.await_count == 3
-    lock_call, chunk_locks_call, delete_call = session.execute.await_args_list
-    assert "id = :id and project_key = :project_key" in str(lock_call.args[0]).lower()
-    assert "for update" in str(lock_call.args[0]).lower()
+    assert session.execute.await_count == 4
+    lock_call, _ledger_call, chunk_locks_call, delete_call = session.execute.await_args_list
+    lock_sql = _compiled_sql(lock_call)
+    assert "indexed_plans.id =" in lock_sql
+    assert "indexed_plans.project_key =" in lock_sql
+    assert "for update" in lock_sql
     chunk_locks_sql = str(chunk_locks_call.args[0]).lower()
     assert chunk_locks_sql == (
         "select id, project_key from indexed_plan_chunks where plan_id = :id for update"
     )
     assert "delete from indexed_plans" in str(delete_call.args[0]).lower()
-    for call in (lock_call, delete_call):
-        assert call.args[1] == {"id": ENTITY_ID, "project_key": PROJECT_KEY}
+    assert delete_call.args[1] == {"id": ENTITY_ID, "project_key": PROJECT_KEY}
     assert chunk_locks_call.args[1] == {"id": ENTITY_ID}
     session.commit.assert_awaited_once_with()
     session.rollback.assert_not_awaited()
@@ -385,6 +421,7 @@ async def test_scoped_plan_delete_foreign_chunk_rolls_back_without_delete(
 ) -> None:
     session = _session(
         _result(scalar=ENTITY_ID),
+        _result(),
         _result(
             rows=[
                 {"id": OWNED_REFERENCE_ID, "project_key": PROJECT_KEY},
@@ -400,9 +437,9 @@ async def test_scoped_plan_delete_foreign_chunk_rolls_back_without_delete(
     )
 
     assert deleted is False
-    assert session.execute.await_count == 2
-    lock_call, chunk_locks_call = session.execute.await_args_list
-    assert "for update" in str(lock_call.args[0]).lower()
+    assert session.execute.await_count == 3
+    lock_call, _ledger_call, chunk_locks_call = session.execute.await_args_list
+    assert "for update" in _compiled_sql(lock_call)
     assert str(chunk_locks_call.args[0]).lower() == (
         "select id, project_key from indexed_plan_chunks where plan_id = :id for update"
     )
@@ -428,14 +465,20 @@ async def test_scoped_plan_delete_rolls_back_on_query_exception() -> None:
 
 @pytest.mark.asyncio
 async def test_admin_plan_queries_remain_byte_for_byte_unscoped() -> None:
-    session = _session(_result(row=None), _result(scalar=None))
+    session = _session(
+        _result(row=None),
+        _result(scalar=ENTITY_ID),
+        _result(),
+        _result(scalar=ENTITY_ID),
+    )
     repo = PgIndexedPlanRepo(session)
 
     assert await repo.get_with_chunks(ENTITY_ID) is None
-    assert await repo.delete(ENTITY_ID) is False
+    assert await repo.delete(ENTITY_ID) is True
 
-    get_call, delete_call = session.execute.await_args_list
+    get_call, lock_call, _ledger_call, delete_call = session.execute.await_args_list
     assert str(get_call.args[0]) == "SELECT * FROM indexed_plans WHERE id = :id"
     assert get_call.args[1] == {"id": ENTITY_ID}
+    assert "project_key" not in _compiled_sql(lock_call)
     assert str(delete_call.args[0]) == "DELETE FROM indexed_plans WHERE id = :id"
     assert delete_call.args[1] == {"id": ENTITY_ID}

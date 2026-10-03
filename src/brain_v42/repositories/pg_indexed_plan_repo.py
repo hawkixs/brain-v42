@@ -13,11 +13,13 @@ from sqlalchemy import text
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_v42.db.tables import indexed_plans
 from brain_v42.models.indexed_plan import IndexedPlan, IndexedPlanCreate
 from brain_v42.models.indexed_plan_chunk import (
     IndexedPlanChunk,
     IndexedPlanChunkCreate,
 )
+from brain_v42.repositories.capture_guard import lock_unless_captured
 
 # Max character count fed into ``to_tsvector``. PostgreSQL drops lexemes
 # past the 1 MB ``tsvector`` limit and long inputs cause CPU spikes during
@@ -247,24 +249,26 @@ class PgIndexedPlanRepo:
         Returns True if a row was deleted, False if not found.
         """
         if project_key is None:
-            result = await self._session.execute(
-                text("DELETE FROM indexed_plans WHERE id = :id"),
-                {"id": plan_id},
-            )
-            await self._session.commit()
+            try:
+                if not await lock_unless_captured(self._session, indexed_plans, plan_id):
+                    await self._session.rollback()
+                    return False
+                result = await self._session.execute(
+                    text("DELETE FROM indexed_plans WHERE id = :id"),
+                    {"id": plan_id},
+                )
+                await self._session.commit()
+            except Exception:
+                await self._session.rollback()
+                raise
             rowcount: int = result.rowcount  # type: ignore[attr-defined]
             return rowcount > 0
 
         params = {"id": plan_id, "project_key": project_key}
         try:
-            target = await self._session.execute(
-                text(
-                    "SELECT id FROM indexed_plans "
-                    "WHERE id = :id AND project_key = :project_key FOR UPDATE"
-                ),
-                params,
-            )
-            if target.scalar_one_or_none() is None:
+            if not await lock_unless_captured(
+                self._session, indexed_plans, plan_id, project_key=project_key
+            ):
                 await self._session.rollback()
                 return False
 

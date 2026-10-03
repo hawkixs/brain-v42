@@ -22,7 +22,7 @@ from uuid import UUID
 
 import structlog
 
-from brain_v42.facts.model import Unreadable
+from brain_v42.facts.model import Unreadable, identity_matches
 from brain_v42.facts.sources import release_sha_from_path
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.repositories.pg_claim_nightly import SELF_REFERENTIAL_FACTS, VerifyRunOwnershipLost
@@ -31,7 +31,7 @@ _LOG = structlog.get_logger(__name__)
 _MAX_ERROR_CHARS: Final = 2000
 
 if TYPE_CHECKING:
-    from brain_v42.facts.model import FactTarget, Measurement
+    from brain_v42.facts.model import FactTarget, Identity, Measurement
     from brain_v42.repositories.pg_claim_verdicts import VerdictRow
 
 
@@ -62,7 +62,7 @@ class RegistryLike(Protocol):
     def refusals(self) -> dict[str, str]: ...
     def disabled(self) -> dict[str, str]: ...
     def describe(self, name: str) -> object: ...
-    def expected_identity(self, target: FactTarget) -> object | None: ...
+    def expected_identity(self, target: FactTarget) -> Identity | None: ...
     async def measure(self, name: str, *, max_age: timedelta | None = None) -> Measurement: ...
 
 
@@ -633,7 +633,9 @@ class NightlyVerifier:
                 }
             else:
                 expected = registry.expected_identity(measurement.target)
-                identity_ok = expected is not None and measurement.source == expected
+                identity_ok = expected is not None and identity_matches(
+                    measurement.source, expected
+                )
                 dry_facts[name] = {
                     "status": "measured",
                     "error_code": None,

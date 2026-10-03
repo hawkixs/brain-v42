@@ -59,6 +59,29 @@ async def test_an_identity_differing_on_any_single_field_is_a_target_mismatch(
     assert warning[0][field] == other
 
 
+@pytest.mark.parametrize(
+    "changes,expected_where",
+    [
+        ({"server_addr": "10.0.0.9"}, "server_addr"),
+        ({"system_identifier": "1"}, "system_identifier"),
+        ({"server_port": 5433, "database": "brain_test"}, "database, server_port"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_a_target_mismatch_names_the_differing_fields_and_never_their_values(
+    changes: dict[str, object], expected_where: str
+) -> None:
+    """Q134: an operator must tell server_addr from system_identifier without a value leaking."""
+    measured = SourceIdentity(**{**identity().as_dict(), **changes})
+    fact_registry = registry(FakeProbe("who"), source=FakeSource(measured))
+    result = await fact_registry.measure("who")
+    assert isinstance(result, Unreadable)
+    assert result.error_code == "target_mismatch"
+    assert result.where == expected_where
+    for observed_or_declared in (*changes.values(), *identity().as_dict().values()):
+        assert str(observed_or_declared) not in (result.where or "")
+
+
 @pytest.mark.asyncio
 async def test_a_hanging_probe_is_a_timeout_and_frees_its_slot_and_its_source() -> None:
     """F3: the deadline exists; the source is closed; the semaphore is released."""
