@@ -16,7 +16,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.focus_history import record_focus_history, render_focus_diff
-from brain_v42.db.focus_slots import cas_slot_body, lock_slot, record_slot_history
+from brain_v42.db.focus_slots import (
+    cas_slot_body,
+    load_anchors,
+    lock_slot,
+    record_slot_history,
+    to_focus_slot,
+)
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import (
     adrs,
@@ -64,6 +70,7 @@ from brain_v42.models.brain_session import (
 from brain_v42.models.focus_slot import (
     SLOT_BODY_MAX_LENGTH,
     BrainSessionBindResult,
+    BrainSessionRelayResult,
     FocusSlotError,
 )
 from brain_v42.repositories.pg_base import BasePgRepository
@@ -602,60 +609,9 @@ class PgBrainSessionRepo(BasePgRepository):
             focus = await self._load_focus(session, model.project_key, for_update=True)
             if focus is None:
                 raise BrainSessionNotFoundError(f"Project {model.project_key!r} was not found")
-            existing = await self._load_artifact_rows(session, capture_ids)
-            # What the exclusivity rule refused to attribute must stay
-            # repairable by a human who NAMES the UUID. Without this path,
-            # fail-closed becomes a dead loss: the artifact stays with the
-            # server and nobody can get it out.
-            reclaimable = await self._tracer_held_ids(session, existing, model.id)
-            existing_ids = self._owned_capture_ids(existing, model.id, reclaimable)
-            if reclaimable:
-                await session.execute(
-                    brain_session_artifacts.update()
-                    .where(brain_session_artifacts.c.knowledge_id.in_(reclaimable))
-                    .values(session_id=model.id, attribution_mode="explicit")
-                )
-                existing_ids.update(reclaimable)
-            resolved_types = await self._validate_captures(session, model, capture_ids)
-            all_existing = await self._load_session_artifact_ids(session, model.id)
-            all_after = sorted(set(all_existing) | set(capture_ids), key=str)
-            if len(all_after) > MAX_CAPTURED_KNOWLEDGE_IDS:
-                raise BrainSessionInputError(
-                    "a session may capture at most "
-                    f"{MAX_CAPTURED_KNOWLEDGE_IDS} knowledge artifacts"
-                )
-
-            missing = [item for item in capture_ids if item not in existing_ids]
-            if missing:
-                insert_stmt = (
-                    pg_insert(brain_session_artifacts)
-                    .values(
-                        [
-                            {
-                                "knowledge_id": knowledge_id,
-                                "session_id": model.id,
-                                "knowledge_type": resolved_types[knowledge_id],
-                                # A human named this UUID. It is the only mode
-                                # that is a PROOF and not a deduction.
-                                "attribution_mode": "explicit",
-                            }
-                            for knowledge_id in missing
-                        ]
-                    )
-                    .on_conflict_do_nothing(index_elements=[brain_session_artifacts.c.knowledge_id])
-                    .returning(brain_session_artifacts.c.knowledge_id)
-                )
-                inserted_ids = set((await session.execute(insert_stmt)).scalars().all())
-                if len(inserted_ids) != len(missing):
-                    raced_rows = await self._load_artifact_rows(session, missing)
-                    raced_owned_ids = self._owned_capture_ids(raced_rows, model.id)
-                    unresolved = set(missing) - inserted_ids - raced_owned_ids
-                    if unresolved:
-                        raise BrainSessionStateError(
-                            "session artifact ownership could not be resolved"
-                        )
-                    existing_ids.update(raced_owned_ids)
-                missing = sorted(inserted_ids, key=str)
+            all_after, missing, existing_ids = await self._attach_captures(
+                session, model, capture_ids
+            )
 
             now = datetime.now(UTC)
             heartbeat_stmt = (
@@ -679,6 +635,73 @@ class PgBrainSessionRepo(BasePgRepository):
                 replayed_knowledge_ids=sorted(existing_ids, key=str),
                 replayed=not missing,
             )
+
+    async def _attach_captures(
+        self,
+        session: AsyncSession,
+        model: BrainSession,
+        capture_ids: Sequence[UUID],
+    ) -> tuple[builtins.list[UUID], builtins.list[UUID], set[UUID]]:
+        """Attach explicitly named artifacts inside the CALLER's transaction.
+
+        Shared by `capture` and `relay` (spec §4 step 3): same project, created
+        after the session start, exclusive ledger, tracer-held artifacts reclaimed
+        by a human naming them. Returns (ledger after, newly captured, already
+        owned). The caller decides what else it locks: `capture` locks the base,
+        `relay` does not.
+        """
+        existing = await self._load_artifact_rows(session, capture_ids)
+        # What the exclusivity rule refused to attribute must stay
+        # repairable by a human who NAMES the UUID. Without this path,
+        # fail-closed becomes a dead loss: the artifact stays with the
+        # server and nobody can get it out.
+        reclaimable = await self._tracer_held_ids(session, existing, model.id)
+        existing_ids = self._owned_capture_ids(existing, model.id, reclaimable)
+        if reclaimable:
+            await session.execute(
+                brain_session_artifacts.update()
+                .where(brain_session_artifacts.c.knowledge_id.in_(reclaimable))
+                .values(session_id=model.id, attribution_mode="explicit")
+            )
+            existing_ids.update(reclaimable)
+        resolved_types = await self._validate_captures(session, model, capture_ids)
+        all_existing = await self._load_session_artifact_ids(session, model.id)
+        all_after = sorted(set(all_existing) | set(capture_ids), key=str)
+        if len(all_after) > MAX_CAPTURED_KNOWLEDGE_IDS:
+            raise BrainSessionInputError(
+                f"a session may capture at most {MAX_CAPTURED_KNOWLEDGE_IDS} knowledge artifacts"
+            )
+
+        missing = [item for item in capture_ids if item not in existing_ids]
+        if missing:
+            insert_stmt = (
+                pg_insert(brain_session_artifacts)
+                .values(
+                    [
+                        {
+                            "knowledge_id": knowledge_id,
+                            "session_id": model.id,
+                            "knowledge_type": resolved_types[knowledge_id],
+                            # A human named this UUID. It is the only mode
+                            # that is a PROOF and not a deduction.
+                            "attribution_mode": "explicit",
+                        }
+                        for knowledge_id in missing
+                    ]
+                )
+                .on_conflict_do_nothing(index_elements=[brain_session_artifacts.c.knowledge_id])
+                .returning(brain_session_artifacts.c.knowledge_id)
+            )
+            inserted_ids = set((await session.execute(insert_stmt)).scalars().all())
+            if len(inserted_ids) != len(missing):
+                raced_rows = await self._load_artifact_rows(session, missing)
+                raced_owned_ids = self._owned_capture_ids(raced_rows, model.id)
+                unresolved = set(missing) - inserted_ids - raced_owned_ids
+                if unresolved:
+                    raise BrainSessionStateError("session artifact ownership could not be resolved")
+                existing_ids.update(raced_owned_ids)
+            missing = sorted(inserted_ids, key=str)
+        return all_after, missing, existing_ids
 
     @staticmethod
     async def _last_checkpoint_by_session(
@@ -1059,6 +1082,204 @@ class PgBrainSessionRepo(BasePgRepository):
                 focus_revision_at_end=focus["focus_revision"],
                 focus_diff=rendered_diff,
             )
+
+    async def relay(
+        self,
+        session_id: UUID | str,
+        expected_client_key: str,
+        *,
+        summary: str,
+        handover: str,
+        expected_slot_revision: int,
+        new_client_key: str,
+        initiator: str,
+        knowledge_ids: Sequence[UUID],
+        nothing_to_capture_reason: str | None,
+    ) -> BrainSessionRelayResult:
+        """End a bound session onto its slot and start its successor, in ONE transaction.
+
+        Spec §4. Lock order: the old session row, then the slot; the base is read
+        without a lock. Unlike `end`, a closed slot or a stale revision mutates
+        nothing and leaves the session open (S8): closing would lose the handover,
+        and with one open session per slot a conflict means a stale client that
+        re-reads and retries. An ended session takes the replay path (S9). The
+        slot is locked BEFORE the successor takes its `slot_id`, as `bind` does:
+        `uq_brain_sessions_open_slot` stays the last word, never the only guard.
+        """
+        capture_ids = sorted(knowledge_ids, key=str)
+        self._validate_capture_ids(capture_ids, require_nonempty=False)
+        async with self.transaction() as session:
+            row = await self._get_row(session, session_id, for_update=True)
+            if row is None:
+                raise BrainSessionNotFoundError(f"Session {session_id} was not found")
+            model = self._to_model(row)
+            self._assert_identity(model, expected_client_key)
+            if model.status != "open":
+                return await self._replay_relay(
+                    session,
+                    model,
+                    summary=summary,
+                    handover=handover,
+                    expected=expected_slot_revision,
+                    new_client_key=new_client_key,
+                    knowledge_ids=capture_ids,
+                )
+            if model.nature == "agent":
+                raise FocusSlotError(
+                    "session_is_agent_trace", f"session {model.id} is an agent trace"
+                )
+            slot_id = row.get("slot_id")
+            if slot_id is None:
+                raise FocusSlotError(
+                    "relay_requires_slot",
+                    f"session {model.id} is not bound to a focus slot: work without an anchor "
+                    "cannot be relayed; bind it to a slot, or end it explicitly",
+                )
+            slot = await lock_slot(session, slot_id)
+            if slot is None:
+                raise BrainSessionStateError(f"slot {slot_id} of session {model.id} was not found")
+            if slot["closed_at"] is not None:
+                raise FocusSlotError("slot_closed", f"slot {slot_id} is closed")
+            if slot["revision"] != expected_slot_revision:
+                raise FocusSlotError(
+                    "slot_revision_conflict",
+                    f"slot {slot_id} is at revision {slot['revision']}, "
+                    f"not {expected_slot_revision}",
+                )
+            if capture_ids:
+                await self._attach_captures(session, model, capture_ids)
+            ledger = await self._load_session_artifact_ids(session, model.id)
+            if ledger:
+                await self._validate_captures(session, model, ledger)
+            updated = await cas_slot_body(
+                session, slot_id=slot_id, expected=expected_slot_revision, body=handover
+            )
+            if updated is None:
+                raise BrainSessionStateError(f"slot {slot_id} moved under its own lock")
+            await record_slot_history(
+                session,
+                slot_id=slot_id,
+                revision=int(updated["revision"]),
+                body=handover,
+                source="session_relay",
+                session_id=model.id,
+            )
+            ended = await self._mark_ended(
+                session,
+                model.id,
+                summary,
+                handover,
+                ledger,
+                nothing_to_capture_reason,
+                expected_focus_revision=expected_slot_revision,
+                focus_outcome=BrainSessionFocusOutcome.APPLIED,
+                focus_at_end=handover,
+                focus_revision_at_end=int(updated["revision"]),
+            )
+            base = await self._load_focus(session, model.project_key)
+            if base is None:
+                raise BrainSessionNotFoundError(f"Project {model.project_key!r} was not found")
+            boundary = ended.ended_at or datetime.now(UTC)
+            successor = (
+                (
+                    await session.execute(
+                        pg_insert(brain_sessions)
+                        .values(
+                            project_key=model.project_key,
+                            client_key=new_client_key,
+                            started_focus=base["current_focus"],
+                            started_focus_revision=base["focus_revision"],
+                            slot_id=slot_id,
+                            relayed_from_session_id=model.id,
+                            started_by_actor=f"relay:{initiator}",
+                            started_at=boundary,
+                            last_heartbeat_at=boundary,
+                        )
+                        .on_conflict_do_nothing(
+                            index_elements=[
+                                brain_sessions.c.project_key,
+                                brain_sessions.c.client_key,
+                            ]
+                        )
+                        .returning(brain_sessions)
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if successor is None:  # raising rolls the whole relay back (S8)
+                raise FocusSlotError(
+                    "client_key_conflict",
+                    f"client_key {new_client_key!r} already names a session of "
+                    f"{model.project_key}; choose a new one",
+                )
+            anchors = await load_anchors(session, [slot_id])
+            return BrainSessionRelayResult(
+                ended_session_id=model.id,
+                session=self._to_model(successor, attributed_ids=[]),
+                slot=to_focus_slot(updated, anchors[slot_id]),
+                replayed=False,
+            )
+
+    async def _replay_relay(
+        self,
+        session: AsyncSession,
+        model: BrainSession,
+        *,
+        summary: str,
+        handover: str,
+        expected: int,
+        new_client_key: str,
+        knowledge_ids: Sequence[UUID],
+    ) -> BrainSessionRelayResult:
+        """S9: an equal payload returns the successor; anything else is terminal_conflict."""
+        successor = (
+            (
+                await session.execute(
+                    sa.select(brain_sessions).where(
+                        brain_sessions.c.relayed_from_session_id == model.id
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        ledger = set(await self._load_session_artifact_ids(session, model.id))
+        exact = (
+            successor is not None
+            and model.status == "ended"
+            and successor["client_key"] == new_client_key
+            and model.summary == summary
+            and model.next_focus == handover
+            and model.end_expected_focus_revision == expected
+            and set(knowledge_ids) <= ledger
+        )
+        if not exact or successor is None:
+            named = f"; its successor is session {successor['id']}" if successor is not None else ""
+            raise FocusSlotError(
+                "terminal_conflict",
+                f"session {model.id} is already {model.status.value} with another terminal "
+                f"payload{named}",
+            )
+        slot = (
+            (
+                await session.execute(
+                    sa.select(focus_slots).where(focus_slots.c.id == successor["slot_id"])
+                )
+            )
+            .mappings()
+            .one()
+        )
+        anchors = await load_anchors(session, [slot["id"]])
+        return BrainSessionRelayResult(
+            ended_session_id=model.id,
+            session=self._to_model(
+                successor,
+                attributed_ids=await self._load_session_artifact_ids(session, successor["id"]),
+            ),
+            slot=to_focus_slot(slot, anchors[slot["id"]]),
+            replayed=True,
+        )
 
     async def abandon(
         self,
