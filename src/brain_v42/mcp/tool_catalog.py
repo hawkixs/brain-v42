@@ -27,6 +27,7 @@ SESSION_LIFECYCLE_TOOLS = (
     "brain_session_list",
     "brain_session_resume",
     "brain_session_abandon",
+    "brain_session_bind",
 )
 
 _TOOL_PROFILE_HEADER = "x-brain-tool-profile"

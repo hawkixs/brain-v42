@@ -34,6 +34,7 @@ from brain_v42.models.brain_session import (
     BrainSessionTerminalConflictError,
     SessionAbsorption,
 )
+from brain_v42.models.focus_slot import BrainSessionBindResult
 from brain_v42.models.project_key import canonicalize_project_key
 
 __all__ = [
@@ -62,6 +63,10 @@ class BrainSessionRepository(Protocol):
     async def resume(
         self, session_id: UUID, expected_client_key: str
     ) -> BrainSessionResumeResult: ...
+
+    async def bind(
+        self, session_id: UUID, expected_client_key: str, slot_id: UUID
+    ) -> BrainSessionBindResult: ...
 
     async def capture(
         self,
@@ -284,6 +289,13 @@ class BrainSessionService:
         identity = _normalize_expected_client_key(expected_client_key)
         await self._absorb_derived(session_id, identity)
         return await self.repo.resume(session_id, identity)
+
+    async def bind(
+        self, session_id: UUID, expected_client_key: str, slot_id: UUID
+    ) -> BrainSessionBindResult:
+        """Bind an open operator session to one focus slot. Not a boundary: no absorption."""
+        identity = _normalize_expected_client_key(expected_client_key)
+        return await self.repo.bind(session_id, identity, slot_id)
 
     async def capture(
         self,

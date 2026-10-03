@@ -50,10 +50,11 @@ _COVENANT = (
 _RETIRED_COVENANT = "No hook or auto-close may invoke this lifecycle boundary."
 
 #: Eight since the checkpoint (M-C, migration 051) landed with its covenant sentence.
-_EXPECTED_TOOL_COUNT = 8
+#: Nine since brain_session_bind (ADR #34, migration 060).
+_EXPECTED_TOOL_COUNT = 9
 
 #: The word the registration docstring must use for this number.
-_COUNT_WORD = {7: "seven", 8: "eight", 9: "nine"}
+_COUNT_WORD = {7: "seven", 8: "eight", 9: "nine", 10: "ten"}
 
 
 def _tool_functions() -> dict[str, ast.AsyncFunctionDef]:
@@ -78,6 +79,7 @@ def test_the_lifecycle_surface_is_exactly_the_expected_size() -> None:
             "brain_session_checkpoint",
             "brain_session_end",
             "brain_session_abandon",
+            "brain_session_bind",
         ]
     )
     assert len(tools) == _EXPECTED_TOOL_COUNT

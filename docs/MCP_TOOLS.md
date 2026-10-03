@@ -1,11 +1,11 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-09-22
-**Repository registry:** 73 always-on + 2 graph-gated = 75 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
-**Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
+**Repository registry:** 77 always-on + 2 graph-gated = 79 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
-Most tools return formatted markdown strings. The seven v4 session lifecycle tools return structured Pydantic results. Their repository contract is documented below. Lifecycle v4 has run in production since 24 July 2026, after revision 036, explicit schema proof and a restart-last MCP cutover with authenticated E2E canaries.
+Most tools return formatted markdown strings. The v4 session lifecycle tools return structured Pydantic results. Their repository contract is documented below. Lifecycle v4 has run in production since 24 July 2026, after revision 036, explicit schema proof and a restart-last MCP cutover with authenticated E2E canaries.
 
 Migration 060 is the repository target: focus slots (ADR #34), three tables and two nullable `brain_sessions` columns, plus the 16314b31 CHECK fix; downgrade refuses to destroy slots without `-x allow_focus_slots_downgrade=yes`. Migration 059: `tickets.target_release`, nullable with no default or backfill, validated as `major.minor.patch` and indexed for planned tickets; downgrade refuses to erase plans without `-x allow_target_release_downgrade=yes`. Migration 058: the `knowledge_claims` provenance CHECK also accepts `extracted` (claims the server derives from knowledge prose, decision f99ca46f); its downgrade refuses while such rows exist. Migration 057 before it: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
 so a reader can tell a PROVEN attribution (`derived_connection`, same connection) from a DEDUCED
@@ -798,9 +798,9 @@ Return the shortest graph path between two entities (1-6 hops, clamped). Discove
 
 ---
 
-## Session lifecycle — 8 tools (`session_lifecycle_tools.py`, v4.0)
+## Session lifecycle — 9 tools (`session_lifecycle_tools.py`, v4.0)
 
-These tools implement explicit, persistent session actions. Only an explicit user command may invoke them; hooks and agents must never infer a start, capture, heartbeat, resume, end, list, or abandon action. Migration 037 extends the schema created by migration 032 and depends on revision 036. It is active on the production database since 24 July 2026; fresh or restored environments must still prove their own Alembic head before enabling this runtime.
+These tools implement explicit, persistent session actions. Only an explicit user command may invoke them; hooks and agents must never infer a start, capture, heartbeat, resume, end, list, bind, or abandon action. Migration 037 extends the schema created by migration 032 and depends on revision 036. It is active on the production database since 24 July 2026; fresh or restored environments must still prove their own Alembic head before enabling this runtime.
 
 Every structured result that contains `session` uses the same `BrainSession` shape:
 
@@ -839,8 +839,16 @@ brain_session_resume(session_id, expected_client_key)
     current_focus_revision, briefing}
 ```
 Attach to an existing `open` session after the UUID/client-key guard passes, without mutating it. Ended and abandoned sessions cannot be resumed. Resume does not refresh liveness; issue an explicit heartbeat for a long-running session. Use the returned current focus revision before attempting `brain_session_end`.
+For a bound session, `current_focus` and `current_focus_revision` are the slot's body and revision.
 The nested session also restores every existing ledger attribution in
 `attributed_knowledge_ids`, so a client can recover safely after losing local state.
+
+### brain_session_bind
+```
+brain_session_bind(session_id, expected_client_key, slot_id)
+-> {session_id, slot_id, slot_revision, slot_body}
+```
+Explicit user command. Binds an open operator session to one focus slot of its project, once; binding the same slot again is a replay. From then on `brain_session_end` writes that slot, never the base: its `expected_focus_revision` is the slot revision, `next_focus` becomes the slot body (at most 4,000 characters, else `slot_body_too_long` before any mutation), and `current_focus*` and `focus_*_at_end` describe the slot. `brain_session_resume` of a bound session returns the slot body and revision. Refusals: `session_not_open`, `session_is_agent_trace`, `session_already_bound`, `slot_not_found`, `slot_closed`, `slot_project_mismatch`, `slot_busy`.
 
 ### brain_session_capture
 ```
@@ -903,7 +911,9 @@ The capture outcome is an exclusive choice:
 
 Invalid or missing capture evidence rolls back the transaction and leaves the session open. A focus revision mismatch is instead a normal terminal outcome: focus remains unchanged, the session still becomes `ended`, and `focus_outcome="conflict"` is persisted with the observed `focus_at_end` and `focus_revision_at_end`. A matching revision applies `next_focus`, increments the revision even when the text is unchanged, and persists `focus_outcome="applied"` with the resulting focus snapshot.
 
-Replaying the exact terminal payload returns `replayed=true` and the original persisted focus outcome/snapshot; a different payload conflicts. `current_focus` and `current_focus_revision` report the project state at response time and may therefore differ from the persisted end snapshot on a later replay.
+For a session bound to a focus slot (`brain_session_bind`), `expected_focus_revision` is the slot revision and `next_focus` becomes the slot body (at most 4,000 characters, else `slot_body_too_long` before any write); the project base is not written. A stale revision or a closed slot closes the session with `conflict` and leaves the slot untouched, except a closed slot at exactly `expected_focus_revision`, which refuses `slot_closed` and leaves the session open: end with `expected_focus_revision` minus 1 (the pre-close slot revision; a close bumps the revision by exactly 1) to record a conflict, or abandon it.
+
+Replaying the exact terminal payload returns `replayed=true` and the original persisted focus outcome/snapshot; a different payload conflicts. `current_focus` and `current_focus_revision` report the project state at response time (for a bound session, the slot body and revision) and may therefore differ from the persisted end snapshot on a later replay.
 
 ### brain_session_abandon
 ```
@@ -923,6 +933,30 @@ No lifecycle tool infers a session from project, list order, or recency.
 The briefing returned by start and resume is assembled in `session_tools.py`.
 
 ---
+
+## Focus slots — 3 tools (`focus_slot_tools.py`)
+
+The project focus (`current_focus`) is the project's BASE: identity, rules, standing constraints. Topics in flight live in focus slots, each anchored to a ticket, a lot or a PR and guarded by its own `revision`. No slot tool writes the base. No TTL closes a slot; `is_stale` (open, unbound, untouched for seven days) only shows it.
+
+### brain_slot_open
+```
+brain_slot_open(project_key, title[1..120], body[1..4000], anchors[1..10])
+-> {slot, replayed}
+```
+Explicit user command. Opens at revision 0 with its anchors (written once, never changed) and a `slot_open` history row. An equal open is a replay. Refusals: `project_not_found`, `anchor_required`, `anchor_invalid`, `anchor_ticket_foreign`, `anchor_unbound_pr`, `anchor_lot_unplanned`, `anchor_already_received`, `slot_title_conflict`.
+
+### brain_slot_list
+```
+brain_slot_list(project_key, status='open'|'closed'|'all', limit=20, offset=0)
+-> {slots, total, limit, offset}
+```
+Read only. Each slot carries its anchors, `bound_session_id` and `is_stale`. Refusals: `project_not_found`, `invalid_limit`.
+
+### brain_slot_close
+```
+brain_slot_close(slot_id, expected_revision>=0, note[1..2000]) -> {slot}
+```
+Explicit user command; `close_reason = 'explicit'`, revision + 1, a `slot_close` history row. Refusals: `slot_not_found`, `slot_closed`, `slot_revision_conflict` (names the current revision), `slot_bound` (an open session is bound: end, relay or abandon it first).
 
 ## Project context — 4 tools
 
@@ -1288,11 +1322,12 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `project_context_tools.py` | project + groups + archival | 7 |
 | `roadmap_tools.py` | roadmap | 3 |
 | `runbook_tools.py` | runbooks | 4 |
-| `session_lifecycle_tools.py` | persistent session lifecycle | 8 |
+| `session_lifecycle_tools.py` | persistent session lifecycle | 9 |
+| `focus_slot_tools.py` | focus slots (ADR #34) | 3 |
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 6 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
 | `delivery_tools.py` | observable delivery | 11 |
 | `fact_tools.py` | measured facts (registered by later server composition) | 2 |
 | `claim_tools.py` | claim verification + reads (registered by later server composition) | 3 |
-| **Total** | | **73 always-on + 2 graph-gated = 75** |
+| **Total** | | **77 always-on + 2 graph-gated = 79** |

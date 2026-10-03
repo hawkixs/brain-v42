@@ -7,7 +7,8 @@
     "brain_session_end",
     "brain_session_list",
     "brain_session_resume",
-    "brain_session_abandon"
+    "brain_session_abandon",
+    "brain_session_bind"
   ],
   "output_schema_lengths": {
     "brain_session_start": 2639,
@@ -17,9 +18,10 @@
     "brain_session_list": 2640,
     "brain_session_resume": 2777,
     "brain_session_abandon": 2621,
-    "brain_session_checkpoint": 633
+    "brain_session_checkpoint": 633,
+    "brain_session_bind": 352
   },
-  "output_schema_total": 19674,
+  "output_schema_total": 20026,
   "contracts": {
     "brain_session_start": {
       "version": "4.0",
@@ -361,6 +363,41 @@
           "seq",
           "progress",
           "next_step"
+        ],
+        "type": "object"
+      }
+    },
+    "brain_session_bind": {
+      "version": "4.0",
+      "annotations": {
+        "title": null,
+        "readOnlyHint": false,
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expected_client_key": {
+            "description": "Client identity expected for the addressed session UUID. The pair must match before any session mutation. This is an isolation guard, not authentication.",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "slot_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "expected_client_key",
+          "slot_id"
         ],
         "type": "object"
       }
