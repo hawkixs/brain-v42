@@ -47,6 +47,28 @@ replacement is restored or left in a flagged staging for recovery. This defense 
 mistakes and other UIDs; a hostile process sharing the same UID stays within the same
 trust boundary and would need a dedicated `dirfd` helper.
 
+### Hosts that restrict unprivileged user namespaces
+
+When `/proc/sys/kernel/apparmor_restrict_unprivileged_userns` reads `1` (Ubuntu 24.04+),
+a unit combining `PrivateUsers=true` with an empty `CapabilityBoundingSet=` dies with
+`status=218/CAPABILITIES`. On such a host `install.sh` (legacy install and `--dry-run`)
+publishes `zz-apparmor-userns-compat.conf` as a drop-in of every managed unit with that
+combination (derived from the templates), and `install-delivery-observer.sh` renders it next to
+the observer unit. On any other host a later `install.sh` run removes the drop-in, so the
+installed state follows the host. `--check-only` and `--render-dir` of `install.sh` do not
+render it. No sudo is involved.
+
+### Boot resilience of the long-running units
+
+`brain-mcp-http`, `brain-v42-automation` and `brain-v42-delivery-observer` are user units and
+cannot order themselves after `docker.service`. After a reboot each one therefore waits for
+PostgreSQL in an `ExecStartPre` (`scripts/wait_for_postgres.py`, 90 s, killed at
+`TimeoutStartSec=120`; the URL is read from the unit's environment, never from the command
+line) and restarts with an exponential backoff (`RestartSec` growing over `RestartSteps=6` up to
+`RestartMaxDelaySec=60`, systemd >= 254). `StartLimitIntervalSec=0`: the backoff already caps the
+rate at one start a minute, and a start limit would latch the unit as failed until an operator
+intervenes. The timer-driven oneshot units are unchanged.
+
 ## Preflight
 
 This block first verifies all managed units without publishing, produces an artifact inspectable outside

@@ -6,6 +6,9 @@ UNIT_NAME="brain-v42-delivery-observer.service"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/../.." && pwd -P)"
 TEMPLATE="$SCRIPT_DIR/$UNIT_NAME.tmpl"
+USERNS_COMPAT_FILE="zz-apparmor-userns-compat.conf"
+USERNS_COMPAT_SOURCE="$SCRIPT_DIR/$USERNS_COMPAT_FILE"
+USERNS_SYSCTL="${BRAIN_APPARMOR_USERNS_SYSCTL:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}"
 MODE=""
 RENDER_TARGET=""
 STAGING_DIR=""
@@ -25,6 +28,12 @@ Required environment:
 
 Both modes render and verify only brain-v42-delivery-observer.service. They never
 call systemctl and never activate, restart, stop, or modify a live unit.
+
+On a host that restricts unprivileged user namespaces
+(kernel.apparmor_restrict_unprivileged_userns reads 1) the render also carries
+brain-v42-delivery-observer.service.d/zz-apparmor-userns-compat.conf, without which the
+sandboxed unit fails with status=218/CAPABILITIES. On any other host it does not.
+BRAIN_APPARMOR_USERNS_SYSCTL overrides the probed sysctl path (tests only).
 EOF
 }
 
@@ -157,6 +166,22 @@ render_unit() {
   chmod 0644 -- "$output"
 }
 
+host_restricts_userns() {
+  local value=""
+  [[ -r "$USERNS_SYSCTL" ]] || return 1
+  IFS= read -r value < "$USERNS_SYSCTL" || true
+  [[ "$value" == "1" ]]
+}
+
+render_userns_compat() {
+  local stage="$1"
+  host_restricts_userns || return 0
+  [[ -f "$USERNS_COMPAT_SOURCE" && ! -L "$USERNS_COMPAT_SOURCE" ]] || fail "user namespace compat drop-in is unavailable"
+  mkdir -m 0700 -- "$stage/$UNIT_NAME.d"
+  cp -- "$USERNS_COMPAT_SOURCE" "$stage/$UNIT_NAME.d/$USERNS_COMPAT_FILE"
+  chmod 0644 -- "$stage/$UNIT_NAME.d/$USERNS_COMPAT_FILE"
+}
+
 verify_stage() {
   local analyzer
   analyzer="$(command -v systemd-analyze || true)"
@@ -208,6 +233,7 @@ if [[ "$MODE" == "check-only" ]]; then
   umask 0077
   STAGING_DIR="$(mktemp -d "$temporary_root/.brain-v42-delivery-observer.XXXXXX")"
   render_unit "$STAGING_DIR/$UNIT_NAME"
+  render_userns_compat "$STAGING_DIR"
   verify_stage
   revalidate_configured_paths
   printf '%s\n' "[delivery-observer] check-only: verified isolated render"
@@ -223,6 +249,7 @@ RENDER_PARENT_IDENTITY="$(render_parent_identity "$RENDER_PARENT")"
 umask 0077
 STAGING_DIR="$(mktemp -d "$RENDER_PARENT/.brain-v42-delivery-observer.XXXXXX")"
 render_unit "$STAGING_DIR/$UNIT_NAME"
+render_userns_compat "$STAGING_DIR"
 verify_stage
 
 revalidate_configured_paths

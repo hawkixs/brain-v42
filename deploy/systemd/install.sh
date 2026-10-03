@@ -24,12 +24,21 @@
 # brain-mcp-http-watchdog.service, brain-mcp-http-watchdog.timer) are generated
 # and validated but never auto-enabled. Their production lifecycle is
 # operator-managed. The explicit --uninstall path stops, disables and removes them.
+#
+# Hosts that restrict unprivileged user namespaces (the sysctl
+# kernel.apparmor_restrict_unprivileged_userns reads 1) cannot start a unit that combines
+# PrivateUsers=true with an empty CapabilityBoundingSet= (status=218/CAPABILITIES). On such
+# a host, legacy install and --dry-run publish zz-apparmor-userns-compat.conf as a drop-in of
+# every such unit; on any other host they remove it, so the installed state follows the host.
+# BRAIN_APPARMOR_USERNS_SYSCTL overrides the probed sysctl path (tests only).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 USER_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+USERNS_SYSCTL="${BRAIN_APPARMOR_USERNS_SYSCTL:-/proc/sys/kernel/apparmor_restrict_unprivileged_userns}"
+USERNS_COMPAT_FILE="zz-apparmor-userns-compat.conf"
 
 # Two paired (service, timer) sets:
 #   - dream:          daily 06:00 — knowledge consolidation pipeline
@@ -479,6 +488,60 @@ require_mcp_watchdog_quiescent() {
   esac
 }
 
+host_restricts_userns() {
+  local value=""
+
+  [[ -r "$USERNS_SYSCTL" ]] || return 1
+  IFS= read -r value < "$USERNS_SYSCTL" || true
+  [[ "$value" == "1" ]]
+}
+
+template_needs_userns_compat() {
+  local template="$1"
+
+  grep -qx 'PrivateUsers=true' "$template" && grep -qx 'CapabilityBoundingSet=' "$template"
+}
+
+installer_manages_unit() {
+  local unit="$1"
+  local managed
+
+  for managed in "${MANAGED_UNIT_FILES[@]}"; do
+    [[ "$managed" == "$unit" ]] && return 0
+  done
+  return 1
+}
+
+# Make the compat drop-in of every managed sandboxed unit follow the host: present when the
+# host restricts user namespaces, absent otherwise. The set of units is derived from the
+# templates, never listed; other drop-ins in the same directory are left alone.
+sync_userns_compat_dropins() {
+  local unit_dir="${1:-$USER_UNIT_DIR}"
+  local template
+  local unit
+  local dropin_dir
+  local staged
+
+  for template in "$SCRIPT_DIR"/*.service.tmpl; do
+    unit="${template##*/}"
+    unit="${unit%.tmpl}"
+    installer_manages_unit "$unit" || continue
+    template_needs_userns_compat "$template" || continue
+    dropin_dir="$unit_dir/$unit.d"
+    if host_restricts_userns; then
+      mkdir -p -- "$dropin_dir"
+      staged="$(mktemp "$dropin_dir/.$USERNS_COMPAT_FILE.XXXXXX")"
+      cp -- "$SCRIPT_DIR/$USERNS_COMPAT_FILE" "$staged"
+      mv -f -- "$staged" "$dropin_dir/$USERNS_COMPAT_FILE"
+      log "installed $unit.d/$USERNS_COMPAT_FILE (host restricts unprivileged user namespaces)"
+    elif [[ -e "$dropin_dir/$USERNS_COMPAT_FILE" || -L "$dropin_dir/$USERNS_COMPAT_FILE" ]]; then
+      rm -f -- "$dropin_dir/$USERNS_COMPAT_FILE"
+      rmdir -- "$dropin_dir" 2>/dev/null || true
+      log "removed $unit.d/$USERNS_COMPAT_FILE (host no longer restricts user namespaces)"
+    fi
+  done
+}
+
 # --- Uninstall branch ---
 if $UNINSTALL; then
   log "stopping + disabling managed units"
@@ -570,6 +633,11 @@ for tmpl in brain-mcp-http.service.tmpl brain-mcp-http-watchdog.service.tmpl bra
     exit 1
   }
 done
+
+[[ -f "$SCRIPT_DIR/$USERNS_COMPAT_FILE" ]] || {
+  echo "missing user namespace compat drop-in: $SCRIPT_DIR/$USERNS_COMPAT_FILE" >&2
+  exit 1
+}
 
 AUTOMATION_TEMPLATE="$SCRIPT_DIR/brain-v42-automation.service.tmpl"
 [[ -f "$AUTOMATION_TEMPLATE" ]] || {
@@ -724,6 +792,7 @@ render_isolated_units() {
     "$BACKFILL_TEMPLATE" \
     > "$ISOLATED_RENDER_DIR/brain-v42-embedding-backfill.service"
   cp "$BACKFILL_TIMER" "$ISOLATED_RENDER_DIR/brain-v42-embedding-backfill.timer"
+  sync_userns_compat_dropins "$ISOLATED_RENDER_DIR"
 }
 
 validate_isolated_artifacts() {
@@ -733,7 +802,18 @@ validate_isolated_artifacts() {
   shopt -s nullglob dotglob
   entries=("$ISOLATED_RENDER_DIR"/*)
   shopt -u nullglob dotglob
-  if ((${#entries[@]} != ${#MANAGED_UNIT_FILES[@]})); then
+  local dropin_count=0
+  local template
+  for template in "$SCRIPT_DIR"/*.service.tmpl; do
+    unit="${template##*/}"
+    unit="${unit%.tmpl}"
+    installer_manages_unit "$unit" || continue
+    template_needs_userns_compat "$template" || continue
+    if host_restricts_userns; then
+      ((dropin_count += 1))
+    fi
+  done
+  if ((${#entries[@]} != ${#MANAGED_UNIT_FILES[@]} + dropin_count)); then
     echo "ERROR: isolated render produced an unexpected artifact count." >&2
     return 1
   fi
@@ -747,6 +827,18 @@ validate_isolated_artifacts() {
       return 1
     fi
   done
+  if host_restricts_userns; then
+    for template in "$SCRIPT_DIR"/*.service.tmpl; do
+      unit="${template##*/}"
+      unit="${unit%.tmpl}"
+      installer_manages_unit "$unit" || continue
+      template_needs_userns_compat "$template" || continue
+      [[ -f "$ISOLATED_RENDER_DIR/$unit.d/$USERNS_COMPAT_FILE" ]] || {
+        echo "ERROR: isolated render omitted a required user namespace compatibility drop-in." >&2
+        return 1
+      }
+    done
+  fi
 }
 
 verify_isolated_artifacts() {
@@ -910,10 +1002,40 @@ rollback_published_units() {
   local target
   local backup
   local rollback_failed=false
+  local template
+  local unit
+  local snapshot
 
   ((status != 0)) || status=1
+  # `set -E` lets a command substitution inherit this trap. Rolling back from
+  # that subshell would move every backup back, then the parent's own run would
+  # find no backup left and delete the units it had just restored. Only the
+  # main shell rolls back; a subshell just reports its failure upward.
+  if [[ "$BASHPID" != "$$" ]]; then
+    exit "$status"
+  fi
   trap - ERR INT TERM
   set +e
+  for template in "$SCRIPT_DIR"/*.service.tmpl; do
+    unit="${template##*/}"
+    unit="${unit%.tmpl}"
+    installer_manages_unit "$unit" || continue
+    template_needs_userns_compat "$template" || continue
+    snapshot="$BACKUP_DIR/userns/$unit.d"
+    if [[ -e "$snapshot/.present" ]]; then
+      if ! rm -rf -- "$USER_UNIT_DIR/$unit.d" \
+        || ! cp -a -- "$snapshot/content" "$USER_UNIT_DIR/$unit.d"; then
+        echo "ERROR: failed to restore user namespace drop-in backup: $unit.d" >&2
+        rollback_failed=true
+      fi
+    elif [[ -d "$snapshot" ]]; then
+      if ! rm -f -- "$USER_UNIT_DIR/$unit.d/$USERNS_COMPAT_FILE"; then
+        echo "ERROR: failed to remove partial user namespace drop-in: $unit.d" >&2
+        rollback_failed=true
+      fi
+      rmdir -- "$USER_UNIT_DIR/$unit.d" 2>/dev/null || true
+    fi
+  done
   for ((index = ${#PUBLISHED_FILES[@]} - 1; index >= 0; index--)); do
     filename="${PUBLISHED_FILES[$index]}"
     target="$USER_UNIT_DIR/$filename"
@@ -940,7 +1062,31 @@ rollback_published_units() {
   exit "$status"
 }
 
+# -E: without it, functions do not inherit the ERR trap, so a failure inside
+# snapshot_/sync_userns_compat_dropins would exit under `set -e` without any rollback.
+set -E
 trap rollback_published_units ERR INT TERM
+
+snapshot_userns_compat_dropins() {
+  local template
+  local unit
+  local source
+  local snapshot
+
+  for template in "$SCRIPT_DIR"/*.service.tmpl; do
+    unit="${template##*/}"
+    unit="${unit%.tmpl}"
+    installer_manages_unit "$unit" || continue
+    template_needs_userns_compat "$template" || continue
+    source="$USER_UNIT_DIR/$unit.d"
+    snapshot="$BACKUP_DIR/userns/$unit.d"
+    mkdir -p -- "$snapshot"
+    if [[ -d "$source" ]]; then
+      : > "$snapshot/.present"
+      cp -a -- "$source" "$snapshot/content"
+    fi
+  done
+}
 
 # --- Generate the .service from the template ---
 log "repo root: $REPO_ROOT"
@@ -1015,6 +1161,8 @@ for filename in "${MANAGED_UNIT_FILES[@]}"; do
   mv -f -- "$RENDER_DIR/$filename" "$target"
   PUBLISHED_FILES+=("$filename")
 done
+snapshot_userns_compat_dropins
+sync_userns_compat_dropins
 trap - ERR INT TERM
 cleanup_staging_dir
 log "published validated managed units"

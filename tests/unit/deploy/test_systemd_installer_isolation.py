@@ -142,6 +142,7 @@ def _install_tool_wrappers(fake_bin: Path, *, include_analyzer: bool) -> None:
         "readlink",
         "realpath",
         "rm",
+        "rmdir",
         "sort",
         "tr",
     ):
@@ -187,6 +188,16 @@ def _install_tool_wrappers(fake_bin: Path, *, include_analyzer: bool) -> None:
     )
     _write_live_scan_wrapper(
         fake_bin,
+        "cp",
+        extra_guard="""
+        if [[ -e "$TOOL_CONTROL_ROOT/compat-sync-fail" && "$*" == *zz-apparmor-userns-compat.conf* ]]; then
+          : > "$TOOL_CONTROL_ROOT/compat-sync-fired"
+          exit 93
+        fi
+        """,
+    )
+    _write_live_scan_wrapper(
+        fake_bin,
         "stat",
         extra_guard="""
         if [[ -f "$TOOL_CONTROL_ROOT/stat-foreign-exact-path" ]]; then
@@ -225,6 +236,10 @@ def _install_tool_wrappers(fake_bin: Path, *, include_analyzer: bool) -> None:
         fake_bin / "mktemp",
         """
         #!/bin/bash
+        if [[ -e "$TOOL_CONTROL_ROOT/compat-mktemp-fail" && "$*" == *zz-apparmor-userns-compat.conf* ]]; then
+          : > "$TOOL_CONTROL_ROOT/compat-mktemp-fired"
+          exit 94
+        fi
         created="$(/usr/bin/mktemp "$@")" || exit $?
         printf '%s\n' "$created" >> "$MKTEMP_LOG"
         printf '%s\n' "$created"
@@ -413,6 +428,9 @@ def _make_fixture(tmp_path: Path, *, include_analyzer: bool = True) -> Installer
             "MCP_HTTP_TOKEN": SECRET_SENTINEL,
             "MKTEMP_LOG": str(logs["mktemp"]),
             "MV_LOG": str(logs["mv"]),
+            # Pin the host probe to an absent file: the developer's own machine must never
+            # decide whether the compat drop-in is rendered.
+            "BRAIN_APPARMOR_USERNS_SYSCTL": str(tmp_path / "apparmor_restrict_unprivileged_userns"),
             "PATH": str(fake_bin),
             "PREFLIGHT_LOG": str(logs["preflight"]),
             "SYSTEMCTL_LOG": str(logs["systemctl"]),
@@ -1193,6 +1211,93 @@ def test_render_dir_publishes_exact_verified_artifacts_atomically(tmp_path: Path
 
 
 @pytest.mark.parametrize(
+    "sysctl_value, expected",
+    [
+        (
+            "1",
+            {
+                "brain-v42-graph-recon.service",
+                "brain-mcp-http.service",
+                "brain-v42-automation.service",
+            },
+        ),
+        ("0", set()),
+    ],
+)
+def test_render_dir_includes_compat_dropins_only_when_host_restricts_userns(
+    tmp_path: Path, sysctl_value: str, expected: set[str]
+) -> None:
+    fixture = _make_fixture(tmp_path)
+    sysctl = tmp_path / "userns"
+    sysctl.write_text(f"{sysctl_value}\n", encoding="utf-8")
+    fixture.environment["BRAIN_APPARMOR_USERNS_SYSCTL"] = str(sysctl)
+    parent = tmp_path / "render-parent"
+    make_directory(parent)
+    target = parent / "rendered"
+
+    result = _run_installer(fixture, "--render-dir", str(target))
+
+    assert result.returncode == 0, result.stderr
+    assert {
+        path.parent.name.removesuffix(".d")
+        for path in target.glob("*.service.d/zz-apparmor-userns-compat.conf")
+    } == expected
+
+
+def test_compat_dropin_sync_failure_restores_published_units_and_dropins(tmp_path: Path) -> None:
+    fixture = _make_fixture(tmp_path)
+    make_directory(fixture.user_unit_dir, parents=True)
+    previous = "previous-unit-content\n"
+    (fixture.user_unit_dir / "brain-v42-dream.service").write_text(previous, encoding="utf-8")
+    compat_dir = fixture.user_unit_dir / "brain-v42-dream.service.d"
+    make_directory(compat_dir)
+    old_dropin = compat_dir / "local.conf"
+    old_dropin.write_text("previous-dropin-content\n", encoding="utf-8")
+    sysctl = tmp_path / "userns"
+    sysctl.write_text("1\n", encoding="utf-8")
+    fixture.environment["BRAIN_APPARMOR_USERNS_SYSCTL"] = str(sysctl)
+    (tmp_path / "compat-sync-fail").touch()
+
+    result = _run_installer(fixture, "--dry-run", environment_updates=LIVE_INSTALL_UPDATES)
+
+    # The shim only fires once the installer has published the units and reached the drop-in
+    # sync. Without this, the restoration assertions below hold trivially: an early unrelated
+    # exit also leaves the previous files in place.
+    assert (tmp_path / "compat-sync-fired").exists(), result.stdout + result.stderr
+    assert result.returncode != 0
+    assert (fixture.user_unit_dir / "brain-v42-dream.service").read_text() == previous
+    assert old_dropin.read_text() == "previous-dropin-content\n"
+    assert not (compat_dir / "zz-apparmor-userns-compat.conf").exists()
+
+
+def test_a_failing_command_substitution_in_the_dropin_sync_rolls_back_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """`set -E` lets a `$(...)` inherit the ERR trap: the rollback must not run twice.
+
+    A first run inside the substitution's subshell would move every backup back,
+    then the parent's run would find no backup and delete the units it just
+    restored (review of #264, round 2).
+    """
+    fixture = _make_fixture(tmp_path)
+    make_directory(fixture.user_unit_dir, parents=True)
+    previous = "previous-unit-content\n"
+    unit = fixture.user_unit_dir / "brain-v42-dream.service"
+    unit.write_text(previous, encoding="utf-8")
+    sysctl = tmp_path / "userns"
+    sysctl.write_text("1\n", encoding="utf-8")
+    fixture.environment["BRAIN_APPARMOR_USERNS_SYSCTL"] = str(sysctl)
+    (tmp_path / "compat-mktemp-fail").touch()
+
+    result = _run_installer(fixture, "--dry-run", environment_updates=LIVE_INSTALL_UPDATES)
+
+    assert (tmp_path / "compat-mktemp-fired").exists(), result.stdout + result.stderr
+    assert result.returncode != 0
+    assert unit.is_file(), result.stdout + result.stderr
+    assert unit.read_text() == previous
+
+
+@pytest.mark.parametrize(
     "target_kind",
     [
         "relative",
@@ -1444,3 +1549,84 @@ def test_dry_run_rejects_permissive_user_unit_ancestor(tmp_path: Path) -> None:
     assert not fixture.logs["analyze"].exists()
     _assert_no_systemctl(fixture)
     _assert_secret_redacted(result)
+
+
+USERNS_COMPAT_FILE = "zz-apparmor-userns-compat.conf"
+USERNS_COMPAT_SOURCE = SYSTEMD_DIR / USERNS_COMPAT_FILE
+LIVE_INSTALL_UPDATES = {"ALLOW_LIVE_ACCESS": "1", "ANALYZE_REQUIRE_ISOLATION": "0"}
+
+
+def _sandboxed_managed_services() -> set[str]:
+    """Services whose template drops every capability under PrivateUsers=true.
+
+    Derived from the templates, restricted to what install.sh publishes: the observer
+    template qualifies too but is rendered by its own installer.
+    """
+    sandboxed: set[str] = set()
+    for template in SYSTEMD_DIR.glob("*.service.tmpl"):
+        lines = template.read_text(encoding="utf-8").splitlines()
+        if "PrivateUsers=true" in lines and "CapabilityBoundingSet=" in lines:
+            sandboxed.add(template.name.removesuffix(".tmpl"))
+    return sandboxed & EXPECTED_UNITS
+
+
+def _compat_dropin(fixture: InstallerFixture, unit: str) -> Path:
+    return fixture.user_unit_dir / f"{unit}.d" / USERNS_COMPAT_FILE
+
+
+def _set_userns_restriction(fixture: InstallerFixture, value: str | None) -> None:
+    sysctl = Path(fixture.environment["BRAIN_APPARMOR_USERNS_SYSCTL"])
+    if value is None:
+        sysctl.unlink(missing_ok=True)
+    else:
+        sysctl.write_text(value, encoding="utf-8")
+
+
+def test_restricted_host_gets_the_userns_compat_dropin_on_every_sandboxed_unit(
+    tmp_path: Path,
+) -> None:
+    fixture = _make_fixture(tmp_path)
+    _set_userns_restriction(fixture, "1\n")
+    sandboxed = _sandboxed_managed_services()
+    assert sandboxed, "no sandboxed template derived: the derivation is vacuous"
+
+    result = _run_installer(fixture, "--dry-run", environment_updates=LIVE_INSTALL_UPDATES)
+
+    assert result.returncode == 0, result.stderr
+    expected = USERNS_COMPAT_SOURCE.read_text(encoding="utf-8")
+    for unit in sandboxed:
+        assert _compat_dropin(fixture, unit).read_text(encoding="utf-8") == expected
+    assert {path.name for path in fixture.user_unit_dir.glob("*.d")} == {
+        f"{unit}.d" for unit in sandboxed
+    }
+    _assert_no_systemctl(fixture)
+    _assert_secret_redacted(result)
+
+
+@pytest.mark.parametrize("sysctl_value", ["0\n", None], ids=["unrestricted", "absent"])
+def test_unrestricted_host_keeps_the_full_sandbox(tmp_path: Path, sysctl_value: str | None) -> None:
+    fixture = _make_fixture(tmp_path)
+    _set_userns_restriction(fixture, sysctl_value)
+
+    result = _run_installer(fixture, "--dry-run", environment_updates=LIVE_INSTALL_UPDATES)
+
+    assert result.returncode == 0, result.stderr
+    assert not list(fixture.user_unit_dir.glob("*.d"))
+
+
+def test_unrestricted_host_removes_a_previously_installed_compat_dropin(tmp_path: Path) -> None:
+    fixture = _make_fixture(tmp_path)
+    sandboxed = sorted(_sandboxed_managed_services())
+    for unit in sandboxed:
+        make_directory(_compat_dropin(fixture, unit).parent, parents=True)
+        write_file(_compat_dropin(fixture, unit), "stale\n")
+    keep = fixture.user_unit_dir / f"{sandboxed[0]}.d" / "killswitches.conf"
+    write_file(keep, "[Service]\nEnvironment=KEEP=1\n")
+    _set_userns_restriction(fixture, "0\n")
+
+    result = _run_installer(fixture, "--dry-run", environment_updates=LIVE_INSTALL_UPDATES)
+
+    assert result.returncode == 0, result.stderr
+    assert not any(_compat_dropin(fixture, unit).exists() for unit in sandboxed)
+    assert keep.read_text(encoding="utf-8") == "[Service]\nEnvironment=KEEP=1\n"
+    assert [path.name for path in fixture.user_unit_dir.glob("*.d")] == [f"{sandboxed[0]}.d"]

@@ -596,8 +596,9 @@ capability sets, and a bounded socket-family allowlist. MCP HTTP keeps HOME writ
 documented file operations while protecting repository and Brain credentials read-only. Dream
 and the watchdog use reduced profiles so nested agent sandboxes, caches, logs, and the user bus
 remain compatible. `install.sh --check-only` renders and verifies all eight units without touching
-the live unit directory; `--render-dir` publishes the same verified bytes to a new private
-directory outside systemd. The historical `--dry-run` still writes all eight live fragments and
+the live unit directory; `--render-dir` publishes the verified unit files and, on restricted
+hosts, their AppArmor user namespace compatibility drop-ins to a new private directory outside
+systemd. The historical `--dry-run` still writes all eight live fragments and
 is not a side-effect-free preview. On 24 July 2026 only `brain-mcp-http.service`,
 `brain-mcp-http-watchdog.service` and `brain-mcp-http-watchdog.timer` were published and canaried
 live, including kernel enforcement and authenticated E2E. The five Dream, graph-recon and
