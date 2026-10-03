@@ -200,6 +200,46 @@ class PgTicketRepo(BasePgRepository):
                 )
                 return TicketMessage.model_validate(dict(row))
 
+    async def set_target_release(
+        self,
+        ticket_id: UUID,
+        *,
+        author_project: str,
+        expected: str | None,
+        new: str | None,
+        message: str,
+    ) -> TicketMessage | None:
+        """Compare-and-swap a release plan with its thread message atomically."""
+        async with self.get_session() as session:
+            async with session.begin():
+                updated = await session.execute(
+                    tickets.update()
+                    .where(
+                        tickets.c.id == ticket_id,
+                        tickets.c.target_release.is_not_distinct_from(expected),
+                    )
+                    .values(target_release=new, updated_at=sa.func.now())
+                    .returning(tickets.c.id)
+                )
+                if updated.first() is None:
+                    return None
+                row = (
+                    (
+                        await session.execute(
+                            ticket_messages.insert()
+                            .values(
+                                ticket_id=ticket_id,
+                                author_project=author_project,
+                                body=message,
+                            )
+                            .returning(ticket_messages)
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                return TicketMessage.model_validate(dict(row))
+
     async def apply_transition(
         self,
         ticket_id: UUID,

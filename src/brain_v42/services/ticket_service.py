@@ -28,6 +28,7 @@ from brain_v42.models.ticket import (
     TicketMessage,
     TicketStatus,
     allowed_actions,
+    parse_target_release,
 )
 
 if TYPE_CHECKING:
@@ -65,6 +66,10 @@ class IllegalTransitionError(TicketError):
 
 class TicketTransitionConflictError(TicketError):
     """The ticket status changed after the transition rules were evaluated."""
+
+
+class TicketPlanConflictError(TicketError):
+    """The plan changed between the read and the write; nothing was recorded."""
 
 
 class TicketService:
@@ -158,6 +163,46 @@ class TicketService:
             recorded,
             new_ticket_body=corrects_body,
         )
+
+    async def plan(
+        self, ticket_id: UUID, author_project: str, target_release: str | None
+    ) -> TicketMessage:
+        """Set, move or clear the release a ticket is planned for.
+
+        The executor owns the release decision; the thread records its history,
+        while the plan remains an intention rather than a shipment measurement.
+        """
+        author = canonicalize_project_key(author_project)
+        new = None if target_release is None else parse_target_release(target_release)
+        ticket = await self._get_or_raise(ticket_id)
+        if author != ticket.to_project:
+            raise NotAllowedError(
+                f"'plan' is reserved to the executor ('{ticket.to_project}'); author was '{author}'"
+            )
+        if ticket.status in TERMINAL_STATUSES:
+            raise TicketError(
+                f"ticket is {ticket.status.value} (terminal): planning it now would "
+                f"record an intention after the fact"
+            )
+        previous = ticket.target_release
+        if new == previous:
+            raise TicketError(
+                f"ticket is already planned for {new}" if new else "ticket is not planned"
+            )
+        if previous is None:
+            message = f"planned for {new}"
+        elif new is None:
+            message = f"unplanned (was {previous})"
+        else:
+            message = f"moved from {previous} to {new}"
+        recorded = await self._repo.set_target_release(
+            ticket_id, author_project=author, expected=previous, new=new, message=message
+        )
+        if recorded is None:
+            raise TicketPlanConflictError(
+                "target_release changed concurrently; re-read the ticket and retry"
+            )
+        return recorded
 
     async def transition(
         self,
