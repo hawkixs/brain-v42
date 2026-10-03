@@ -81,6 +81,26 @@ def release_sha_from_path(path: Path) -> str:
     raise ValueError("path has no immutable release SHA")
 
 
+def running_release_sha() -> str | None:
+    """Use the live_release_sha probe's source; a checkout proves no deployment."""
+    import brain_v42
+
+    if brain_v42.__file__ is None:
+        return None
+    try:
+        return release_sha_from_path(Path(brain_v42.__file__))
+    except ValueError:
+        return None
+
+
+def running_release_identity() -> ReleaseIdentity | None:
+    """Pair the imported release path with its installed distribution version."""
+    from brain_v42.release import package_version
+
+    sha = running_release_sha()
+    return None if sha is None else ReleaseIdentity(sha, package_version())
+
+
 def read_text_under(root: Path, relative: str) -> tuple[str, int]:
     """Read one small UTF-8 regular file under ``root`` without following a symlink.
 

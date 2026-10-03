@@ -51,6 +51,22 @@
     "enforced_vocabulary": false,
     "violation": "invalid_kind"
   },
+  "observer_derived": {
+    "issuer_identity": "brain-v42-delivery-observer",
+    "kinds": {
+      "released": {
+        "payload": ["integration_sha", "repository_id", "tag", "tag_sha"],
+        "idempotency_key": "released:<ticket>:<deliverable>:<tag>",
+        "emitted_at": "committer date of the tag's commit"
+      },
+      "deployed": {
+        "payload": ["integration_sha", "live_release_sha", "package_version", "repository_id"],
+        "idempotency_key": "deployed:<ticket>:<deliverable>:<live_release_sha>",
+        "emitted_at": "first observation",
+        "projects": ["brain-v42"]
+      }
+    }
+  },
   "payload": {
     "object_only": true,
     "max_canonical_bytes": 65536,

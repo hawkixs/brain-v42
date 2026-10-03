@@ -91,6 +91,13 @@ def test_payload_bounds_are_the_code_constants() -> None:
     assert CONTRACT["payload"]["unicode_surrogates"] == "refused"
 
 
+def test_observer_derived_kinds_are_the_code_constants() -> None:
+    published = CONTRACT["observer_derived"]
+    from brain_v42.models.delivery import OBSERVER_DERIVED_ATTESTATIONS
+
+    assert published == OBSERVER_DERIVED_ATTESTATIONS
+
+
 def test_digest_recipe_and_every_vector_recompute() -> None:
     from brain_v42.models.delivery_hashes import canonical_digest
 
