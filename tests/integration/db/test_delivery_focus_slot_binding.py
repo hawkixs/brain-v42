@@ -1,9 +1,5 @@
 """brain_session_bind against PostgreSQL: one slot per session, one open session per slot."""
 
-# The fixtures are imported from the slot module (private head database): a test parameter
-# necessarily shadows its import.
-# ruff: noqa: F811
-
 from __future__ import annotations
 
 import asyncio
@@ -18,13 +14,13 @@ from brain_v42.models.brain_session import BrainSessionIdentityConflictError
 from brain_v42.models.focus_slot import FocusSlotError, SlotAnchor
 from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
 from brain_v42.services.brain_session_service import BrainSessionService
-from tests.integration.db.test_delivery_focus_slots import (  # noqa: F401 - fixtures
-    ensure_project,
-    service,
-    session_factory,
-    slot_project,
-    ticket,
-)
+from tests.integration.db import test_delivery_focus_slots as _slots
+from tests.integration.db.test_delivery_focus_slots import ensure_project, service, ticket
+
+# The fixtures live on the slot module (private head database). They are rebound by
+# assignment: a plain import would be shadowed by the test parameters (F811).
+session_factory = _slots.session_factory
+slot_project = _slots.slot_project
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
@@ -181,3 +177,13 @@ async def test_a_bind_racing_a_close_has_exactly_one_winner(session_factory, slo
             assert isinstance(closed, FocusSlotError) and closed.code == "slot_bound"
             assert await open_holders(session_factory, slot_id) == 1
         await sessions(session_factory).abandon(session_id, key, "race over")
+
+
+async def test_a_replayed_bind_on_a_slot_closed_since_is_slot_closed(session_factory, slot_project):
+    slot_id = await open_slot(session_factory, slot_project)
+    session_id, key = await started(session_factory, slot_project)
+    await sessions(session_factory).bind(session_id, key, slot_id)
+    async with session_factory.begin() as session:
+        await close_slot(session, slot_id=slot_id, reason=f"receipt:{uuid4()}", note=None)
+    with pytest.raises(FocusSlotError, match="^slot_closed: "):
+        await sessions(session_factory).bind(session_id, key, slot_id)

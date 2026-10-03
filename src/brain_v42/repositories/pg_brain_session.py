@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.focus_history import record_focus_history, render_focus_diff
-from brain_v42.db.focus_slots import lock_slot
+from brain_v42.db.focus_slots import cas_slot_body, lock_slot, record_slot_history
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import (
     adrs,
@@ -24,6 +24,7 @@ from brain_v42.db.tables import (
     brain_session_checkpoints,
     brain_sessions,
     decisions,
+    focus_slots,
     indexed_plans,
     learnings,
     project_contexts,
@@ -60,7 +61,11 @@ from brain_v42.models.brain_session import (
     BrainSessionSweepResult,
     BrainSessionTerminalConflictError,
 )
-from brain_v42.models.focus_slot import BrainSessionBindResult, FocusSlotError
+from brain_v42.models.focus_slot import (
+    SLOT_BODY_MAX_LENGTH,
+    BrainSessionBindResult,
+    FocusSlotError,
+)
 from brain_v42.repositories.pg_base import BasePgRepository
 
 Row = dict[str, Any]
@@ -458,7 +463,7 @@ class PgBrainSessionRepo(BasePgRepository):
         session_id: UUID | str,
         expected_client_key: str,
     ) -> BrainSessionResumeResult:
-        """Read an open session and current focus without mutating either."""
+        """Read an open session and its current focus, the slot for a bound session, without mutating either."""
         async with self.get_session() as session:
             row = await self._get_row(session, session_id)
             if row is None:
@@ -471,7 +476,11 @@ class PgBrainSessionRepo(BasePgRepository):
             attributed_ids = await self._load_session_artifact_ids(session, model.id)
             model = model.model_copy(update={"attributed_knowledge_ids": attributed_ids})
 
-            focus = await self._load_focus(session, model.project_key)
+            focus = (
+                await self._load_slot_focus(session, row["slot_id"])
+                if row.get("slot_id") is not None
+                else await self._load_focus(session, model.project_key)
+            )
             if focus is None:
                 raise BrainSessionNotFoundError(f"Project {model.project_key!r} was not found")
             open_count = await self._count_open(session, model.project_key)
@@ -521,9 +530,9 @@ class PgBrainSessionRepo(BasePgRepository):
             slot = await lock_slot(session, slot_id)
             if slot is None:
                 raise FocusSlotError("slot_not_found", f"slot {slot_id} was not found")
+            if slot["closed_at"] is not None:
+                raise FocusSlotError("slot_closed", f"slot {slot_id} is closed")
             if bound_to != slot_id:
-                if slot["closed_at"] is not None:
-                    raise FocusSlotError("slot_closed", f"slot {slot_id} is closed")
                 if slot["project_key"] != model.project_key:
                     raise FocusSlotError(
                         "slot_project_mismatch",
@@ -970,6 +979,18 @@ class PgBrainSessionRepo(BasePgRepository):
                 return await self._replay_end(
                     session,
                     model,
+                    normalized_summary,
+                    normalized_focus,
+                    expected_focus_revision,
+                    normalized_reason,
+                    slot_id=row.get("slot_id"),
+                )
+
+            if row.get("slot_id") is not None:
+                return await self._end_bound(
+                    session,
+                    model,
+                    row["slot_id"],
                     normalized_summary,
                     normalized_focus,
                     expected_focus_revision,
@@ -1471,6 +1492,109 @@ class PgBrainSessionRepo(BasePgRepository):
         )
         return dict(row), BrainSessionFocusOutcome.APPLIED
 
+    async def _end_bound(
+        self,
+        session: AsyncSession,
+        model: BrainSession,
+        slot_id: UUID,
+        summary: str,
+        next_focus: str,
+        expected: int,
+        reason: str | None,
+    ) -> BrainSessionEndResult:
+        """End a bound session onto its slot; the base is neither locked nor written (S1).
+
+        Lock order: the session row (held by `end`), then the slot. A closed slot
+        whose revision equals `expected` cannot record a conflict (the ended CHECK
+        requires `focus_revision_at_end <> end_expected_focus_revision`), so the
+        end refuses `slot_closed` and the session stays open: end with the
+        revision you started from (recorded as `conflict`), or abandon.
+        """
+        if len(next_focus) > SLOT_BODY_MAX_LENGTH:
+            raise FocusSlotError(
+                "slot_body_too_long",
+                f"a bound session's next_focus becomes its slot body: {len(next_focus)} "
+                f"characters, at most {SLOT_BODY_MAX_LENGTH}",
+            )
+        slot_before = await lock_slot(session, slot_id)
+        if slot_before is None:
+            raise BrainSessionStateError(f"slot {slot_id} of session {model.id} was not found")
+        closed = slot_before["closed_at"] is not None
+        if closed and slot_before["revision"] == expected:
+            raise FocusSlotError(
+                "slot_closed",
+                f"slot {slot_id} closed at revision {expected}: end with the revision the "
+                "session started from to record a conflict, or abandon the session",
+            )
+        capture_ids = await self._load_session_artifact_ids(session, model.id)
+        if capture_ids:
+            await self._validate_captures(session, model, capture_ids)
+        slot_after = (
+            None
+            if closed or slot_before["revision"] != expected
+            else await cas_slot_body(session, slot_id=slot_id, expected=expected, body=next_focus)
+        )
+        if slot_after is None:
+            slot_after, outcome = slot_before, BrainSessionFocusOutcome.CONFLICT
+        else:
+            outcome = BrainSessionFocusOutcome.APPLIED
+            await record_slot_history(
+                session,
+                slot_id=slot_id,
+                revision=int(slot_after["revision"]),
+                body=str(slot_after["body"]),
+                source="session_end",
+                session_id=model.id,
+            )
+        ended = await self._mark_ended(
+            session,
+            model.id,
+            summary,
+            next_focus,
+            capture_ids,
+            reason,
+            expected_focus_revision=expected,
+            focus_outcome=outcome,
+            focus_at_end=str(slot_after["body"]),
+            focus_revision_at_end=int(slot_after["revision"]),
+        )
+        remaining = await self._count_open(session, model.project_key)
+        unattributed = await self._count_unattributed_in_window(
+            session, model.project_key, model.started_at, ended.ended_at or model.started_at
+        )
+        return BrainSessionEndResult(
+            session=ended,
+            replayed=False,
+            remaining_open_session_count=remaining,
+            unattributed_in_window=unattributed,
+            current_focus=str(slot_after["body"]),
+            current_focus_revision=int(slot_after["revision"]),
+            focus_outcome=outcome,
+            focus_at_end=str(slot_after["body"]),
+            focus_revision_at_end=int(slot_after["revision"]),
+            focus_diff=(
+                render_focus_diff(str(slot_before["body"]), str(slot_after["body"]))
+                if outcome is BrainSessionFocusOutcome.APPLIED
+                else ""
+            ),
+        )
+
+    async def _load_slot_focus(self, session: AsyncSession, slot_id: UUID) -> Row | None:
+        """A bound session's focus: its slot body and revision, in the base's shape."""
+        row = (
+            (
+                await session.execute(
+                    sa.select(
+                        focus_slots.c.body.label("current_focus"),
+                        focus_slots.c.revision.label("focus_revision"),
+                    ).where(focus_slots.c.id == slot_id)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return dict(row) if row is not None else None
+
     async def _mark_ended(
         self,
         session: AsyncSession,
@@ -1517,6 +1641,8 @@ class PgBrainSessionRepo(BasePgRepository):
         next_focus: str,
         expected_focus_revision: int,
         nothing_reason: str | None,
+        *,
+        slot_id: UUID | None = None,
     ) -> BrainSessionEndResult:
         exact = (
             model.status == "ended"
@@ -1533,7 +1659,11 @@ class PgBrainSessionRepo(BasePgRepository):
                 f"Session {model.id} already has a different terminal payload"
             )
 
-        focus = await self._load_focus(session, model.project_key)
+        focus = (
+            await self._load_slot_focus(session, slot_id)
+            if slot_id is not None
+            else await self._load_focus(session, model.project_key)
+        )
         if focus is None:
             raise BrainSessionNotFoundError(f"Project {model.project_key!r} was not found")
         if model.focus_outcome is None:

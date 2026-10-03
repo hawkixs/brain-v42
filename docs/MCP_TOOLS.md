@@ -800,7 +800,7 @@ Return the shortest graph path between two entities (1-6 hops, clamped). Discove
 
 ## Session lifecycle — 9 tools (`session_lifecycle_tools.py`, v4.0)
 
-These tools implement explicit, persistent session actions. Only an explicit user command may invoke them; hooks and agents must never infer a start, capture, heartbeat, resume, end, list, or abandon action. Migration 037 extends the schema created by migration 032 and depends on revision 036. It is active on the production database since 24 July 2026; fresh or restored environments must still prove their own Alembic head before enabling this runtime.
+These tools implement explicit, persistent session actions. Only an explicit user command may invoke them; hooks and agents must never infer a start, capture, heartbeat, resume, end, list, bind, or abandon action. Migration 037 extends the schema created by migration 032 and depends on revision 036. It is active on the production database since 24 July 2026; fresh or restored environments must still prove their own Alembic head before enabling this runtime.
 
 Every structured result that contains `session` uses the same `BrainSession` shape:
 
@@ -839,6 +839,7 @@ brain_session_resume(session_id, expected_client_key)
     current_focus_revision, briefing}
 ```
 Attach to an existing `open` session after the UUID/client-key guard passes, without mutating it. Ended and abandoned sessions cannot be resumed. Resume does not refresh liveness; issue an explicit heartbeat for a long-running session. Use the returned current focus revision before attempting `brain_session_end`.
+For a bound session, `current_focus` and `current_focus_revision` are the slot's body and revision.
 The nested session also restores every existing ledger attribution in
 `attributed_knowledge_ids`, so a client can recover safely after losing local state.
 
@@ -909,6 +910,8 @@ The capture outcome is an exclusive choice:
 - the ledger is empty and a non-blank `nothing_to_capture_reason` is provided.
 
 Invalid or missing capture evidence rolls back the transaction and leaves the session open. A focus revision mismatch is instead a normal terminal outcome: focus remains unchanged, the session still becomes `ended`, and `focus_outcome="conflict"` is persisted with the observed `focus_at_end` and `focus_revision_at_end`. A matching revision applies `next_focus`, increments the revision even when the text is unchanged, and persists `focus_outcome="applied"` with the resulting focus snapshot.
+
+For a session bound to a focus slot (`brain_session_bind`), `expected_focus_revision` is the slot revision and `next_focus` becomes the slot body (at most 4,000 characters, else `slot_body_too_long` before any write); the project base is not written. A stale revision or a closed slot closes the session with `conflict` and leaves the slot untouched, except a closed slot at exactly `expected_focus_revision`, which refuses `slot_closed` and leaves the session open: end with the revision the session started from, or abandon it.
 
 Replaying the exact terminal payload returns `replayed=true` and the original persisted focus outcome/snapshot; a different payload conflicts. `current_focus` and `current_focus_revision` report the project state at response time and may therefore differ from the persisted end snapshot on a later replay.
 
