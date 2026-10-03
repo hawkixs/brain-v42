@@ -1214,8 +1214,8 @@ Write a `BELONGS_TO_DOMAIN` edge from an entity to a Domain node. Called by the 
 | `brain_ticket_reply` | `(ticket_id, author_project, body)` | Posts a message to the thread — any status, participants only. |
 | `brain_ticket_transition` | `(ticket_id, author_project, action, message=None)` | Changes the status via the state machine. Optional `message` is appended to the thread. |
 | `brain_ticket_plan` | `(ticket_id, author_project, target_release?)` | Plans the target release (version without the tag's `v`) as executor; null unplans. Every change is recorded in the thread. |
-| `brain_ticket_list` | `(project_key, limit?, offset?, target_release?)` | Lists tickets grouped by required action: to handle / to confirm / waiting; optionally filters by planned release version X.Y.Z. |
-| `brain_ticket_get` | `(ticket_id)` | Full view: header, body, message thread, possible actions. |
+| `brain_ticket_list` | `(project_key, limit?, offset?, target_release?)` | Lists tickets grouped by required action: to handle / to confirm / waiting; optionally filters by planned release version X.Y.Z. With `target_release`, opens with the lot header: whether tag `vX.Y.Z` was observed, then "planned, not shipped" and "planned X.Y.Z, shipped vA.B.C" lines, read from the observer's `released` attestations only. |
+| `brain_ticket_get` | `(ticket_id)` | Full view: header, body, message thread, possible actions. A `release:` line puts the plan beside the observer's measurements: `planned 0.6.3 · shipped v0.6.3 · deployed`; "deployed once (<sha>), not in the live release" after a rollback; "(live release unmeasured)" when the server runs from a checkout. |
 
 `from_project == to_project` is valid: the project then assumes both the requester and
 executor roles. A `request` of this kind serves as a note-to-self and reappears in its briefing.

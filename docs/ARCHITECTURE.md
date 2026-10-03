@@ -207,6 +207,12 @@ Graph foundation and projection control: `projects`, `project_aliases`, `brain_e
 Delivery: `delivery_workflows`, `delivery_contract_revisions`, `delivery_dependencies`,
 `delivery_artifact_bindings`, `delivery_snapshots`, `delivery_confirmations`,
 `delivery_receipts`, `delivery_events`, `delivery_attestations`.
+The delivery observer derives two kinds of attestations from GitHub, issued as
+`brain-v42-delivery-observer`: `released` (the first `v*` tag that contains a merged
+deliverable) and `deployed` (the live brain-v42 release contains it, brain-v42 only).
+The ticket view renders them beside `tickets.target_release` without reconciling the
+two: a plan is a declaration, a release is a measurement (see `docs/OPERATIONS.md`,
+"Delivery observer: releases and deployments").
 
 See `docs/SCHEMA.md` for the maintained schema reference. Migration files and
 `src/brain_v42/db/tables.py` remain authoritative.
