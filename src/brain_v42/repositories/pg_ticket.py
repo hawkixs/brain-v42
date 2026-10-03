@@ -10,11 +10,12 @@ import sqlalchemy as sa
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_v42.db.tables import delivery_workflows, ticket_messages, tickets
+from brain_v42.db.tables import delivery_attestations, delivery_workflows, ticket_messages, tickets
 from brain_v42.delivery_config import DeliverySettings
 from brain_v42.models.delivery import DeliveryError
 from brain_v42.models.ticket import (
     ExtractionStatus,
+    LotShipping,
     ReleaseLot,
     Ticket,
     TicketAction,
@@ -26,8 +27,13 @@ from brain_v42.models.ticket import (
 from brain_v42.repositories.delivery_ticket_guard import guard_delivery_transition
 from brain_v42.repositories.pg_base import BasePgRepository
 from brain_v42.repositories.pg_delivery import lock_workflows
+from brain_v42.repositories.pg_release_derivation import OBSERVER_IDENTITY
 
 logger = structlog.get_logger(__name__)
+
+# Shapes of the observer's release facts (payloads written by pg_release_derivation).
+_RELEASE_TAG_SHAPE = r"^v[0-9]+\.[0-9]+\.[0-9]+$"
+_RELEASE_SHA_SHAPE = r"^[0-9a-f]{40}$"
 
 _ACTIONABLE = ("open", "in_progress")
 _CONFIRMABLE = ("resolved", "wontfix")
@@ -97,6 +103,93 @@ async def count_grouped_by_project(session: AsyncSession) -> list[dict[str, Any]
 class PgTicketRepo(BasePgRepository):
     table = tickets
     fts_columns: list[str] = []  # hors recherche — famille coordination (spec §1)
+
+    async def release_state(self, ticket_id: UUID) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Read only release facts issued by the delivery observer.
+
+        The issuer label is declared, and ``attest`` does not check payload keys:
+        a row without a well-formed tag or SHA is skipped here, so it can never
+        make the ticket view fail.
+        """
+        payload = delivery_attestations.c.payload
+        tag, sha = payload["tag"].astext, payload["live_release_sha"].astext
+        rows_query = (
+            sa.select(delivery_attestations.c.kind, tag.label("tag"), sha.label("sha"))
+            .where(
+                delivery_attestations.c.ticket_id == ticket_id,
+                delivery_attestations.c.issuer_identity == OBSERVER_IDENTITY,
+                sa.or_(
+                    sa.and_(
+                        delivery_attestations.c.kind == "released",
+                        tag.regexp_match(_RELEASE_TAG_SHAPE),
+                    ),
+                    sa.and_(
+                        delivery_attestations.c.kind == "deployed",
+                        sha.regexp_match(_RELEASE_SHA_SHAPE),
+                    ),
+                ),
+            )
+            .order_by(delivery_attestations.c.emitted_at, delivery_attestations.c.id)
+        )
+        async with self.get_session() as session:
+            rows = (await session.execute(rows_query)).mappings().all()
+        tags = tuple(row["tag"] for row in rows if row["kind"] == "released")
+        shas = tuple(row["sha"] for row in rows if row["kind"] == "deployed")
+        return tags, shas
+
+    async def shipped_by_release(self, project_key: str, target_release: str) -> LotShipping:
+        """Compare planned tickets with observer tags; never alter either record."""
+        observed = delivery_attestations.alias("observed_release")
+        known_query = sa.select(
+            sa.exists().where(
+                observed.c.kind == "released",
+                observed.c.issuer_identity == OBSERVER_IDENTITY,
+                observed.c.payload["tag"].astext == f"v{target_release}",
+                sa.exists().where(
+                    tickets.c.id == observed.c.ticket_id,
+                    tickets.c.to_project == project_key,
+                ),
+            )
+        )
+        planned_observed = delivery_attestations.alias("planned_observed")
+        rows_query = (
+            sa.select(tickets.c.id, planned_observed.c.payload["tag"].astext.label("tag"))
+            .select_from(
+                tickets.outerjoin(
+                    planned_observed,
+                    sa.and_(
+                        tickets.c.id == planned_observed.c.ticket_id,
+                        planned_observed.c.kind == "released",
+                        planned_observed.c.issuer_identity == OBSERVER_IDENTITY,
+                        planned_observed.c.payload["tag"].astext.regexp_match(_RELEASE_TAG_SHAPE),
+                    ),
+                )
+            )
+            .where(tickets.c.to_project == project_key, tickets.c.target_release == target_release)
+        )
+        async with self.get_session() as session:
+            tag_known = bool(await session.scalar(known_query))
+            rows = (await session.execute(rows_query)).all()
+        grouped: dict[UUID, set[str]] = {}
+        for ticket_id, tag in rows:
+            if tag:
+                grouped.setdefault(ticket_id, set()).add(tag)
+            else:
+                grouped.setdefault(ticket_id, set())
+        return LotShipping(
+            tag_known=tag_known,
+            not_shipped=tuple(
+                sorted((ticket_id for ticket_id, tags in grouped.items() if not tags), key=str)
+            )
+            if tag_known
+            else (),
+            shipped_elsewhere=tuple(
+                (ticket_id, tag)
+                for ticket_id, tags in sorted(grouped.items(), key=lambda item: str(item[0]))
+                for tag in sorted(tags)
+                if f"v{target_release}" not in tags
+            ),
+        )
 
     async def release_lots(self, project_key: str) -> list[ReleaseLot]:
         """Aggregate planned tickets by release for one executor project."""

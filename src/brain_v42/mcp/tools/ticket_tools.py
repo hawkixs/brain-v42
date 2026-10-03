@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from pydantic import ValidationError
 
+from brain_v42.facts.sources import running_release_sha
 from brain_v42.mcp.tools.formatters import format_confirmation, format_error, format_id
 from brain_v42.mcp.tools.parsing import parse_uuid, resolve_entity_id
 from brain_v42.mcp.tools.tool_annotations import (
@@ -23,6 +24,7 @@ from brain_v42.mcp.tools.tool_annotations import (
 )
 from brain_v42.models.ticket import (
     ExtractionStatus,
+    LotShipping,
     ReleaseState,
     Ticket,
     TicketAction,
@@ -104,6 +106,7 @@ def _format_groups(
     limit: int,
     offset: int,
     target_release: str | None = None,
+    lot_shipping: LotShipping | None = None,
 ) -> str:
     total = (
         len(groups.a_traiter)
@@ -111,9 +114,20 @@ def _format_groups(
         + len(groups.en_attente)
         + len(groups.awaiting_requester_confirmation)
     )
-    if total == 0:
+    if total == 0 and target_release is None:
         return f"## Tickets — {project_key}\n(aucun ticket)"
     lines = [f"## Tickets — {project_key}"]
+    if target_release is not None and lot_shipping is not None:
+        observed = "observed" if lot_shipping.tag_known else "not observed yet"
+        lines.append(f"Lot {target_release} — tag v{target_release} {observed}")
+        if lot_shipping.tag_known and lot_shipping.not_shipped:
+            ids = ", ".join(f"#{format_id(str(item))}" for item in lot_shipping.not_shipped)
+            lines.append(f"planned, not shipped: {ids}")
+        for ticket_id, tag in lot_shipping.shipped_elsewhere:
+            lines.append(f"planned {target_release}, shipped {tag}: #{format_id(str(ticket_id))}")
+    if total == 0:
+        lines.append("(aucun ticket)")
+        return "\n".join(lines)
     _format_group_page(
         lines,
         label="À traiter",
@@ -201,6 +215,7 @@ def register_ticket_tools(
     ticket_svc: TicketService,
 ) -> None:
     """Register the 6 brain_ticket_* MCP tools on the FastMCP server."""
+    ticket_svc.set_running_sha_provider(running_release_sha)
 
     @mcp.tool(version="1.1", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_ticket_create(
@@ -382,12 +397,22 @@ def register_ticket_tools(
             if target_release is not None:
                 target_release = parse_target_release(target_release)
             groups = await ticket_svc.list_grouped(project_key, target_release=target_release)
+            shipping = (
+                await ticket_svc.lot_shipping(project_key, target_release)
+                if target_release is not None
+                else None
+            )
         except TicketError as exc:
             return format_error(str(exc))
         except ValueError as exc:
             return format_error(str(exc))
         return _format_groups(
-            groups, project_key, limit=limit, offset=offset, target_release=target_release
+            groups,
+            project_key,
+            limit=limit,
+            offset=offset,
+            target_release=target_release,
+            lot_shipping=shipping,
         )
 
     @mcp.tool(version="1.1", annotations=_READ_ANNOTATIONS)

@@ -9,6 +9,7 @@ from brain_v42.models.ticket import (
     TRANSITIONS,
     ExtractionStatus,
     ReleaseLot,
+    ReleaseState,
     Ticket,
     TicketAction,
     TicketCreate,
@@ -20,6 +21,36 @@ from brain_v42.models.ticket import (
     parse_target_release,
     release_key,
 )
+
+L, OLD = "a" * 40, "b" * 40
+
+
+def test_deployed_only_when_the_running_release_is_one_of_them() -> None:
+    assert ReleaseState(
+        shipped_tags=("v0.6.3",), deployed_shas=(L,), running_sha=L
+    ).rendered_parts() == [
+        "shipped v0.6.3",
+        "deployed",
+    ]
+
+
+def test_rollback_to_a_release_without_the_ticket_is_not_deployed() -> None:
+    parts = ReleaseState(
+        shipped_tags=("v0.6.3",), deployed_shas=(L,), running_sha=OLD
+    ).rendered_parts()
+    assert parts == ["shipped v0.6.3", f"deployed once ({L[:8]}), not in the live release"]
+
+
+def test_unmeasured_running_release_is_said_not_guessed() -> None:
+    parts = ReleaseState(shipped_tags=(), deployed_shas=(L,), running_sha=None).rendered_parts()
+    assert parts == [f"deployed {L[:8]} (live release unmeasured)"]
+
+
+def test_two_deliverables_shipped_in_two_tags_are_both_shown_in_order() -> None:
+    parts = ReleaseState(
+        shipped_tags=("v0.6.10", "v0.6.9"), deployed_shas=(), running_sha=None
+    ).rendered_parts()
+    assert parts == ["shipped v0.6.9+v0.6.10"]
 
 
 def test_current_is_lowest_with_open_tickets_in_numeric_order() -> None:
