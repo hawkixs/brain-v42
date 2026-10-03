@@ -55,17 +55,20 @@ SESSION_LEDGER_WRITER_SCAN_ROOTS: Final[tuple[str, ...]] = ("src", "alembic", "s
 
 DECLARED_SESSION_LEDGER_WRITERS: Final[frozenset[str]] = frozenset(
     {
-        # The one runtime writer.  Reached only from brain_session_capture:
-        # session_lifecycle_tools -> BrainSessionService.capture -> here.
-        "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo.capture::insert",
-        # The TAKEOVER, added with the window stage. `capture` used to refuse a
+        # The one runtime writer.  Reached from brain_session_capture
+        # (session_lifecycle_tools -> BrainSessionService.capture -> here) and,
+        # since the slot relay, from the relay transaction that captures into the
+        # session it ends: both go through the one `_attach_captures` helper, so
+        # the exclusivity rule has a single implementation.
+        "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo._attach_captures::insert",
+        # The TAKEOVER, added with the window stage. Capture used to refuse a
         # row held by a tracer by raising "ownership could not be resolved"; it
         # now takes it over when — and ONLY when — the holder is
         # `nature='agent'`, that is, the server. This is the counterpart of
         # fail-closed: whatever the exclusivity rule refuses to attribute stays
         # repairable by a human who names the UUID. A conflict with another
         # human still raises.
-        "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo.capture::update",
+        "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo._attach_captures::update",
         # Backfill of pre-v4 attributions (knowledge_type='legacy').  A migration,
         # not a path in flight.
         "alembic/versions/037_session_lifecycle_v4.py::upgrade::insert",

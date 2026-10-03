@@ -453,6 +453,14 @@ class Settings(BaseSettings):
     # it: that summary names no auto-open flag. To be signed off before arming.
     brain_session_auto_open_enabled: bool = Field(default=False)
 
+    # The slot-relay amendment (ADR #34): a guard mod the operator enabled counts as a
+    # standing user command for ONE gesture, brain_session_relay of a bound
+    # operator session onto its slot. Shipped CLOSED: while false, a relay with
+    # initiator='guard_mod' is refused server-side (relay_guard_mod_disabled) and
+    # the standing command is void. Arming it is an operator gesture; its live
+    # value is measured in the MCP process environment, never read from a doc.
+    brain_session_relay_guard_mod_enabled: bool = Field(default=False)
+
     # DERIVED capture: the server deposits the artifact into the connection's
     # tracer at creation time, and the user's session ABSORBS that ledger on its
     # next command. Shipped CLOSED, and here "closed" is a delivery CONDITION,

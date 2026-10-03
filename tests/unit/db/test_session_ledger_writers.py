@@ -238,15 +238,16 @@ def test_scanner_ignores_reads_and_ddl(tmp_path: Path) -> None:
 def test_capture_declares_its_take_over_update() -> None:
     """The takeover by `capture` is one more WRITER, not a detail.
 
-    `capture()` used to refuse a row held by a tracer; it now TAKES IT OVER when
+    Capture used to refuse a row held by a tracer; it now TAKES IT OVER when
     — and only when — the holder is `nature='agent'`. That is an `UPDATE` of the
     ledger, hence a site the allowlist must name: what the exclusivity rule
     refuses to attribute stays repairable by a human who names the UUID, and
-    that path must be seen at review.
+    that path must be seen at review.  The write lives in `_attach_captures`,
+    shared by `capture` and the slot relay.
     """
     from brain_v42.db.session_ledger_writers import DECLARED_SESSION_LEDGER_WRITERS
 
     assert (
-        "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo.capture::update"
+        "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo._attach_captures::update"
         in DECLARED_SESSION_LEDGER_WRITERS
     )

@@ -28,7 +28,12 @@ from brain_v42.models.brain_session import (
     BrainSessionResumeResult,
     BrainSessionStartResult,
 )
-from brain_v42.models.focus_slot import SLOT_BODY_MAX_LENGTH, BrainSessionBindResult
+from brain_v42.models.focus_slot import (
+    SLOT_BODY_MAX_LENGTH,
+    BrainSessionBindResult,
+    BrainSessionRelayResult,
+    RelayInitiator,
+)
 
 if TYPE_CHECKING:
     from brain_v42.services.brain_session_service import BrainSessionService
@@ -43,6 +48,7 @@ CapturedKnowledgeIdsArg = Annotated[
     list[UUID],
     Field(min_length=1, max_length=MAX_CAPTURED_KNOWLEDGE_IDS),
 ]
+RelayKnowledgeIdsArg = Annotated[list[UUID], Field(max_length=MAX_CAPTURED_KNOWLEDGE_IDS)]
 ProjectKeyArg = Annotated[str, Field(min_length=1, max_length=50)]
 ClientKeyArg = Annotated[
     str,
@@ -168,7 +174,7 @@ def register_session_lifecycle_tools(
     brain_session_svc: BrainSessionService,
     briefing_loader: BriefingLoader,
 ) -> None:
-    """Register the nine explicit Brain session lifecycle tools."""
+    """Register the ten explicit Brain session lifecycle tools."""
 
     @mcp.tool(version="4.0", annotations=_WRITE_ANNOTATIONS)
     async def brain_session_start(
@@ -307,6 +313,56 @@ def register_session_lifecycle_tools(
             expected_focus_revision=expected_focus_revision,
             nothing_to_capture_reason=nothing_to_capture_reason,
         )
+
+    @mcp.tool(version="4.0", annotations=_TERMINAL_ANNOTATIONS)
+    async def brain_session_relay(
+        session_id: UUID,
+        expected_client_key: ExpectedClientKeyArg,
+        summary: SummaryArg,
+        handover: SlotBodyArg,
+        expected_slot_revision: FocusRevisionArg,
+        new_client_key: ClientKeyArg,
+        initiator: RelayInitiator,
+        knowledge_ids: RelayKnowledgeIdsArg | None = None,
+        nothing_to_capture_reason: ReasonArg | None = None,
+    ) -> BrainSessionRelayResult:
+        """Relay a bound session onto its slot: capture, end and start its successor at once.
+
+        One transaction: the named `knowledge_ids` are captured into the old session,
+        the `handover` becomes the slot body under a compare-and-swap on
+        `expected_slot_revision`, the old session ends, and a successor opens on the
+        same slot under `new_client_key`; its briefing follows. A closed slot or a
+        stale revision changes nothing and leaves the session open. An equal replay
+        returns the same successor with `replayed = true`; any other payload on an
+        ended session is `terminal_conflict`. Work without an anchor cannot be
+        relayed (`relay_requires_slot`): give it a slot first.
+
+        A guard mod the operator explicitly enabled may make this call as a standing
+        user command, and only this one (Amendment — slot relay (ADR #34)); with
+        `initiator = 'guard_mod'` it is refused while
+        `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false.
+
+        An agent tracer is the only session the server opens or closes on
+        its own; no hook and no auto-close may invoke this lifecycle
+        boundary.
+        """
+        result = await brain_session_svc.relay(
+            session_id=session_id,
+            expected_client_key=expected_client_key,
+            summary=summary,
+            handover=handover,
+            expected_slot_revision=expected_slot_revision,
+            new_client_key=new_client_key,
+            initiator=initiator,
+            knowledge_ids=knowledge_ids,
+            nothing_to_capture_reason=nothing_to_capture_reason,
+        )
+        briefing = await _load_briefing_safely(
+            briefing_loader,
+            project_key=result.session.project_key,
+            session_id=result.session.id,
+        )
+        return result.model_copy(update={"briefing": briefing})
 
     @mcp.tool(version="4.0", output_schema=None, annotations=_READ_ANNOTATIONS)
     async def brain_session_list(

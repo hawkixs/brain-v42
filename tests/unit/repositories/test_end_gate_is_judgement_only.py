@@ -29,7 +29,7 @@ SOURCE_ROOT = REPO_ROOT / "src"
 MIGRATION_046 = REPO_ROOT / "alembic" / "versions" / "046_session_identity_and_nature.py"
 
 #: The only sites in `src/` that carry a session `summary` — and their list IS
-#: the result: two links of one human chain, no third party.
+#: the result: two links of one human chain, plus the relay door below, no third party.
 DECLARED_SUMMARY_WRITERS = frozenset(
     {
         # The explicit tool: it RELAYS the user's text, it does not manufacture
@@ -38,8 +38,17 @@ DECLARED_SUMMARY_WRITERS = frozenset(
             "src/brain_v42/mcp/tools/session_lifecycle_tools.py"
             "::register_session_lifecycle_tools.brain_session_end"
         ),
+        # `brain_session_relay` is a second explicit door that relays the operator's own
+        # text and manufactures none.
+        (
+            "src/brain_v42/mcp/tools/session_lifecycle_tools.py"
+            "::register_session_lifecycle_tools.brain_session_relay"
+        ),
         # And the only site that persists it, at the end of that same command.
         "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo._mark_ended",
+        # The repository relay method that persists the operator's text passed through
+        # the tool above.
+        "src/brain_v42/repositories/pg_brain_session.py::PgBrainSessionRepo.relay",
     }
 )
 

@@ -50,8 +50,9 @@ _COVENANT = (
 _RETIRED_COVENANT = "No hook or auto-close may invoke this lifecycle boundary."
 
 #: Eight since the checkpoint (M-C, migration 051) landed with its covenant sentence.
-#: Nine since brain_session_bind (ADR #34, migration 060).
-_EXPECTED_TOOL_COUNT = 9
+#: Ten since brain_session_relay (ADR #34).
+_EXPECTED_TOOL_COUNT = 10
+_AMENDMENT_NAME = "Amendment — slot relay (ADR #34)"
 
 #: The word the registration docstring must use for this number.
 _COUNT_WORD = {7: "seven", 8: "eight", 9: "nine", 10: "ten"}
@@ -80,6 +81,7 @@ def test_the_lifecycle_surface_is_exactly_the_expected_size() -> None:
             "brain_session_end",
             "brain_session_abandon",
             "brain_session_bind",
+            "brain_session_relay",
         ]
     )
     assert len(tools) == _EXPECTED_TOOL_COUNT
@@ -89,6 +91,10 @@ def _normalized_docstring(name: str) -> str:
     doc = ast.get_docstring(_tool_functions()[name])
     assert doc is not None, f"{name} n'a pas de docstring"
     return " ".join(doc.split())
+
+
+def test_the_relay_docstring_names_the_amendment_that_lets_a_mod_call_it() -> None:
+    assert _AMENDMENT_NAME in _normalized_docstring("brain_session_relay")
 
 
 @pytest.mark.parametrize("name", sorted(_tool_functions()))

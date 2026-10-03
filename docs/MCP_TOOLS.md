@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-09-22
-**Repository registry:** 77 always-on + 2 graph-gated = 79 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 78 always-on + 2 graph-gated = 80 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -798,7 +798,7 @@ Return the shortest graph path between two entities (1-6 hops, clamped). Discove
 
 ---
 
-## Session lifecycle — 9 tools (`session_lifecycle_tools.py`, v4.0)
+## Session lifecycle — 10 tools (`session_lifecycle_tools.py`, v4.0)
 
 These tools implement explicit, persistent session actions. Only an explicit user command may invoke them; hooks and agents must never infer a start, capture, heartbeat, resume, end, list, bind, or abandon action. Migration 037 extends the schema created by migration 032 and depends on revision 036. It is active on the production database since 24 July 2026; fresh or restored environments must still prove their own Alembic head before enabling this runtime.
 
@@ -914,6 +914,16 @@ Invalid or missing capture evidence rolls back the transaction and leaves the se
 For a session bound to a focus slot (`brain_session_bind`), `expected_focus_revision` is the slot revision and `next_focus` becomes the slot body (at most 4,000 characters, else `slot_body_too_long` before any write); the project base is not written. A stale revision or a closed slot closes the session with `conflict` and leaves the slot untouched, except a closed slot at exactly `expected_focus_revision`, which refuses `slot_closed` and leaves the session open: end with `expected_focus_revision` minus 1 (the pre-close slot revision; a close bumps the revision by exactly 1) to record a conflict, or abandon it.
 
 Replaying the exact terminal payload returns `replayed=true` and the original persisted focus outcome/snapshot; a different payload conflicts. `current_focus` and `current_focus_revision` report the project state at response time (for a bound session, the slot body and revision) and may therefore differ from the persisted end snapshot on a later replay.
+
+### brain_session_relay
+```
+brain_session_relay(session_id, expected_client_key, summary[1..10000], handover[1..4000],
+                    expected_slot_revision>=0, new_client_key[1..128],
+                    initiator='operator'|'guard_mod', knowledge_ids[0..100]=None,
+                    nothing_to_capture_reason=None)
+-> {ended_session_id, session, slot, replayed, briefing}
+```
+Ends a session bound to a focus slot and starts its successor on the same slot in one transaction: captures `knowledge_ids` into the old session, writes `handover` as the slot body (compare-and-swap on `expected_slot_revision`, history source `session_relay`), ends the old session with `focus_outcome = applied`, and opens the successor under `new_client_key` with `relayed_from_session_id`, `started_by_actor = relay:<initiator>` and the base snapshot in `started_focus*`; the successor's briefing is built after commit. Unlike `end`, a closed slot or a stale revision changes nothing and leaves the session open. An equal replay returns the same successor with `replayed = true`; any other payload on an ended session is `terminal_conflict` naming the successor. Explicit user command, or the standing command of an operator-enabled guard mod (Amendment — slot relay (ADR #34), `docs/OPERATIONS.md` § Session lifecycle); `initiator = 'guard_mod'` is refused while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Refusals: `relay_guard_mod_disabled`, `relay_same_client_key`, `relay_requires_slot`, `session_is_agent_trace`, `slot_closed`, `slot_revision_conflict`, `terminal_conflict`, `client_key_conflict`, `slot_body_too_long`, plus the capture errors.
 
 ### brain_session_abandon
 ```
@@ -1322,7 +1332,7 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `project_context_tools.py` | project + groups + archival | 7 |
 | `roadmap_tools.py` | roadmap | 3 |
 | `runbook_tools.py` | runbooks | 4 |
-| `session_lifecycle_tools.py` | persistent session lifecycle | 9 |
+| `session_lifecycle_tools.py` | persistent session lifecycle | 10 |
 | `focus_slot_tools.py` | focus slots (ADR #34) | 3 |
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 6 |
@@ -1330,4 +1340,4 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `delivery_tools.py` | observable delivery | 11 |
 | `fact_tools.py` | measured facts (registered by later server composition) | 2 |
 | `claim_tools.py` | claim verification + reads (registered by later server composition) | 3 |
-| **Total** | | **77 always-on + 2 graph-gated = 79** |
+| **Total** | | **78 always-on + 2 graph-gated = 80** |

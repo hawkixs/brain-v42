@@ -8,11 +8,11 @@ this document exists so the short version doesn't have to carry everything.
 
 ## Session lifecycle (full v4 contract)
 
-Only an explicit user command may start, capture, heartbeat, list, resume, end, or abandon a session on the agent and client side. Hooks and agents never infer a boundary or close a stale session. The only server-side exception is the Dream `sweep` phase, shipped disabled and dry, which abandons an open session with no heartbeat for seven days (`abandonment_reason = 'auto_stale_7d'`) without touching project focus. It ships behind `BRAIN_DREAM_SWEEP_ENABLED=false` and `BRAIN_DREAM_SWEEP_DRY_RUN=true`. Staleness is a list filter over open rows; it never changes the persisted `status` and never auto-closes a session. Do not confuse this 24-hour display flag with the separate seven-day server-side sweep, which is the only mechanism that moves an open session to `abandoned` without an explicit command (`abandonment_reason = 'auto_stale_7d'`).
+Only an explicit user command may start, capture, heartbeat, list, resume, bind, relay, end, or abandon a session on the agent and client side. Hooks and agents never infer a boundary or close a stale session. **Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly enabled counts as a standing user command for one gesture only: `brain_session_relay` of an open operator session bound to a focus slot, onto that same slot — capture, end and start of its successor under a new `client_key`, in one transaction. The model makes the call and chooses its captures, summary and handover; the mod only triggers the turn and replays the result at compaction. The standing command covers nothing else: not `brain_session_abandon`, not `brain_session_end` of any session, not the relay of an unbound session, not any write of the project base, not opening, closing or changing a slot, and not `start`, `resume` or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Hooks still never capture, close or commit on their own. Cross-cutting work without a ticket cannot be relayed automatically: give it an anchor and a slot first. The only server-side exception is the Dream `sweep` phase, shipped disabled and dry, which abandons an open session with no heartbeat for seven days (`abandonment_reason = 'auto_stale_7d'`) without touching project focus. It ships behind `BRAIN_DREAM_SWEEP_ENABLED=false` and `BRAIN_DREAM_SWEEP_DRY_RUN=true`. Staleness is a list filter over open rows; it never changes the persisted `status` and never auto-closes a session. Do not confuse this 24-hour display flag with the separate seven-day server-side sweep, which is the only mechanism that moves an open session to `abandoned` without an explicit command (`abandonment_reason = 'auto_stale_7d'`).
 
 **Two natures.** Since migration 046, `brain_sessions.nature` separates two kinds of
 row. An *operator* session is the one a user opens with `brain_session_start` and
-drives with the seven explicit commands below. An *agent* trace is a row the server
+drives with the explicit commands below. An *agent* trace is a row the server
 opens for itself, one per HTTP MCP connection, so that the artifacts created on that
 connection have somewhere to be attributed. The explicit-command rule governs the operator nature; the agent nature is a server-owned trace that grants no right to an agent, a hook or a client.
 No code path writes `nature = 'operator'` today: explicit sessions are persisted with
@@ -154,9 +154,10 @@ apart from abandonments. The four-hour rule writes only when the phase itself ru
 wet (`BRAIN_DREAM_SWEEP_ENABLED=true` and `BRAIN_DREAM_SWEEP_DRY_RUN=false`).
 
 **Arming state is measured, not documented.** This document deliberately does not
-state whether the three flags are armed: drop-ins change, and a copied value cannot
-tell it has aged. Measure each flag in the process that reads it. Auto-opening and
-derived capture are read by the live MCP server; the inactivity sweep is read by the
+state whether the four flags are armed: drop-ins change, and a copied value cannot
+tell it has aged. Measure each flag in the process that reads it. Auto-opening,
+derived capture and the `guard_mod` relay flag (`BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED`)
+are read by the live MCP server; the inactivity sweep is read by the
 Dream unit (`python -m brain_v42.maintenance.session_sweep`), and a copy of
 `BRAIN_SESSION_INACTIVE_SWEEP_ENABLED` in the MCP server's environment arms nothing.
 These commands print only the exact flag keys listed below, and only when the value
@@ -177,9 +178,9 @@ flags_of() {  # $1 = pid, $2 = extglob pattern of the exact records to print
   done < "/proc/$1/environ"
 }
 
-# MCP server (auto-open, derived capture): the live process environment
+# MCP server (auto-open, derived capture, the `guard_mod` relay flag): the live process environment
 flags_of "$(systemctl --user show brain-mcp-http.service -p MainPID --value)" \
-  'BRAIN_SESSION_@(AUTO_OPEN|DERIVED_CAPTURE|INACTIVE_SWEEP)_ENABLED=@(true|false)'
+  'BRAIN_SESSION_@(AUTO_OPEN|DERIVED_CAPTURE|INACTIVE_SWEEP|RELAY_GUARD_MOD)_ENABLED=@(true|false)'
 
 # Dream unit, what the unit declares: Environment= lines, drop-ins included.
 # One grep per key, with token boundaries: only these exact tokens can come out.

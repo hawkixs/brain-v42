@@ -156,7 +156,7 @@ parameters; use the plain form above with host, port, username and password all 
 |--------|-------|
 | Search & list | `brain_search`, `brain_list`, `brain_get`, `brain_update`, `brain_delete` |
 | Graph traversal | `brain_get_neighbors`, `brain_graph_path` |
-| Session lifecycle | `brain_session_start`, `brain_session_list`, `brain_session_resume`, `brain_session_capture`, `brain_session_heartbeat`, `brain_session_checkpoint`, `brain_session_bind`, `brain_session_end`, `brain_session_abandon` |
+| Session lifecycle | `brain_session_start`, `brain_session_list`, `brain_session_resume`, `brain_session_capture`, `brain_session_heartbeat`, `brain_session_checkpoint`, `brain_session_bind`, `brain_session_end`, `brain_session_relay`, `brain_session_abandon` |
 | Focus slots | `brain_slot_open`, `brain_slot_list`, `brain_slot_close` |
 | Project context | `brain_set_project_context`, `brain_update_project_focus`, `brain_focus_history`, `brain_list_projects`, `brain_list_project_groups`, `brain_project_archive`, `brain_project_unarchive` |
 | Decisions | `brain_log_decision`, `brain_supersede_decision`, `brain_get_supersession_chain` |
@@ -174,7 +174,7 @@ parameters; use the plain form above with host, port, username and password all 
 
 Full catalog with signatures: `docs/MCP_TOOLS.md`.
 
-The default catalog profile is `compact`: the eight session lifecycle tools stay
+The default catalog profile is `compact`: the nine session lifecycle tools stay
 visible, and every other tool is reached through two gateways — `brain_find_tool`
 to discover, `brain_call_tool` to invoke. Set `BRAIN_MCP_PROFILE=native` to expose
 every tool directly.
