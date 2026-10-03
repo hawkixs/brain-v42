@@ -433,7 +433,7 @@ workflow, optionally about one contract revision, on behalf of a ticket particip
 and with no ticket-status restriction — `incident_detected` and `rolled_back`
 legitimately arrive after a ticket closed. The issuer identity is the normalized
 `X-Brain-Agent` caller label, refused when empty, unknown or unexpanded
-(`invalid_issuer`); there is no registry of labels. Brain validates the FORM and
+(`invalid_issuer`); there is no registry of labels, except one reserved identity: the delivery observer's own label `brain-v42-delivery-observer` is refused by this tool (`issuer_identity_reserved`), because only the observer's repository writer may carry it. Brain validates the FORM and
 never judges the kind, and every form violation carries a stable code:
 `invalid_kind` when `kind` does not match `^[a-z][a-z0-9_]{0,63}$` (the well-known
 values `released`, `deployed`, `rolled_back`, `incident_detected`, `restored`,
@@ -539,7 +539,7 @@ Returns a bounded, read-only guide for the `session.lifecycle`, `project.context
 reports `current`, `outdated`, or `unknown` freshness from the supplied guide and catalog
 versions, with an explicit refresh action. `error_context` is never echoed.
 
-Session lifecycle actions remain under exclusive user control on the agent and client side. Agents and hooks must not start, capture, heartbeat, resume, end, list, or abandon a session unless the user explicitly requests that command. The only server-side exception is the seven-day sweep documented under `brain_session_list`.
+Session lifecycle actions remain under exclusive user control on the agent and client side. Agents and hooks must not start, capture, heartbeat, resume, end, list, bind, relay, or abandon a session unless the user explicitly requests that command. The one standing command is the guarded slot relay, bounded by "Amendment — slot relay (ADR #34)" in `docs/OPERATIONS.md` § Session lifecycle. The only server-side exception is the seven-day sweep documented under `brain_session_list`.
 
 ## Degraded search banners
 
@@ -800,7 +800,7 @@ Return the shortest graph path between two entities (1-6 hops, clamped). Discove
 
 ## Session lifecycle — 10 tools (`session_lifecycle_tools.py`, v4.0)
 
-These tools implement explicit, persistent session actions. Only an explicit user command may invoke them; hooks and agents must never infer a start, capture, heartbeat, resume, end, list, bind, or abandon action. Migration 037 extends the schema created by migration 032 and depends on revision 036. It is active on the production database since 24 July 2026; fresh or restored environments must still prove their own Alembic head before enabling this runtime.
+These tools implement explicit, persistent session actions. Only an explicit user command may invoke them; hooks and agents must never infer a start, capture, heartbeat, resume, end, list, bind, relay, or abandon action. The one standing command is the guarded slot relay, bounded by "Amendment — slot relay (ADR #34)" in `docs/OPERATIONS.md`. Migration 037 extends the schema created by migration 032 and depends on revision 036. It is active on the production database since 24 July 2026; fresh or restored environments must still prove their own Alembic head before enabling this runtime.
 
 Every structured result that contains `session` uses the same `BrainSession` shape:
 
@@ -953,7 +953,7 @@ The project focus (`current_focus`) is the project's BASE: identity, rules, stan
 brain_slot_open(project_key, title[1..120], body[1..4000], anchors[1..10])
 -> {slot, replayed}
 ```
-Explicit user command. Opens at revision 0 with its anchors (written once, never changed) and a `slot_open` history row. An equal open is a replay. Refusals: `project_not_found`, `anchor_required`, `anchor_invalid`, `anchor_ticket_foreign`, `anchor_unbound_pr`, `anchor_lot_unplanned`, `anchor_already_received`, `slot_title_conflict`.
+Explicit user command. Opens at revision 0 with its anchors (written once, never changed) and a `slot_open` history row. An equal open is a replay. Refusals: `project_not_found`, `anchor_required` (a schema refusal at the tool), `anchor_invalid`, `anchor_ticket_foreign`, `anchor_unbound_pr`, `anchor_lot_unplanned`, `anchor_already_received`, `slot_title_conflict`.
 
 ### brain_slot_list
 ```

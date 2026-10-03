@@ -141,7 +141,9 @@ in production since 24 July 2026.
 **Keep `client_key`, `session.id` and `started_focus_revision` together.** The server
 refuses an inconsistent pair before any mutation: it is a guard against mis-targeting
 between parallel sessions, **not** authentication. Reuse the same `client_key` for the
-retries of one session; use a distinct key per parallel session.
+retries of one session; use a distinct key per parallel session. For a bound session
+(bind, relay), the revision to send at end or relay is the **slot** revision (from bind,
+resume, or relay's `slot.revision`), never `started_focus_revision`.
 
 The capture ledger is **exclusive**: an artifact belongs to one session only. The server
 requires the same project and a creation later than the session start. Provenance is

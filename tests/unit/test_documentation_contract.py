@@ -2415,8 +2415,8 @@ _ENGLISH_USER_CONTROL = (
     "Session lifecycle actions remain under exclusive user control on the agent and client side."
 )
 _ENGLISH_AGENTS_AND_HOOKS = (
-    "Agents and hooks must not start, capture, heartbeat, resume, end, list, or abandon a "
-    "session unless the user explicitly requests that command."
+    "Agents and hooks must not start, capture, heartbeat, resume, end, list, bind, relay, or "
+    "abandon a session unless the user explicitly requests that command."
 )
 _ENGLISH_SWEEP_POINTER = (
     "The only server-side exception is the seven-day sweep documented under `brain_session_list`."

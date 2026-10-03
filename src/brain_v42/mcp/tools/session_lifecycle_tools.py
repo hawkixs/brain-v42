@@ -301,6 +301,9 @@ def register_session_lifecycle_tools(
         ledger — as a measure, never a gate. It cannot refuse a close, and a
         session cannot improve it by doing nothing.
 
+        For a bound session, `expected_focus_revision` is the SLOT revision (from
+        bind, resume, or relay's `slot.revision`), never `started_focus_revision`.
+
         An agent tracer is the only session the server opens or closes on
         its own; no hook and no auto-close may invoke this lifecycle
         boundary.
@@ -335,7 +338,10 @@ def register_session_lifecycle_tools(
         stale revision changes nothing and leaves the session open. An equal replay
         returns the same successor with `replayed = true`; any other payload on an
         ended session is `terminal_conflict`. Work without an anchor cannot be
-        relayed (`relay_requires_slot`): give it a slot first.
+        relayed (`relay_requires_slot`): give it a slot first. The successor's next
+        end or relay must send `result.slot.revision` as its expected revision: for
+        a bound session it is the SLOT revision (from bind, resume, or relay's
+        `slot.revision`), never `started_focus_revision`.
 
         A guard mod the operator explicitly enabled may make this call as a standing
         user command, and only this one (Amendment — slot relay (ADR #34)); with
