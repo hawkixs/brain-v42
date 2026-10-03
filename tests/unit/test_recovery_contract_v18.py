@@ -252,8 +252,11 @@ ADDED_LINES = [
     " 'contract_id', 'brain-v42/postgresql-recovery/v18',",
     " 'schema_version', 18",
 ]
-#: Two new CHECKs carry an `array[...]::text[]` cast, which `pg_restore` re-serialises: the
-#: twin fingerprints them canonicalised, exactly as it does for every earlier such row.
+#: The twin's own canonicalisation, not `pg_restore`, makes these two differ. Alembic created
+#: both CHECKs AFTER the restore, so `pg_restore` never touched them. The twin's observed query
+#: rewrites `]::text[]` to `]` (`replace(..., ']::text[]', ']')`, ops/recovery/
+#: brain-v42-v18-pgrestore.sql:1571) before hashing, while the base hashes the pretty-mode
+#: `array[...]::text[]` (lower-cased) as the server renders it: same constraint, two fingerprints.
 TWIN_RESERIALISED = {
     "         '6de853ff4078f27eb3bce58db1d9805b'": "         'b20c2943054abbe9999cd1ae17fa71ad'",
     "         '62c5bb6431f3a0e93e4d78ad4eb2e05d'": "         '659f35872b99b87b6f1fbefbdc5bff8b'",
