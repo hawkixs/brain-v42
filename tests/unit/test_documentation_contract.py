@@ -2368,7 +2368,7 @@ _WITHOUT_A_USER_COMMAND = re.compile(
     r"(?:command|request|instruction|asking|waiting|activity|sign of life)"
     r"|without being asked|on (?:its|their) own|by (?:itself|themselves)"
     r"|of (?:its|their) own accord"
-    r"|côté serveur|server-side|agents?\b",
+    r"|côté serveur|server-side|agents?\b|\bmods?\b",
     re.IGNORECASE,
 )
 
@@ -2480,6 +2480,30 @@ _CLOSED_INACTIVE_CHECK_SCOPE = (
     "(ticket `16314b31`, closed)."
 )
 
+# ADR #34, the D9 amendment, verbatim from the focus-slots spec §7. Its first
+# sentence is what the anti-widening scan sees (a session, `end`, a mod): it is
+# sanctioned by name in the three documents that carry it, and nowhere else.
+_SLOT_RELAY_FIRST_SENTENCE = (
+    "**Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly "
+    "enabled counts as a standing user command for one gesture only: `brain_session_relay` "
+    "of an open operator session bound to a focus slot, onto that same slot — capture, end "
+    "and start of its successor under a new `client_key`, in one transaction."
+)
+_SLOT_RELAY_AMENDMENT = (
+    f"{_SLOT_RELAY_FIRST_SENTENCE} The model makes the call and chooses its captures, summary "
+    "and handover; the mod only triggers the turn and replays the result at compaction. The "
+    "standing command covers nothing else: not `brain_session_abandon`, not "
+    "`brain_session_end` of any session, not the relay of an unbound session, not any write "
+    "of the project base, not opening, closing or changing a slot, and not `start`, `resume` "
+    "or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is "
+    "false. Hooks still never capture, close or commit on their own."
+)
+# S14, red note (c).
+_CROSS_CUTTING_NEEDS_A_SLOT = (
+    "Cross-cutting work without a ticket cannot be relayed automatically: give it an anchor "
+    "and a slot first."
+)
+
 # Each statement is anchored to the section that governs its reader, not the file.
 _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
     *(
@@ -2493,6 +2517,8 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
                     ("focus-intact", _SWEEP_LEAVES_THE_FOCUS_ALONE),
                     ("no-client-right", _SWEEP_GRANTS_NOTHING_TO_THE_CLIENT),
                     ("explicit-commands", _SESSION_COMMANDS_STAY_EXPLICIT),
+                    ("slot-relay-amendment", _SLOT_RELAY_AMENDMENT),
+                    ("cross-cutting-needs-a-slot", _CROSS_CUTTING_NEEDS_A_SLOT),
                 ),
             ),
             (
@@ -2527,6 +2553,8 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("two-natures", _TWO_NATURES_SCOPE),
             ("inactivity-sweep", _INACTIVITY_SWEEP_RULE),
             ("closed-inactive-check-scope", _CLOSED_INACTIVE_CHECK_SCOPE),
+            ("slot-relay-amendment", _SLOT_RELAY_AMENDMENT),
+            ("cross-cutting-needs-a-slot", _CROSS_CUTTING_NEEDS_A_SLOT),
         ),
     ),
     (
@@ -2558,6 +2586,8 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("sweep-exception", _ARCHITECTURE_SWEEP_EXCEPTION),
             ("stale-closes-nothing", _ARCHITECTURE_STALENESS_CLOSES_NOTHING),
             ("thresholds-24h-vs-7d", _ENGLISH_THRESHOLD_DISAMBIGUATION),
+            ("slot-relay-amendment", _SLOT_RELAY_AMENDMENT),
+            ("cross-cutting-needs-a-slot", _CROSS_CUTTING_NEEDS_A_SLOT),
         ),
     ),
 )
@@ -2574,6 +2604,7 @@ _DOCTRINE_DOCUMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
                     _SESSION_CLOSURE_PROHIBITION,
                     _CLAUDE_SWEEP_EXCEPTION,
                     _CLAUDE_THRESHOLD_SENTENCE,
+                    _SLOT_RELAY_FIRST_SENTENCE,
                 ),
             ),
         )
@@ -2609,6 +2640,7 @@ _DOCTRINE_DOCUMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         ARCHITECTURE,
         (
             _ARCHITECTURE_BOUNDARIES_SENTENCE,
+            _SLOT_RELAY_FIRST_SENTENCE,
             _HOOKS_AND_AGENTS_NEVER_CLOSE,
             _ARCHITECTURE_SWEEP_EXCEPTION,
             _ARCHITECTURE_STALENESS_CLOSES_NOTHING,
@@ -2620,6 +2652,7 @@ _DOCTRINE_DOCUMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         OPERATIONS,
         (
             _ARCHITECTURE_USER_CONTROLLED_BOUNDARIES,
+            _SLOT_RELAY_FIRST_SENTENCE,
             _HOOKS_AND_AGENTS_NEVER_CLOSE,
             _ARCHITECTURE_SWEEP_EXCEPTION,
             _ARCHITECTURE_STALENESS_CLOSES_NOTHING,
@@ -2663,6 +2696,8 @@ _REWORDED_CLOSURE_GRANTS = (
     "A nightly job may end any session left open.",
     "Sessions expire on their own after a week.",
     "The server terminates a session without an explicit request.",
+    # A mod is a client-side trigger: without `\bmods?\b` the scan did not see one.
+    "A guard mod may end any open session when the context fills up.",
 )
 
 
@@ -2774,6 +2809,8 @@ _SYNTHETIC_MCP_ENVIRON = (
     b"PATH=/usr/bin\0"
     b"BRAIN_SESSION_AUTO_OPEN_ENABLED=true\0"
     b"BRAIN_SESSION_DERIVED_CAPTURE_ENABLED=false\0"
+    b"BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED=false\0"
+    b"BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED=yes\0"
     b"BRAIN_SESSION_INACTIVE_SWEEP_ENABLED=maybe\0"
     b"DECOY=SYNTHETIC_SECRET\nBRAIN_SESSION_INACTIVE_SWEEP_ENABLED=true\0"
     b"OTHER=x BRAIN_SESSION_DERIVED_CAPTURE_ENABLED=true\0"
@@ -2800,6 +2837,7 @@ _SYNTHETIC_UNIT_ENVIRONMENT = (
 _EXPECTED_ARMING_OUTPUT = [
     "BRAIN_SESSION_AUTO_OPEN_ENABLED=true",
     "BRAIN_SESSION_DERIVED_CAPTURE_ENABLED=false",
+    "BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED=false",
     "BRAIN_SESSION_INACTIVE_SWEEP_ENABLED=true",
     "BRAIN_DREAM_SWEEP_ENABLED=true",
     "BRAIN_DREAM_SWEEP_DRY_RUN=false",
