@@ -10,6 +10,17 @@ this document exists so the short version doesn't have to carry everything.
 
 Only an explicit user command may start, capture, heartbeat, list, resume, end, or abandon a session on the agent and client side. Hooks and agents never infer a boundary or close a stale session. The only server-side exception is the Dream `sweep` phase, shipped disabled and dry, which abandons an open session with no heartbeat for seven days (`abandonment_reason = 'auto_stale_7d'`) without touching project focus. It ships behind `BRAIN_DREAM_SWEEP_ENABLED=false` and `BRAIN_DREAM_SWEEP_DRY_RUN=true`. Staleness is a list filter over open rows; it never changes the persisted `status` and never auto-closes a session. Do not confuse this 24-hour display flag with the separate seven-day server-side sweep, which is the only mechanism that moves an open session to `abandoned` without an explicit command (`abandonment_reason = 'auto_stale_7d'`).
 
+**Two natures.** Since migration 046, `brain_sessions.nature` separates two kinds of
+row. An *operator* session is the one a user opens with `brain_session_start` and
+drives with the seven explicit commands below. An *agent* trace is a row the server
+opens for itself, one per HTTP MCP connection, so that the artifacts created on that
+connection have somewhere to be attributed. The explicit-command rule governs the operator nature; the agent nature is a server-owned trace that grants no right to an agent, a hook or a client.
+No code path writes `nature = 'operator'` today: explicit sessions are persisted with
+`nature IS NULL`, and every rule that separates the two natures reads "not `agent`"
+(`nature IS NULL OR nature <> 'agent'`) as operator. Agent traces, their arming flags
+and the inactivity sweep are described in
+[Agent traces and the inactivity sweep](#agent-traces-and-the-inactivity-sweep).
+
 `brain_session_start(project_key, client_key)` creates a persistent session identified
 by a UUID. `client_key` names a session the client wants: reuse the exact same key for
 every retry of that session, and give a distinct, stable key to every parallel
@@ -36,9 +47,11 @@ attributions: their provenance stays exclusive, and an exact retry of `capture` 
 idempotent even after abandonment.
 
 `brain_session_end` no longer accepts capture identifiers directly: it reads this
-ledger and stays fail-closed. The session must have either at least one captured
-artifact or a non-empty `nothing_to_capture_reason`, never both. An identity, capture,
-or provenance error leaves the session open.
+ledger. Since migration 047 a closure no longer needs a non-empty ledger or a
+`nothing_to_capture_reason` to the exclusion of the other: the ledger may be empty or
+filled, by explicit or derived capture, with or without a reason, and a reason, once
+given, must not be blank. An identity, capture, or provenance error still leaves the
+session open.
 
 Closing then attempts a compare-and-swap of the focus with
 `expected_focus_revision`. If the revision matches, the focus updates and the
@@ -73,6 +86,146 @@ sequential application of migrations 036 then 037, explicit proof of
 `alembic current=037`, and restarting the MCP service last. The 037→036 downgrade
 refuses any capture not reflected by a terminal snapshot and any focus-conflict close,
 because v3 cannot represent either without loss.
+
+### Agent traces and the inactivity sweep
+
+Three server paths act on the agent nature. Each ships closed in code
+(`src/brain_v42/config.py`) and is armed by an operator gesture, outside the
+repository.
+
+**Auto-opening** (`src/brain_v42/mcp/session_autoopen.py`, flag
+`BRAIN_SESSION_AUTO_OPEN_ENABLED`). Over HTTP, the outermost tool call of a
+connection opens an agent trace keyed by `(project_key, connection_id)`, where
+`connection_id` is the `Mcp-Session-Id` the server minted for that connection: the
+only identifier of the call that the client does not declare itself. The project
+comes from the caller's actor, and the row gets a generated `client_key`
+(`auto:<hex>`). A call with no connection identifier, no resolvable actor or no
+project context opens nothing. Under stdio there is no connection identifier, so no
+trace is ever opened: this is the contract, not a degraded mode, and falling back on
+the declared actor was rejected. Stateless HTTP (`mcp_http_stateless=true`) mints no
+identifier either. The opening is synchronous and runs before the tool, so the
+artifact the call creates falls inside the trace's capture window; it is also
+fail-open, so a failed opening is logged as `session_autoopen.failed` and the call
+proceeds. The partial unique index `uq_brain_sessions_connection`
+(`WHERE status = 'open'`) keeps at most one open trace per connection, and each later
+call stamps `last_observed_at`, the server's observation clock. That clock is
+distinct from `last_heartbeat_at`, which only the explicit commands refresh on an
+operator session. An agent trace never carries a `summary`, a `next_focus` or a focus
+outcome, and `connection_id` is never set on an operator row.
+
+**Derived capture** (`src/brain_v42/db/session_derived_capture.py`, flag
+`BRAIN_SESSION_DERIVED_CAPTURE_ENABLED`, migrations 047 and 048). An artifact created on
+a connection is deposited in that connection's trace at creation time. An operator
+session absorbs what traces hold on `resume`, `capture`, `heartbeat` and `end`, in two
+stages, and only artifacts of the same project created at or after the session started,
+which is what an explicit capture would accept. Absorption is attempted only on a call
+that carries a connection identifier, so never under stdio or in stateless HTTP mode.
+The connection stage takes the artifacts held by the open trace of the current
+connection, when there is one. The window stage then runs whenever ledger capacity
+remains (100 artifacts per session, minus those already attributed), whether or not the
+current connection still has a trace. Its donors are the project's `open` or
+`closed_inactive` traces opened by a human actor, never an abandoned trace and never one
+opened by a system actor such as the Dream. It takes an artifact only if no other
+session of the project that is not an agent trace covered the instant of its creation,
+whether that session is still open or has finished since; under that ambiguity the
+artifact stays with the trace. The server never promotes a trace into an operator
+session. Migration 047 removed the "non-empty ledger XOR `nothing_to_capture_reason`"
+constraint on `ended`, because a ledger can now be filled without an explicit capture,
+and migration 048 records in `attribution_mode` which key attributed each artifact
+(`explicit`, `derived_deposit`, `derived_connection` or `derived_window`).
+
+**Inactivity sweep** (`src/brain_v42/maintenance/session_sweep.py`, flag
+`BRAIN_SESSION_INACTIVE_SWEEP_ENABLED`). The same Dream `sweep` phase carries a second, narrower rule: its predicate selects only open `nature = 'agent'` traces whose `last_observed_at` is more than four hours old and moves them to `closed_inactive`.
+The CHECK on `brain_sessions` fixes the terminal fields of `closed_inactive` (`next_focus IS NULL`, no summary, no abandonment reason) and refuses it for `nature = 'operator'`, but it accepts it for `nature IS NULL`, so only the sweep's predicate keeps an operator row out of that state.
+Migration 046 presents that guarantee as a database constraint; for `nature IS NULL`
+rows it is not one, and the gap is tracked as an open defect (ticket `16314b31`,
+"brain_sessions CHECK accepts closed_inactive with nature IS NULL").
+Four hours is an eligibility threshold evaluated once a night, not a closing delay:
+a trace that goes idle just after a pass waits for the next one, about 28 hours in
+the worst case. Both rules run in one statement, and the seven-day rule wins when
+both match, so a trace silent for more than seven days is abandoned with
+`auto_stale_7d` rather than marked inactive. A trace never observed
+(`last_observed_at IS NULL`) is never eligible, and an operator row is out of reach of
+the predicate, whether its `nature` is `NULL` or `operator`. Both outcomes leave the
+trace's capture ledger in place and the phase touches neither `project_contexts` nor
+the focus. What differs is donor eligibility for derived capture: an abandoned trace
+is no longer a donor, while a `closed_inactive` one stays absorbable, so artifacts
+left in it can still reach an operator session. `closed_inactive` carries no
+`abandonment_reason`.
+Each run writes its count to `dream_runs.closed_inactive_count` (migration 049),
+apart from abandonments. The four-hour rule writes only when the phase itself runs
+wet (`BRAIN_DREAM_SWEEP_ENABLED=true` and `BRAIN_DREAM_SWEEP_DRY_RUN=false`).
+
+**Arming state is measured, not documented.** This document deliberately does not
+state whether the three flags are armed: drop-ins change, and a copied value cannot
+tell it has aged. Measure each flag in the process that reads it. Auto-opening and
+derived capture are read by the live MCP server; the inactivity sweep is read by the
+Dream unit (`python -m brain_v42.maintenance.session_sweep`), and a copy of
+`BRAIN_SESSION_INACTIVE_SWEEP_ENABLED` in the MCP server's environment arms nothing.
+These commands print only the exact flag keys listed below, and only when the value
+is `true` or `false`: whatever the other variables hold, nothing else can come out.
+Never dump the full environment, which carries `MCP_HTTP_TOKEN`, and do not replace
+these commands with a `tr ... | grep` pipeline. Splitting an environment on NUL or on
+spaces loses the record boundaries, so a variable whose value embeds a newline, or a
+space followed by a flag-shaped token, forges a matching line and prints material
+around it.
+
+```bash
+# Run in bash. Whole-record match against an exact KEY=(true|false) whitelist.
+shopt -s extglob
+flags_of() {  # $1 = pid, $2 = extglob pattern of the exact records to print
+  local record
+  while IFS= read -r -d '' record; do
+    case $record in $2) printf '%s\n' "$record" ;; esac
+  done < "/proc/$1/environ"
+}
+
+# MCP server (auto-open, derived capture): the live process environment
+flags_of "$(systemctl --user show brain-mcp-http.service -p MainPID --value)" \
+  'BRAIN_SESSION_@(AUTO_OPEN|DERIVED_CAPTURE|INACTIVE_SWEEP)_ENABLED=@(true|false)'
+
+# Dream unit, what the unit declares: Environment= lines, drop-ins included.
+# One grep per key, with token boundaries: only these exact tokens can come out.
+for key in BRAIN_SESSION_INACTIVE_SWEEP_ENABLED BRAIN_DREAM_SWEEP_ENABLED BRAIN_DREAM_SWEEP_DRY_RUN; do
+  systemctl --user show brain-v42-dream.service -p Environment --value |
+    grep -oE "(^| )$key=(true|false)( |\$)"
+done | tr -d ' '
+
+# Dream unit, what the process sees: only while a night is running
+# (otherwise it prints nothing and exits 1)
+pid=$(systemctl --user show brain-v42-dream.service -p MainPID --value)
+[ "${pid:-0}" -gt 0 ] && flags_of "$pid" \
+  '@(BRAIN_SESSION_INACTIVE_SWEEP_ENABLED|BRAIN_DREAM_SWEEP_ENABLED|BRAIN_DREAM_SWEEP_DRY_RUN)=@(true|false)'
+```
+
+A flag that is set but not printed has a non-boolean value, or is absent: inspect that
+one by hand, without echoing the rest of the environment. The unit-level command
+works on one text line, so it can repeat a flag-shaped token that sits inside another
+variable's quoted value; it can print a flag value that way, never anything else. The
+process-environment form matches whole records and has no such case.
+
+`systemctl show -p Environment` lists the `Environment=` lines only. A value set
+through `EnvironmentFile=` does not appear there (`-p EnvironmentFiles` lists the
+files by path, not their content), so that command shows what the unit declares, not
+what the process receives. The process environment is the measurement, and the Dream
+unit has a process only while a night runs. Do not open the private environment files
+to settle the question.
+
+pydantic-settings also reads `.env` from the working directory, below the process
+environment. If a flag is absent from the environment, check that file by key name
+only. Volume is measured the same way: per night in
+`dream_runs.closed_inactive_count` (`phase = 'sweep'`), and by grouping
+`brain_sessions` on `nature` and `status`.
+
+For context: on 2026-09-06 brain learning `823c686d` measured all three flags armed
+in the live server, while the code comments and the project prose still described
+them as shipped dormant. ADR #29 (`12f17bd2`) made reading the live process
+environment the method for any flag state, and confirmed the covenant of ADR #24
+(`f24ba872`): the server never writes a `summary`, never chooses a `next_focus`, and
+closes an operator session only through the seven-day rule that opens this section.
+Ticket `09d2b56e` measured the trace volume on 2026-09-22, over the six days before
+it: about 1,400 agent traces opened per day, almost none closed. These are dated
+observations, not the current state.
 
 ## Network trust boundary (detailed)
 

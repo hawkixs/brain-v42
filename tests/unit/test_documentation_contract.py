@@ -5,6 +5,8 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -2446,6 +2448,34 @@ _ARCHITECTURE_STALENESS_CLOSES_NOTHING = (
     "Staleness is a list filter over open rows; it never changes the persisted `status` and "
     "never auto-closes a session."
 )
+# Migration 046 split `brain_sessions` into two natures, and the server writes on
+# the `agent` one: it opens a trace per HTTP connection and the sweep closes it
+# after four hours unobserved. The explicit-command rule above was written before
+# that split; this sentence says which nature it binds, so the server path cannot
+# be read as a licence for the agent or the client.
+_TWO_NATURES_SCOPE = (
+    "The explicit-command rule governs the operator nature; the agent nature is a "
+    "server-owned trace that grants no right to an agent, a hook or a client."
+)
+# The second rule of the Dream `sweep` phase. What bounds it to `agent` traces is
+# the sweep's own predicate (`session_sweep.py`), NOT the database: the CHECK of
+# migration 046 reads `nature = 'agent'` inside an OR branch, which is NULL, not
+# false, for a row whose `nature IS NULL`, and a CHECK accepts NULL. An earlier
+# wording said the CHECK "reserves" `closed_inactive` to agent rows, which is
+# false for exactly the rows explicit sessions are stored as. It is the only
+# other server-side closure, so it is sanctioned here by name rather than left
+# for the anti-widening scan to reject.
+_INACTIVITY_SWEEP_RULE = (
+    "The same Dream `sweep` phase carries a second, narrower rule: its predicate selects only "
+    "open `nature = 'agent'` traces whose `last_observed_at` is more than four hours old and "
+    "moves them to `closed_inactive`."
+)
+_CLOSED_INACTIVE_CHECK_SCOPE = (
+    "The CHECK on `brain_sessions` fixes the terminal fields of `closed_inactive` "
+    "(`next_focus IS NULL`, no summary, no abandonment reason) and refuses it for "
+    "`nature = 'operator'`, but it accepts it for `nature IS NULL`, so only the sweep's "
+    "predicate keeps an operator row out of that state."
+)
 
 # Each statement is anchored to the section that governs its reader, not the file.
 _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
@@ -2465,7 +2495,10 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             (
                 "CLAUDE.md#explicit-session-lifecycle",
                 _section(CLAUDE, "### Explicit session lifecycle"),
-                (("thresholds-24h-vs-7d", _CLAUDE_THRESHOLD_SENTENCE),),
+                (
+                    ("thresholds-24h-vs-7d", _CLAUDE_THRESHOLD_SENTENCE),
+                    ("two-natures", _TWO_NATURES_SCOPE),
+                ),
             ),
         )
         if CLAUDE
@@ -2488,6 +2521,9 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("sweep-exception", _ARCHITECTURE_SWEEP_EXCEPTION),
             ("stale-closes-nothing", _ARCHITECTURE_STALENESS_CLOSES_NOTHING),
             ("thresholds-24h-vs-7d", _ENGLISH_THRESHOLD_DISAMBIGUATION),
+            ("two-natures", _TWO_NATURES_SCOPE),
+            ("inactivity-sweep", _INACTIVITY_SWEEP_RULE),
+            ("closed-inactive-check-scope", _CLOSED_INACTIVE_CHECK_SCOPE),
         ),
     ),
     (
@@ -2585,6 +2621,7 @@ _DOCTRINE_DOCUMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             _ARCHITECTURE_SWEEP_EXCEPTION,
             _ARCHITECTURE_STALENESS_CLOSES_NOTHING,
             _ENGLISH_THRESHOLD_DISAMBIGUATION,
+            _INACTIVITY_SWEEP_RULE,
             # brain_session_heartbeat paragraph restating the same sanctioned
             # 24h/7d threshold doctrine in different words.
             "After 24 hours without a heartbeat, an open session exposes `is_stale=true`; "
@@ -2712,6 +2749,170 @@ def test_a_reworded_grant_of_automatic_closure_is_still_detected(grant: str) -> 
     widened = f"{CLAUDE}\n\n{grant}\n"
 
     assert grant in _automatic_closure_statements(widened)
+
+
+_ARMING_SECTION = "### Agent traces and the inactivity sweep"
+
+
+def _arming_state_commands() -> str:
+    """The exact bash blocks the operator is told to run, joined in document order."""
+    start = OPERATIONS.index(_ARMING_SECTION)
+    end = OPERATIONS.index("\n## ", start)
+    return "\n".join(re.findall(r"```bash\n(.*?)```", OPERATIONS[start:end], flags=re.DOTALL))
+
+
+_SYNTHETIC_SECRET = "SYNTHETIC_SECRET"
+
+# Synthetic process environments, NUL-separated like /proc/<pid>/environ. Every record
+# that is not a plain `flag=true|false` is a decoy: a value embedding a newline that
+# forges a flag line, a non-boolean flag, flag-shaped text inside another value, a key
+# the Dream command does not list, and a fake token.
+_SYNTHETIC_MCP_ENVIRON = (
+    b"PATH=/usr/bin\0"
+    b"BRAIN_SESSION_AUTO_OPEN_ENABLED=true\0"
+    b"BRAIN_SESSION_DERIVED_CAPTURE_ENABLED=false\0"
+    b"BRAIN_SESSION_INACTIVE_SWEEP_ENABLED=maybe\0"
+    b"DECOY=SYNTHETIC_SECRET\nBRAIN_SESSION_INACTIVE_SWEEP_ENABLED=true\0"
+    b"OTHER=x BRAIN_SESSION_DERIVED_CAPTURE_ENABLED=true\0"
+    b"MCP_HTTP_TOKEN=SYNTHETIC_SECRET\0"
+)
+_SYNTHETIC_DREAM_ENVIRON = (
+    b"BRAIN_DREAM_SWEEP_ENABLED=true\0"
+    b"BRAIN_DREAM_SWEEP_DRY_RUN=false\0"
+    b"BRAIN_DREAM_SWEEP_DRY_RUN=0\0"
+    b"BRAIN_SESSION_INACTIVE_SWEEP_ENABLED=true\0"
+    b"BRAIN_SESSION_AUTO_OPEN_ENABLED=true\0"
+    b"DECOY=SYNTHETIC_SECRET\nBRAIN_DREAM_SWEEP_ENABLED=true\0"
+    b"MCP_HTTP_TOKEN=SYNTHETIC_SECRET\0"
+)
+# What `systemctl show -p Environment --value` prints: one line, entries that contain a
+# space quoted. The secret shares that line with the real flags, which is exactly what
+# makes a missing `grep -o` leak it.
+_SYNTHETIC_UNIT_ENVIRONMENT = (
+    'PATH=/usr/bin BRAIN_SESSION_INACTIVE_SWEEP_ENABLED=true "DECOY=x BRAIN_DREAM_SWEEP_ENABLED='
+    'SYNTHETIC_SECRET" MCP_HTTP_TOKEN=SYNTHETIC_SECRET BRAIN_DREAM_SWEEP_ENABLED=true '
+    "BRAIN_DREAM_SWEEP_DRY_RUN=false BRAIN_SESSION_AUTO_OPEN_ENABLED=true"
+)
+# In the document's order: MCP process, unit property, Dream process.
+_EXPECTED_ARMING_OUTPUT = [
+    "BRAIN_SESSION_AUTO_OPEN_ENABLED=true",
+    "BRAIN_SESSION_DERIVED_CAPTURE_ENABLED=false",
+    "BRAIN_SESSION_INACTIVE_SWEEP_ENABLED=true",
+    "BRAIN_DREAM_SWEEP_ENABLED=true",
+    "BRAIN_DREAM_SWEEP_DRY_RUN=false",
+    "BRAIN_DREAM_SWEEP_ENABLED=true",
+    "BRAIN_DREAM_SWEEP_DRY_RUN=false",
+    "BRAIN_SESSION_INACTIVE_SWEEP_ENABLED=true",
+]
+
+_SYNTHETIC_PATH = "/usr/bin:/bin"
+_FAKE_MCP_PID = "1111"
+_FAKE_DREAM_PID = "2222"
+# `systemctl` is stubbed by a shell function, so the commands never touch the real
+# systemd, and any call the document did not announce fails loudly.
+_SYSTEMCTL_STUB = """
+systemctl() {
+  case "$*" in
+    *"brain-mcp-http.service -p MainPID"*) echo 1111 ;;
+    *"brain-v42-dream.service -p MainPID"*) echo 2222 ;;
+    *"brain-v42-dream.service -p Environment"*) printf '%s\\n' "$SYNTHETIC_UNIT_ENVIRONMENT" ;;
+    *) echo "unexpected systemctl call: $*" >&2; return 99 ;;
+  esac
+}
+"""
+
+
+def _run_arming_commands(commands: str, proc_root: Path) -> subprocess.CompletedProcess[str]:
+    """Run the documented commands in bash on synthetic input only.
+
+    One thing is rewritten: the `/proc/$1/environ` path of the function, pointed at a
+    temporary directory. Everything else, patterns and pipelines included, runs as
+    written. The refusal below keeps this honest: if the document ever reads another
+    `/proc/` path, the rewrite would leave it pointing at a REAL process environment, so
+    the test stops instead of running it.
+    """
+    assert commands.count("/proc/$1/environ") == 1, "the documented /proc read has moved"
+    rewritten = commands.replace("/proc/$1/environ", "$SYNTHETIC_PROC/$1/environ")
+    assert "/proc/" not in rewritten, "the document reads a /proc path this test cannot fake"
+    for pid, environ in (
+        (_FAKE_MCP_PID, _SYNTHETIC_MCP_ENVIRON),
+        (_FAKE_DREAM_PID, _SYNTHETIC_DREAM_ENVIRON),
+    ):
+        (proc_root / pid).mkdir()
+        (proc_root / pid / "environ").write_bytes(environ)
+    return subprocess.run(  # noqa: S603 - fixed argv, synthetic input, no shell string from outside
+        [shutil.which("bash", path=_SYNTHETIC_PATH) or "bash", "-c", _SYSTEMCTL_STUB + rewritten],
+        env={
+            "PATH": _SYNTHETIC_PATH,
+            "SYNTHETIC_PROC": str(proc_root),
+            "SYNTHETIC_UNIT_ENVIRONMENT": _SYNTHETIC_UNIT_ENVIRONMENT,
+        },
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+
+requires_bash_tools = pytest.mark.skipif(
+    any(shutil.which(tool, path=_SYNTHETIC_PATH) is None for tool in ("bash", "grep", "tr")),
+    reason="bash, grep and tr are needed to run the documented measurement commands",
+)
+
+
+def test_arming_state_commands_do_not_split_an_environment_with_tr() -> None:
+    """Splitting on NUL or on spaces loses record boundaries: a forbidden shape."""
+    commands = _arming_state_commands()
+
+    assert commands, "the measurement commands are no longer in a bash block of this section"
+    assert not re.search(r"\btr\s+'[^']+'\s+'\\n'", commands), (
+        "splitting an environment with tr loses record boundaries and can print secrets"
+    )
+
+
+@requires_bash_tools
+def test_arming_state_commands_print_only_whitelisted_booleans(tmp_path: Path) -> None:
+    """RUN the documented commands on a hostile synthetic environment.
+
+    They read a process environment that also carries secrets (`MCP_HTTP_TOKEN`). The
+    first version of this pin only looked for substrings, and two mutations passed it:
+    dropping `grep -o` printed a whole line holding the token, and widening the `case`
+    pattern to `*` printed the token's record. So the pin is behavioural: the exact bash
+    blocks of the section run against synthetic input, stdout must equal the expected
+    whitelisted lines, and the fake secret must not appear anywhere.
+    """
+    result = _run_arming_commands(_arming_state_commands(), tmp_path)
+
+    assert result.stderr == ""
+    assert result.stdout.splitlines() == _EXPECTED_ARMING_OUTPUT
+    assert _SYNTHETIC_SECRET not in result.stdout + result.stderr
+
+
+@requires_bash_tools
+@pytest.mark.parametrize(
+    ("original", "mutated"),
+    [
+        pytest.param('grep -oE "(^| )$key', 'grep -E "(^| )$key', id="grep-without-o"),
+        pytest.param("case $record in $2)", "case $record in *)", id="case-pattern-widened"),
+    ],
+)
+def test_the_behavioural_pin_catches_a_leaking_command(
+    original: str, mutated: str, tmp_path: Path
+) -> None:
+    """Prove the test above bites: each mutation must be seen, never absorbed.
+
+    Without this, the behavioural pin could rot into a test that passes whatever the
+    commands print. Both mutations are the ones the round-3 review found passing the
+    substring version.
+    """
+    commands = _arming_state_commands()
+    assert commands.count(original) == 1, f"the mutation site has moved: {original!r}"
+
+    result = _run_arming_commands(commands.replace(original, mutated), tmp_path)
+
+    leaked = _SYNTHETIC_SECRET in result.stdout + result.stderr
+    assert leaked or result.stdout.splitlines() != _EXPECTED_ARMING_OUTPUT
+    assert leaked, "the mutation should have printed the synthetic secret"
 
 
 @requires_claude

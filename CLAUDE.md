@@ -152,9 +152,19 @@ An open session with no heartbeat for 24 h exposes `is_stale=true`; `stale` is a
 **derived** list filter, not a persisted status. The status stays `open`, and only the
 7-day server-side sweep abandons a session without an explicit command.
 
-> The arming state of the session flags (derived capture, auto-open, sweep) is an
-> operator gesture that changes: **measure it in the environment of the live process**,
-> do not read it here.
+**Two natures.** Since migration 046 a session row is either an *operator* session
+(the one the commands above open, persisted today with `nature IS NULL`) or an
+*agent* trace that the server opens itself, one per HTTP MCP connection, keyed by the
+server-minted `Mcp-Session-Id` (none under stdio). The explicit-command rule governs the operator nature; the agent nature is a server-owned trace that grants no right to an agent, a hook or a client.
+Traces, derived capture and the four-hour inactivity rule of the Dream `sweep` phase
+(`closed_inactive`) are documented in `docs/OPERATIONS.md`, "Agent traces and the
+inactivity sweep".
+
+> The arming state of the session flags (derived capture, auto-open, inactivity
+> sweep) is an operator gesture that changes: **measure it in the environment of the
+> live process that reads it**, do not read it here. The MCP server reads auto-open
+> and derived capture; the Dream unit reads the inactivity sweep. Commands:
+> `docs/OPERATIONS.md`, "Arming state is measured, not documented".
 
 ### Proactive capitalisation
 
