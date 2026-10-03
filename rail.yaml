@@ -1,0 +1,13 @@
+rail: 1
+project: brain-v42
+brain_key: brain-v42
+tier: dev
+stack: python
+ledger: file
+gates:
+  docs.root:
+    value: internal/docs/superpowers
+    reason: "specs and plans are dated working notes kept in the private brain-v42-internal clone (ticket 8dc6f0d2)"
+  hygiene.docs_layout:
+    value: false
+    reason: "ADRs live in Brain (brain_propose_adr), not in a docs/adr folder: operator decision 2026-10-03; specs/ and plans/ are still read by the design and plan gates"
