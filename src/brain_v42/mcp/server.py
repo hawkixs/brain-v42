@@ -9,7 +9,7 @@ Initialization sequence on startup:
 3. All domain repos (PgDecisionRepo, PgLearningRepo, etc.) — injected with session_factory
 4. All domain services (DecisionService, LearningService, etc.) — injected with repo + embedding_svc
 5. BrainService — fans out semantic search across all domain services
-6. Registration roots expose 73 always-on + 2 graph-gated = 75 brain_* tools
+6. Registration roots expose 76 always-on + 2 graph-gated = 78 brain_* tools
 
 Shutdown discipline (prevents zombie children when parent Claude Code exits abruptly):
 - prctl(PR_SET_PDEATHSIG, SIGTERM) — kernel signals child on parent death (Linux only)
@@ -1046,6 +1046,13 @@ def build_server() -> BuiltServer:
         claim_inventory_svc=claim_inventory_svc,
         claim_extraction_enabled=settings.brain_claim_extraction_enabled,
     )
+
+    from brain_v42.mcp.tools.focus_slot_tools import register_focus_slot_tools  # noqa: PLC0415
+    from brain_v42.repositories.pg_focus_slot import PgFocusSlotRepo  # noqa: PLC0415
+    from brain_v42.services.focus_slot_service import FocusSlotService  # noqa: PLC0415
+
+    focus_slot_svc = FocusSlotService(PgFocusSlotRepo(_session_factory))
+    register_focus_slot_tools(mcp, focus_slot_svc=focus_slot_svc)
 
     # Roadmap tools
     from brain_v42.mcp.tools.roadmap_tools import register_roadmap_tools  # noqa: PLC0415

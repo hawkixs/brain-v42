@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Updated:** 2026-09-22
-**Repository registry:** 73 always-on + 2 graph-gated = 75 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 76 always-on + 2 graph-gated = 78 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Default catalog:** Admin clients use `compact` while capability enforcement is disabled: the seven session lifecycle tools plus `brain_find_tool` and `brain_call_tool`; other registered tools remain discoverable through those gateways. `native` exposes every registered tool. An authenticated Dream phase always receives its exact native allowlist, independent of presentation headers, and cannot access either gateway. Experimental `brain_code_mode` takes precedence only while Dream capability enforcement is disabled.
 **Transport:** HTTP loopback `http://127.0.0.1:8765/mcp` (production fleet). Tools are defined as closures capturing injected services — see `src/brain_v42/mcp/server.py` (`build_services()`) and the `register_*_tools()` functions in each module under `src/brain_v42/mcp/tools/`.
 
@@ -924,6 +924,30 @@ The briefing returned by start and resume is assembled in `session_tools.py`.
 
 ---
 
+## Focus slots — 3 tools (`focus_slot_tools.py`)
+
+The project focus (`current_focus`) is the project's BASE: identity, rules, standing constraints. Topics in flight live in focus slots, each anchored to a ticket, a lot or a PR and guarded by its own `revision`. No slot tool writes the base. No TTL closes a slot; `is_stale` (open, unbound, untouched for seven days) only shows it.
+
+### brain_slot_open
+```
+brain_slot_open(project_key, title[1..120], body[1..4000], anchors[1..10])
+-> {slot, replayed}
+```
+Explicit user command. Opens at revision 0 with its anchors (written once, never changed) and a `slot_open` history row. An equal open is a replay. Refusals: `project_not_found`, `anchor_required`, `anchor_invalid`, `anchor_ticket_foreign`, `anchor_unbound_pr`, `anchor_lot_unplanned`, `anchor_already_received`, `slot_title_conflict`.
+
+### brain_slot_list
+```
+brain_slot_list(project_key, status='open'|'closed'|'all', limit=20, offset=0)
+-> {slots, total, limit, offset}
+```
+Read only. Each slot carries its anchors, `bound_session_id` and `is_stale`. Refusals: `project_not_found`, `invalid_limit`.
+
+### brain_slot_close
+```
+brain_slot_close(slot_id, expected_revision>=0, note[1..2000]) -> {slot}
+```
+Explicit user command; `close_reason = 'explicit'`, revision + 1, a `slot_close` history row. Refusals: `slot_not_found`, `slot_closed`, `slot_revision_conflict` (names the current revision), `slot_bound` (an open session is bound: end, relay or abandon it first).
+
 ## Project context — 4 tools
 
 ### brain_set_project_context (`project_context_tools.py`)
@@ -1289,10 +1313,11 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `roadmap_tools.py` | roadmap | 3 |
 | `runbook_tools.py` | runbooks | 4 |
 | `session_lifecycle_tools.py` | persistent session lifecycle | 8 |
+| `focus_slot_tools.py` | focus slots (ADR #34) | 3 |
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 6 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
 | `delivery_tools.py` | observable delivery | 11 |
 | `fact_tools.py` | measured facts (registered by later server composition) | 2 |
 | `claim_tools.py` | claim verification + reads (registered by later server composition) | 3 |
-| **Total** | | **73 always-on + 2 graph-gated = 75** |
+| **Total** | | **76 always-on + 2 graph-gated = 78** |

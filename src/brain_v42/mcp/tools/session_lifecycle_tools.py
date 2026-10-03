@@ -28,6 +28,7 @@ from brain_v42.models.brain_session import (
     BrainSessionResumeResult,
     BrainSessionStartResult,
 )
+from brain_v42.models.focus_slot import SLOT_BODY_MAX_LENGTH
 
 if TYPE_CHECKING:
     from brain_v42.services.brain_session_service import BrainSessionService
@@ -117,6 +118,10 @@ FocusArg = Annotated[
         ),
     ),
 ]
+#: A slot body, a bound session's next_focus written into its slot, or a relay
+#: handover: 4,000 CHARACTERS (Q4), like `NEXT_FOCUS_MAX_LENGTH` counted in
+#: characters, a separate contract from the base cap.
+SlotBodyArg = Annotated[str, Field(min_length=1, max_length=SLOT_BODY_MAX_LENGTH)]
 ReasonArg = Annotated[str, Field(min_length=1, max_length=2_000)]
 FocusRevisionArg = Annotated[int, Field(ge=0, strict=True)]
 ListLimitArg = Annotated[int, Field(ge=1, le=100)]

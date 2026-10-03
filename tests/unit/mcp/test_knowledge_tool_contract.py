@@ -1,4 +1,4 @@
-"""Protocol contracts for the 43 non-session Brain MCP tools."""
+"""Protocol contracts for the 46 non-session Brain MCP tools."""
 
 from __future__ import annotations
 
@@ -26,12 +26,13 @@ READ_ONLY_TOOLS = frozenset(
         "brain_list_project_groups",
         "brain_list_projects",
         "brain_search",
+        "brain_slot_list",
         "brain_ticket_get",
         "brain_ticket_list",
         "brain_workflow_guide",
     }
 )
-IDEMPOTENT_ADDITIVE_TOOLS = frozenset({"brain_assign_domain"})
+IDEMPOTENT_ADDITIVE_TOOLS = frozenset({"brain_assign_domain", "brain_slot_open"})
 #: Same annotation shape, different nature: these change a project's lifecycle
 #: rather than add anything. They are NOT destructive — archiving deletes no
 #: knowledge and `brain_project_unarchive` puts every view back — and they ARE
@@ -75,6 +76,7 @@ DESTRUCTIVE_TOOLS = frozenset(
         "brain_refresh_entity",
         "brain_reindex_plans",
         "brain_set_project_context",
+        "brain_slot_close",
         "brain_supersede_decision",
         "brain_ticket_transition",
         "brain_update",
@@ -90,6 +92,7 @@ def _registered_knowledge_server() -> FastMCP:
     from brain_v42.mcp.tools.crud_tools import register_crud_tools
     from brain_v42.mcp.tools.decay_tools import register_decay_tools
     from brain_v42.mcp.tools.dream_tools import register_dream_tools
+    from brain_v42.mcp.tools.focus_slot_tools import register_focus_slot_tools
     from brain_v42.mcp.tools.plan_tools import register_plan_tools
     from brain_v42.mcp.tools.roadmap_tools import register_roadmap_tools
     from brain_v42.mcp.tools.ticket_tools import register_ticket_tools
@@ -127,6 +130,7 @@ def _registered_knowledge_server() -> FastMCP:
         graph_service=service,
     )
     register_ticket_tools(server, service)
+    register_focus_slot_tools(server, service)
     return server
 
 
@@ -142,7 +146,7 @@ async def test_all_knowledge_tools_publish_exact_safety_annotations() -> None:
         DESTRUCTIVE_TOOLS,
     )
     expected_names = frozenset().union(*groups)
-    assert len(expected_names) == 51
+    assert len(expected_names) == 54
     assert sum(len(group) for group in groups) == len(expected_names)
     assert {tool.name for tool in await server.list_tools()} == expected_names
 
