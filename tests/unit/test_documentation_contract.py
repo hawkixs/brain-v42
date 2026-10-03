@@ -2793,3 +2793,17 @@ def test_readme_versioning_contract_points_at_the_measured_health_fields() -> No
 # here, checking docs/runbooks/2026-09-07-observable-delivery-workflows.md. That runbook
 # moved to the private brain-v42-internal repository (ticket 8dc6f0d2); the check moved
 # with it, to tests/unit/test_documentation_contract_internal.py in that repository.
+
+
+def test_operations_documents_the_tag_pass_and_its_budget() -> None:
+    text = (REPO_ROOT / "docs" / "OPERATIONS.md").read_text()
+    assert "brain-v42-delivery-observer" in text
+    assert "released:<ticket>:<deliverable>:<tag>" in text
+    assert "BRAIN_DELIVERY_REQUEST_BUDGET_PER_MINUTE" in text
+    assert "deployed" in text and "brain-v42 only" in text
+
+
+def test_mcp_tools_documents_the_release_line_and_the_lot_header() -> None:
+    text = (REPO_ROOT / "docs" / "MCP_TOOLS.md").read_text()
+    assert "planned, not shipped" in text
+    assert "deployed once" in text

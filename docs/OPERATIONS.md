@@ -453,6 +453,88 @@ forever. The suppression is a LOG volume decision only: `brain_reindex_plans` st
 names every rejected path in its `Fichiers non indexés` list on every single run, and
 so does each sweep's `plan_index_refresher.sweep_done` error count.
 
+## Delivery observer: releases and deployments
+
+Besides confirming pull requests, the delivery observer
+(`brain-v42-delivery-observer.service`) derives two facts per merged deliverable,
+once per cycle, after its confirmation queue. It records them as delivery
+attestations; it never transitions a ticket, and it never judges what a fact means
+(red-rail does).
+
+**`released` — which tag first shipped a merge.** For every active artifact binding
+with an `integration_sha` on its workflow's current contract revision, and no
+`released` row yet for that `integration_sha` (issued by the observer as the
+executor project), the pass lists the repository's `v*` tags (only
+`vMAJOR.MINOR.PATCH` names count), dates each tag and the merge by commit date,
+and walks the tags from the oldest one not older than the merge. Containment is
+asked tag-first, `GET .../compare/{tag}...{merge}`: `behind` or `identical`
+means the tag carries the merge. The first containing tag is recorded and the walk
+stops; a conflict on that tag's key also stops it, so a later tag is never claimed
+in its place. A failed tag list or tag-date fetch leaves the repository empty for
+this cycle and is retried on the next one. A failed fetch of the merge's own date
+skips that candidate for this cycle; if GitHub answers that the merge commit does
+not exist, the candidate is skipped for the life of the process, any other failure
+is retried on the next cycle.
+
+**`deployed` — whether the live brain-v42 release carries a merge.** brain-v42 only:
+the observer reads the release it runs from (`releases/<40-hex sha>/` of its own
+import path) and asks GitHub whether that SHA contains each brain-v42 merge not yet
+attested for it. A process running from a checkout measures no release and records
+nothing. The pass is the observer's own measurement of its own release, so it
+covers the brain-v42 repository only, and only while that repository is registered
+for `brain-v42` in the observer's repository registry.
+
+| Kind | Idempotency key | Payload |
+|---|---|---|
+| `released` | `released:<ticket>:<deliverable>:<tag>` | `repository_id`, `tag`, `tag_sha`, `integration_sha` |
+| `deployed` | `deployed:<ticket>:<deliverable>:<live release sha>` | `repository_id`, `live_release_sha`, `package_version`, `integration_sha` |
+
+Both are issued as `brain-v42-delivery-observer` by the ticket's executor project,
+with the binding's contract revision; `released` is dated by the tag's commit,
+`deployed` by the observation. Readers count only rows carrying that issuer
+identity and issued by the ticket's executor project: a caller's declaration of the
+same kind is stored but is not a measurement. The identity is a declared label,
+like every attestation issuer, not a proof of origin: it holds inside the same
+trust boundary as the MCP bearer.
+
+**Reopened tickets.** A reopen deactivates the bindings; the next attempt binds a
+new merge under the same deliverable. Both passes then treat that merge as new work:
+a row counts as "already recorded" only when it carries the binding's
+`integration_sha`, so the new merge is derived against the later tag or live
+release. The ticket view reads only observer rows whose `integration_sha` belongs
+to an active binding of the ticket, so the first merge's tag and live release are no
+longer shown as the reopened ticket's own. The idempotency key does not contain the
+merge: when the new merge lands in the same tag or the same live release as the
+first one, the key is already taken, the write is refused, and the key stays
+blocked for the life of the process with one `idempotency_key_reused` diagnostic.
+Nothing is claimed for the new merge in that case, and it is never attributed to a
+later tag in place of the taken one.
+
+Both passes run only in a repository-wide cycle: a run scoped to one project
+(`run_once(project_key=...)`) leaves them out. They check the shutdown signal, like
+the loss of ownership, before each request, since admission can wait up to a
+minute for one.
+
+**Budget.** Both passes go through the observer's GitHub transport and share its
+admission budget, `BRAIN_DELIVERY_REQUEST_BUDGET_PER_MINUTE` (default and ceiling
+40). On top of it, a cycle performs at most ten containment checks across the two
+passes; the rest wait for the next cycle. A pair found not contained, and a merge
+GitHub does not know, are remembered for the life of the process and not asked again.
+
+**Rollback.** Switching the live release back writes nothing and deletes nothing:
+the `deployed` rows stay, and the ticket view compares them with the release the
+MCP server itself runs from. A ticket whose deployed releases do not include the
+running one reads "deployed once (<sha>), not in the live release"; a server
+running from a checkout says "live release unmeasured" instead of guessing.
+
+**Check it.** On a merged ticket, `brain_delivery_get` shows the binding's
+`integration_sha`; after the next cycle that follows a tag (or a cutover),
+`brain_ticket_get` shows the measurement on its `release:` line, for example
+`release: planned 0.6.3 · shipped v0.6.3 · deployed`.
+`brain_ticket_list(project_key, target_release="0.6.3")` opens with the lot header:
+whether `v0.6.3` was observed, the tickets planned but not shipped in it, and those
+shipped under another tag.
+
 ## Automation service
 
 The `brain-v42-automation.service` unit is generated and verified, but stays dormant.

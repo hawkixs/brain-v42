@@ -5,25 +5,34 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from brain_v42.delivery_config import DeliverySettings
-from brain_v42.delivery_observer.github import GitHubClient
+from brain_v42.delivery_observer.github import GitHubClient, ReleaseTag
 from brain_v42.delivery_observer.ownership import ObserverOwnership, ObserverOwnershipLost
 from brain_v42.delivery_observer.transport import ProviderError
+from brain_v42.facts.model import ReleaseIdentity
 from brain_v42.models.delivery import (
     SAFE_OBSERVATION_ERROR_CODES,
     DeliveryError,
     PullRequestEvidence,
     RepositoryContextEvidence,
 )
+from brain_v42.models.ticket import release_key
 from brain_v42.repositories.pg_delivery_evidence import PgDeliveryEvidenceRepo
 from brain_v42.repositories.pg_delivery_queue import ObservationJob, PgDeliveryQueue
+from brain_v42.repositories.pg_release_derivation import (
+    BRAIN_V42_REPOSITORY_ID,
+    PgReleaseDerivationRepo,
+    ReleaseCandidate,
+)
 
 
 class ObservationRunResult(BaseModel):
@@ -46,6 +55,7 @@ class _Outcome:
 
 _MAX_DECODED_JOBS_PER_PASS = 100
 _MAX_UNDECODABLE_ROWS_PER_PASS = 1000
+_MAX_RELEASE_COMPARES_PER_PASS = 10
 
 
 class _UndecodableScanLimitReached(Exception):
@@ -88,11 +98,21 @@ class DeliveryObserverRuntime:
         client: GitHubClient,
         evidence_repository: PgDeliveryEvidenceRepo,
         queue: PgDeliveryQueue | None = None,
+        releases: PgReleaseDerivationRepo | None = None,
+        release_identity: Callable[[], ReleaseIdentity | None] = lambda: None,
     ) -> None:
         self.settings = DeliverySettings.model_validate(settings.model_dump())
         self.owner, self.client = owner, client
         self.evidence_repository = evidence_repository
         self.queue = queue or PgDeliveryQueue()
+        self.releases = releases
+        self.release_identity = release_identity
+        self._commit_dates: dict[str, datetime] = {}
+        self._not_contained: set[tuple[str, str]] = set()
+        # A merge commit the provider says it does not have never comes back; anything
+        # else (rate limit, outage) is transient and stays retryable.
+        self._missing_merges: set[str] = set()
+        self._blocked_keys: set[tuple[UUID, str, str]] = set()
         self._run_lock = asyncio.Lock()
 
     async def run_once(self, project_key: str | None = None) -> ObservationRunResult:
@@ -245,6 +265,15 @@ class DeliveryObserverRuntime:
                         failed += 1
                     else:
                         deferred += 1
+            # The passes are repository-wide: a run scoped to one project leaves them out.
+            if (
+                project_key is None
+                and not stop_event.is_set()
+                and self.owner.owned
+                and not self.owner.lost.is_set()
+            ):
+                compares = await self._release_pass(stop_event)
+                await self._deployed_pass(compares, stop_event)
         except ObserverOwnershipLost:
             return ObservationRunResult(
                 collected=collected,
@@ -267,6 +296,182 @@ class DeliveryObserverRuntime:
             max_lag_seconds=lag,
             exit_code=exit_code,
         )
+
+    async def _tag_date(self, repository_id: int, tag: ReleaseTag) -> datetime:
+        return await self._tag_date_of_sha(repository_id, tag.sha)
+
+    async def _tag_date_of_sha(self, repository_id: int, sha: str) -> datetime:
+        if sha not in self._commit_dates:
+            self._commit_dates[sha] = await self.client.commit_date(repository_id, sha)
+        return self._commit_dates[sha]
+
+    async def _derivation_candidates(
+        self, *, repository_id: int | None = None, live_release_sha: str = ""
+    ) -> AsyncIterator[ReleaseCandidate]:
+        """Page past memoized candidates without letting a SQL limit starve later work."""
+        if self.releases is None:
+            return
+        repositories = {
+            rid for repos in self.settings.repository_registry.values() for rid in repos
+        }
+        seen: set[tuple[UUID, str]] = set()
+        while not self.owner.lost.is_set():
+            async with self.owner.transaction() as session:
+                if repository_id is None:
+                    candidates = await self.releases.unreleased(
+                        session,
+                        repository_ids=repositories,
+                        limit=_MAX_RELEASE_COMPARES_PER_PASS,
+                        exclude=seen,
+                    )
+                else:
+                    candidates = await self.releases.undeployed(
+                        session,
+                        repository_id=repository_id,
+                        live_release_sha=live_release_sha,
+                        limit=_MAX_RELEASE_COMPARES_PER_PASS,
+                        exclude=seen,
+                    )
+            for candidate in candidates:
+                seen.add((candidate.ticket_id, candidate.deliverable_key))
+                yield candidate
+            if len(candidates) < _MAX_RELEASE_COMPARES_PER_PASS:
+                return
+
+    def _halted(self, stop_event: asyncio.Event) -> bool:
+        """Admission can sleep up to a minute per request: look before each one."""
+        return stop_event.is_set() or self.owner.lost.is_set()
+
+    async def _release_pass(self, stop_event: asyncio.Event) -> int:
+        """Bound containment checks while sharing the transport's admission budget."""
+        if self.releases is None:
+            return 0
+        compares = 0
+        tags_by_repo: dict[int, list[tuple[ReleaseTag, datetime]]] = {}
+        async for candidate in self._derivation_candidates():
+            if self._halted(stop_event):
+                break
+            blocked_key: tuple[UUID, str, str] | None = None
+            try:
+                if candidate.repository_id not in tags_by_repo:
+                    # A failed list/date fetch stays empty for this pass, then retries next cycle.
+                    tags_by_repo[candidate.repository_id] = []
+                    tags = await self.client.release_tags(candidate.repository_id)
+                    dated = []
+                    for tag in tags:
+                        if self._halted(stop_event):
+                            return compares
+                        dated.append((tag, await self._tag_date(candidate.repository_id, tag)))
+                    tags_by_repo[candidate.repository_id] = sorted(
+                        dated, key=lambda item: (item[1], release_key(item[0].version))
+                    )
+                dated = tags_by_repo[candidate.repository_id]
+                if not dated:
+                    continue
+                if candidate.integration_sha in self._missing_merges:
+                    continue
+                try:
+                    merged_at = await self._tag_date_of_sha(
+                        candidate.repository_id, candidate.integration_sha
+                    )
+                except ProviderError as error:
+                    if error.code == "provider_not_found":
+                        self._missing_merges.add(candidate.integration_sha)
+                    raise
+                for tag, tag_date in dated:
+                    if self._halted(stop_event):
+                        return compares
+                    if tag_date < merged_at:
+                        continue
+                    key = f"released:{candidate.ticket_id}:{candidate.deliverable_key}:{tag.name}"
+                    blocked_key = (candidate.ticket_id, candidate.deliverable_key, key)
+                    pair = (candidate.integration_sha, tag.sha)
+                    if blocked_key in self._blocked_keys:
+                        # A conflict on the first containing tag must never claim a later release.
+                        break
+                    if pair in self._not_contained:
+                        continue
+                    if compares >= _MAX_RELEASE_COMPARES_PER_PASS:
+                        return compares
+                    compares += 1
+                    if await self.client.contains(
+                        candidate.repository_id, candidate.integration_sha, tag.sha
+                    ):
+                        async with self.owner.transaction() as session:
+                            await self.releases.record_released(session, candidate, tag, tag_date)
+                        break
+                    self._not_contained.add(pair)
+            except ProviderError as error:
+                _diagnose(
+                    f"release:{candidate.ticket_id}",
+                    error.code,
+                    provider_code=error.code,
+                    diagnostic=error.diagnostic,
+                )
+            except DeliveryError as error:
+                if error.code == "idempotency_key_reused" and blocked_key is not None:
+                    self._blocked_keys.add(blocked_key)
+                _diagnose(
+                    f"release:{candidate.ticket_id}",
+                    error.code,
+                    provider_code=None,
+                    diagnostic=type(error).__name__,
+                )
+        return compares
+
+    async def _deployed_pass(self, compares: int, stop_event: asyncio.Event) -> None:
+        """Claim deployment only from this process's immutable brain-v42 release."""
+        if (
+            self.releases is None
+            or compares >= _MAX_RELEASE_COMPARES_PER_PASS
+            or self._halted(stop_event)
+        ):
+            return
+        identity = self.release_identity()
+        if identity is None:
+            return
+        repository_id = BRAIN_V42_REPOSITORY_ID
+        if repository_id not in self.settings.repositories_for("brain-v42"):
+            return
+        async for candidate in self._derivation_candidates(
+            repository_id=repository_id, live_release_sha=identity.release_sha
+        ):
+            if self._halted(stop_event):
+                break
+            key = (
+                f"deployed:{candidate.ticket_id}:{candidate.deliverable_key}:{identity.release_sha}"
+            )
+            blocked_key = (candidate.ticket_id, candidate.deliverable_key, key)
+            pair = (candidate.integration_sha, identity.release_sha)
+            if blocked_key in self._blocked_keys or pair in self._not_contained:
+                continue
+            if compares >= _MAX_RELEASE_COMPARES_PER_PASS:
+                return
+            compares += 1
+            try:
+                if await self.client.contains(
+                    candidate.repository_id, candidate.integration_sha, identity.release_sha
+                ):
+                    async with self.owner.transaction() as session:
+                        await self.releases.record_deployed(session, candidate, identity)
+                else:
+                    self._not_contained.add(pair)
+            except ProviderError as error:
+                _diagnose(
+                    f"deployed:{candidate.ticket_id}",
+                    error.code,
+                    provider_code=error.code,
+                    diagnostic=error.diagnostic,
+                )
+            except DeliveryError as error:
+                if error.code == "idempotency_key_reused":
+                    self._blocked_keys.add(blocked_key)
+                _diagnose(
+                    f"deployed:{candidate.ticket_id}",
+                    error.code,
+                    provider_code=None,
+                    diagnostic=type(error).__name__,
+                )
 
     async def _observe(self, job: ObservationJob) -> _Outcome:
         started_at = datetime.now(UTC)

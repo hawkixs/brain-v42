@@ -39,10 +39,33 @@ class TicketStatus(StrEnum):
 
 
 class ReleaseState(BaseModel, frozen=True):
-    """Placeholder for observer measurements rendered beside the release plan."""
+    """Observer measurements rendered beside the release plan, without reconciliation."""
+
+    shipped_tags: tuple[str, ...] = ()
+    deployed_shas: tuple[str, ...] = ()
+    running_sha: str | None = None
 
     def rendered_parts(self) -> list[str]:
-        return []
+        parts: list[str] = []
+        if self.shipped_tags:
+            ordered = sorted(set(self.shipped_tags), key=lambda tag: release_key(tag[1:]))
+            parts.append("shipped " + "+".join(ordered))
+        if self.deployed_shas:
+            if self.running_sha is None:
+                parts.append(f"deployed {self.deployed_shas[-1][:8]} (live release unmeasured)")
+            elif self.running_sha in self.deployed_shas:
+                parts.append("deployed")
+            else:
+                parts.append(
+                    f"deployed once ({self.deployed_shas[-1][:8]}), not in the live release"
+                )
+        return parts
+
+
+class LotShipping(BaseModel, frozen=True):
+    tag_known: bool
+    not_shipped: tuple[UUID, ...] = ()
+    shipped_elsewhere: tuple[tuple[UUID, str], ...] = ()
 
 
 class TicketAction(StrEnum):

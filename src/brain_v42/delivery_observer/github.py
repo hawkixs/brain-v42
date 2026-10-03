@@ -30,6 +30,15 @@ from brain_v42.models.delivery import (
 
 _REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
 _SHA = re.compile(r"(?:[a-f0-9]{40}|[a-f0-9]{64})")
+RELEASE_TAG = re.compile(r"^v([0-9]+\.[0-9]+\.[0-9]+)$")
+_COMPARE_STATUSES = frozenset({"ahead", "behind", "identical", "diverged"})
+
+
+@dataclass(frozen=True)
+class ReleaseTag:
+    name: str
+    version: str
+    sha: str
 
 
 class GitHubAuthorization(Protocol):
@@ -230,6 +239,19 @@ class GitHubClient:
             raise ProviderError("provider_invalid_response")
         return actual
 
+    def _relative_next(
+        self, next_url: str, paths: str | set[str], query: Mapping[str, str]
+    ) -> None:
+        next_parts = urlsplit(self.transport.validate_url(next_url))
+        pairs = parse_qsl(next_parts.query, keep_blank_values=True)
+        accepted_paths = {paths} if isinstance(paths, str) else paths
+        if (
+            next_parts.path not in accepted_paths
+            or len(pairs) != len(query)
+            or dict(pairs) != dict(query)
+        ):
+            raise ProviderError("provider_invalid_response")
+
     async def _records(
         self,
         path: str,
@@ -271,14 +293,75 @@ class GitHubClient:
                 return records
             page_number += 1
             expected_query = {**query, "page": str(page_number)}
-            next_parts = urlsplit(self.transport.validate_url(page.next_url))
-            pairs = parse_qsl(next_parts.query, keep_blank_values=True)
-            if (
-                next_parts.path != path
-                or len(pairs) != len(expected_query)
-                or dict(pairs) != expected_query
-            ):
+            self._relative_next(page.next_url, {path}, expected_query)
+
+    async def release_tags(self, repository_id: int) -> list[ReleaseTag]:
+        """Every ``vX.Y.Z`` tag; pre-releases and other names are not releases."""
+        root = self._address(repository_id)
+        budget = _PageBudget()
+        found: list[ReleaseTag] = []
+        seen_names: set[str] = set()
+        path: str | None = f"{root}/tags?per_page=100&page=1"
+        try:
+            while path is not None:
+                budget.take_page()
+                page = await self._get(path)
+                if not isinstance(page.data, list):
+                    raise ProviderError("provider_invalid_response")
+                budget.take_records(len(page.data))
+                for raw in page.data:
+                    item = _object(raw)
+                    name = _text(item.get("name"))
+                    if name in seen_names:
+                        raise ProviderError("provider_invalid_response")
+                    seen_names.add(name)
+                    sha = _sha(_object(item.get("commit")).get("sha"))
+                    match = RELEASE_TAG.fullmatch(name)
+                    if match:
+                        found.append(ReleaseTag(name=name, version=match.group(1), sha=sha))
+                if page.next_url is None:
+                    path = None
+                else:
+                    next_page = budget.pages + 1
+                    self._relative_next(
+                        page.next_url,
+                        {f"{root}/tags", f"/repositories/{repository_id}/tags"},
+                        {"per_page": "100", "page": str(next_page)},
+                    )
+                    next_path = urlsplit(self.transport.validate_url(page.next_url)).path
+                    path = f"{next_path}?per_page=100&page={next_page}"
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
+            raise ProviderError(
+                "provider_invalid_response", diagnostic=_diagnostic(error)
+            ) from error
+        return found
+
+    async def commit_date(self, repository_id: int, sha: str) -> datetime:
+        try:
+            sha = _sha(sha)
+            raw = _object(
+                (await self._get(f"{self._address(repository_id)}/git/commits/{sha}")).data
+            )
+            if raw.get("sha") != sha:
                 raise ProviderError("provider_invalid_response")
+            result = _time(_object(raw.get("committer")).get("date"))
+            if result is None:
+                raise ProviderError("provider_invalid_response")
+            return result
+        except (KeyError, TypeError, ValueError, OverflowError) as error:
+            raise ProviderError(
+                "provider_invalid_response", diagnostic=_diagnostic(error)
+            ) from error
+
+    async def contains(self, repository_id: int, ancestor_sha: str, descendant_sha: str) -> bool:
+        """Does ``descendant`` contain ``ancestor``? Compare descendant first."""
+        root = self._address(repository_id)
+        ancestor_sha, descendant_sha = _sha(ancestor_sha), _sha(descendant_sha)
+        raw = _object((await self._get(f"{root}/compare/{descendant_sha}...{ancestor_sha}")).data)
+        status = raw.get("status")
+        if status not in _COMPARE_STATUSES:
+            raise ProviderError("provider_invalid_response")
+        return status in {"behind", "identical"}
 
     async def _association(
         self, root: str, synthetic: str, head: str, base: str

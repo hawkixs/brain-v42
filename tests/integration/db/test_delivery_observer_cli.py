@@ -222,7 +222,11 @@ async def test_real_once_publishes_receipts_then_restart_is_idle(
         assert {row["milestone"] for row in receipts} == {"integration", "fulfilled"}
         count = len(case.requests)
         code, result = await finish(await start("--once"))
-        assert code == result["collected"] == 0 and len(case.requests) == count
+        # The restart collects nothing again. An unscoped run also runs the release
+        # pass, whose only request is the tag listing of the merged deliverable's
+        # repository (the fixture serves no tags, so nothing is compared).
+        assert code == result["collected"] == 0
+        assert [path for _, path in case.requests[count:]] == ["/repos/hawkixs/brain-v42/tags"]
 
 
 async def test_real_once_provider_failure_is_nonzero_and_persisted_without_secret(
