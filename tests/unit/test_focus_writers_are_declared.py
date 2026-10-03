@@ -86,6 +86,13 @@ FOCUS_WRITERS: dict[str, tuple[str, bool | None, str]] = {
         "names the column in its docstring only: the project focus is the BASE a slot "
         "never writes. Reads nothing, writes nothing, never stamps",
     ),
+    "src/brain_v42/repositories/pg_focus_slot.py": (
+        "reader",
+        None,
+        "the session_slots sidecar block reads the base's size (`char_length`), revision and "
+        "`focus_updated_at`. Its only project_contexts statements are SELECTs: never writes the "
+        "base, never stamps",
+    ),
     "src/brain_v42/services/project_context_service.py": ("reader", None, "delegates"),
     "src/brain_v42/mcp/tools/project_context_tools.py": ("reader", None, "tool surface"),
     "src/brain_v42/mcp/tools/session_tools.py": ("reader", None, "briefing"),

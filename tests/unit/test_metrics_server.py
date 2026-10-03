@@ -101,6 +101,8 @@ def collector() -> MetricsCollector:
     c.collect_ticket_counts = AsyncMock(  # type: ignore[method-assign]
         return_value={}
     )
+    # session_slots block (ADR #34 D12): same reason, it opens a session too.
+    c.collect_session_slots = AsyncMock(return_value={})  # type: ignore[method-assign]
     return c
 
 
@@ -489,6 +491,33 @@ class TestSlowBlockCacheWiring:
 
         assert response.status == 200
         assert "tickets" not in data
+
+    async def test_session_slots_block_carries_generated_at(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        collector.collect_session_slots = AsyncMock(return_value={"projects": []})  # type: ignore[method-assign]
+        server = self._server(collector, mock_embedding_svc, time_box=[0.0])
+        data = json.loads((await server._handle_metrics(MagicMock())).body)
+        assert data["session_slots"]["generated_at"] == "2026-01-01T00:00:00+00:00"
+        assert data["session_slots"]["projects"] == []
+
+    async def test_a_session_slots_failure_degrades_without_crashing(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        collector.collect_session_slots = AsyncMock(side_effect=RuntimeError("db down"))  # type: ignore[method-assign]
+        server = self._server(collector, mock_embedding_svc, time_box=[0.0])
+        response = await server._handle_metrics(MagicMock())
+        assert response.status == 200
+        assert "session_slots" not in json.loads(response.body)
+
+    async def test_session_slots_is_cached_like_tickets(
+        self, collector: MetricsCollector, mock_embedding_svc: MagicMock
+    ) -> None:
+        collector.collect_session_slots = AsyncMock(return_value={"projects": []})  # type: ignore[method-assign]
+        server = self._server(collector, mock_embedding_svc, time_box=[0.0])
+        await server._handle_metrics(MagicMock())
+        await server._handle_metrics(MagicMock())
+        assert collector.collect_session_slots.call_count == 1
 
 
 async def test_start_disables_aiohttp_request_decompression(

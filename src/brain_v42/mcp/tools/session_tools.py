@@ -25,6 +25,7 @@ from brain_v42.models.brain_session import (
     RESUME_CHECKPOINT_LIMIT,
     SESSION_STALE_AFTER,
 )
+from brain_v42.models.focus_slot import SLOT_BODY_MAX_LENGTH, SlotBriefing
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.ticket import ReleaseLot, current_and_next
 from brain_v42.services.dream_run_service import (
@@ -414,7 +415,13 @@ def _format_focus_age(written_at: datetime, now: datetime) -> str:
     return f"il y a {hours // 24}j"
 
 
-def _focus_margin_line(focus_length: int, focus_octets: int | None = None) -> str:
+def _focus_margin_line(
+    focus_length: int,
+    focus_octets: int | None = None,
+    *,
+    cap: int = NEXT_FOCUS_MAX_LENGTH,
+    label: str = "Focus",
+) -> str:
     """What is left before `brain_session_end` refuses to close.
 
     `next_focus` is MANDATORY and capped; it REPLACES `current_focus` when the
@@ -430,8 +437,8 @@ def _focus_margin_line(focus_length: int, focus_octets: int | None = None) -> st
     named — compress, and so lose text the author chose, with no diff and no
     trace, or be refused.
     """
-    margin = NEXT_FOCUS_MAX_LENGTH - focus_length
-    head = f"- Focus : {focus_length} / {NEXT_FOCUS_MAX_LENGTH} caractères"
+    margin = cap - focus_length
+    head = f"- {label} : {focus_length} / {cap} caractères"
     if margin > 0:
         # The "which of the two do we count" question, reopened on 2026-08-29:
         # the bound counts CHARACTERS, and the same focus was 9,977 characters
@@ -557,6 +564,83 @@ def _section_drill_in_hint() -> str:
     return "→ More: brain_search · brain_get_roadmap · brain_list types=…"
 
 
+_PREVIOUS_SUMMARY_CAP = 1_000
+
+
+def _capped(text: str, cap: int) -> str:
+    return text if len(text) <= cap else text[:cap] + "…"
+
+
+def _section_slots(view: SlotBriefing | None, *, now: datetime) -> str:
+    """### Slots — one line per open slot: title, anchors, age, holder, flags (spec §6)."""
+    if view is None or not view.open_slots:
+        return ""
+    lines = [f"### Slots ({len(view.open_slots)} ouverts)"]
+    for slot in view.open_slots:
+        anchors = ", ".join(anchor.ref for anchor in slot.anchors)
+        holder = str(slot.bound_session_id)[:8] if slot.bound_session_id else "orphelin"
+        flags = [
+            name
+            for name, on in (("stale", slot.is_stale), ("reçu en attente", slot.receipt_pending))
+            if on
+        ]
+        tail = "".join(f" · {flag}" for flag in flags)
+        lines.append(
+            f"- {slot.title} [{anchors}] · {_format_focus_age(slot.opened_at, now)} · {holder}{tail}"
+        )
+    return "\n".join(lines)
+
+
+def _section_bound_slot(view: SlotBriefing | None) -> str:
+    """### Slot — the bound slot in full, its predecessor and that session's last checkpoint."""
+    if view is None or view.bound_slot is None:
+        return ""
+    slot = view.bound_slot
+    lines = [
+        f"### Slot : {slot.title} (rév. {slot.revision})",
+        slot.body,
+        _focus_margin_line(
+            len(slot.body), len(slot.body.encode("utf-8")), cap=SLOT_BODY_MAX_LENGTH, label="Slot"
+        ),
+    ]
+    previous = view.previous
+    if previous is not None:
+        lines.append(
+            f"Session précédente : {previous.session_id} "
+            f"(terminée {previous.ended_at.isoformat(timespec='minutes')})"
+        )
+        lines.append(f"Résumé : {_capped(previous.summary, _PREVIOUS_SUMMARY_CAP)}")
+        for decision_id, title in previous.decisions:
+            lines.append(f"- décision #{format_id(str(decision_id))} {title}")
+        checkpoint = previous.last_checkpoint
+        if checkpoint is not None:
+            lines.append(
+                f"Dernier checkpoint : #{checkpoint.seq} {checkpoint.progress} → "
+                f"{checkpoint.next_step}"
+            )
+    return "\n".join(lines)
+
+
+def _section_bind_hint(view: SlotBriefing | None) -> str:
+    if view is None or view.bound_slot is not None or not view.open_slots:
+        return ""
+    return (
+        "→ Session non liée : `brain_session_bind(session_id, expected_client_key, slot_id)` "
+        "la lie à l'un des slots ouverts ; sa fin écrira alors ce slot, pas la base."
+    )
+
+
+def _section_to_distill(view: SlotBriefing | None) -> str:
+    """### À distiller — slots closed on a receipt since the base was last written."""
+    if view is None or not view.to_distill:
+        return ""
+    lines = ["### À distiller"]
+    for slot in view.to_distill:
+        closed = slot.closed_at.date().isoformat() if slot.closed_at else "?"
+        lines.append(f"- {slot.title} — fermé sur reçu le {closed}")
+    return "\n".join(lines)
+
+
 def _format_session_briefing(
     ctx: Any | None,
     decisions: list[Any],
@@ -578,6 +662,7 @@ def _format_session_briefing(
     fact_lines: Sequence[str] = (),
     claim_suffixes: Mapping[tuple[str, UUID], str] | None = None,
     claim_inventory_line: str | None = None,
+    slot_view: SlotBriefing | None = None,
 ) -> str:
     blockers = list(getattr(ctx, "blockers", []) or []) if ctx else []
     sections = [
@@ -605,6 +690,10 @@ def _format_session_briefing(
             claim_inventory_line=claim_inventory_line,
         ),
         _section_focus(ctx),
+        _section_bound_slot(slot_view),
+        _section_slots(slot_view, now=datetime.now(UTC)),
+        _section_bind_hint(slot_view),
+        _section_to_distill(slot_view),
         _section_blockers(blockers),
         _section_recap(decisions, learnings, claim_suffixes),
         _section_cross_project(cross_block),
@@ -698,6 +787,7 @@ def make_session_briefing_loader(
     claim_read_svc: ClaimReadService | None = None,
     claim_inventory_svc: ClaimInventoryService | None = None,
     claim_extraction_enabled: bool = False,
+    focus_slot_svc: Any | None = None,
 ) -> BriefingLoader:
     """Build the shared, read-only session briefing loader without lifecycle effects."""
 
@@ -865,6 +955,15 @@ def make_session_briefing_loader(
                     "### Livraison\n- indisponible : lecture PostgreSQL de livraison échouée"
                 )
 
+        # Slots (ADR #34) — best-effort like every optional section: a failed read
+        # drops the slot sections, never the briefing.
+        slot_view: SlotBriefing | None = None
+        if focus_slot_svc is not None:
+            try:
+                slot_view = await focus_slot_svc.briefing(project_key, session_id)
+            except Exception as exc:
+                logger.warning("brain_session_briefing_slots_failed", error=str(exc))
+
         return _format_session_briefing(
             ctx,
             decisions,
@@ -885,6 +984,7 @@ def make_session_briefing_loader(
             fact_lines=fact_lines,
             claim_suffixes=claim_suffixes,
             claim_inventory_line=claim_inventory_line,
+            slot_view=slot_view,
         )
 
     return load_briefing
@@ -907,6 +1007,7 @@ def register_session_tools(
     claim_read_svc: ClaimReadService | None = None,
     claim_inventory_svc: ClaimInventoryService | None = None,
     claim_extraction_enabled: bool = False,
+    focus_slot_svc: Any | None = None,
 ) -> None:
     """Register explicit lifecycle tools with the shared action-forward loader."""
     load_briefing = make_session_briefing_loader(
@@ -924,5 +1025,6 @@ def register_session_tools(
         claim_read_svc=claim_read_svc,
         claim_inventory_svc=claim_inventory_svc,
         claim_extraction_enabled=claim_extraction_enabled,
+        focus_slot_svc=focus_slot_svc,
     )
     register_session_lifecycle_tools(mcp, brain_session_svc, load_briefing)
