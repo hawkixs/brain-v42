@@ -337,8 +337,81 @@ async def received_anchor(
     return value if isinstance(value, UUID) else None
 
 
+def _decisive(states: Sequence[AnchorState]) -> list[AnchorState]:
+    lots = [state for state in states if state.kind == "lot"]
+    return lots or list(states)
+
+
 def slot_satisfied(states: Sequence[AnchorState]) -> bool:
     """Q2: any lot anchor decides; otherwise every ticket and PR anchor must be integrated."""
-    lots = [state for state in states if state.kind == "lot"]
-    decisive = lots or list(states)
+    decisive = _decisive(states)
     return bool(decisive) and all(state.satisfied for state in decisive)
+
+
+def _closing_row(states: Sequence[AnchorState], hook_row_id: UUID) -> UUID:
+    """The row that completed the slot: the hook's own when it is one of the decisive
+    completers, else the first decisive one (a catch-up close of an already-pending slot)."""
+    completers = [state.completing_row_id for state in _decisive(states) if state.completing_row_id]
+    return hook_row_id if hook_row_id in completers else completers[0]
+
+
+async def close_slots_satisfied_by(
+    session: AsyncSession,
+    *,
+    ticket_ids: Sequence[UUID],
+    completing_row_id: UUID,
+) -> list[UUID]:
+    """Close every open slot that the receipt just written satisfies (spec §5, ADR D5).
+
+    Runs inside the receipt writer's transaction, after the workflow locks it
+    already holds; it locks SLOTS only, ordered by id. Candidates are over-chosen
+    on purpose (a ticket anchor on the ticket, a PR anchor whose binding is on
+    it, any lot anchor of its project); the predicate decides, with Q2's rule.
+    The close writes no base text and no summary. A closed slot is skipped, so a
+    replayed receipt or attestation closes nothing twice.
+    """
+    if not ticket_ids:
+        return []
+    ids = list(ticket_ids)
+    a, s, b, t = focus_slot_anchors, focus_slots, delivery_artifact_bindings, tickets
+    touched = sa.or_(
+        sa.and_(a.c.kind == "ticket", a.c.ticket_id.in_(ids)),
+        sa.and_(
+            a.c.kind == "pr",
+            sa.exists().where(
+                b.c.repository_id == a.c.repository_id,
+                b.c.pr_number == a.c.pr_number,
+                b.c.active.is_(True),
+                b.c.ticket_id.in_(ids),
+            ),
+        ),
+        sa.and_(
+            a.c.kind == "lot",
+            sa.exists().where(t.c.id.in_(ids), t.c.to_project == s.c.project_key),
+        ),
+    )
+    candidates = (
+        sa.select(a.c.slot_id)
+        .select_from(a.join(s, s.c.id == a.c.slot_id))
+        .where(s.c.closed_at.is_(None), touched)
+    )
+    locked = list(
+        (
+            await session.execute(
+                sa.select(s.c.id)
+                .where(s.c.id.in_(candidates), s.c.closed_at.is_(None))
+                .order_by(s.c.id)
+                .with_for_update()
+            )
+        ).scalars()
+    )
+    if not locked:
+        return []
+    states = await anchor_states(session, locked)
+    closed: list[UUID] = []
+    for slot_id in locked:
+        if slot_satisfied(states[slot_id]):
+            reason = f"receipt:{_closing_row(states[slot_id], completing_row_id)}"
+            await close_slot(session, slot_id=slot_id, reason=reason, note=None)
+            closed.append(slot_id)
+    return closed

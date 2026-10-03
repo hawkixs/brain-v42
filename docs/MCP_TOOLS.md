@@ -960,7 +960,9 @@ Explicit user command. Opens at revision 0 with its anchors (written once, never
 brain_slot_list(project_key, status='open'|'closed'|'all', limit=20, offset=0)
 -> {slots, total, limit, offset}
 ```
-Read only. Each slot carries its anchors, `bound_session_id` and `is_stale`. Refusals: `project_not_found`, `invalid_limit`.
+Read only. Each slot carries its anchors, `bound_session_id`, `is_stale` and `receipt_pending`. `receipt_pending` is true on an open slot whose receipts have all arrived but which a writer has not closed yet (a missed or raced hook call, for example a slot opened while its receipt committed; `brain_slot_close` closes it); it is derived, never stored. Refusals: `project_not_found`, `invalid_limit`.
+
+A slot also closes by itself, with no tool call and no distillation into the base: when the receipt of its anchors is written, the writer closes it in the same transaction (`close_reason = 'receipt:<id>'`, `close_note` null, revision + 1, a `slot_close` history row). Only two writers do: the integration receipt (ticket and PR anchors) and the delivery observer's `released` attestation (lot anchors). A caller-declared `brain_delivery_attest` is not a measurement and closes nothing; neither does a `released` attestation by another issuer, for another project, or on a ticket of another project. A slot with a lot anchor is decided by its lot; otherwise every ticket and PR anchor must be integrated, at the workflow's current contract revision and attempt (a receipt of an older revision does not count). A closed slot never reopens. A session bound to a slot closed this way ends with `slot_closed` at the post-close revision and records `conflict` at the pre-close revision; it can always be abandoned.
 
 ### brain_slot_close
 ```
