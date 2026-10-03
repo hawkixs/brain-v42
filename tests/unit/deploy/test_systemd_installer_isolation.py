@@ -236,6 +236,10 @@ def _install_tool_wrappers(fake_bin: Path, *, include_analyzer: bool) -> None:
         fake_bin / "mktemp",
         """
         #!/bin/bash
+        if [[ -e "$TOOL_CONTROL_ROOT/compat-mktemp-fail" && "$*" == *zz-apparmor-userns-compat.conf* ]]; then
+          : > "$TOOL_CONTROL_ROOT/compat-mktemp-fired"
+          exit 94
+        fi
         created="$(/usr/bin/mktemp "$@")" || exit $?
         printf '%s\n' "$created" >> "$MKTEMP_LOG"
         printf '%s\n' "$created"
@@ -1264,6 +1268,33 @@ def test_compat_dropin_sync_failure_restores_published_units_and_dropins(tmp_pat
     assert (fixture.user_unit_dir / "brain-v42-dream.service").read_text() == previous
     assert old_dropin.read_text() == "previous-dropin-content\n"
     assert not (compat_dir / "zz-apparmor-userns-compat.conf").exists()
+
+
+def test_a_failing_command_substitution_in_the_dropin_sync_rolls_back_exactly_once(
+    tmp_path: Path,
+) -> None:
+    """`set -E` lets a `$(...)` inherit the ERR trap: the rollback must not run twice.
+
+    A first run inside the substitution's subshell would move every backup back,
+    then the parent's run would find no backup and delete the units it just
+    restored (review of #264, round 2).
+    """
+    fixture = _make_fixture(tmp_path)
+    make_directory(fixture.user_unit_dir, parents=True)
+    previous = "previous-unit-content\n"
+    unit = fixture.user_unit_dir / "brain-v42-dream.service"
+    unit.write_text(previous, encoding="utf-8")
+    sysctl = tmp_path / "userns"
+    sysctl.write_text("1\n", encoding="utf-8")
+    fixture.environment["BRAIN_APPARMOR_USERNS_SYSCTL"] = str(sysctl)
+    (tmp_path / "compat-mktemp-fail").touch()
+
+    result = _run_installer(fixture, "--dry-run", environment_updates=LIVE_INSTALL_UPDATES)
+
+    assert (tmp_path / "compat-mktemp-fired").exists(), result.stdout + result.stderr
+    assert result.returncode != 0
+    assert unit.is_file(), result.stdout + result.stderr
+    assert unit.read_text() == previous
 
 
 @pytest.mark.parametrize(

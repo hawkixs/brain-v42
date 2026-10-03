@@ -1007,6 +1007,13 @@ rollback_published_units() {
   local snapshot
 
   ((status != 0)) || status=1
+  # `set -E` lets a command substitution inherit this trap. Rolling back from
+  # that subshell would move every backup back, then the parent's own run would
+  # find no backup left and delete the units it had just restored. Only the
+  # main shell rolls back; a subshell just reports its failure upward.
+  if [[ "$BASHPID" != "$$" ]]; then
+    exit "$status"
+  fi
   trap - ERR INT TERM
   set +e
   for template in "$SCRIPT_DIR"/*.service.tmpl; do
