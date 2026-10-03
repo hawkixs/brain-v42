@@ -8,6 +8,7 @@ from uuid import UUID
 from fastmcp import FastMCP
 from pydantic import Field, SecretStr
 
+from brain_v42.db.focus_slots import OBSERVER_IDENTITY
 from brain_v42.mcp.delivery_transport import _DeliveryRegistry
 from brain_v42.mcp.tools.tool_annotations import (
     _HEARTBEAT_ANNOTATIONS,
@@ -262,7 +263,9 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
 
         `actor_project` is the ticket participant on whose behalf the fact is declared.
         The issuer identity is the X-Brain-Agent caller label (declared provenance within
-        the admin boundary, as for brain_delivery_accept); an unknown caller is refused.
+        the admin boundary, as for brain_delivery_accept); an unknown caller is refused, and
+        so is the delivery observer's own identity (`issuer_identity_reserved`): a declared
+        label can never stand in for the observer, which writes through the repository.
         Form violations carry stable codes: `invalid_kind`, `invalid_payload` (a float, a
         Unicode surrogate, a NUL character, more than 64 KiB of canonical JSON) and `invalid_emitted_at`
         (a naive instant). Replaying the same idempotency_key with identical content
@@ -271,6 +274,11 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         caller = get_current_actor()
         if not caller.strip() or caller in {UNKNOWN_ACTOR, UNEXPANDED_ACTOR}:
             raise DeliveryError("invalid_issuer", "a declared issuer caller is required")
+        if caller == OBSERVER_IDENTITY:
+            raise DeliveryError(
+                "issuer_identity_reserved",
+                "this issuer identity belongs to the delivery observer and cannot be declared",
+            )
         return await delivery_svc.attest(
             UUID(ticket_id),
             actor_project=actor_project,

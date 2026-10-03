@@ -22,7 +22,7 @@
   "issuer": {
     "actor_project": "a participant of the ticket, from_project or to_project; by agreed convention the executor, to_project, for every kind",
     "issuer_project": "equals actor_project",
-    "issuer_identity": "the normalized X-Brain-Agent caller label; empty, unknown or unexpanded is refused with invalid_issuer",
+    "issuer_identity": "the normalized X-Brain-Agent caller label; empty, unknown or unexpanded is refused with invalid_issuer; the delivery observer's own identity (brain-v42-delivery-observer) is refused with issuer_identity_reserved",
     "normalization": [
       "trim",
       "empty -> unknown (refused)",
@@ -215,6 +215,7 @@
       "invalid_payload",
       "invalid_scope",
       "invalid_window",
+      "issuer_identity_reserved",
       "not_allowed",
       "revision_not_found",
       "ticket_not_found"

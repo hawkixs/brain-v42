@@ -90,9 +90,17 @@ def test_a_bound_session_gets_its_slot_its_predecessor_and_its_last_checkpoint()
     assert "keep the base short" in section and "#4 p → n" in section
 
 
+def test_a_bound_slot_closed_on_a_receipt_is_marked_closed_in_the_heading() -> None:
+    closed = FocusSlot(**_slot(closed_at=NOW, close_reason=f"receipt:{uuid4()}"))
+    section = _section_bound_slot(SlotBriefing(bound_slot=closed))
+    assert section.splitlines()[0] == "### Slot : relay work (rév. 2) (fermé sur reçu)"
+
+
 def test_an_unbound_session_with_open_slots_gets_the_bind_hint_only() -> None:
     open_only = SlotBriefing(open_slots=[FocusSlotView(**_slot())])
-    assert "brain_session_bind" in _section_bind_hint(open_only)
+    hint = _section_bind_hint(open_only)
+    assert "brain_session_bind" in hint
+    assert "sur commande explicite de l'utilisateur" in hint
     bound = SlotBriefing(open_slots=[FocusSlotView(**_slot())], bound_slot=FocusSlot(**_slot()))
     assert _section_bind_hint(bound) == ""
     assert _section_bind_hint(SlotBriefing()) == ""

@@ -195,3 +195,29 @@ async def test_sidecar_failure_never_logs_claim_input_or_exception_text(
     captured = capsys.readouterr()
     assert result.is_error and "invalid_arguments" in str(result.content)
     assert MARKER not in str(result.content) + caplog.text + captured.out + captured.err
+
+
+async def test_the_generic_attest_tool_refuses_the_reserved_observer_identity(monkeypatch):
+    """A declared X-Brain-Agent must not be able to impersonate the delivery observer."""
+    from brain_v42.repositories.pg_release_derivation import OBSERVER_IDENTITY
+
+    monkeypatch.setattr(
+        "brain_v42.mcp.tools.delivery_tools.get_current_actor", lambda: OBSERVER_IDENTITY
+    )
+    service = AsyncMock()
+    app = await _app(service, "native")
+    result = await _call(
+        app,
+        "native",
+        "brain_delivery_attest",
+        {
+            "ticket_id": str(uuid4()),
+            "actor_project": "executor",
+            "kind": "released",
+            "payload": {},
+            "idempotency_key": "k",
+            "emitted_at": "2026-10-03T12:00:00+00:00",
+        },
+    )
+    assert result.is_error and "issuer_identity_reserved" in str(result.content)
+    service.attest.assert_not_called()

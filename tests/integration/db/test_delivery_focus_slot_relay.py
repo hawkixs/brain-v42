@@ -200,6 +200,16 @@ async def test_a_refused_relay_mutates_nothing_s8(session_factory, slot_project,
     assert await history(session_factory, slot_id) == slot_before
 
 
+async def test_a_closed_slot_refusal_names_the_way_out(session_factory, slot_project):
+    session_id, key, slot_id = await bound(session_factory, slot_project)
+    async with session_factory.begin() as session:
+        await close_slot(session, slot_id=slot_id, reason=f"receipt:{uuid4()}", note=None)
+    with pytest.raises(FocusSlotError) as refused:
+        await relay(session_factory, session_id, key, expected_slot_revision=1)
+    assert "expected_focus_revision=0" in str(refused.value)
+    assert "abandon" in str(refused.value)
+
+
 async def test_an_equal_replay_returns_the_same_successor_s9(session_factory, slot_project):
     session_id, key, _slot_id = await bound(session_factory, slot_project)
     first = await relay(session_factory, session_id, key, new_client_key="successor-r")
