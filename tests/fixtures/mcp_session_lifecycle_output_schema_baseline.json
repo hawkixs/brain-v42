@@ -8,7 +8,8 @@
     "brain_session_list",
     "brain_session_resume",
     "brain_session_abandon",
-    "brain_session_bind"
+    "brain_session_bind",
+    "brain_session_relay"
   ],
   "output_schema_lengths": {
     "brain_session_start": 2639,
@@ -19,9 +20,10 @@
     "brain_session_resume": 2777,
     "brain_session_abandon": 2621,
     "brain_session_checkpoint": 633,
-    "brain_session_bind": 352
+    "brain_session_bind": 352,
+    "brain_session_relay": 4287
   },
-  "output_schema_total": 20026,
+  "output_schema_total": 24313,
   "contracts": {
     "brain_session_start": {
       "version": "4.0",
@@ -398,6 +400,97 @@
           "session_id",
           "expected_client_key",
           "slot_id"
+        ],
+        "type": "object"
+      }
+    },
+    "brain_session_relay": {
+      "version": "4.0",
+      "annotations": {
+        "title": null,
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": true,
+        "openWorldHint": false
+      },
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "session_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "expected_client_key": {
+            "description": "Client identity expected for the addressed session UUID. The pair must match before any session mutation. This is an isolation guard, not authentication.",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 10000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "handover": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "type": "string"
+          },
+          "expected_slot_revision": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "new_client_key": {
+            "description": "Stable identity for one intended session. Reuse it for every retry of that session; use a distinct stable key for each parallel session.",
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "initiator": {
+            "enum": [
+              "operator",
+              "guard_mod"
+            ],
+            "type": "string"
+          },
+          "knowledge_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "format": "uuid",
+                  "type": "string"
+                },
+                "maxItems": 100,
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "nothing_to_capture_reason": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "session_id",
+          "expected_client_key",
+          "summary",
+          "handover",
+          "expected_slot_revision",
+          "new_client_key",
+          "initiator"
         ],
         "type": "object"
       }
