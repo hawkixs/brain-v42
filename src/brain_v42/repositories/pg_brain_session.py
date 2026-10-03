@@ -1139,7 +1139,12 @@ class PgBrainSessionRepo(BasePgRepository):
             if slot is None:
                 raise BrainSessionStateError(f"slot {slot_id} of session {model.id} was not found")
             if slot["closed_at"] is not None:
-                raise FocusSlotError("slot_closed", f"slot {slot_id} is closed")
+                raise FocusSlotError(
+                    "slot_closed",
+                    f"slot {slot_id} is closed at revision {slot['revision']}: end with "
+                    f"expected_focus_revision={slot['revision'] - 1} (the pre-close slot "
+                    "revision) to record a conflict, or abandon the session",
+                )
             if slot["revision"] != expected_slot_revision:
                 raise FocusSlotError(
                     "slot_revision_conflict",

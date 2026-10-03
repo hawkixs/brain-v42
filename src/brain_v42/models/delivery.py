@@ -77,6 +77,7 @@ DELIVERY_ATTESTATION_ERROR_CODES: frozenset[str] = frozenset(
         "invalid_payload",
         "invalid_scope",
         "invalid_window",
+        "issuer_identity_reserved",
         "not_allowed",
         "revision_not_found",
         "ticket_not_found",

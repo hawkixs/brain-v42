@@ -596,8 +596,9 @@ def _section_bound_slot(view: SlotBriefing | None) -> str:
     if view is None or view.bound_slot is None:
         return ""
     slot = view.bound_slot
+    closed = " (fermé sur reçu)" if slot.closed_at is not None else ""
     lines = [
-        f"### Slot : {slot.title} (rév. {slot.revision})",
+        f"### Slot : {slot.title} (rév. {slot.revision}){closed}",
         slot.body,
         _focus_margin_line(
             len(slot.body), len(slot.body.encode("utf-8")), cap=SLOT_BODY_MAX_LENGTH, label="Slot"
@@ -625,7 +626,8 @@ def _section_bind_hint(view: SlotBriefing | None) -> str:
     if view is None or view.bound_slot is not None or not view.open_slots:
         return ""
     return (
-        "→ Session non liée : `brain_session_bind(session_id, expected_client_key, slot_id)` "
+        "→ Session non liée : sur commande explicite de l'utilisateur, "
+        "`brain_session_bind(session_id, expected_client_key, slot_id)` "
         "la lie à l'un des slots ouverts ; sa fin écrira alors ce slot, pas la base."
     )
 
