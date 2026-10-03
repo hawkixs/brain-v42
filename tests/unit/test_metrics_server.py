@@ -101,6 +101,8 @@ def collector() -> MetricsCollector:
     c.collect_ticket_counts = AsyncMock(  # type: ignore[method-assign]
         return_value={}
     )
+    # session_slots block (ADR #34 D12): same reason, it opens a session too.
+    c.collect_session_slots = AsyncMock(return_value={})  # type: ignore[method-assign]
     return c
 
 

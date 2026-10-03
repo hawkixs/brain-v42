@@ -17,5 +17,11 @@ class _SessionSlotCollectorsMixin:
         _session_factory: async_sessionmaker[AsyncSession]
 
     async def collect_session_slots(self) -> dict[str, Any]:
+        """Read the block; exceptions propagate on purpose.
+
+        This collector does not catch its own failures: the slow-block cache
+        applies its short error TTL, so a broken read neither hides behind a
+        stale value nor is retried on every scrape.
+        """
         async with self._session_factory() as session:
             return await session_slots_block(session)

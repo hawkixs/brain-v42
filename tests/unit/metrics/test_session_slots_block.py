@@ -1,18 +1,22 @@
-import inspect
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
+import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-from brain_v42.db.focus_slots import AnchorState, anchor_states_statement
-from brain_v42.metrics import collector_session_slots
+from brain_v42.db.focus_slots import AnchorState
 from brain_v42.repositories.pg_focus_slot import (
     assemble_session_slots_block,
+    session_slots_block,
     session_slots_statements,
 )
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 CONTRACT = Path(__file__).resolve().parents[3] / "docs" / "contracts" / "session_slots_block.json"
 NOW = datetime(2026, 10, 3, 12, tzinfo=UTC)
@@ -124,12 +128,42 @@ def test_the_contract_carries_no_body_summary_or_client_key() -> None:
         assert name not in text
 
 
-def test_collection_touches_no_access_counter_s13() -> None:
-    statements = [*session_slots_statements().values(), anchor_states_statement([uuid4()])]
-    for statement in statements:
+class _RecordingSession:
+    """Fake AsyncSession: records every executed statement, answers per call position."""
+
+    def __init__(self, replies: list[list[dict[str, Any]]]) -> None:
+        self.statements: list[Any] = []
+        self._replies = iter(replies)
+
+    async def execute(self, statement: Any) -> Any:  # noqa: ANN401
+        self.statements.append(statement)
+        rows = next(self._replies, [])
+        return SimpleNamespace(mappings=lambda: rows)
+
+
+async def test_collection_executes_only_selects_and_no_access_counter_s13() -> None:
+    # No body, summary or client_key leaves the block either: the key-set pinned by
+    # test_the_assembled_block_equals_the_published_shape rejects any extra key.
+    slot = {
+        "id": uuid4(),
+        "project_key": "brain-v42",
+        "title": "relay",
+        "revision": 1,
+        "opened_at": NOW,
+        "body_updated_at": NOW,
+        "bound_session_id": None,
+        "last_bound_ended_at": None,
+    }
+    # session_slots_statements() order: bases, slots, sessions, traces; then the anchors.
+    names = list(session_slots_statements())
+    session = _RecordingSession([[slot] if name == "slots" else [] for name in names])
+
+    block = await session_slots_block(cast("AsyncSession", session), now=NOW)
+
+    assert block["projects"][0]["project"] == "brain-v42"
+    for statement in session.statements:
+        assert isinstance(statement, sa.Select), type(statement).__name__
         sql = str(statement.compile(dialect=postgresql.dialect()))
         for name in FORBIDDEN:
-            assert name not in sql
-        assert not sql.lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))
-    source = inspect.getsource(collector_session_slots)
-    assert "access" not in source.lower()
+            assert name not in sql, name
+    assert len(session.statements) == len(names) + 1  # the anchor-state query ran too

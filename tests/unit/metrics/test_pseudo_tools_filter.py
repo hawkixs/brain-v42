@@ -113,6 +113,7 @@ def _make_collector() -> MetricsCollector:
     c.collect_dream_promotions = AsyncMock(return_value={})  # type: ignore[method-assign]
     c.collect_dream_promoted_health = AsyncMock(return_value=[])  # type: ignore[method-assign]
     c.collect_nightly_ops = AsyncMock(return_value={})  # type: ignore[method-assign]
+    c.collect_session_slots = AsyncMock(return_value={})  # type: ignore[method-assign]
     return c
 
 

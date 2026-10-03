@@ -42,6 +42,18 @@ def test_slot_staleness_uses_body_and_bound_session_activity() -> None:
     assert not slot_is_stale(
         is_open=True, bound=False, body_updated_at=old, last_bound_ended_at=now, now=now
     )
+    # The bound is strict: activity exactly seven days old is not yet stale.
+    assert not slot_is_stale(
+        is_open=True,
+        bound=False,
+        body_updated_at=now - SLOT_STALE_AFTER,
+        last_bound_ended_at=None,
+        now=now,
+    )
+    # A closed slot is never stale, however old.
+    assert not slot_is_stale(
+        is_open=False, bound=False, body_updated_at=old, last_bound_ended_at=None, now=now
+    )
 
 
 def test_error_carries_a_code_and_the_delivery_error_shape() -> None:
