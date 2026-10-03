@@ -39,11 +39,9 @@ from typing import Any
 import pytest
 
 from tests.integration.disposable_db import (
-    alembic_upgrade_head,
     asyncpg_dsn,
     create_database,
     drop_database,
-    fresh_head_database,
     replay_attestation,
     run_sql,
     swap_database,
@@ -52,6 +50,7 @@ from tests.integration.disposable_db import (
 pytestmark = pytest.mark.integration
 
 PROJECT_ROOT = Path(__file__).parents[3]
+CONTRACT_HEAD = "058"  # Each recovery contract must be checked against its own schema head.
 V15_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v15.sql"
 V15_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v15.json"
 V15_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v15-pgrestore.sql"
@@ -159,10 +158,16 @@ def _pg_restore(target_url: str, archive: Path) -> None:
 
 @pytest.fixture(scope="module")
 def fresh_head_db_url() -> Iterator[str]:
-    """A pristine database brought to head 058 by the alembic chain."""
+    """A pristine disposable database upgraded to this contract's 058 head."""
     admin_url = _database_url_or_skip()
-    with fresh_head_database(admin_url, prefix="brain_v15_fresh") as url:
+    name = f"brain_v15_fresh_{uuid.uuid4().hex[:12]}"
+    create_database(admin_url, name)
+    url = swap_database(admin_url, name)
+    try:
+        _alembic_upgrade_to(url, CONTRACT_HEAD)
         yield url
+    finally:
+        drop_database(admin_url, name)
 
 
 @pytest.fixture(scope="module")
@@ -189,7 +194,7 @@ def restored_head_db_url() -> Iterator[str]:
         # use it; `pg_dump` may or may not carry `CREATE EXTENSION` itself.
         run_sql(asyncpg_dsn(target_url), ["CREATE EXTENSION IF NOT EXISTS vector"])
         _pg_restore(target_url, archive)
-        alembic_upgrade_head(target_url)
+        _alembic_upgrade_to(target_url, CONTRACT_HEAD)
         yield target_url
     finally:
         archive.unlink(missing_ok=True)
