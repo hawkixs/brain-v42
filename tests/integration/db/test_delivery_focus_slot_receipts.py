@@ -17,7 +17,9 @@ import sqlalchemy as sa
 from brain_v42.db.focus_slots import close_slots_satisfied_by
 from brain_v42.db.tables import (
     brain_sessions,
+    delivery_artifact_bindings,
     delivery_attestations,
+    delivery_workflows,
     focus_slot_history,
     focus_slots,
 )
@@ -361,6 +363,41 @@ async def test_a_receipt_of_an_older_revision_does_not_satisfy_a_reopened_ticket
         contract=_contract(),
     )
     # The receipt at revision 1 is still in `delivery_receipts`; revision 2 has none.
+    ticket_slot = await open_slot(session_factory, SlotAnchor(kind="ticket", ticket_id=ticket.id))
+    pr_slot = await open_slot(
+        session_factory, SlotAnchor(kind="pr", repository_id=RID, pr_number=number)
+    )
+    async with session_factory.begin() as session:
+        closed = await close_slots_satisfied_by(
+            session, ticket_ids=[ticket.id], completing_row_id=uuid4()
+        )
+    assert closed == []
+    for opened in (ticket_slot, pr_slot):
+        assert (await slot(session_factory, opened.slot.id))["closed_at"] is None
+        assert await pending(session_factory, opened.slot.id) is False
+
+
+async def test_a_receipt_of_an_older_attempt_does_not_satisfy_a_ticket_or_pr_anchor(
+    session_factory,
+):
+    """Same contract revision, newer attempt (a reopen): the attempt join rejects the receipt."""
+    ticket, binding, _, number = await workflow(session_factory)
+    first = await open_slot(session_factory, SlotAnchor(kind="ticket", ticket_id=ticket.id))
+    await integrate(session_factory, ticket.id, binding, number)
+    assert (await slot(session_factory, first.slot.id))["closed_at"] is not None
+    # What a reopen does, minus the unrelated side effects: attempt 2 at revision 1, with the
+    # binding carried to the new attempt so that only the receipt's attempt can disqualify it.
+    async with session_factory.begin() as session:
+        await session.execute(
+            delivery_workflows.update()
+            .where(delivery_workflows.c.ticket_id == ticket.id)
+            .values(attempt=2)
+        )
+        await session.execute(
+            delivery_artifact_bindings.update()
+            .where(delivery_artifact_bindings.c.ticket_id == ticket.id)
+            .values(attempt=2)
+        )
     ticket_slot = await open_slot(session_factory, SlotAnchor(kind="ticket", ticket_id=ticket.id))
     pr_slot = await open_slot(
         session_factory, SlotAnchor(kind="pr", repository_id=RID, pr_number=number)

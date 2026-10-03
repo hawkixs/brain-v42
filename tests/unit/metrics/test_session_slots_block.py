@@ -122,6 +122,20 @@ def test_the_block_derives_holder_staleness_and_pending() -> None:
     assert project["agent_traces_open"] == 3
 
 
+def test_a_project_with_only_open_agent_traces_is_published() -> None:
+    block = assemble_session_slots_block(
+        bases=[],
+        slots=[],
+        states={},
+        sessions=[],
+        traces=[{"project_key": "p", "open_traces": 2}],
+        now=NOW,
+    )
+    assert [
+        (p["project"], p["agent_traces_open"], p["slots"], p["sessions"]) for p in block["projects"]
+    ] == [("p", 2, [], [])]
+
+
 def test_the_contract_carries_no_body_summary_or_client_key() -> None:
     text = CONTRACT.read_text(encoding="utf-8")
     for name in ('"body"', '"summary"', '"client_key"', '"next_focus"'):

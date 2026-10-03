@@ -5,6 +5,7 @@
     "read-only: the block writes nothing and reads no access counter",
     "open slots and open operator sessions only; agent traces are counted, never listed",
     "no slot body, no session summary, no client_key",
+    "the block's queries are not one snapshot: a bound session may briefly appear in slots but not in sessions",
     "a type written a|b admits both; null means the value is not known"
   ],
   "shape": {

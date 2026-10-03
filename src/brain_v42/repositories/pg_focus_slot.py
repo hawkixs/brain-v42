@@ -532,7 +532,9 @@ def assemble_session_slots_block(
     by_project = {row["project_key"]: row for row in bases}
     trace_counts = {row["project_key"]: int(row["open_traces"]) for row in traces}
     projects = sorted(
-        {row["project_key"] for row in slots} | {row["project_key"] for row in sessions}
+        {row["project_key"] for row in slots}
+        | {row["project_key"] for row in sessions}
+        | set(trace_counts)
     )
     out: builtins.list[dict[str, Any]] = []
     for project in projects:
