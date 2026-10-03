@@ -18,6 +18,7 @@ import pytest
 
 from tests.integration.schema_residue import (
     DOWNGRADING_TEST_FILES,
+    PRIVATE_HEAD_DOWNGRADING_FILES,
     Breadcrumb,
     ResidueProbe,
     describe_data_residue_notice,
@@ -158,15 +159,16 @@ def test_declared_downgrading_files_still_match_the_tree() -> None:
     Same discipline as the Alembic head pin: a constant nobody is forced to
     revisit is a constant that drifts.
     """
+    declared = (*DOWNGRADING_TEST_FILES, *PRIVATE_HEAD_DOWNGRADING_FILES)
     measured = sorted(
         str(path.relative_to(_REPO_ROOT))
         for path in (_REPO_ROOT / "tests" / "integration").rglob("*.py")
         if '"downgrade"' in path.read_text()
     )
 
-    assert measured == sorted(DOWNGRADING_TEST_FILES), (
-        "tests/integration/schema_residue.py::DOWNGRADING_TEST_FILES no longer matches the "
-        f"files that downgrade the shared database.\n  declared: {sorted(DOWNGRADING_TEST_FILES)}"
+    assert measured == sorted(declared), (
+        "tests/integration/schema_residue.py::DOWNGRADING_TEST_FILES and PRIVATE_HEAD_DOWNGRADING_FILES no longer match the "
+        f"files that downgrade the shared database.\n  declared: {sorted(declared)}"
         f"\n  measured: {measured}\nAlso give the new test the migration_downgrade_fence "
         "fixture, or its interruption will stay unattributable."
     )

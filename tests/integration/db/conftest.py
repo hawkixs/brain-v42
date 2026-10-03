@@ -119,6 +119,30 @@ async def engine(migration_database_url: str) -> AsyncIterator[AsyncEngine]:
     await disposable_engine.dispose()
 
 
+@pytest.fixture(scope="module")
+def _private_module_head(migration_database_url: str) -> Iterator[str]:
+    """One fresh head database per test MODULE, dropped when the module ends."""
+    with fresh_head_database(migration_database_url, prefix="brain_migration_module") as url:
+        yield url
+
+
+@pytest_asyncio.fixture(scope="module", loop_scope="session")
+async def private_head_engine(_private_module_head: str) -> AsyncIterator[AsyncEngine]:
+    """An engine over a PRIVATE head database, for modules that write focus slots.
+
+    Slot, slot-history and slot-anchor rows can never be deleted (append-only
+    triggers, RESTRICT keys, no delete path), and migration 060's downgrade refuses
+    while any exists. A module that writes them onto the session's shared head
+    (`engine` above) therefore turns every downgrading test that runs after it
+    into a refusal it did not cause. Slot-writing modules MUST use this fixture
+    and never `engine`; the database is built from the shared one as admin and
+    dropped with the module, residue included.
+    """
+    private_engine = create_async_engine(_private_module_head, poolclass=NullPool, echo=False)
+    yield private_engine
+    await private_engine.dispose()
+
+
 async def _delivery_workflow_ticket_ids(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> frozenset[UUID]:

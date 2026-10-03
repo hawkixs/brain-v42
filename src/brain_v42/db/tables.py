@@ -854,6 +854,21 @@ brain_sessions = Table(
     Column("intent", String(500), nullable=True),
     Column("nature", String(16), nullable=True),
     Column("connection_id", String(64), nullable=True),
+    # Migration 060 (ADR #34): the slot a session is bound to, and the session a
+    # relay ended. Nullable, no backfill. Never public on `BrainSession`: the
+    # lifecycle output-schema budget has 35 bytes left (S12).
+    Column(
+        "slot_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("focus_slots.id", ondelete="RESTRICT"),
+        nullable=True,
+    ),
+    Column(
+        "relayed_from_session_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("brain_sessions.id", ondelete="RESTRICT"),
+        nullable=True,
+    ),
     UniqueConstraint(
         "project_key",
         "client_key",
@@ -867,6 +882,27 @@ brain_sessions = Table(
         "connection_id",
         unique=True,
         postgresql_where=sa.text("status = 'open'"),
+    ),
+    sa.Index(
+        "uq_brain_sessions_open_slot",
+        "slot_id",
+        unique=True,
+        postgresql_where=sa.text("status = 'open' AND slot_id IS NOT NULL"),
+    ),
+    sa.Index(
+        "uq_brain_sessions_relayed_from",
+        "relayed_from_session_id",
+        unique=True,
+        postgresql_where=sa.text("relayed_from_session_id IS NOT NULL"),
+    ),
+    sa.CheckConstraint(
+        "COALESCE((slot_id IS NULL AND relayed_from_session_id IS NULL) "
+        "OR nature IS DISTINCT FROM 'agent', false)",
+        name="brain_sessions_slot_operator_only",
+    ),
+    sa.CheckConstraint(
+        "COALESCE(relayed_from_session_id IS NULL OR slot_id IS NOT NULL, false)",
+        name="brain_sessions_relay_requires_slot",
     ),
     sa.CheckConstraint(
         "status IN ('open', 'ended', 'abandoned', 'closed_inactive')",
@@ -961,6 +997,7 @@ brain_sessions = Table(
         )
         OR (
             status = 'closed_inactive'
+            AND nature IS NOT NULL
             AND nature = 'agent'
             AND ended_at IS NOT NULL
             AND summary IS NULL
@@ -1866,6 +1903,9 @@ __all__ = [
     "delivery_receipts",
     "delivery_events",
     "delivery_attestations",
+    "focus_slots",
+    "focus_slot_anchors",
+    "focus_slot_history",
 ]
 
 _claim_tables = register_claim_tables(METADATA)
@@ -1919,5 +1959,145 @@ project_focus_history = Table(
         "source IN ('session_end', 'focus_tool', 'context_upsert', "
         "'generic_update', 'maintenance_scrub', 'migration_seed')",
         name="project_focus_history_source_valid",
+    ),
+)
+
+# ─── focus slots (migration 060, ADR #34) ─────────────────────────────────────
+#
+# A slot is a topic in flight: anchored (focus_slot_anchors, written once), guarded
+# by its own revision, closed by an explicit command or a measured receipt. Every
+# revision leaves one focus_slot_history row in the same transaction; a deferred
+# constraint trigger refuses a COMMIT that did not. These three tables have no
+# delete path at all, so their foreign keys are RESTRICT.
+_FOCUS_SLOTS_CLOSE_VALID = (
+    "COALESCE("
+    "(closed_at IS NULL AND close_reason IS NULL AND close_note IS NULL) "
+    "OR (closed_at IS NOT NULL AND close_reason = 'explicit' "
+    "AND close_note IS NOT NULL AND btrim(close_note) <> '') "
+    "OR (closed_at IS NOT NULL AND close_reason ~ '^receipt:[0-9a-f-]{36}$' "
+    "AND close_note IS NULL), false)"
+)
+_FOCUS_SLOT_ANCHORS_SHAPE = (
+    "COALESCE("
+    "(kind = 'ticket' AND ticket_id IS NOT NULL AND target_release IS NULL "
+    "AND repository_id IS NULL AND pr_number IS NULL) "
+    r"OR (kind = 'lot' AND target_release IS NOT NULL "
+    r"AND target_release ~ '^[0-9]+\.[0-9]+\.[0-9]+$' "
+    "AND ticket_id IS NULL AND repository_id IS NULL AND pr_number IS NULL) "
+    "OR (kind = 'pr' AND repository_id IS NOT NULL AND pr_number IS NOT NULL "
+    "AND pr_number >= 1 AND ticket_id IS NULL AND target_release IS NULL), false)"
+)
+
+focus_slots = Table(
+    "focus_slots",
+    METADATA,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+    Column(
+        "project_key",
+        String(50),
+        sa.ForeignKey("project_contexts.project_key", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("title", String(120), nullable=False),
+    Column("body", Text, nullable=False),
+    Column("revision", sa.BigInteger, nullable=False, server_default=sa.text("0")),
+    Column("opened_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column(
+        "body_updated_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")
+    ),
+    Column("closed_at", DateTime(timezone=True), nullable=True),
+    Column("close_reason", String(48), nullable=True),
+    Column("close_note", Text, nullable=True),
+    sa.CheckConstraint("COALESCE(btrim(title) <> '', false)", name="focus_slots_title_nonblank"),
+    sa.CheckConstraint(
+        "COALESCE(btrim(body) <> '' AND char_length(body) <= 4000, false)",
+        name="focus_slots_body_valid",
+    ),
+    sa.CheckConstraint("COALESCE(revision >= 0, false)", name="focus_slots_revision_valid"),
+    sa.CheckConstraint(_FOCUS_SLOTS_CLOSE_VALID, name="focus_slots_close_valid"),
+    sa.Index(
+        "uq_focus_slots_open_title",
+        "project_key",
+        "title",
+        unique=True,
+        postgresql_where=sa.text("closed_at IS NULL"),
+    ),
+)
+
+focus_slot_anchors = Table(
+    "focus_slot_anchors",
+    METADATA,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+    Column(
+        "slot_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("focus_slots.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("kind", String(8), nullable=False),
+    Column(
+        "ticket_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("tickets.id", ondelete="RESTRICT"),
+        nullable=True,
+    ),
+    Column("target_release", Text, nullable=True),
+    Column("repository_id", sa.BigInteger, nullable=True),
+    Column("pr_number", Integer, nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    sa.CheckConstraint(_FOCUS_SLOT_ANCHORS_SHAPE, name="focus_slot_anchors_shape"),
+    UniqueConstraint(
+        "slot_id",
+        "kind",
+        "ticket_id",
+        "target_release",
+        "repository_id",
+        "pr_number",
+        name="uq_focus_slot_anchors",
+        postgresql_nulls_not_distinct=True,
+    ),
+    sa.Index(
+        "idx_focus_slot_anchors_ticket", "ticket_id", postgresql_where=sa.text("kind = 'ticket'")
+    ),
+    sa.Index(
+        "idx_focus_slot_anchors_lot", "target_release", postgresql_where=sa.text("kind = 'lot'")
+    ),
+    sa.Index(
+        "idx_focus_slot_anchors_pr",
+        "repository_id",
+        "pr_number",
+        postgresql_where=sa.text("kind = 'pr'"),
+    ),
+)
+
+focus_slot_history = Table(
+    "focus_slot_history",
+    METADATA,
+    Column(
+        "slot_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("focus_slots.id", ondelete="RESTRICT"),
+        nullable=False,
+    ),
+    Column("revision", sa.BigInteger, nullable=False),
+    Column("body", Text, nullable=False),
+    Column("source", String(16), nullable=False),
+    Column(
+        "session_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("brain_sessions.id", ondelete="RESTRICT"),
+        nullable=True,
+    ),
+    Column("actor", String(64), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    sa.PrimaryKeyConstraint("slot_id", "revision", name="focus_slot_history_pkey"),
+    sa.CheckConstraint(
+        "COALESCE(source IN ('slot_open', 'session_end', 'session_relay', 'slot_close'), false)",
+        name="focus_slot_history_source_valid",
+    ),
+    sa.CheckConstraint(
+        "COALESCE((source IN ('session_end', 'session_relay') AND session_id IS NOT NULL) "
+        "OR (source IN ('slot_open', 'slot_close') AND session_id IS NULL), false)",
+        name="focus_slot_history_session_valid",
     ),
 )

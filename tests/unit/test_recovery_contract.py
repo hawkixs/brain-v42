@@ -313,7 +313,7 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # added by 004), but this v1 contract tracks no per-column fingerprint for
     # it — only its membership in `table_set` — so a new column on it moves
     # nothing this contract checks.
-    assert script.get_heads() == ["059"]
+    assert script.get_heads() == ["060"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim
@@ -354,6 +354,12 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
         "knowledge_fact_definitions",
         "knowledge_claims",
         "knowledge_claim_verdicts",
+        # 060's three tables, for the same reason as 054's and 055's: `table_set` is
+        # DERIVED from live METADATA, so tables added after 031 must not appear in
+        # a contract that describes 031. It is the SET, not the shape, that moves.
+        "focus_slots",
+        "focus_slot_anchors",
+        "focus_slot_history",
         "brain_session_artifacts",
         "brain_sessions",
         "projects",

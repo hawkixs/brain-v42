@@ -55,6 +55,9 @@ def test_brain_sessions_table_contract() -> None:
         "intent",
         "nature",
         "connection_id",
+        # Migration 060 — focus slot binding and relay provenance.
+        "slot_id",
+        "relayed_from_session_id",
     } == set(session_table.c.keys())
 
     project_fks = list(session_table.c.project_key.foreign_keys)
