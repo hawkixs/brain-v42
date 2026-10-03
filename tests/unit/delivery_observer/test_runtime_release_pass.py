@@ -98,6 +98,25 @@ async def test_conflicting_key_is_diagnosed_once_and_never_recompared(kind, caps
     assert [line["error_code"] for line in lines] == ["idempotency_key_reused"]
 
 
+async def test_conflicting_earliest_release_key_never_falls_through_to_a_later_tag():
+    runtime = make_runtime([candidate()])
+    later = ReleaseTag("v0.6.4", "0.6.4", "c" * 40)
+    runtime.client.release_tags.return_value = [TAG, later]
+    runtime.releases.record_released.side_effect = [
+        DeliveryError("idempotency_key_reused", "private fixture"),
+        None,
+    ]
+
+    await runtime._release_pass()
+    await runtime._release_pass()
+
+    runtime.releases.record_released.assert_awaited_once()
+    assert runtime.releases.record_released.await_args.args[2] == TAG
+    runtime.client.contains.assert_awaited_once_with(
+        BRAIN_V42_REPOSITORY_ID, runtime.releases.candidates[0].integration_sha, TAG.sha
+    )
+
+
 @pytest.mark.parametrize("kind", ["released", "deployed"])
 async def test_other_delivery_errors_remain_retryable(kind, capsys):
     runtime = make_runtime([candidate()])

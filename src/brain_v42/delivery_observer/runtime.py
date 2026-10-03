@@ -364,7 +364,10 @@ class DeliveryObserverRuntime:
                     key = f"released:{candidate.ticket_id}:{candidate.deliverable_key}:{tag.name}"
                     blocked_key = (candidate.ticket_id, candidate.deliverable_key, key)
                     pair = (candidate.integration_sha, tag.sha)
-                    if blocked_key in self._blocked_keys or pair in self._not_contained:
+                    if blocked_key in self._blocked_keys:
+                        # A conflict on the first containing tag must never claim a later release.
+                        break
+                    if pair in self._not_contained:
                         continue
                     if compares >= _MAX_RELEASE_COMPARES_PER_PASS:
                         return compares

@@ -238,7 +238,14 @@ async def test_foreign_attestations_do_not_hide_observer_candidates(
 ):
     case = ObserverCase(engine, session_factory)
     ticket, binding, _ = await case.create()
-    case.tags = [("v0.6.3", T2, "2026-10-04T10:00:00Z", True)] if kind == "released" else []
+    case.tags = (
+        [
+            ("v0.6.3", T2, "2026-10-04T10:00:00Z", True),
+            ("v0.6.4", T3, "2026-10-09T10:00:00Z", True),
+        ]
+        if kind == "released"
+        else []
+    )
     case.contained[L] = True
     suffix = "v0.6.3" if kind == "released" else L
     key = f"{kind}:{ticket.id}:implementation:{suffix}"
