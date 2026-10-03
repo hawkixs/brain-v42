@@ -337,11 +337,22 @@ async def received_anchor(
     return value if isinstance(value, UUID) else None
 
 
+def _decisive(states: Sequence[AnchorState]) -> list[AnchorState]:
+    lots = [state for state in states if state.kind == "lot"]
+    return lots or list(states)
+
+
 def slot_satisfied(states: Sequence[AnchorState]) -> bool:
     """Q2: any lot anchor decides; otherwise every ticket and PR anchor must be integrated."""
-    lots = [state for state in states if state.kind == "lot"]
-    decisive = lots or list(states)
+    decisive = _decisive(states)
     return bool(decisive) and all(state.satisfied for state in decisive)
+
+
+def _closing_row(states: Sequence[AnchorState], hook_row_id: UUID) -> UUID:
+    """The row that completed the slot: the hook's own when it is one of the decisive
+    completers, else the first decisive one (a catch-up close of an already-pending slot)."""
+    completers = [state.completing_row_id for state in _decisive(states) if state.completing_row_id]
+    return hook_row_id if hook_row_id in completers else completers[0]
 
 
 async def close_slots_satisfied_by(
@@ -400,8 +411,7 @@ async def close_slots_satisfied_by(
     closed: list[UUID] = []
     for slot_id in locked:
         if slot_satisfied(states[slot_id]):
-            await close_slot(
-                session, slot_id=slot_id, reason=f"receipt:{completing_row_id}", note=None
-            )
+            reason = f"receipt:{_closing_row(states[slot_id], completing_row_id)}"
+            await close_slot(session, slot_id=slot_id, reason=reason, note=None)
             closed.append(slot_id)
     return closed

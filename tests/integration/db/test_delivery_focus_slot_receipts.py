@@ -15,7 +15,12 @@ import pytest
 import sqlalchemy as sa
 
 from brain_v42.db.focus_slots import close_slots_satisfied_by
-from brain_v42.db.tables import brain_sessions, focus_slot_history, focus_slots
+from brain_v42.db.tables import (
+    brain_sessions,
+    delivery_attestations,
+    focus_slot_history,
+    focus_slots,
+)
 from brain_v42.models.brain_session import BrainSessionFocusOutcome
 from brain_v42.models.focus_slot import FocusSlotError, SlotAnchor
 from brain_v42.models.ticket import TicketCreate, TicketKind
@@ -251,6 +256,93 @@ async def test_a_declared_or_foreign_release_closes_nothing(session_factory):
     assert closed == []
 
 
+async def observer_release(factory, delivery, ticket_id: UUID, *, actor: str, tag: str, key: str):
+    """The generic, unhooked `attest`, signed by the observer identity: it writes the row the
+    lot predicate reads without running a receipt hook, so a test controls what the slot sees."""
+    await delivery.attest(
+        ticket_id,
+        actor_project=actor,
+        caller_identity=OBSERVER_IDENTITY,
+        kind="released",
+        payload={"repository_id": RID, "tag": tag, "tag_sha": "d" * 40, "integration_sha": C},
+        idempotency_key=f"{key}-{ticket_id}",
+        emitted_at=NOW,
+        contract_revision=1,
+    )
+
+
+async def assert_lot_stays_open(factory, slot_id: UUID, *ticket_ids: UUID) -> None:
+    assert (await slot(factory, slot_id))["closed_at"] is None
+    assert await pending(factory, slot_id) is False
+    async with factory.begin() as session:  # the predicate, not the hook's absence
+        closed = await close_slots_satisfied_by(
+            session, ticket_ids=list(ticket_ids), completing_row_id=uuid4()
+        )
+    assert closed == []
+
+
+async def test_a_release_attested_by_the_wrong_issuer_project_closes_nothing(session_factory):
+    """Right issuer identity, right tag, right ticket: only the issuer project is wrong."""
+    ticket, _, delivery, _ = await workflow(session_factory)
+    await plan(session_factory, ticket.id, "8.4.4")
+    opened = await open_slot(session_factory, SlotAnchor(kind="lot", target_release="8.4.4"))
+    await observer_release(
+        session_factory, delivery, ticket.id, actor="requester", tag="v8.4.4", key="wrong-issuer"
+    )
+    await assert_lot_stays_open(session_factory, opened.slot.id, ticket.id)
+
+
+async def test_a_release_on_a_ticket_of_another_project_closes_nothing(session_factory):
+    """Right issuer identity, right tag, issuer project = the slot's: only the ticket is foreign."""
+    planned, _, _, _ = await workflow(session_factory)
+    await plan(session_factory, planned.id, "8.4.5")
+    opened = await open_slot(session_factory, SlotAnchor(kind="lot", target_release="8.4.5"))
+    await ensure_project(session_factory, "brain-v42")
+    foreign = await PgTicketRepo(session_factory).create(
+        TicketCreate(
+            kind=TicketKind.REQUEST,
+            title=f"foreign {uuid4()}",
+            body="b",
+            from_project=EXECUTOR,
+            to_project="brain-v42",
+        )
+    )
+    delivery = _service(session_factory)
+    await delivery.set_contract(
+        foreign.id,
+        actor_project=EXECUTOR,
+        expected_revision=0,
+        idempotency_key=f"contract-{foreign.id}",
+        contract=_contract(),
+    )
+    await observer_release(
+        session_factory, delivery, foreign.id, actor=EXECUTOR, tag="v8.4.5", key="foreign-ticket"
+    )
+    await assert_lot_stays_open(session_factory, opened.slot.id, planned.id, foreign.id)
+
+
+async def test_a_catch_up_close_names_the_completing_row_not_the_hooks_row(session_factory):
+    """A lot slot already pending (its release row exists, no hook ran) closes when ANOTHER
+    receipt of the project arrives; `close_reason` names the release, not that receipt."""
+    planned, _, delivery, _ = await workflow(session_factory)
+    await plan(session_factory, planned.id, "8.4.6")
+    opened = await open_slot(session_factory, SlotAnchor(kind="lot", target_release="8.4.6"))
+    await observer_release(
+        session_factory, delivery, planned.id, actor=EXECUTOR, tag="v8.4.6", key="catch-up"
+    )
+    assert await pending(session_factory, opened.slot.id) is True
+    async with session_factory() as session:
+        attestation_id = await session.scalar(
+            sa.select(delivery_attestations.c.id).where(
+                delivery_attestations.c.ticket_id == planned.id
+            )
+        )
+    other, binding, _, number = await workflow(session_factory)
+    receipt = await integrate(session_factory, other.id, binding, number)
+    reason = (await slot(session_factory, opened.slot.id))["close_reason"]
+    assert reason == f"receipt:{attestation_id}" and reason != f"receipt:{receipt.id}"
+
+
 async def test_a_receipt_of_an_older_revision_does_not_satisfy_a_reopened_ticket(session_factory):
     """The workflow join is the only guard against a reopened ticket counting as received."""
     ticket, binding, delivery, number = await workflow(session_factory)
@@ -380,3 +472,22 @@ async def test_a_relay_waits_for_an_uncommitted_receipt_close_then_refuses(sessi
     with pytest.raises(FocusSlotError, match="^slot_closed: "):
         await asyncio.wait_for(queued, timeout=30)
     assert await sources(session_factory, opened.slot.id) == ["slot_open", "slot_close"]
+
+
+async def test_a_relay_that_wins_first_leaves_the_receipt_to_close_the_relayed_slot(
+    session_factory,
+):
+    ticket, binding, _, number = await workflow(session_factory)
+    opened = await open_slot(
+        session_factory, SlotAnchor(kind="ticket", ticket_id=ticket.id), title="relay first"
+    )
+    svc = sessions(session_factory)
+    started = await svc.start(EXECUTOR, f"op-{uuid4().hex[:8]}")
+    await svc.bind(started.session.id, started.session.client_key, opened.slot.id)
+    await relay(session_factory, started.session.id, started.session.client_key)
+    await integrate(session_factory, ticket.id, binding, number)
+    assert await sources(session_factory, opened.slot.id) == [
+        "slot_open",
+        "session_relay",
+        "slot_close",
+    ]
