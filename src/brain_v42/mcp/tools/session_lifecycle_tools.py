@@ -28,7 +28,7 @@ from brain_v42.models.brain_session import (
     BrainSessionResumeResult,
     BrainSessionStartResult,
 )
-from brain_v42.models.focus_slot import SLOT_BODY_MAX_LENGTH
+from brain_v42.models.focus_slot import SLOT_BODY_MAX_LENGTH, BrainSessionBindResult
 
 if TYPE_CHECKING:
     from brain_v42.services.brain_session_service import BrainSessionService
@@ -168,7 +168,7 @@ def register_session_lifecycle_tools(
     brain_session_svc: BrainSessionService,
     briefing_loader: BriefingLoader,
 ) -> None:
-    """Register the eight explicit Brain session lifecycle tools."""
+    """Register the nine explicit Brain session lifecycle tools."""
 
     @mcp.tool(version="4.0", annotations=_WRITE_ANNOTATIONS)
     async def brain_session_start(
@@ -349,6 +349,30 @@ def register_session_lifecycle_tools(
             session_id=result.session.id,
         )
         return result.model_copy(update={"briefing": briefing})
+
+    @mcp.tool(version="4.0", annotations=_WRITE_ANNOTATIONS)
+    async def brain_session_bind(
+        session_id: UUID,
+        expected_client_key: ExpectedClientKeyArg,
+        slot_id: UUID,
+    ) -> BrainSessionBindResult:
+        """Bind an open operator session to one focus slot, from an explicit user command.
+
+        Once per session; binding the same slot again is a replay. From then on the
+        session's `end` writes that slot only, never the project base:
+        `expected_focus_revision` is the slot revision returned here. Refusals:
+        `session_not_open`, `session_is_agent_trace`, `session_already_bound`,
+        `slot_not_found`, `slot_closed`, `slot_project_mismatch`, `slot_busy`.
+
+        An agent tracer is the only session the server opens or closes on
+        its own; no hook and no auto-close may invoke this lifecycle
+        boundary.
+        """
+        return await brain_session_svc.bind(
+            session_id=session_id,
+            expected_client_key=expected_client_key,
+            slot_id=slot_id,
+        )
 
     @mcp.tool(version="4.0", output_schema=None, annotations=_TERMINAL_ANNOTATIONS)
     async def brain_session_abandon(

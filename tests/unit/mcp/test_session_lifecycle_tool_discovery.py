@@ -72,7 +72,9 @@ LIGHTWEIGHT_OUTPUT_SCHEMA_TOOLS = frozenset(
 # eight tools will not fit in 35 bytes — when that day comes we stop, we do not
 # loosen OUTPUT_SCHEMA_MINIMUM_SAVINGS, and the read surface goes to the briefing
 # TEXT where it costs nothing (051's route for `recent_checkpoints`).
-OUTPUT_SCHEMA_TOTAL = 10_139
+# Bumped by brain_session_bind (ADR #34), MEASURED: +352 on both sides — an unoptimized
+# tool raises the baseline by exactly what it raises the total, so the margin stays 35.
+OUTPUT_SCHEMA_TOTAL = 10_491
 # Lowered from 10_000 to 9_500: the floor had been set against a THREE-state
 # machine, and the fourth state costs 600 bytes on its own — only 554 of margin
 # were left. The loosened floor is still a floor: the effective saving is 9_660
@@ -121,6 +123,7 @@ def _assert_output_schema_presence(
     assert output_schemas["brain_session_heartbeat"] is None
     assert output_schemas["brain_session_list"] is None
     assert output_schemas["brain_session_abandon"] is None
+    assert output_schemas["brain_session_bind"] is not None
 
 
 def _baseline() -> dict[str, Any]:
@@ -216,7 +219,7 @@ async def test_discovery_contract_keeps_tool_identity_inputs_and_schema_budget()
     # fixture's frozen names, so a NEW tool was never measured by the budget at
     # all — only the growth of an existing one could trip it. A budget blind to
     # the cheapest way of exceeding it is not a budget.
-    assert len(registered) == 8
+    assert len(registered) == 9
 
     output_schemas: dict[str, dict[str, Any] | None] = {}
     final_lengths: dict[str, int] = {}
@@ -249,8 +252,9 @@ async def test_discovery_contract_keeps_tool_identity_inputs_and_schema_budget()
         "brain_session_list": 2640,
         "brain_session_resume": 2777,
         "brain_session_abandon": 2621,
+        "brain_session_bind": 352,
     }
-    assert sum(baseline_lengths.values()) == baseline["output_schema_total"] == 19674
+    assert sum(baseline_lengths.values()) == baseline["output_schema_total"] == 20026
     _assert_output_schema_presence(output_schemas)
     assert sum(final_lengths.values()) == OUTPUT_SCHEMA_TOTAL
     assert sum(final_lengths.values()) <= (

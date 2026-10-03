@@ -12,9 +12,11 @@ from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.focus_history import record_focus_history, render_focus_diff
+from brain_v42.db.focus_slots import lock_slot
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import (
     adrs,
@@ -58,6 +60,7 @@ from brain_v42.models.brain_session import (
     BrainSessionSweepResult,
     BrainSessionTerminalConflictError,
 )
+from brain_v42.models.focus_slot import BrainSessionBindResult, FocusSlotError
 from brain_v42.repositories.pg_base import BasePgRepository
 
 Row = dict[str, Any]
@@ -479,6 +482,82 @@ class PgBrainSessionRepo(BasePgRepository):
             current_focus=focus["current_focus"],
             current_focus_revision=focus["focus_revision"],
         )
+
+    async def bind(
+        self,
+        session_id: UUID | str,
+        expected_client_key: str,
+        slot_id: UUID,
+    ) -> BrainSessionBindResult:
+        """Bind an open operator session to one slot of its project, once (ADR D7).
+
+        Lock order: session row, then slot row. Rebinding the same slot is a
+        replay; another slot is `session_already_bound`. The slot is re-read under
+        its lock, so a close that committed while this bind queued is seen
+        (`slot_closed`): a slot close checks for a bound session without locking
+        the session row, and only the slot lock keeps the two apart. The partial
+        unique index `uq_brain_sessions_open_slot` is the last word on "one open
+        session per slot": its violation is mapped to `slot_busy`, never a 500.
+        """
+        async with self.transaction() as session:
+            row = await self._get_row(session, session_id, for_update=True)
+            if row is None:
+                raise BrainSessionNotFoundError(f"Session {session_id} was not found")
+            model = self._to_model(row)
+            self._assert_identity(model, expected_client_key)
+            if model.status != "open":
+                raise FocusSlotError(
+                    "session_not_open", f"session {model.id} is {model.status.value}, not open"
+                )
+            if model.nature == "agent":
+                raise FocusSlotError(
+                    "session_is_agent_trace", f"session {model.id} is an agent trace"
+                )
+            bound_to = row.get("slot_id")
+            if bound_to is not None and bound_to != slot_id:
+                raise FocusSlotError(
+                    "session_already_bound", f"session {model.id} is bound to slot {bound_to}"
+                )
+            slot = await lock_slot(session, slot_id)
+            if slot is None:
+                raise FocusSlotError("slot_not_found", f"slot {slot_id} was not found")
+            if bound_to != slot_id:
+                if slot["closed_at"] is not None:
+                    raise FocusSlotError("slot_closed", f"slot {slot_id} is closed")
+                if slot["project_key"] != model.project_key:
+                    raise FocusSlotError(
+                        "slot_project_mismatch",
+                        f"slot {slot_id} belongs to {slot['project_key']}, "
+                        f"session {model.id} to {model.project_key}",
+                    )
+                holder = await session.scalar(
+                    sa.select(brain_sessions.c.id).where(
+                        brain_sessions.c.slot_id == slot_id, brain_sessions.c.status == "open"
+                    )
+                )
+                if holder is not None:
+                    raise FocusSlotError(
+                        "slot_busy", f"session {holder} is already bound to slot {slot_id}"
+                    )
+                try:
+                    async with session.begin_nested():
+                        await session.execute(
+                            brain_sessions.update()
+                            .where(brain_sessions.c.id == model.id)
+                            .values(slot_id=slot_id, updated_at=datetime.now(UTC))
+                        )
+                except IntegrityError as exc:
+                    if "uq_brain_sessions_open_slot" in str(exc.orig):
+                        raise FocusSlotError(
+                            "slot_busy", f"another session is already bound to slot {slot_id}"
+                        ) from exc
+                    raise
+            return BrainSessionBindResult(
+                session_id=model.id,
+                slot_id=slot_id,
+                slot_revision=int(slot["revision"]),
+                slot_body=str(slot["body"]),
+            )
 
     async def capture(
         self,

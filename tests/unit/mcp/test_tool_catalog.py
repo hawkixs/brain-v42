@@ -177,6 +177,7 @@ def test_all_user_controlled_session_commands_are_pinned() -> None:
         "brain_session_list",
         "brain_session_resume",
         "brain_session_abandon",
+        "brain_session_bind",
     )
 
 
