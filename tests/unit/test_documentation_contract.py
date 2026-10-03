@@ -2446,6 +2446,25 @@ _ARCHITECTURE_STALENESS_CLOSES_NOTHING = (
     "Staleness is a list filter over open rows; it never changes the persisted `status` and "
     "never auto-closes a session."
 )
+# Migration 046 split `brain_sessions` into two natures, and the server writes on
+# the `agent` one: it opens a trace per HTTP connection and the sweep closes it
+# after four hours unobserved. The explicit-command rule above was written before
+# that split; this sentence says which nature it binds, so the server path cannot
+# be read as a licence for the agent or the client.
+_TWO_NATURES_SCOPE = (
+    "The explicit-command rule governs the operator nature; the agent nature is a "
+    "server-owned trace that grants no right to an agent, a hook or a client."
+)
+# The second rule of the Dream `sweep` phase, bounded by the same CHECK as the
+# code: `closed_inactive` exists only for `nature = 'agent'` and never carries a
+# `next_focus`. It is the only other server-side closure, so it is sanctioned
+# here by name rather than left for the anti-widening scan to reject.
+_INACTIVITY_SWEEP_RULE = (
+    "The same Dream `sweep` phase carries a second, narrower rule: it moves an open `agent` "
+    "trace whose `last_observed_at` is more than four hours old to `closed_inactive`, a "
+    "terminal state that a CHECK reserves to sessions with `nature = 'agent'` and "
+    "`next_focus IS NULL`."
+)
 
 # Each statement is anchored to the section that governs its reader, not the file.
 _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
@@ -2465,7 +2484,10 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             (
                 "CLAUDE.md#explicit-session-lifecycle",
                 _section(CLAUDE, "### Explicit session lifecycle"),
-                (("thresholds-24h-vs-7d", _CLAUDE_THRESHOLD_SENTENCE),),
+                (
+                    ("thresholds-24h-vs-7d", _CLAUDE_THRESHOLD_SENTENCE),
+                    ("two-natures", _TWO_NATURES_SCOPE),
+                ),
             ),
         )
         if CLAUDE
@@ -2488,6 +2510,8 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("sweep-exception", _ARCHITECTURE_SWEEP_EXCEPTION),
             ("stale-closes-nothing", _ARCHITECTURE_STALENESS_CLOSES_NOTHING),
             ("thresholds-24h-vs-7d", _ENGLISH_THRESHOLD_DISAMBIGUATION),
+            ("two-natures", _TWO_NATURES_SCOPE),
+            ("inactivity-sweep", _INACTIVITY_SWEEP_RULE),
         ),
     ),
     (
@@ -2585,6 +2609,7 @@ _DOCTRINE_DOCUMENTS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             _ARCHITECTURE_SWEEP_EXCEPTION,
             _ARCHITECTURE_STALENESS_CLOSES_NOTHING,
             _ENGLISH_THRESHOLD_DISAMBIGUATION,
+            _INACTIVITY_SWEEP_RULE,
             # brain_session_heartbeat paragraph restating the same sanctioned
             # 24h/7d threshold doctrine in different words.
             "After 24 hours without a heartbeat, an open session exposes `is_stale=true`; "
