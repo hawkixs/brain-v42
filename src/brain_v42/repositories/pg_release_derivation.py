@@ -9,6 +9,7 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_v42.db.focus_slots import close_slots_satisfied_by
 from brain_v42.db.tables import (
     delivery_artifact_bindings,
     delivery_attestations,
@@ -116,7 +117,7 @@ class PgReleaseDerivationRepo:
         tag: _ReleaseTag,
         tag_date: datetime,
     ) -> None:
-        await self._attestations.attest(
+        attestation = await self._attestations.attest(
             session,
             candidate.ticket_id,
             actor_project=candidate.to_project,
@@ -131,6 +132,13 @@ class PgReleaseDerivationRepo:
             idempotency_key=f"released:{candidate.ticket_id}:{candidate.deliverable_key}:{tag.name}",
             emitted_at=tag_date,
             contract_revision=candidate.contract_revision,
+        )
+        # ADR #34 D5: a measured release closes the lot slots it satisfies. Here,
+        # not in the generic `attest`: a caller-declared attestation is not a
+        # measurement. An idempotent replay returns the existing row; closed slots
+        # are skipped, so the call is idempotent too.
+        await close_slots_satisfied_by(
+            session, ticket_ids=[candidate.ticket_id], completing_row_id=attestation.id
         )
 
     async def undeployed(

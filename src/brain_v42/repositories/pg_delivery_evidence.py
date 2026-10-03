@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from brain_v42.db.focus_slots import close_slots_satisfied_by
 from brain_v42.db.tables import (
     delivery_artifact_bindings,
     delivery_confirmations,
@@ -487,6 +488,12 @@ class PgDeliveryEvidenceRepo(BasePgRepository):
                 issued_at=receipt.issued_at,
             )
         )
+        # ADR #34 D5: the single receipt insert site closes the focus slots this
+        # integration satisfies, in the same transaction. `fulfilled` is not consulted.
+        if receipt.milestone == "integration":
+            await close_slots_satisfied_by(
+                session, ticket_ids=[receipt.ticket_id], completing_row_id=receipt.id
+            )
 
     async def publish_observation(
         self,

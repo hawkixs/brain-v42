@@ -342,3 +342,66 @@ def slot_satisfied(states: Sequence[AnchorState]) -> bool:
     lots = [state for state in states if state.kind == "lot"]
     decisive = lots or list(states)
     return bool(decisive) and all(state.satisfied for state in decisive)
+
+
+async def close_slots_satisfied_by(
+    session: AsyncSession,
+    *,
+    ticket_ids: Sequence[UUID],
+    completing_row_id: UUID,
+) -> list[UUID]:
+    """Close every open slot that the receipt just written satisfies (spec §5, ADR D5).
+
+    Runs inside the receipt writer's transaction, after the workflow locks it
+    already holds; it locks SLOTS only, ordered by id. Candidates are over-chosen
+    on purpose (a ticket anchor on the ticket, a PR anchor whose binding is on
+    it, any lot anchor of its project); the predicate decides, with Q2's rule.
+    The close writes no base text and no summary. A closed slot is skipped, so a
+    replayed receipt or attestation closes nothing twice.
+    """
+    if not ticket_ids:
+        return []
+    ids = list(ticket_ids)
+    a, s, b, t = focus_slot_anchors, focus_slots, delivery_artifact_bindings, tickets
+    touched = sa.or_(
+        sa.and_(a.c.kind == "ticket", a.c.ticket_id.in_(ids)),
+        sa.and_(
+            a.c.kind == "pr",
+            sa.exists().where(
+                b.c.repository_id == a.c.repository_id,
+                b.c.pr_number == a.c.pr_number,
+                b.c.active.is_(True),
+                b.c.ticket_id.in_(ids),
+            ),
+        ),
+        sa.and_(
+            a.c.kind == "lot",
+            sa.exists().where(t.c.id.in_(ids), t.c.to_project == s.c.project_key),
+        ),
+    )
+    candidates = (
+        sa.select(a.c.slot_id)
+        .select_from(a.join(s, s.c.id == a.c.slot_id))
+        .where(s.c.closed_at.is_(None), touched)
+    )
+    locked = list(
+        (
+            await session.execute(
+                sa.select(s.c.id)
+                .where(s.c.id.in_(candidates), s.c.closed_at.is_(None))
+                .order_by(s.c.id)
+                .with_for_update()
+            )
+        ).scalars()
+    )
+    if not locked:
+        return []
+    states = await anchor_states(session, locked)
+    closed: list[UUID] = []
+    for slot_id in locked:
+        if slot_satisfied(states[slot_id]):
+            await close_slot(
+                session, slot_id=slot_id, reason=f"receipt:{completing_row_id}", note=None
+            )
+            closed.append(slot_id)
+    return closed
