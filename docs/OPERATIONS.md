@@ -162,21 +162,47 @@ tell it has aged. Measure each flag in the process that reads it. Auto-opening a
 derived capture are read by the live MCP server; the inactivity sweep is read by the
 Dream unit (`python -m brain_v42.maintenance.session_sweep`), and a copy of
 `BRAIN_SESSION_INACTIVE_SWEEP_ENABLED` in the MCP server's environment arms nothing.
-These commands print flag names and values only. Never dump the full environment,
-which carries `MCP_HTTP_TOKEN`.
+These commands print only the exact flag keys listed below, and only when the value
+is `true` or `false`: whatever the other variables hold, nothing else can come out.
+Never dump the full environment, which carries `MCP_HTTP_TOKEN`, and do not replace
+these commands with a `tr ... | grep` pipeline. Splitting an environment on NUL or on
+spaces loses the record boundaries, so a variable whose value embeds a newline, or a
+space followed by a flag-shaped token, forges a matching line and prints material
+around it.
 
 ```bash
-# MCP server (auto-open, derived capture): the live process environment
-pid=$(systemctl --user show brain-mcp-http.service -p MainPID --value)
-tr '\0' '\n' < "/proc/$pid/environ" | grep -E '^BRAIN_SESSION_[A-Z_]*='
+# Run in bash. Whole-record match against an exact KEY=(true|false) whitelist.
+shopt -s extglob
+flags_of() {  # $1 = pid, $2 = extglob pattern of the exact records to print
+  local record
+  while IFS= read -r -d '' record; do
+    case $record in $2) printf '%s\n' "$record" ;; esac
+  done < "/proc/$1/environ"
+}
 
-# Dream unit, what the unit declares: Environment= lines, drop-ins included
-systemctl --user show brain-v42-dream.service -p Environment --value | tr ' ' '\n' | grep -E '^BRAIN_(SESSION|DREAM_SWEEP)_[A-Z_]*='
+# MCP server (auto-open, derived capture): the live process environment
+flags_of "$(systemctl --user show brain-mcp-http.service -p MainPID --value)" \
+  'BRAIN_SESSION_@(AUTO_OPEN|DERIVED_CAPTURE|INACTIVE_SWEEP)_ENABLED=@(true|false)'
+
+# Dream unit, what the unit declares: Environment= lines, drop-ins included.
+# One grep per key, with token boundaries: only these exact tokens can come out.
+for key in BRAIN_SESSION_INACTIVE_SWEEP_ENABLED BRAIN_DREAM_SWEEP_ENABLED BRAIN_DREAM_SWEEP_DRY_RUN; do
+  systemctl --user show brain-v42-dream.service -p Environment --value |
+    grep -oE "(^| )$key=(true|false)( |\$)"
+done | tr -d ' '
 
 # Dream unit, what the process sees: only while a night is running
+# (otherwise it prints nothing and exits 1)
 pid=$(systemctl --user show brain-v42-dream.service -p MainPID --value)
-[ "$pid" != 0 ] && tr '\0' '\n' < "/proc/$pid/environ" | grep -E '^BRAIN_(SESSION|DREAM_SWEEP)_[A-Z_]*='
+[ "${pid:-0}" -gt 0 ] && flags_of "$pid" \
+  '@(BRAIN_SESSION_INACTIVE_SWEEP_ENABLED|BRAIN_DREAM_SWEEP_ENABLED|BRAIN_DREAM_SWEEP_DRY_RUN)=@(true|false)'
 ```
+
+A flag that is set but not printed has a non-boolean value, or is absent: inspect that
+one by hand, without echoing the rest of the environment. The unit-level command
+works on one text line, so it can repeat a flag-shaped token that sits inside another
+variable's quoted value; it can print a flag value that way, never anything else. The
+process-environment form matches whole records and has no such case.
 
 `systemctl show -p Environment` lists the `Environment=` lines only. A value set
 through `EnvironmentFile=` does not appear there (`-p EnvironmentFiles` lists the

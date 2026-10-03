@@ -2749,6 +2749,38 @@ def test_a_reworded_grant_of_automatic_closure_is_still_detected(grant: str) -> 
     assert grant in _automatic_closure_statements(widened)
 
 
+def test_arming_state_commands_print_only_whitelisted_booleans() -> None:
+    """The documented measurement commands must not be able to print anything but a flag.
+
+    They read a process environment that also carries secrets (`MCP_HTTP_TOKEN`).
+    Splitting it on NUL or on spaces and filtering the pieces loses the record
+    boundaries: a variable whose value embeds a newline, or a space followed by a
+    flag-shaped token, then forges a matching line and prints material around it
+    (reproduced by the round-2 review with synthetic input). The commands match whole
+    records against an exact `KEY=(true|false)` whitelist instead, so a flag that is set
+    but not boolean prints nothing, and nothing else can.
+    """
+    start = OPERATIONS.index("### Agent traces and the inactivity sweep")
+    end = OPERATIONS.index("\n## ", start)
+    commands = "\n".join(re.findall(r"```bash\n(.*?)```", OPERATIONS[start:end], flags=re.DOTALL))
+
+    # The whitelist, in the process-environment form and in the unit-property form.
+    assert "=@(true|false)" in commands
+    assert "=(true|false)( |\\$)" in commands
+    for key in (
+        "BRAIN_SESSION_@(AUTO_OPEN|DERIVED_CAPTURE|INACTIVE_SWEEP)_ENABLED",
+        "BRAIN_SESSION_INACTIVE_SWEEP_ENABLED",
+        "BRAIN_DREAM_SWEEP_ENABLED",
+        "BRAIN_DREAM_SWEEP_DRY_RUN",
+    ):
+        assert key in commands, f"flag key missing from the measurement commands: {key}"
+
+    # The splitting pipeline itself, which the whitelist replaces.
+    assert not re.search(r"\btr\s+'[^']+'\s+'\\n'", commands), (
+        "splitting an environment with tr loses record boundaries and can print secrets"
+    )
+
+
 @requires_claude
 def test_sweep_killswitches_are_documented_in_the_shared_environment() -> None:
     """The sweep is off and dry in the shared `.env` an operator copies."""
