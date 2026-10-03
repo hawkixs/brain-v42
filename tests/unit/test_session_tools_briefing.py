@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from brain_v42.mcp.tools.session_tools import _TICKETS_CAP, _section_tickets
-from brain_v42.models.ticket import Ticket, TicketGroups, TicketKind, TicketStatus
+from brain_v42.models.ticket import ReleaseLot, Ticket, TicketGroups, TicketKind, TicketStatus
 
 
 def _ticket(title: str, *, kind: TicketKind = TicketKind.REQUEST, **kwargs) -> Ticket:
@@ -23,6 +23,28 @@ def _ticket(title: str, *, kind: TicketKind = TicketKind.REQUEST, **kwargs) -> T
         to_project=kwargs.pop("to_project", "p"),
         **kwargs,
     )
+
+
+class TestReleaseLotLine:
+    def test_lot_line_and_next_line(self):
+        groups = TicketGroups(a_traiter=[_ticket("t")], a_confirmer=[], en_attente=[])
+        lots = [
+            ReleaseLot(target_release="0.6.3", open=4, resolved=2, wontfix=0),
+            ReleaseLot(target_release="0.6.4", open=1, resolved=0, wontfix=0),
+        ]
+        section = _section_tickets(groups, lots)
+        assert "Lot en cours : 0.6.3 — 4 ouverts · 2 résolus" in section
+        assert "Suivant : 0.6.4 — 1" in section
+
+    def test_wontfix_is_shown_only_when_present(self):
+        groups = TicketGroups(a_traiter=[_ticket("t")], a_confirmer=[], en_attente=[])
+        lots = [ReleaseLot(target_release="0.6.3", open=1, resolved=0, wontfix=2)]
+        assert "· 2 abandonnés" in _section_tickets(groups, lots)
+
+    def test_no_lots_leaves_the_section_unchanged(self):
+        groups = TicketGroups(a_traiter=[_ticket("t")], a_confirmer=[], en_attente=[])
+        assert _section_tickets(groups, None) == _section_tickets(groups)
+        assert "Lot en cours" not in _section_tickets(groups, [])
 
 
 class TestTicketsSilencedCount:

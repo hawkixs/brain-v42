@@ -21,6 +21,7 @@ from brain_v42.models.ticket import (
     TERMINAL_STATUSES,
     TRANSITIONS,
     ExtractionStatus,
+    ReleaseLot,
     ReleaseState,
     Ticket,
     TicketAction,
@@ -296,6 +297,10 @@ class TicketService:
         key = canonicalize_project_key(project_key, strict=False)
         release = None if target_release is None else parse_target_release(target_release)
         return await self._repo.list_grouped(key, target_release=release)
+
+    async def release_lots(self, project_key: str) -> list[ReleaseLot]:
+        key = canonicalize_project_key(project_key, strict=False)
+        return await self._repo.release_lots(key)
 
     async def _get_or_raise(self, ticket_id: UUID) -> Ticket:
         ticket = await self._repo.get_by_id(ticket_id)

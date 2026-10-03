@@ -8,6 +8,7 @@ from brain_v42.models.ticket import (
     TERMINAL_STATUSES,
     TRANSITIONS,
     ExtractionStatus,
+    ReleaseLot,
     Ticket,
     TicketAction,
     TicketCreate,
@@ -15,9 +16,33 @@ from brain_v42.models.ticket import (
     TicketMessage,
     TicketStatus,
     allowed_actions,
+    current_and_next,
     parse_target_release,
     release_key,
 )
+
+
+def test_current_is_lowest_with_open_tickets_in_numeric_order() -> None:
+    lots = [
+        ReleaseLot(target_release="0.6.10", open=2, resolved=0, wontfix=0),
+        ReleaseLot(target_release="0.6.9", open=1, resolved=3, wontfix=0),
+        ReleaseLot(target_release="0.6.8", open=0, resolved=5, wontfix=0),
+    ]
+    current, following = current_and_next(lots)
+    assert (current.target_release, following.target_release) == ("0.6.9", "0.6.10")
+
+
+def test_a_fully_resolved_lot_hands_over_by_itself() -> None:
+    lots = [
+        ReleaseLot(target_release="0.6.3", open=0, resolved=4, wontfix=1),
+        ReleaseLot(target_release="0.6.4", open=2, resolved=0, wontfix=0),
+    ]
+    current, following = current_and_next(lots)
+    assert current.target_release == "0.6.4" and following is None
+
+
+def test_no_open_lot_means_no_line() -> None:
+    assert current_and_next([]) == (None, None)
 
 
 class TestTicketCreate:

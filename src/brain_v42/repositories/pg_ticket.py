@@ -15,6 +15,7 @@ from brain_v42.delivery_config import DeliverySettings
 from brain_v42.models.delivery import DeliveryError
 from brain_v42.models.ticket import (
     ExtractionStatus,
+    ReleaseLot,
     Ticket,
     TicketAction,
     TicketCreate,
@@ -96,6 +97,24 @@ async def count_grouped_by_project(session: AsyncSession) -> list[dict[str, Any]
 class PgTicketRepo(BasePgRepository):
     table = tickets
     fts_columns: list[str] = []  # hors recherche — famille coordination (spec §1)
+
+    async def release_lots(self, project_key: str) -> list[ReleaseLot]:
+        """Aggregate planned tickets by release for one executor project."""
+        query = (
+            sa.select(
+                tickets.c.target_release,
+                sa.func.count().filter(tickets.c.status.in_(("open", "in_progress"))).label("open"),
+                sa.func.count()
+                .filter(tickets.c.status.in_(("resolved", "closed")))
+                .label("resolved"),
+                sa.func.count().filter(tickets.c.status == "wontfix").label("wontfix"),
+            )
+            .where(tickets.c.to_project == project_key, tickets.c.target_release.is_not(None))
+            .group_by(tickets.c.target_release)
+        )
+        async with self.get_session() as session:
+            rows = (await session.execute(query)).mappings().all()
+        return [ReleaseLot.model_validate(dict(row)) for row in rows]
 
     async def update(
         self,
