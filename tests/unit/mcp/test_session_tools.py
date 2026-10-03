@@ -963,6 +963,7 @@ class TestTicketsSection:
         )
         ticket_svc = MagicMock()
         ticket_svc.list_grouped = AsyncMock(return_value=groups)
+        ticket_svc.release_lots = AsyncMock(return_value=[])
         with patch(
             "brain_v42.mcp.tools.session_tools.get_settings", return_value=_SETTINGS_NO_CROSS
         ):
@@ -980,6 +981,7 @@ class TestTicketsSection:
 
         ticket_svc = MagicMock()
         ticket_svc.list_grouped = AsyncMock(return_value=TicketGroups())
+        ticket_svc.release_lots = AsyncMock(return_value=[])
         with patch(
             "brain_v42.mcp.tools.session_tools.get_settings", return_value=_SETTINGS_NO_CROSS
         ):
@@ -993,6 +995,7 @@ class TestTicketsSection:
     async def test_ticket_service_failure_degrades_gracefully(self):
         ticket_svc = MagicMock()
         ticket_svc.list_grouped = AsyncMock(side_effect=RuntimeError("db down"))
+        ticket_svc.release_lots = AsyncMock(return_value=[])
         with patch(
             "brain_v42.mcp.tools.session_tools.get_settings", return_value=_SETTINGS_NO_CROSS
         ):
@@ -1015,6 +1018,35 @@ class TestTicketsSection:
         assert "### Tickets" not in result.briefing
 
     @pytest.mark.asyncio
+    async def test_release_lots_failure_keeps_ticket_section(self):
+        from brain_v42.models.ticket import Ticket, TicketGroups, TicketKind
+
+        groups = TicketGroups(
+            a_traiter=[
+                Ticket(
+                    kind=TicketKind.REQUEST,
+                    title="actionable ticket",
+                    body="b",
+                    from_project="red-shrik",
+                    to_project="p",
+                )
+            ],
+        )
+        ticket_svc = MagicMock()
+        ticket_svc.list_grouped = AsyncMock(return_value=groups)
+        ticket_svc.release_lots = AsyncMock(side_effect=RuntimeError("db down"))
+        with patch(
+            "brain_v42.mcp.tools.session_tools.get_settings", return_value=_SETTINGS_NO_CROSS
+        ):
+            mcp = FastMCP("test")
+            register_session_tools(mcp, *_minimal_services(), ticket_svc=ticket_svc)
+            tool = await mcp.get_tool("brain_session_start")
+            result = await tool.fn(project_key="p", client_key="client-1")
+        assert "actionable ticket" in result.briefing
+        assert "### Tickets (1 à traiter · 0 à confirmer)" in result.briefing
+        assert "· Lot " not in result.briefing
+
+    @pytest.mark.asyncio
     async def test_third_counter_shown_when_awaiting_group_non_empty(self):
         # spec 2026-08-03-ticket-briefing-fourth-quadrant §2.3, test 5.
         from brain_v42.models.ticket import Ticket, TicketGroups, TicketKind, TicketStatus
@@ -1033,6 +1065,7 @@ class TestTicketsSection:
         )
         ticket_svc = MagicMock()
         ticket_svc.list_grouped = AsyncMock(return_value=groups)
+        ticket_svc.release_lots = AsyncMock(return_value=[])
         with patch(
             "brain_v42.mcp.tools.session_tools.get_settings", return_value=_SETTINGS_NO_CROSS
         ):
@@ -1060,6 +1093,7 @@ class TestTicketsSection:
         )
         ticket_svc = MagicMock()
         ticket_svc.list_grouped = AsyncMock(return_value=groups)
+        ticket_svc.release_lots = AsyncMock(return_value=[])
         with patch(
             "brain_v42.mcp.tools.session_tools.get_settings", return_value=_SETTINGS_NO_CROSS
         ):
@@ -1089,6 +1123,7 @@ class TestTicketsSection:
         )
         ticket_svc = MagicMock()
         ticket_svc.list_grouped = AsyncMock(return_value=groups)
+        ticket_svc.release_lots = AsyncMock(return_value=[])
         with patch(
             "brain_v42.mcp.tools.session_tools.get_settings", return_value=_SETTINGS_NO_CROSS
         ):

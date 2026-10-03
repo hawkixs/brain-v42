@@ -147,7 +147,7 @@ def test_the_documented_inventory_is_exactly_what_the_code_emits() -> None:
 
 
 def test_the_headline_total_equals_what_the_code_emits() -> None:
-    """Derived, not remembered. It said 13, then 16, before it said 18."""
+    """Derived, not remembered. The inventory grows with UUID-using tools."""
     text = MCP_TOOLS.read_text(encoding="utf-8")
     claimed = int(re.search(r"The (\d+) tools listed below reject a malformed UUID", text).group(1))
 

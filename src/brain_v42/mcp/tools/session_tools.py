@@ -26,6 +26,7 @@ from brain_v42.models.brain_session import (
     SESSION_STALE_AFTER,
 )
 from brain_v42.models.project_key import canonicalize_project_key
+from brain_v42.models.ticket import ReleaseLot, current_and_next
 from brain_v42.services.dream_run_service import (
     KillswitchState,
     LastFailureRow,
@@ -44,7 +45,7 @@ _CAP = 5
 _TICKETS_CAP = 5
 
 
-def _section_tickets(groups: Any | None) -> str:
+def _section_tickets(groups: Any | None, lots: list[ReleaseLot] | None = None) -> str:
     """### Tickets — the actionable ones at the top of the briefing (tickets spec §5).
 
     Shows only the actionable: to handle (I am the recipient) and to confirm (my
@@ -60,13 +61,24 @@ def _section_tickets(groups: Any | None) -> str:
     a_traiter = list(groups.a_traiter)
     a_confirmer = list(groups.a_confirmer)
     awaiting = list(groups.awaiting_requester_confirmation)
-    if not a_traiter and not a_confirmer and not awaiting:
+    current, following = current_and_next(lots or [])
+    if not a_traiter and not a_confirmer and not awaiting and current is None:
         return ""
     header = f"### Tickets ({len(a_traiter)} à traiter · {len(a_confirmer)} à confirmer"
     if awaiting:
         header += f" · {len(awaiting)} livrés à valider"
     header += ")"
     lines = [header]
+    if current is not None:
+        line = (
+            f"- Lot en cours : {current.target_release} — {current.open} ouverts · "
+            f"{current.resolved} résolus"
+        )
+        if current.wontfix:
+            line += f" · {current.wontfix} abandonnés"
+        lines.append(line)
+        if following is not None:
+            lines.append(f"- Suivant : {following.target_release} — {following.open}")
     budget = _TICKETS_CAP
     shown_traiter = a_traiter[:budget]
     for t in shown_traiter:
@@ -561,6 +573,7 @@ def _format_session_briefing(
     schema_revision: str | None = None,
     schema_unavailable: bool = False,
     checkpoints: list[Any] | None = None,
+    ticket_lots: list[ReleaseLot] | None = None,
     delivery_briefing: str = "",
     fact_lines: Sequence[str] = (),
     claim_suffixes: Mapping[tuple[str, UUID], str] | None = None,
@@ -574,7 +587,7 @@ def _format_session_briefing(
         ),
         _section_last_failure(last_failure),
         _section_checkpoints(checkpoints or []),
-        _section_tickets(ticket_groups),
+        _section_tickets(ticket_groups, ticket_lots),
         _section_roadmap(roadmap_items),
         _section_stale_pinned(stale_pinned),
         # Deliberately adjacent to the focus: the measured value sits directly
@@ -759,11 +772,19 @@ def make_session_briefing_loader(
         # Any failure degrades to "section omitted" — same graceful-degrade
         # contract as the rest of the briefing.
         ticket_groups = None
+        ticket_lots = None
         if ticket_svc is not None:
             try:
                 ticket_groups = await ticket_svc.list_grouped(project_key)
             except Exception as exc:
                 logger.warning("brain_session_start_tickets_failed", error=str(exc))
+                ticket_groups = None
+            else:
+                try:
+                    ticket_lots = await ticket_svc.release_lots(project_key)
+                except Exception as exc:
+                    logger.warning("brain_session_start_tickets_failed", error=str(exc))
+                    ticket_lots = None
 
         # Technical state — measured, never carried forward (ticket 87ac8b7a).
         # Unlike the other optional sections, a failure does NOT degrade to
@@ -856,6 +877,7 @@ def make_session_briefing_loader(
             killswitch_unavailable=killswitch_unavailable,
             cross_block=cross_block,
             ticket_groups=ticket_groups,
+            ticket_lots=ticket_lots,
             schema_revision=schema_revision,
             schema_unavailable=schema_unavailable,
             checkpoints=checkpoints,

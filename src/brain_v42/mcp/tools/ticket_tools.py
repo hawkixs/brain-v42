@@ -1,5 +1,5 @@
 """MCP tools for cross-project tickets: brain_ticket_create / reply /
-transition / list / get.
+transition / plan / list / get.
 
 Coordination family — addressed, transient, stateful (spec 2026-07-04).
 Formatting stays local (single consumer); shared write-confirmations come
@@ -23,6 +23,7 @@ from brain_v42.mcp.tools.tool_annotations import (
 )
 from brain_v42.models.ticket import (
     ExtractionStatus,
+    ReleaseState,
     Ticket,
     TicketAction,
     TicketCreate,
@@ -30,6 +31,7 @@ from brain_v42.models.ticket import (
     TicketKind,
     TicketMessage,
     allowed_actions,
+    parse_target_release,
 )
 from brain_v42.services.ticket_service import TicketError
 
@@ -68,6 +70,7 @@ def _format_group_page(
     project_key: str,
     limit: int,
     offset: int,
+    target_release: str | None = None,
 ) -> None:
     if not tickets:
         return
@@ -84,10 +87,13 @@ def _format_group_page(
 
     notice = f"… ({omitted} omis sur cette page; {omitted_before} avant, {omitted_after} après"
     if omitted_after:
-        notice += (
+        continuation = (
             " — suite: brain_ticket_list("
-            f"project_key='{project_key}', limit={limit}, offset={offset + limit})"
+            f"project_key='{project_key}', limit={limit}, offset={offset + limit}"
         )
+        if target_release is not None:
+            continuation += f", target_release='{target_release}'"
+        notice += continuation + ")"
     lines.append(notice + ")")
 
 
@@ -97,6 +103,7 @@ def _format_groups(
     *,
     limit: int,
     offset: int,
+    target_release: str | None = None,
 ) -> str:
     total = (
         len(groups.a_traiter)
@@ -115,6 +122,7 @@ def _format_groups(
         project_key=project_key,
         limit=limit,
         offset=offset,
+        target_release=target_release,
     )
     _format_group_page(
         lines,
@@ -124,6 +132,7 @@ def _format_groups(
         project_key=project_key,
         limit=limit,
         offset=offset,
+        target_release=target_release,
     )
     _format_group_page(
         lines,
@@ -133,6 +142,7 @@ def _format_groups(
         project_key=project_key,
         limit=limit,
         offset=offset,
+        target_release=target_release,
     )
     _format_group_page(
         lines,
@@ -142,11 +152,24 @@ def _format_groups(
         project_key=project_key,
         limit=limit,
         offset=offset,
+        target_release=target_release,
     )
     return "\n".join(lines)
 
 
-def _format_thread(ticket: Ticket, messages: list[TicketMessage]) -> str:
+def _release_line(ticket: Ticket, state: ReleaseState | None) -> str | None:
+    """Render the plan beside measurements without reconciling either (spec S3)."""
+    parts: list[str] = []
+    if ticket.target_release is not None:
+        parts.append(f"planned {ticket.target_release}")
+    if state is not None:
+        parts.extend(state.rendered_parts())
+    return "release: " + " · ".join(parts) if parts else None
+
+
+def _format_thread(
+    ticket: Ticket, messages: list[TicketMessage], *, release: ReleaseState | None = None
+) -> str:
     header = (
         f"## Ticket #{format_id(str(ticket.id))} [{ticket.kind.value}] — « {ticket.title} »\n"
         f"{ticket.from_project} → {ticket.to_project} · status: {ticket.status.value}"
@@ -154,6 +177,9 @@ def _format_thread(ticket: Ticket, messages: list[TicketMessage]) -> str:
     )
     if ticket.extraction_status is not None:
         header += f" · extraction: {ticket.extraction_status.value}"
+    release_line = _release_line(ticket, release)
+    if release_line is not None:
+        header += f"\n{release_line}"
     parts = [header, ticket.body]
     if messages:
         parts.append(f"### Fil ({len(messages)} message{'s' if len(messages) > 1 else ''})")
@@ -174,7 +200,7 @@ def register_ticket_tools(
     mcp: Any,
     ticket_svc: TicketService,
 ) -> None:
-    """Register the 5 brain_ticket_* MCP tools on the FastMCP server."""
+    """Register the 6 brain_ticket_* MCP tools on the FastMCP server."""
 
     @mcp.tool(version="1.1", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_ticket_create(
@@ -295,11 +321,43 @@ def register_ticket_tools(
             status=updated.status.value,
         )
 
+    @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    async def brain_ticket_plan(
+        ticket_id: str,
+        author_project: str,
+        target_release: str | None = None,
+    ) -> str:
+        """Plan the release a ticket should ship in — executor (to_project) only.
+
+        Records an INTENTION, never a measurement: which tag actually shipped
+        the ticket is derived by the delivery observer from GitHub tags and
+        shown next to the plan, never reconciled with it. Every change leaves
+        a thread message ("planned for 0.6.3", "moved from 0.6.3 to 0.6.4",
+        "unplanned (was 0.6.3)"). A requester asks in the thread instead.
+
+        Args:
+            ticket_id: Ticket UUID.
+            author_project: Must be the ticket's to_project.
+            target_release: Version X.Y.Z without the tag's v (e.g. "0.6.3");
+                omit or null to unplan.
+        """
+        tid = parse_uuid(ticket_id)
+        if tid is None:
+            return format_error(f"Invalid UUID: {ticket_id}")
+        try:
+            message = await ticket_svc.plan(tid, author_project, target_release)
+        except (TicketError, ValueError) as exc:
+            return format_error(str(exc))
+        return format_confirmation(
+            f"Ticket planned: {message.body}", message.body, id=format_id(ticket_id)
+        )
+
     @mcp.tool(version="1.1", annotations=_READ_ANNOTATIONS)
     async def brain_ticket_list(
         project_key: str,
         limit: int = _LIST_DEFAULT_LIMIT,
         offset: int = 0,
+        target_release: str | None = None,
     ) -> str:
         """List a project's tickets grouped by needed action: à traiter
         (I'm the target), à confirmer (my requests resolved/wontfixed,
@@ -316,14 +374,21 @@ def register_ticket_tools(
             project_key: Project whose incoming and outgoing tickets are listed.
             limit: Maximum tickets per category (default 10, clamped to [1, 100]).
             offset: Tickets skipped in every category (default 0, minimum 0).
+            target_release: Exact match on the planned release, X.Y.Z; categories, pagination and ordering unchanged.
         """
         limit = max(1, min(limit, _LIST_MAX_LIMIT))
         offset = max(0, offset)
         try:
-            groups = await ticket_svc.list_grouped(project_key)
+            if target_release is not None:
+                target_release = parse_target_release(target_release)
+            groups = await ticket_svc.list_grouped(project_key, target_release=target_release)
         except TicketError as exc:
             return format_error(str(exc))
-        return _format_groups(groups, project_key, limit=limit, offset=offset)
+        except ValueError as exc:
+            return format_error(str(exc))
+        return _format_groups(
+            groups, project_key, limit=limit, offset=offset, target_release=target_release
+        )
 
     @mcp.tool(version="1.1", annotations=_READ_ANNOTATIONS)
     async def brain_ticket_get(ticket_id: str) -> str:
@@ -339,4 +404,5 @@ def register_ticket_tools(
         if result is None:
             return format_error(f"Ticket '{format_id(ticket_id)}' not found")
         ticket, messages = result
-        return _format_thread(ticket, messages)
+        release = await ticket_svc.release_state(tid)
+        return _format_thread(ticket, messages, release=release)

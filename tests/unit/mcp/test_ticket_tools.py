@@ -1,4 +1,4 @@
-"""Unit tests for the 5 brain_ticket_* MCP tools (mocked service)."""
+"""Unit tests for the brain_ticket_* MCP tools (mocked service)."""
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -56,16 +56,65 @@ def _mcp_with(svc):
 
 
 class TestRegistration:
-    async def test_all_five_tools_registered(self):
+    async def test_all_six_tools_registered(self):
         mcp = _mcp_with(MagicMock())
         for name in (
             "brain_ticket_create",
             "brain_ticket_reply",
             "brain_ticket_transition",
+            "brain_ticket_plan",
             "brain_ticket_list",
             "brain_ticket_get",
         ):
             assert await mcp.get_tool(name) is not None
+
+
+class TestListByRelease:
+    async def test_filter_is_passed_and_every_continuation_keeps_it(self):
+        svc = MagicMock()
+        svc.list_grouped = AsyncMock(
+            return_value=TicketGroups(
+                a_traiter=[_ticket() for _ in range(12)], a_confirmer=[], en_attente=[]
+            )
+        )
+        tool = await _tool(_mcp_with(svc), "brain_ticket_list")
+        result = await tool.fn(project_key=TO, target_release="0.6.3")
+        svc.list_grouped.assert_awaited_once_with(TO, target_release="0.6.3")
+        assert "target_release='0.6.3'" in result
+
+    async def test_tag_shaped_filter_is_an_error(self):
+        tool = await _tool(_mcp_with(MagicMock()), "brain_ticket_list")
+        result = await tool.fn(project_key=TO, target_release="v0.6.3")
+        assert "without the v" in result
+
+    async def test_no_filter_keeps_the_old_call(self):
+        svc = MagicMock()
+        svc.list_grouped = AsyncMock(
+            return_value=TicketGroups(a_traiter=[], a_confirmer=[], en_attente=[])
+        )
+        tool = await _tool(_mcp_with(svc), "brain_ticket_list")
+        await tool.fn(project_key=TO)
+        svc.list_grouped.assert_awaited_once_with(TO, target_release=None)
+
+
+class TestThreadReleaseLine:
+    async def test_planned_ticket_shows_release_line_before_the_body(self):
+        svc = MagicMock()
+        svc.get_with_thread = AsyncMock(return_value=(_ticket(target_release="0.6.3"), []))
+        svc.resolve_id_prefix = AsyncMock(return_value=None)
+        svc.release_state = AsyncMock(return_value=None)
+        tool = await _tool(_mcp_with(svc), "brain_ticket_get")
+        result = await tool.fn(ticket_id=str(uuid4()))
+        header = result.split("\n\n", 1)[0]
+        assert "release: planned 0.6.3" in header
+
+    async def test_unplanned_ticket_has_no_release_line(self):
+        svc = MagicMock()
+        svc.get_with_thread = AsyncMock(return_value=(_ticket(), []))
+        svc.resolve_id_prefix = AsyncMock(return_value=None)
+        svc.release_state = AsyncMock(return_value=None)
+        tool = await _tool(_mcp_with(svc), "brain_ticket_get")
+        assert "release:" not in await tool.fn(ticket_id=str(uuid4()))
 
 
 class TestCreate:
@@ -368,6 +417,7 @@ class TestListAndGet:
                 ],
             )
         )
+        svc.release_state = AsyncMock(return_value=None)
         tool = await _tool(_mcp_with(svc), "brain_ticket_get")
         result = await tool.fn(ticket_id=str(t.id))
         assert "je regarde" in result
@@ -386,6 +436,7 @@ class TestListAndGet:
         t = _ticket(from_project="brain-v42", to_project="brain-v42")
         svc = MagicMock()
         svc.get_with_thread = AsyncMock(return_value=(t, []))
+        svc.release_state = AsyncMock(return_value=None)
         tool = await _tool(_mcp_with(svc), "brain_ticket_get")
         result = await tool.fn(ticket_id=str(t.id))
         assert "resolve_pending" in result
@@ -397,6 +448,7 @@ class TestIdPrefixResolution:
         svc = MagicMock()
         svc.resolve_id_prefix = AsyncMock(return_value=[t.id])
         svc.get_with_thread = AsyncMock(return_value=(t, []))
+        svc.release_state = AsyncMock(return_value=None)
         tool = await _tool(_mcp_with(svc), "brain_ticket_get")
 
         result = await tool.fn(ticket_id=t.id.hex[:8])
@@ -442,21 +494,44 @@ class TestIdPrefixResolution:
         svc.transition.assert_not_awaited()
 
 
+class TestPlan:
+    async def test_plan_reports_the_thread_message(self):
+        svc = MagicMock()
+        svc.plan = AsyncMock(return_value=MagicMock(body="planned for 0.6.3"))
+        tool = await _tool(_mcp_with(svc), "brain_ticket_plan")
+        result = await tool.fn(ticket_id=str(uuid4()), author_project=TO, target_release="0.6.3")
+        assert "planned for 0.6.3" in result
+        svc.plan.assert_awaited_once()
+
+    async def test_unplan_passes_none(self):
+        svc = MagicMock()
+        svc.plan = AsyncMock(return_value=MagicMock(body="unplanned (was 0.6.3)"))
+        tool = await _tool(_mcp_with(svc), "brain_ticket_plan")
+        await tool.fn(ticket_id=str(uuid4()), author_project=TO, target_release=None)
+        assert svc.plan.await_args.args[2] is None
+
+    async def test_tag_shaped_value_is_an_error_with_the_hint(self):
+        svc = MagicMock()
+        svc.plan = AsyncMock(
+            side_effect=ValueError(
+                "target_release is a version, not a tag: write 0.6.3, without the v"
+            )
+        )
+        tool = await _tool(_mcp_with(svc), "brain_ticket_plan")
+        result = await tool.fn(ticket_id=str(uuid4()), author_project=TO, target_release="v0.6.3")
+        assert "without the v" in result
+
+    async def test_invalid_uuid(self):
+        tool = await _tool(_mcp_with(MagicMock()), "brain_ticket_plan")
+        assert "Invalid UUID" in await tool.fn(
+            ticket_id="nope", author_project=TO, target_release="0.6.3"
+        )
+
+
 class TestReplyCanCorrectTheTicketBody:
-    """`cabb7503` — fix a stale body WITHOUT adding a tool to the catalogue.
+    """Correct a stale ticket body through the reply tool."""
 
-    The public MCP contract has no free room left: its floor already had to be
-    renegotiated by measurement (10,000 → 9,500). A sixth tool would have been the
-    obvious solution; that is why it was not taken.
-    """
-
-    async def test_the_ticket_catalog_still_has_exactly_five_tools(self):
-        """Architecture guard: no tool added, the fix goes through `reply`.
-
-        This test does not measure bytes — it pins the DECISION. A sixth tool here
-        would be an operator decision, not a worker's batch, and this red is what
-        forces it to be put rather than taken in passing.
-        """
+    async def test_the_ticket_catalog_has_six_tools(self):
         mcp = _mcp_with(MagicMock())
 
         async with Client(mcp) as client:
@@ -467,6 +542,7 @@ class TestReplyCanCorrectTheTicketBody:
             "brain_ticket_create",
             "brain_ticket_get",
             "brain_ticket_list",
+            "brain_ticket_plan",
             "brain_ticket_reply",
             "brain_ticket_transition",
         ], f"le catalogue ticket a changé de taille : {ticket_tools}"

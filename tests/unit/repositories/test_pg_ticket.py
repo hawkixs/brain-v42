@@ -379,6 +379,28 @@ async def test_list_grouped_uses_role_specific_status_buckets() -> None:
     assert "tickets.from_project != tickets.to_project" in sql[3]
 
 
+async def test_list_grouped_filters_target_release_only_when_requested() -> None:
+    session = _session(*[_all_result([]) for _ in range(4)])
+    repo = _repo_with_session(session)
+
+    await repo.list_grouped("red-data", target_release="0.6.3")
+
+    statements = [call.args[0] for call in session.execute.await_args_list]
+    sql = [
+        str(statement.compile(compile_kwargs={"literal_binds": True})) for statement in statements
+    ]
+    assert all("tickets.target_release = '0.6.3'" in statement for statement in sql)
+
+    session = _session(*[_all_result([]) for _ in range(4)])
+    repo = _repo_with_session(session)
+    await repo.list_grouped("red-data")
+    statements = [call.args[0] for call in session.execute.await_args_list]
+    sql = [
+        str(statement.compile(compile_kwargs={"literal_binds": True})) for statement in statements
+    ]
+    assert all("tickets.target_release =" not in statement for statement in sql)
+
+
 class TestListGrouped:
     async def test_actionable_self_ticket_is_only_in_a_traiter(self) -> None:
         ticket_id = uuid4()

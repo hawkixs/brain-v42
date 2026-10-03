@@ -38,6 +38,13 @@ class TicketStatus(StrEnum):
     ACKED = "acked"
 
 
+class ReleaseState(BaseModel, frozen=True):
+    """Placeholder for observer measurements rendered beside the release plan."""
+
+    def rendered_parts(self) -> list[str]:
+        return []
+
+
 class TicketAction(StrEnum):
     START = "start"
     RESOLVE = "resolve"
@@ -80,6 +87,25 @@ def release_key(value: str) -> tuple[int, int, int]:
     """Numeric order: 0.6.10 sorts after 0.6.9, which text order gets wrong."""
     major, minor, patch = (int(part) for part in value.split("."))
     return major, minor, patch
+
+
+class ReleaseLot(BaseModel):
+    model_config = {"frozen": True}
+
+    target_release: str
+    open: int
+    resolved: int
+    wontfix: int
+
+
+def current_and_next(
+    lots: list[ReleaseLot],
+) -> tuple[ReleaseLot | None, ReleaseLot | None]:
+    """Choose the two lowest planned releases that still have open tickets."""
+    pending = sorted(
+        (lot for lot in lots if lot.open), key=lambda lot: release_key(lot.target_release)
+    )
+    return (pending[0] if pending else None, pending[1] if len(pending) > 1 else None)
 
 
 TERMINAL_STATUSES: frozenset[TicketStatus] = frozenset({TicketStatus.CLOSED, TicketStatus.ACKED})
