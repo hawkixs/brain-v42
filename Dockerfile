@@ -23,12 +23,7 @@ RUN pip install --no-cache-dir "uv==${UV_VERSION}"
 FROM base AS deps
 
 COPY pyproject.toml uv.lock README.md ./
-# The uv workspace member `brain_v42` depends on (`[tool.uv.workspace]`). It is a
-# dependency, not application source: without it `uv sync --locked` refuses with
-# "references a workspace in tool.uv.sources, but is not a workspace member", and
-# the image had not built since 0.6.0 introduced the member — unnoticed while the
-# delivery rail waited on a runner that never came (ticket 03846021).
-COPY packages/headless-agents/ ./packages/headless-agents/
+# uv installs headless-agents from its pinned Git tag in uv.lock.
 # Install dependencies only (no --editable src yet — src/ not copied here).
 # The placeholder src stub below satisfies the "package must exist" requirement
 # of uv's editable project install without polluting the cache with real source files.
@@ -38,7 +33,10 @@ RUN mkdir -p src/brain_v42 && touch src/brain_v42/__init__.py
 # image refuses to build. Copying the real migrations HERE would make every new
 # revision invalidate the locked dependency sync; the production stage copies them.
 RUN mkdir -p alembic && touch alembic.ini
-RUN uv sync --locked --no-dev --no-cache
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && uv sync --locked --no-dev --no-cache \
+    && apt-get purge -y --auto-remove git \
+    && rm -rf /var/lib/apt/lists/*
 
 # ===== DEV DEPS =====
 FROM deps AS deps-dev

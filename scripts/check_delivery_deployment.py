@@ -795,8 +795,8 @@ def _validate_workspace_wheels(
 ) -> None:
     """Attest every workspace member the release installs beside ``brain_v42``.
 
-    Since Brain ticket b2a2d1a5 the release carries a second wheel, the
-    ``headless_agents`` workspace member ``brain_v42`` depends on. The rule is
+    The rule is generic and checks any workspace member a release archive
+    declares, including the historical ``headless_agents`` member. It is
     read off the ARCHIVE, not off the manifest: every ``packages/<dir>/src/<pkg>``
     the source tree declares must either be absent from the venv or be
     declared under ``workspace_wheels`` and checked exactly like the main

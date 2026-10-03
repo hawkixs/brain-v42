@@ -321,9 +321,9 @@ class TestToolConfigsUntouched:
         )
 
     def test_requires_python(self, pyproject_content: str) -> None:
-        """requires-python = '>=3.12' must remain."""
-        assert 'requires-python = ">=3.12"' in pyproject_content, (
-            "requires-python = '>=3.12' must remain"
+        """red-ha 0.5.4 requires Python 3.12.7 or newer."""
+        assert 'requires-python = ">=3.12.7"' in pyproject_content, (
+            "requires-python = '>=3.12.7' is required by red-ha 0.5.4"
         )
 
 

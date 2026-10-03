@@ -1063,12 +1063,10 @@ def test_preflight_allows_only_derived_python_caches_beside_verified_sources(
 
 # --- workspace members --------------------------------------------------------
 #
-# Since Brain ticket b2a2d1a5 a release installs TWO wheels: brain_v42 and the
-# headless_agents workspace member it depends on. A member that is installed
-# but not attested would be code the night runs without any digest tying it to
-# the source archive, so the preflight reads the archive for workspace members
-# (packages/<dir>/src/<package>/) and demands that every installed one is
-# declared under `workspace_wheels` and validated like the main wheel.
+# These fixtures exercise the generic workspace-member rule. A release archive
+# may carry a member under packages/<dir>/src/<package>/; preflight requires
+# every installed member to be declared under `workspace_wheels` and validated
+# like the main wheel. No current release carries a workspace member.
 
 MEMBER_INIT = b'"""headless_agents 0.1.0"""\n'
 MEMBER_PYPROJECT = b'[project]\nname = "headless-agents"\nversion = "0.1.0"\n'

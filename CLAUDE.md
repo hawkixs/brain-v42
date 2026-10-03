@@ -232,10 +232,10 @@ uv sync --extra dev --python 3.12
 source .venv/bin/activate
 ```
 
-> **`pip install -e ".[dev]"` does not work here**, and it never has:
-> `headless-agents` is a uv workspace member (`[tool.uv.sources]`), not a published
-> distribution — pip looks for it on PyPI and fails. `--python 3.12` is mandatory:
-> `requires-python` is `>=3.12`, so a bare `uv sync` picks the most recent interpreter
+> **Use uv to install dependencies.** `headless-agents` is a Git dependency from
+> `hawkixs/red-ha`, pinned to `v0.5.4` in `pyproject.toml`; pip does not consume
+> `uv.lock` or uv's Git source declaration. `--python 3.12` is mandatory:
+> `requires-python` is `>=3.12.7`, so a bare `uv sync` picks the most recent interpreter
 > on the machine while the whole CI targets 3.12.
 
 ```bash
@@ -261,7 +261,6 @@ brain_v42/
 │   ├── metrics/               # sidecar + collector + cockpit
 │   ├── automation/            # independent webhook/dedup runtime
 │   └── mcp/                   # FastMCP server + brain_*/dream_* handlers
-├── packages/headless-agents/  # uv workspace member, separate distribution
 ├── tests/{unit,integration}
 ├── alembic/versions/          # migrations (shipped inside the wheel)
 ├── scripts/                   # operational CLIs (dream.sh, canaries, repair)

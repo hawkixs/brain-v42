@@ -9,7 +9,7 @@ name = "brain_v42"
 version = "0.6.2"
 description = "Second Cerveau v42 - Mémoire persistante pour Claude Code via MCP"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12.7"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 authors = [
@@ -49,10 +49,10 @@ dependencies = [
     # Reranker — uses shared unified HTTP service on :8003 (no local model deps)
     # Graph (optional Neo4j relationship index — disabled by default)
     "neo4j>=5.0,<7",
-    # Shared agent runtime (uv workspace member under packages/, Brain ticket
-    # b2a2d1a5). brain_v42.agents is the Dream-side adapter over it; the
-    # runtime itself must never import brain_v42 (guarded by
-    # tests/unit/headless_agents/test_package_boundary.py).
+    # Shared agent runtime, released from its own repository (hawkixs/red-ha,
+    # Brain ticket aa5ffd5d). brain_v42.agents is the Dream-side adapter over
+    # it; the runtime never imports brain_v42. Pinned by tag in
+    # [tool.uv.sources] below, and by commit in uv.lock.
     "headless-agents",
 ]
 
@@ -146,7 +146,6 @@ markers = [
     # into the default run would make it green by absence everywhere it matters.
     "boundary_host: replays the tracked network boundary against the local host; excluded by default, run with -m boundary_host",
     "live: spends real provider quota on this machine; excluded by default, run with -m live",
-    "real_watcher: starts a real headless-agents process-group watcher (unit tests of procgroup only)",
 ]
 pythonpath = ["src"]
 # The net that holds whatever the cause. Twice, CI produced THIRTY MINUTES of
@@ -164,7 +163,7 @@ faulthandler_exit_on_timeout = true
 [tool.ruff]
 target-version = "py312"
 line-length = 100
-src = ["src", "tests", "packages/headless-agents/src"]
+src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
@@ -181,7 +180,7 @@ disallow_untyped_defs = true
 ignore_missing_imports = true
 
 [tool.coverage.run]
-source = ["src/brain_v42", "packages/headless-agents/src/headless_agents"]
+source = ["src/brain_v42"]
 branch = true
 
 [tool.coverage.report]
@@ -196,15 +195,9 @@ dev = [
     "aiosqlite>=0.22.1",
 ]
 
-# The shared agent runtime is a workspace member: `uv sync` installs it
-# editable next to brain_v42, `uv build` at the root still builds only
-# brain_v42, and a consumer outside this repository installs the member alone
-# by git URL + subdirectory. The release script builds and installs BOTH
-# wheels (`uv export --no-emit-workspace`), see the release runbook
-# (docs/runbooks/2026-09-07-observable-delivery-workflows.md in the private
-# brain-v42-internal repository).
-[tool.uv.workspace]
-members = ["packages/headless-agents"]
-
+# The shared agent runtime lives in hawkixs/red-ha since its 0.5.4 release
+# (ticket aa5ffd5d): it is a git dependency pinned to that tag, resolved to its
+# commit in uv.lock. Upgrading it is a deliberate tag bump here, never a
+# floating branch.
 [tool.uv.sources]
-headless-agents = { workspace = true }
+headless-agents = { git = "https://github.com/hawkixs/red-ha.git", tag = "v0.5.4" }
