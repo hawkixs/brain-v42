@@ -1,5 +1,6 @@
 """Containment budgets must keep progressing across immutable negative results."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
@@ -18,7 +19,7 @@ from brain_v42.repositories.pg_release_derivation import (
     PgReleaseDerivationRepo,
     ReleaseCandidate,
 )
-from tests.unit.delivery_observer.test_runtime_job_isolation import FakeOwner
+from tests.unit.delivery_observer.test_runtime_job_isolation import FakeOwner, FakeQueue
 
 NOW = datetime(2026, 10, 3, tzinfo=UTC)
 TAG = ReleaseTag("v0.6.3", "0.6.3", "a" * 40)
@@ -44,6 +45,7 @@ class Releases:
 
 def make_runtime(candidates):
     return DeliveryObserverRuntime(
+        queue=FakeQueue([]),
         settings=DeliverySettings(enabled=True),
         owner=FakeOwner(),
         client=AsyncMock(
@@ -57,10 +59,11 @@ def make_runtime(candidates):
     )
 
 
-async def run_pass(runtime, kind):
+async def run_pass(runtime, kind, stop=None):
+    stop = stop or asyncio.Event()
     if kind == "released":
-        return await runtime._release_pass()
-    await runtime._deployed_pass(0)
+        return await runtime._release_pass(stop)
+    await runtime._deployed_pass(0, stop)
 
 
 @pytest.mark.parametrize("kind", ["released", "deployed"])
@@ -107,8 +110,8 @@ async def test_conflicting_earliest_release_key_never_falls_through_to_a_later_t
         None,
     ]
 
-    await runtime._release_pass()
-    await runtime._release_pass()
+    await runtime._release_pass(asyncio.Event())
+    await runtime._release_pass(asyncio.Event())
 
     runtime.releases.record_released.assert_awaited_once()
     assert runtime.releases.record_released.await_args.args[2] == TAG
@@ -131,10 +134,10 @@ async def test_other_delivery_errors_remain_retryable(kind, capsys):
 async def test_failed_tag_fetch_is_attempted_once_per_repository_and_pass(stage, capsys):
     runtime = make_runtime([candidate(), candidate()])
     getattr(runtime.client, stage).side_effect = ProviderError("provider_unavailable")
-    await runtime._release_pass()
+    await runtime._release_pass(asyncio.Event())
     assert runtime.client.release_tags.await_count == 1
     assert runtime.client.contains.await_count == 0
-    await runtime._release_pass()
+    await runtime._release_pass(asyncio.Event())
     assert runtime.client.release_tags.await_count == 2
 
 
@@ -143,7 +146,7 @@ async def test_equal_tag_dates_use_numeric_version_order():
     earlier = ReleaseTag("v0.6.9", "0.6.9", "d" * 40)
     later = ReleaseTag("v0.6.10", "0.6.10", "e" * 40)
     runtime.client.release_tags.return_value = [later, earlier]
-    await runtime._release_pass()
+    await runtime._release_pass(asyncio.Event())
     assert runtime.releases.record_released.call_args.args[2] == earlier
 
 
@@ -170,3 +173,86 @@ async def test_undeployed_rejects_other_repository_ids_without_querying():
         )
         == []
     )
+
+
+@pytest.mark.parametrize("kind", ["released", "deployed"])
+async def test_shutdown_stops_the_pass_before_the_next_candidate(kind):
+    runtime = make_runtime([candidate(), candidate()])
+    stop = asyncio.Event()
+
+    async def contains(*args):
+        stop.set()
+        return False
+
+    runtime.client.contains.side_effect = contains
+    await run_pass(runtime, kind, stop)
+    assert runtime.client.contains.await_count == 1
+
+
+@pytest.mark.parametrize("kind", ["released", "deployed"])
+async def test_shutdown_before_the_pass_sends_no_request(kind):
+    runtime = make_runtime([candidate()])
+    stop = asyncio.Event()
+    stop.set()
+    await run_pass(runtime, kind, stop)
+    for call in (runtime.client.release_tags, runtime.client.commit_date, runtime.client.contains):
+        call.assert_not_awaited()
+
+
+async def test_shutdown_stops_dating_the_tags():
+    runtime = make_runtime([candidate()])
+    runtime.client.release_tags.return_value = [TAG, ReleaseTag("v0.6.4", "0.6.4", "c" * 40)]
+    stop = asyncio.Event()
+
+    async def commit_date(*args):
+        stop.set()
+        return NOW
+
+    runtime.client.commit_date.side_effect = commit_date
+    await runtime._release_pass(stop)
+    assert runtime.client.commit_date.await_count == 1
+    runtime.client.contains.assert_not_awaited()
+
+
+async def test_a_merge_the_provider_does_not_know_is_not_asked_for_again():
+    gone = candidate("d" * 40)
+    runtime = make_runtime([gone])
+
+    async def commit_date(repository_id, sha):
+        if sha == gone.integration_sha:
+            raise ProviderError("provider_not_found")
+        return NOW
+
+    runtime.client.commit_date.side_effect = commit_date
+    await runtime._release_pass(asyncio.Event())
+    await runtime._release_pass(asyncio.Event())
+
+    asked = [call.args[1] for call in runtime.client.commit_date.await_args_list]
+    assert asked.count(gone.integration_sha) == 1
+    runtime.client.contains.assert_not_awaited()
+
+
+async def test_a_transient_merge_date_failure_is_retried_next_pass():
+    flaky = candidate("d" * 40)
+    runtime = make_runtime([flaky])
+    outcomes = [ProviderError("provider_unavailable"), NOW]
+
+    async def commit_date(repository_id, sha):
+        if sha == flaky.integration_sha:
+            outcome = outcomes.pop(0)
+            if isinstance(outcome, Exception):
+                raise outcome
+        return NOW
+
+    runtime.client.commit_date.side_effect = commit_date
+    await runtime._release_pass(asyncio.Event())
+    await runtime._release_pass(asyncio.Event())
+
+    assert runtime.client.contains.await_count == 1
+
+
+@pytest.mark.parametrize("project_key, expected", [("brain-v42", False), (None, True)])
+async def test_a_single_project_run_skips_the_repository_wide_release_passes(project_key, expected):
+    runtime = make_runtime([candidate()])
+    await runtime.run_once(project_key)
+    assert runtime.client.release_tags.await_count == int(expected)

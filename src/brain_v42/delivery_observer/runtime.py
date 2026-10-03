@@ -109,6 +109,9 @@ class DeliveryObserverRuntime:
         self.release_identity = release_identity
         self._commit_dates: dict[str, datetime] = {}
         self._not_contained: set[tuple[str, str]] = set()
+        # A merge commit the provider says it does not have never comes back; anything
+        # else (rate limit, outage) is transient and stays retryable.
+        self._missing_merges: set[str] = set()
         self._blocked_keys: set[tuple[UUID, str, str]] = set()
         self._run_lock = asyncio.Lock()
 
@@ -262,9 +265,15 @@ class DeliveryObserverRuntime:
                         failed += 1
                     else:
                         deferred += 1
-            if not stop_event.is_set() and self.owner.owned and not self.owner.lost.is_set():
-                compares = await self._release_pass()
-                await self._deployed_pass(compares)
+            # The passes are repository-wide: a run scoped to one project leaves them out.
+            if (
+                project_key is None
+                and not stop_event.is_set()
+                and self.owner.owned
+                and not self.owner.lost.is_set()
+            ):
+                compares = await self._release_pass(stop_event)
+                await self._deployed_pass(compares, stop_event)
         except ObserverOwnershipLost:
             return ObservationRunResult(
                 collected=collected,
@@ -329,14 +338,18 @@ class DeliveryObserverRuntime:
             if len(candidates) < _MAX_RELEASE_COMPARES_PER_PASS:
                 return
 
-    async def _release_pass(self) -> int:
+    def _halted(self, stop_event: asyncio.Event) -> bool:
+        """Admission can sleep up to a minute per request: look before each one."""
+        return stop_event.is_set() or self.owner.lost.is_set()
+
+    async def _release_pass(self, stop_event: asyncio.Event) -> int:
         """Bound containment checks while sharing the transport's admission budget."""
         if self.releases is None:
             return 0
         compares = 0
         tags_by_repo: dict[int, list[tuple[ReleaseTag, datetime]]] = {}
         async for candidate in self._derivation_candidates():
-            if self.owner.lost.is_set():
+            if self._halted(stop_event):
                 break
             blocked_key: tuple[UUID, str, str] | None = None
             try:
@@ -344,20 +357,29 @@ class DeliveryObserverRuntime:
                     # A failed list/date fetch stays empty for this pass, then retries next cycle.
                     tags_by_repo[candidate.repository_id] = []
                     tags = await self.client.release_tags(candidate.repository_id)
-                    dated = [
-                        (tag, await self._tag_date(candidate.repository_id, tag)) for tag in tags
-                    ]
+                    dated = []
+                    for tag in tags:
+                        if self._halted(stop_event):
+                            return compares
+                        dated.append((tag, await self._tag_date(candidate.repository_id, tag)))
                     tags_by_repo[candidate.repository_id] = sorted(
                         dated, key=lambda item: (item[1], release_key(item[0].version))
                     )
                 dated = tags_by_repo[candidate.repository_id]
                 if not dated:
                     continue
-                merged_at = await self._tag_date_of_sha(
-                    candidate.repository_id, candidate.integration_sha
-                )
+                if candidate.integration_sha in self._missing_merges:
+                    continue
+                try:
+                    merged_at = await self._tag_date_of_sha(
+                        candidate.repository_id, candidate.integration_sha
+                    )
+                except ProviderError as error:
+                    if error.code == "provider_not_found":
+                        self._missing_merges.add(candidate.integration_sha)
+                    raise
                 for tag, tag_date in dated:
-                    if self.owner.lost.is_set():
+                    if self._halted(stop_event):
                         return compares
                     if tag_date < merged_at:
                         continue
@@ -397,12 +419,12 @@ class DeliveryObserverRuntime:
                 )
         return compares
 
-    async def _deployed_pass(self, compares: int) -> None:
+    async def _deployed_pass(self, compares: int, stop_event: asyncio.Event) -> None:
         """Claim deployment only from this process's immutable brain-v42 release."""
         if (
             self.releases is None
             or compares >= _MAX_RELEASE_COMPARES_PER_PASS
-            or self.owner.lost.is_set()
+            or self._halted(stop_event)
         ):
             return
         identity = self.release_identity()
@@ -414,7 +436,7 @@ class DeliveryObserverRuntime:
         async for candidate in self._derivation_candidates(
             repository_id=repository_id, live_release_sha=identity.release_sha
         ):
-            if self.owner.lost.is_set():
+            if self._halted(stop_event):
                 break
             key = (
                 f"deployed:{candidate.ticket_id}:{candidate.deliverable_key}:{identity.release_sha}"
