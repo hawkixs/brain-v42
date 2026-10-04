@@ -586,3 +586,91 @@ async def test_a_base_relay_still_replays_after_its_successor_bound_to_a_slot(
         first.session.id,
         revision + 1,
     )
+
+
+class _PausedAfterTheBaseLock(PgBrainSessionRepo):
+    """A base relay that stops right after taking its lock, before it inserts its successor."""
+
+    def __init__(self, factory) -> None:
+        super().__init__(factory)
+        self.locked = asyncio.Event()
+        self.resume = asyncio.Event()
+
+    async def _mark_ended(self, *args, **kwargs):
+        self.locked.set()
+        await self.resume.wait()
+        return await super()._mark_ended(*args, **kwargs)
+
+
+async def test_a_start_with_the_relays_new_key_cannot_deadlock_a_base_relay(
+    session_factory, slot_project
+):
+    """The base lock must tolerate the FK KEY SHARE of a concurrent session insert.
+
+    start inserts its row (placing the unique entry for the key, then needing KEY SHARE on
+    the project row for the FK); the relay, holding the base, then inserts the same key and
+    waits on that entry. With FOR UPDATE that is a cycle PostgreSQL breaks with a deadlock
+    error; the relay must instead lose cleanly with `client_key_conflict`.
+    """
+    revision = await set_base(session_factory, slot_project, "base")
+    session_id, key = await started(session_factory, slot_project)
+    repo = _PausedAfterTheBaseLock(session_factory)
+    relaying = asyncio.create_task(
+        repo.relay(
+            session_id,
+            key,
+            summary="s",
+            handover="base",
+            expected_focus_revision=revision,
+            new_client_key="race-key",
+            initiator="operator",
+            knowledge_ids=[],
+            nothing_to_capture_reason=None,
+        )
+    )
+    await asyncio.wait_for(repo.locked.wait(), 10)
+    starting = asyncio.create_task(sessions(session_factory).start(slot_project, "race-key"))
+    await asyncio.sleep(1.5)  # past deadlock_timeout (1 s): start has inserted and is parked
+    repo.resume.set()
+    relayed, started_result = await asyncio.gather(relaying, starting, return_exceptions=True)
+    assert getattr(relayed, "code", None) == "client_key_conflict", relayed
+    assert not isinstance(started_result, BaseException), started_result
+    assert (await row(session_factory, session_id))["status"] == "open"
+
+
+async def test_the_base_lock_lets_a_session_insert_through(session_factory, slot_project):
+    """The same lock mode, held the way `_relay_base` holds it, against the FK a session insert needs."""
+    repo = PgBrainSessionRepo(session_factory)
+    async with session_factory.begin() as holder:
+        await repo._load_focus(holder, slot_project, for_no_key_update=True)
+        async with session_factory.begin() as other:
+            await other.execute(sa.text("SET LOCAL lock_timeout = '2s'"))
+            await other.execute(
+                brain_sessions.insert().values(
+                    project_key=slot_project, client_key="fk-probe", started_focus_revision=0
+                )
+            )
+
+
+async def test_a_slot_retry_naming_a_coincident_base_successors_key_is_terminal_conflict(
+    session_factory, slot_project
+):
+    """The slot lookup and the base lookup must not both answer (one row each at one boundary)."""
+    anchored, anchored_key, _slot_id = await bound(session_factory, slot_project)
+    loose, loose_key = await started(session_factory, slot_project)
+    revision = await set_base(session_factory, slot_project, "base")
+    base = await base_relay(session_factory, loose, loose_key, revision, new_client_key="b-key")
+    slot = await relay(session_factory, anchored, anchored_key, new_client_key="s-key")
+    boundary = (await row(session_factory, loose))["ended_at"]
+    async with session_factory.begin() as session:
+        await session.execute(
+            brain_sessions.update().where(brain_sessions.c.id == anchored).values(ended_at=boundary)
+        )
+        await session.execute(
+            brain_sessions.update()
+            .where(brain_sessions.c.id == slot.session.id)
+            .values(started_at=boundary)
+        )
+    assert (await row(session_factory, base.session.id))["started_at"] == boundary
+    with pytest.raises(FocusSlotError, match="^terminal_conflict: "):
+        await relay(session_factory, anchored, anchored_key, new_client_key="b-key")

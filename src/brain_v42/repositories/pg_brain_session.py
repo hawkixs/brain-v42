@@ -1244,8 +1244,10 @@ class PgBrainSessionRepo(BasePgRepository):
     ) -> BrainSessionRelayResult:
         """Relay an unbound session onto the project BASE (ticket 64ebd73a, ADR #34).
 
-        Lock order: the session row (held by `relay`), then `project_contexts` FOR
-        UPDATE, as an unbound `end` does. The handover REPLACES the whole base, so
+        Lock order: the session row (held by `relay`), then `project_contexts` FOR NO
+        KEY UPDATE (an unbound `end` takes FOR UPDATE; here the weaker mode is
+        required, see `_load_focus`: the successor insert must not deadlock with a
+        concurrent `start` on the same key). The handover REPLACES the whole base, so
         the two refusals that guard it mutate nothing (beyond the derived-capture
         absorption the service commits first, as for `end`) and leave the session open:
         a stale revision is the slot relay's semantics (S8), deliberately NOT
@@ -1256,7 +1258,7 @@ class PgBrainSessionRepo(BasePgRepository):
         The history row keeps the source `session_end`: `project_focus_history`'s
         CHECK has no `session_relay`, and a new source is a migration.
         """
-        base = await self._load_focus(session, model.project_key, for_update=True)
+        base = await self._load_focus(session, model.project_key, for_no_key_update=True)
         if base is None:
             raise BrainSessionNotFoundError(f"Project {model.project_key!r} was not found")
         if base["focus_revision"] != expected_focus_revision:
@@ -1386,6 +1388,49 @@ class PgBrainSessionRepo(BasePgRepository):
             )
         return dict(successor)
 
+    @staticmethod
+    async def _find_slot_successor(session: AsyncSession, model: BrainSession) -> Row | None:
+        """The slot relay's successor: the one row naming `model` as its predecessor."""
+        found = (
+            (
+                await session.execute(
+                    sa.select(brain_sessions).where(
+                        brain_sessions.c.relayed_from_session_id == model.id
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return dict(found) if found is not None else None
+
+    @staticmethod
+    async def _find_base_successor(
+        session: AsyncSession, model: BrainSession, new_client_key: str
+    ) -> Row | None:
+        """The base relay's successor, which names no predecessor (060's CHECK).
+
+        Looked up only AFTER the slot lookup found nothing: both shapes at one boundary
+        would otherwise be two rows for `one_or_none`, and a coincidence of two relays
+        ending in the same microsecond must be a `terminal_conflict`, never an exception.
+        """
+        found = (
+            (
+                await session.execute(
+                    sa.select(brain_sessions).where(
+                        brain_sessions.c.project_key == model.project_key,
+                        brain_sessions.c.client_key == new_client_key,
+                        brain_sessions.c.started_at == model.ended_at,
+                        brain_sessions.c.started_by_actor.like("relay:%"),
+                        brain_sessions.c.relayed_from_session_id.is_(None),
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return dict(found) if found is not None else None
+
     async def _replay_relay(
         self,
         session: AsyncSession,
@@ -1407,26 +1452,9 @@ class PgBrainSessionRepo(BasePgRepository):
         sent, the predecessor's end boundary and the `relay:` actor, so a wrong
         `new_client_key` finds nothing and is `terminal_conflict`.
         """
-        successor = (
-            (
-                await session.execute(
-                    sa.select(brain_sessions).where(
-                        sa.or_(
-                            brain_sessions.c.relayed_from_session_id == model.id,
-                            sa.and_(
-                                brain_sessions.c.project_key == model.project_key,
-                                brain_sessions.c.client_key == new_client_key,
-                                brain_sessions.c.started_at == model.ended_at,
-                                brain_sessions.c.started_by_actor.like("relay:%"),
-                                brain_sessions.c.relayed_from_session_id.is_(None),
-                            ),
-                        )
-                    )
-                )
-            )
-            .mappings()
-            .one_or_none()
-        )
+        successor = await self._find_slot_successor(session, model)
+        if successor is None:
+            successor = await self._find_base_successor(session, model, new_client_key)
         ledger = set(await self._load_session_artifact_ids(session, model.id))
         # The form is read from the lineage column, not the slot: a base successor may
         # have bound to a slot since, and its retried relay must still replay.
@@ -1720,13 +1748,23 @@ class PgBrainSessionRepo(BasePgRepository):
         project_key: str,
         *,
         for_update: bool = False,
+        for_no_key_update: bool = False,
     ) -> Row | None:
+        """Read the base focus, optionally locking its row.
+
+        `for_no_key_update` is for a writer that changes no key column and inserts a
+        `brain_sessions` row while holding the lock (the base relay): FOR UPDATE would
+        block the FK `KEY SHARE` a concurrent session insert needs on this row, and a
+        waiting insert on the same `client_key` then closes a cycle.
+        """
         stmt = sa.select(
             project_contexts.c.current_focus,
             project_contexts.c.focus_revision,
         ).where(project_contexts.c.project_key == project_key)
         if for_update:
             stmt = stmt.with_for_update()
+        elif for_no_key_update:
+            stmt = stmt.with_for_update(key_share=True)  # FOR NO KEY UPDATE
         row = (await session.execute(stmt)).mappings().one_or_none()
         return dict(row) if row is not None else None
 
