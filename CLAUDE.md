@@ -147,7 +147,7 @@ resume, or relay's `slot.revision`), never `started_focus_revision`. An unbound 
 relays onto the project base: it sends the BASE revision as `expected_focus_revision` (a
 successor sends relay's `focus_revision`), and a stale one refuses `focus_revision_conflict`
 and leaves the session open, where `end` would close it anyway. The handover REPLACES the
-whole base focus, so a handover under 70% of it is refused `base_focus_shrink`.
+whole base focus, so a handover under 70% of it is refused `base_focus_shrink`; a base relay's successor is linked by client_key and start boundary, not by relayed_from_session_id (the 060 CHECK keeps that column slot-only).
 
 The capture ledger is **exclusive**: an artifact belongs to one session only. The server
 requires the same project and a creation later than the session start. Provenance is

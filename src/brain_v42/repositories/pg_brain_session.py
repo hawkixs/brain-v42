@@ -1343,7 +1343,12 @@ class PgBrainSessionRepo(BasePgRepository):
         started_focus: str | None,
         started_focus_revision: int,
     ) -> Row:
-        """Insert the successor at the instant its predecessor ended; a taken key rolls back (S8)."""
+        """Insert the successor at the instant its predecessor ended; a taken key rolls back (S8).
+
+        A slot relay's successor names its predecessor in `relayed_from_session_id`; a base
+        relay's does not (see the comment at the insert), so its only link is that instant,
+        the `relay:` actor and the unique `new_client_key`, which `_replay_relay` reads.
+        """
         boundary = ended.ended_at or datetime.now(UTC)
         successor = (
             (
@@ -1355,7 +1360,10 @@ class PgBrainSessionRepo(BasePgRepository):
                         started_focus=started_focus,
                         started_focus_revision=started_focus_revision,
                         slot_id=slot_id,
-                        relayed_from_session_id=model.id,
+                        # Slot-only: the 060 CHECK `brain_sessions_relay_requires_slot`
+                        # refuses the column without a slot. A base relay's successor is
+                        # linked by `client_key` and the start boundary instead.
+                        relayed_from_session_id=model.id if slot_id is not None else None,
                         started_by_actor=f"relay:{initiator}",
                         started_at=boundary,
                         last_heartbeat_at=boundary,
@@ -1392,13 +1400,26 @@ class PgBrainSessionRepo(BasePgRepository):
         """S9: an equal payload returns the successor; anything else is terminal_conflict.
 
         The successor says which form this was: no slot, a base relay, whose
-        revision is the one the caller sent as `expected_focus_revision`.
+        revision is the one the caller sent as `expected_focus_revision`. A slot
+        successor is found by `relayed_from_session_id`; a base successor has none
+        (060's CHECK keeps that column slot-only) and is found by the key the caller
+        sent, the predecessor's end boundary and the `relay:` actor, so a wrong
+        `new_client_key` finds nothing and is `terminal_conflict`.
         """
         successor = (
             (
                 await session.execute(
                     sa.select(brain_sessions).where(
-                        brain_sessions.c.relayed_from_session_id == model.id
+                        sa.or_(
+                            brain_sessions.c.relayed_from_session_id == model.id,
+                            sa.and_(
+                                brain_sessions.c.project_key == model.project_key,
+                                brain_sessions.c.client_key == new_client_key,
+                                brain_sessions.c.started_at == model.ended_at,
+                                brain_sessions.c.started_by_actor.like("relay:%"),
+                                brain_sessions.c.slot_id.is_(None),
+                            ),
+                        )
                     )
                 )
             )

@@ -7,7 +7,6 @@ from uuid import UUID, uuid4
 
 import pytest
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
 
 from brain_v42.db.focus_slots import close_slot
 from brain_v42.db.tables import (
@@ -395,16 +394,6 @@ async def test_the_service_refuses_guard_mod_and_a_reused_key_before_any_write(
 
 # ─── the base relay: an unbound session relayed onto the project base (ticket 64ebd73a) ─────
 
-# `brain_sessions_relay_requires_slot` (migration 060) refuses ANY successor that carries
-# `relayed_from_session_id` without a slot, and the base relay's successor is unbound. The
-# tests that reach the successor insert fail on that CHECK until a migration relaxes it;
-# strict, so the day it lands they fail as XPASS and this marker has to go.
-needs_unbound_relay_check_relaxed = pytest.mark.xfail(
-    strict=True,
-    raises=IntegrityError,
-    reason="brain_sessions_relay_requires_slot refuses an unbound relay successor (060)",
-)
-
 
 async def set_base(factory, project: str, text: str) -> int:
     """Put `text` on the project base through a plain unbound end; return the new revision."""
@@ -433,7 +422,6 @@ async def base_history_sources(factory, project: str, revision: int) -> list[str
         )
 
 
-@needs_unbound_relay_check_relaxed
 async def test_a_base_relay_writes_the_base_and_starts_an_unbound_successor(
     session_factory, slot_project
 ):
@@ -457,7 +445,7 @@ async def test_a_base_relay_writes_the_base_and_starts_an_unbound_successor(
     assert (new["status"], new["slot_id"], new["relayed_from_session_id"]) == (
         "open",
         None,
-        session_id,
+        None,
     )
     assert (new["started_focus"], new["started_focus_revision"], new["started_by_actor"]) == (
         state[0],
@@ -470,7 +458,6 @@ async def test_a_base_relay_writes_the_base_and_starts_an_unbound_successor(
     ]
 
 
-@needs_unbound_relay_check_relaxed
 async def test_a_base_relay_captures_the_named_knowledge(session_factory, slot_project):
     revision = await set_base(session_factory, slot_project, "base")
     session_id, key = await started(session_factory, slot_project)
@@ -489,7 +476,7 @@ async def test_a_base_relay_captures_the_named_knowledge(session_factory, slot_p
     [
         "stale",
         "shrink",
-        pytest.param("client_key", marks=needs_unbound_relay_check_relaxed),
+        "client_key",
         "capture",
     ],
 )
@@ -515,14 +502,15 @@ async def test_a_refused_base_relay_mutates_nothing_and_leaves_the_session_open(
     else:
         overrides["knowledge_ids"] = [uuid4()]
     before = await base_state(session_factory, slot_project)
+    sessions_before = await project_sessions(session_factory, slot_project)
     with pytest.raises((FocusSlotError, BrainSessionInputError), match=code):
         await base_relay(session_factory, session_id, key, revision, **overrides)
     assert await base_state(session_factory, slot_project) == before
     assert (await row(session_factory, session_id))["status"] == "open"
-    assert await successors(session_factory, session_id) == []
+    # A base successor has no `relayed_from_session_id`: compare the project's sessions.
+    assert await project_sessions(session_factory, slot_project) == sessions_before
 
 
-@needs_unbound_relay_check_relaxed
 async def test_the_shrink_refusal_gives_both_lengths_and_the_operator_may_override_it(
     session_factory, slot_project
 ):
@@ -541,7 +529,6 @@ async def test_the_shrink_refusal_gives_both_lengths_and_the_operator_may_overri
     assert (await base_state(session_factory, slot_project))[:2] == ("short", revision + 2)
 
 
-@needs_unbound_relay_check_relaxed
 async def test_a_base_relay_replays_and_any_other_payload_is_terminal_conflict(
     session_factory, slot_project
 ):
@@ -549,11 +536,12 @@ async def test_a_base_relay_replays_and_any_other_payload_is_terminal_conflict(
     session_id, key = await started(session_factory, slot_project)
     first = await base_relay(session_factory, session_id, key, revision, new_client_key="succ-b")
     state = await base_state(session_factory, slot_project)
+    sessions_after = await project_sessions(session_factory, slot_project)
     again = await base_relay(session_factory, session_id, key, revision, new_client_key="succ-b")
     assert (again.replayed, again.session.id, again.slot) == (True, first.session.id, None)
     assert again.focus_revision == first.focus_revision == revision + 1
     assert await base_state(session_factory, slot_project) == state
-    assert await successors(session_factory, session_id) == [first.session.id]
+    assert await project_sessions(session_factory, slot_project) == sessions_after
     for change in (
         {"expected_focus_revision": revision + 1},
         {"handover": "another"},
@@ -563,3 +551,20 @@ async def test_a_base_relay_replays_and_any_other_payload_is_terminal_conflict(
             await base_relay(
                 session_factory, session_id, key, revision, new_client_key="succ-b", **change
             )
+
+
+async def test_a_base_relay_successor_has_no_relayed_from_and_is_found_by_its_key(
+    session_factory, slot_project
+):
+    revision = await set_base(session_factory, slot_project, "base")
+    session_id, key = await started(session_factory, slot_project)
+    first = await base_relay(session_factory, session_id, key, revision, new_client_key="succ-l")
+    successor = await row(session_factory, first.session.id)
+    # The 060 CHECK keeps `relayed_from_session_id` slot-only: the link is key + boundary.
+    assert (successor["relayed_from_session_id"], successor["slot_id"]) == (None, None)
+    assert await successors(session_factory, session_id) == []
+    assert successor["started_at"] == (await row(session_factory, session_id))["ended_at"]
+    again = await base_relay(session_factory, session_id, key, revision, new_client_key="succ-l")
+    assert (again.replayed, again.session.id) == (True, first.session.id)
+    with pytest.raises(FocusSlotError, match="^terminal_conflict: "):
+        await base_relay(session_factory, session_id, key, revision, new_client_key="other-key")
