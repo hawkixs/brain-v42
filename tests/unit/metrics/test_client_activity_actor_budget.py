@@ -168,3 +168,49 @@ class TestAnExpiredConnectionFreesItsBudget:
         rows = _rows(registry, "red-rail")
         assert [row["kind"] for row in rows] == ["transport"]
         assert registry.eviction_counters()["folded_observations_total"] == 2
+
+
+class TestRelabellingAConnectionDoesNotBypassTheBudget:
+    """A connection's actor comes from a header read on every request.
+
+    Independent review of PR #286 (codex, ha judge 20261004T174000-7b41b7ce): an
+    existing transport row skipped the budget check while its actor was
+    overwritten, so a client rotating two labels over reused connections moved
+    rows from one budget to the other without bound.
+    """
+
+    def test_a_connection_relabelled_to_an_actor_at_its_budget_folds(self) -> None:
+        registry = _registry(_Clock())
+        registry.record_observations(_connections("actor-a", MAX_TRANSPORT_ROWS_PER_ACTOR))
+        registry.record_observations(
+            _connections("actor-b", MAX_TRANSPORT_ROWS_PER_ACTOR, first=100)
+        )
+        relabelled = tuple(
+            ClientObservation(actor="actor-a", session_id=None, calls=1, transport=obs.transport)
+            for obs in _connections("actor-b", MAX_TRANSPORT_ROWS_PER_ACTOR, first=100)
+        )
+        registry.record_observations(relabelled)
+
+        rows_a = _rows(registry, "actor-a")
+        assert [row["kind"] for row in rows_a].count("transport") == MAX_TRANSPORT_ROWS_PER_ACTOR
+        assert (
+            _calls(rows_a) + _calls(_rows(registry, "actor-b")) == 3 * MAX_TRANSPORT_ROWS_PER_ACTOR
+        )
+
+    def test_rotating_two_labels_over_new_connections_evicts_nothing(self) -> None:
+        registry = _registry(_Clock())
+        registry.record_observations(_connections("brain-v42", 4, first=10_000))
+        for index in range(135):
+            transport = f"{index:032x}"
+            for actor in ("actor-b", "actor-a"):
+                registry.record_observations(
+                    (ClientObservation(actor=actor, session_id=None, calls=1, transport=transport),)
+                )
+
+        counters = registry.eviction_counters()
+        assert counters["evictions_bearing_total"] == 0
+        for actor in ("actor-a", "actor-b"):
+            kinds = [row["kind"] for row in _rows(registry, actor)]
+            assert kinds.count("transport") <= MAX_TRANSPORT_ROWS_PER_ACTOR
+        assert _calls(_rows(registry, "actor-a")) + _calls(_rows(registry, "actor-b")) == 270
+        assert _calls(_rows(registry, "brain-v42")) == 4

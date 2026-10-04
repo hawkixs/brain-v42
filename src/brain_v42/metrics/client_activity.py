@@ -579,15 +579,20 @@ class ClientActivityRegistry:
                     key = self._session_key(observation.session_id)
                 elif observation.transport is not None:
                     key = self._transport_key(observation.transport)
-                    # A NEW connection of an actor already at its budget folds
-                    # into that actor's residual row, calls included. A
-                    # connection that already has its row keeps accumulating
-                    # on it: only creation is bounded. The prune above has
+                    # A connection NEW TO THIS ACTOR, when the actor is already
+                    # at its budget, folds into the actor's residual row, calls
+                    # included. A connection that already has its row under
+                    # this actor keeps accumulating on it: only creation is
+                    # bounded. "New to this actor" includes a known connection
+                    # now declaring another label (the actor is read from a
+                    # header on every request): taking it over is a creation
+                    # for the new actor, or relabelling would move rows from
+                    # one budget to another without bound. The prune above has
                     # already expired stale rows, so they free their budget.
-                    if (
-                        key not in brain
-                        and self._transport_rows(brain, actor) >= MAX_TRANSPORT_ROWS_PER_ACTOR
-                    ):
+                    held = brain.get(key)
+                    if (held is None or held.actor != actor) and self._transport_rows(
+                        brain, actor
+                    ) >= MAX_TRANSPORT_ROWS_PER_ACTOR:
                         key = f"{_ACTOR_KEY_PREFIX}{actor}"
                         self._folded += 1
                 else:
