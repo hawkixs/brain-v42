@@ -50,6 +50,10 @@ def _is_compliant(
             or any("fixture" in ast.unparse(d) for d in node.decorator_list)
         ):
             params |= {arg.arg for arg in node.args.args + node.args.kwonlyargs}
+    # The shared engine taken by ANY test or fixture of the module disqualifies it,
+    # whatever its `session_factory` is: naming the private head is not using it.
+    if "engine" in params:
+        return False
     for node in tree.body:
         if isinstance(node, ast.ImportFrom):
             aliases.update({a.asname or a.name: f"{node.module}.{a.name}" for a in node.names})
@@ -208,3 +212,36 @@ def test_modules_that_do_not_mention_slots_are_not_asked_anything() -> None:
         slot_module_problems({"tests.integration.db.test_other": "async def test_it(engine): ..."})
         == []
     )
+
+
+_PRIVATE_NAME_SHARED_BODY = """
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+@pytest_asyncio.fixture
+async def session_factory(private_head_engine, engine):
+    return async_sessionmaker(engine)
+
+focus_slots = 1
+"""
+
+_ALIASED_PLUS_SHARED_ENGINE = (
+    _ALIASED
+    + """
+async def test_also_on_the_shared_head(engine):
+    focus_slots = 1
+"""
+)
+
+
+def test_a_private_override_that_also_takes_the_shared_engine_is_refused() -> None:
+    """Independent review of #287: naming the private head is not using it."""
+    problems = slot_module_problems({_SIDECAR: _PRIVATE_NAME_SHARED_BODY})
+    assert len(problems) == 1 and problems[0].startswith(_SIDECAR)
+
+
+def test_an_alias_does_not_excuse_a_test_on_the_shared_engine() -> None:
+    problems = slot_module_problems(
+        {_BASE: _PRIVATE_FIXTURE + "focus_slots = 1", _SIDECAR: _ALIASED_PLUS_SHARED_ENGINE}
+    )
+    assert len(problems) == 1 and problems[0].startswith(_SIDECAR)
