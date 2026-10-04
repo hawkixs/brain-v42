@@ -151,6 +151,22 @@ class TestBrainSetProjectContext:
         assert "Project context set" in result
         assert "my-proj" in result
 
+    async def test_a_relative_scan_path_is_still_refused_on_write(
+        self, tools: tuple[dict[str, Any], AsyncMock]
+    ) -> None:
+        """The read side tolerates a legacy value (ticket 2f913741); writes do not."""
+        registered, svc = tools
+
+        with pytest.raises(ValidationError, match="must be absolute"):
+            await registered["brain_set_project_context"](
+                project_key="my-proj",
+                name="My Project",
+                description="A test project",
+                plan_scan_paths=["docs/plans"],
+            )
+
+        svc.get_or_create.assert_not_called()
+
     async def test_calls_get_or_create_with_correct_fields(
         self, tools: tuple[dict[str, Any], AsyncMock]
     ) -> None:
