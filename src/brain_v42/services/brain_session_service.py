@@ -85,7 +85,9 @@ class BrainSessionRepository(Protocol):
         *,
         summary: str,
         handover: str,
-        expected_slot_revision: int,
+        expected_slot_revision: int | None,
+        expected_focus_revision: int | None,
+        allow_focus_shrink: bool,
         new_client_key: str,
         initiator: str,
         knowledge_ids: list[UUID],
@@ -328,13 +330,20 @@ class BrainSessionService:
         *,
         summary: str,
         handover: str,
-        expected_slot_revision: int,
+        expected_slot_revision: int | None = None,
+        expected_focus_revision: int | None = None,
+        allow_focus_shrink: bool = False,
         new_client_key: str,
         initiator: str,
         knowledge_ids: Sequence[UUID] | None = None,
         nothing_to_capture_reason: str | None = None,
     ) -> BrainSessionRelayResult:
-        """End a bound session and start its successor on the same slot (spec §4).
+        """End a session onto its slot, or onto the project base, and start its successor.
+
+        A bound session sends `expected_slot_revision` and the handover becomes its
+        slot body (spec §4); an unbound one sends `expected_focus_revision` and the
+        handover becomes the BASE focus. Which one the session needs is the
+        repository's to say, it alone has read the row: here exactly one is required.
 
         Before the transaction, in this order: the guard-mod flag (S10), the
         inputs and the new-key rule, then derived capture absorbed into the OLD
@@ -347,6 +356,18 @@ class BrainSessionService:
                 "relay_guard_mod_disabled",
                 "a guard mod relays only while BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED is true",
             )
+        if allow_focus_shrink and initiator == "guard_mod":
+            raise FocusSlotError(
+                "relay_shrink_override_operator_only",
+                "allow_focus_shrink is an operator decision: a guard mod relay must carry the "
+                "durable base content over instead of overriding the shrink guard",
+            )
+        if (expected_slot_revision is None) == (expected_focus_revision is None):
+            raise FocusSlotError(
+                "relay_expects_one_revision",
+                "send exactly one revision: expected_slot_revision for a session bound to a "
+                "slot, expected_focus_revision (the BASE revision) for an unbound session",
+            )
         identity = _normalize_expected_client_key(expected_client_key)
         successor_key = _normalize_required(
             new_client_key, field_name="new_client_key", max_length=CLIENT_KEY_MAX_LENGTH
@@ -358,8 +379,15 @@ class BrainSessionService:
         # No bound here, as in `end`: the 10,000-character summary cap is the
         # tool argument's (`SummaryArg`), one lifecycle contract for both doors.
         normalized_summary = _normalize_required(summary, field_name="summary")
-        normalized_handover = slot_body(handover, field_name="handover")
-        _validate_revision(expected_slot_revision, field_name="expected_slot_revision")
+        # A slot body is bounded at 4,000 characters. The base is not bounded here, as in
+        # `end`: the 10,000-character cap is the tool argument's.
+        if expected_slot_revision is not None:
+            normalized_handover = slot_body(handover, field_name="handover")
+            _validate_revision(expected_slot_revision, field_name="expected_slot_revision")
+        else:
+            normalized_handover = _normalize_required(handover, field_name="handover")
+            assert expected_focus_revision is not None
+            _validate_revision(expected_focus_revision)
         captured = _normalize_captured_ids(knowledge_ids) or []
         reason = _normalize_capture_reason(nothing_to_capture_reason)
         await self._absorb_derived(session_id, identity)
@@ -369,6 +397,8 @@ class BrainSessionService:
             summary=normalized_summary,
             handover=normalized_handover,
             expected_slot_revision=expected_slot_revision,
+            expected_focus_revision=expected_focus_revision,
+            allow_focus_shrink=allow_focus_shrink,
             new_client_key=successor_key,
             initiator=initiator,
             knowledge_ids=captured,

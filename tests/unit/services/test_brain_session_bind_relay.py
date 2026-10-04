@@ -138,3 +138,72 @@ async def test_a_bad_slot_revision_is_refused_before_the_repository(monkeypatch,
     with pytest.raises(BrainSessionInputError, match="expected_slot_revision"):
         await _relay(BrainSessionService(repo), expected_slot_revision=revision)
     repo.relay.assert_not_awaited()
+
+
+_NO_SLOT_REVISION = {"expected_slot_revision": None}
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"expected_slot_revision": None},
+        {"expected_slot_revision": 3, "expected_focus_revision": 5},
+    ],
+    ids=["neither", "both"],
+)
+async def test_a_relay_names_exactly_one_revision_before_the_repository(
+    monkeypatch, overrides
+) -> None:
+    _flag(monkeypatch, False)
+    repo = _relay_repo()
+    with pytest.raises(FocusSlotError, match="^relay_expects_one_revision: "):
+        await _relay(BrainSessionService(repo), **overrides)
+    repo.relay.assert_not_awaited()
+
+
+async def test_the_base_form_forwards_the_focus_revision_and_lifts_the_slot_bound(
+    monkeypatch,
+) -> None:
+    _flag(monkeypatch, False)
+    repo = _relay_repo()
+    await _relay(
+        BrainSessionService(repo),
+        handover="é" * 4001,  # past a slot body, still a legal base focus
+        expected_focus_revision=5,
+        **_NO_SLOT_REVISION,
+    )
+    kwargs = repo.relay.await_args.kwargs
+    assert (kwargs["expected_slot_revision"], kwargs["expected_focus_revision"]) == (None, 5)
+    assert kwargs["allow_focus_shrink"] is False
+
+
+@pytest.mark.parametrize("revision", [-1, True, "5"])
+async def test_a_bad_focus_revision_is_refused_before_the_repository(monkeypatch, revision) -> None:
+    _flag(monkeypatch, False)
+    repo = _relay_repo()
+    with pytest.raises(BrainSessionInputError, match="expected_focus_revision"):
+        await _relay(
+            BrainSessionService(repo), expected_focus_revision=revision, **_NO_SLOT_REVISION
+        )
+    repo.relay.assert_not_awaited()
+
+
+async def test_the_shrink_override_is_the_operators_alone(monkeypatch) -> None:
+    _flag(monkeypatch, True)
+    repo = _relay_repo()
+    with pytest.raises(FocusSlotError, match="^relay_shrink_override_operator_only: "):
+        await _relay(
+            BrainSessionService(repo),
+            initiator="guard_mod",
+            allow_focus_shrink=True,
+            expected_focus_revision=5,
+            **_NO_SLOT_REVISION,
+        )
+    repo.relay.assert_not_awaited()
+    await _relay(
+        BrainSessionService(repo),
+        allow_focus_shrink=True,
+        expected_focus_revision=5,
+        **_NO_SLOT_REVISION,
+    )
+    assert repo.relay.await_args.kwargs["allow_focus_shrink"] is True

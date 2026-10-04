@@ -128,6 +128,10 @@ FocusArg = Annotated[
 #: handover: 4,000 CHARACTERS (Q4), like `NEXT_FOCUS_MAX_LENGTH` counted in
 #: characters, a separate contract from the base cap.
 SlotBodyArg = Annotated[str, Field(min_length=1, max_length=SLOT_BODY_MAX_LENGTH)]
+#: A relay handover is a slot body for a bound session (4,000, checked by the service
+#: once the form is known) and the whole BASE focus for an unbound one: the argument
+#: carries the larger of the two, the base's, exactly as `end`'s `next_focus` does.
+RelayHandoverArg = Annotated[str, Field(min_length=1, max_length=NEXT_FOCUS_MAX_LENGTH)]
 ReasonArg = Annotated[str, Field(min_length=1, max_length=2_000)]
 FocusRevisionArg = Annotated[int, Field(ge=0, strict=True)]
 ListLimitArg = Annotated[int, Field(ge=1, le=100)]
@@ -322,26 +326,40 @@ def register_session_lifecycle_tools(
         session_id: UUID,
         expected_client_key: ExpectedClientKeyArg,
         summary: SummaryArg,
-        handover: SlotBodyArg,
-        expected_slot_revision: FocusRevisionArg,
+        handover: RelayHandoverArg,
         new_client_key: ClientKeyArg,
         initiator: RelayInitiator,
+        expected_slot_revision: FocusRevisionArg | None = None,
+        expected_focus_revision: FocusRevisionArg | None = None,
+        allow_focus_shrink: bool = False,
         knowledge_ids: RelayKnowledgeIdsArg | None = None,
         nothing_to_capture_reason: ReasonArg | None = None,
     ) -> BrainSessionRelayResult:
-        """Relay a bound session onto its slot: capture, end and start its successor at once.
+        """Relay an open session onto its slot, or its project base: capture, end, restart.
 
         One transaction: the named `knowledge_ids` are captured into the old session,
-        the `handover` becomes the slot body under a compare-and-swap on
-        `expected_slot_revision`, the old session ends, and a successor opens on the
-        same slot under `new_client_key`; its briefing follows. A closed slot or a
-        stale revision changes nothing and leaves the session open. An equal replay
-        returns the same successor with `replayed = true`; any other payload on an
-        ended session is `terminal_conflict`. Work without an anchor cannot be
-        relayed (`relay_requires_slot`): give it a slot first. The successor's next
-        end or relay must send `result.slot.revision` as its expected revision: for
-        a bound session it is the SLOT revision (from bind, resume, or relay's
-        `slot.revision`), never `started_focus_revision`.
+        the `handover` is written under a compare-and-swap, the old session ends, and
+        a successor opens under `new_client_key`; its briefing follows. Two forms,
+        and exactly one revision per call.
+
+        Bound session: send `expected_slot_revision`; the `handover` (at most 4,000
+        characters) becomes the slot body and the successor stays on the slot. A
+        closed slot or a stale revision changes nothing and leaves the session open.
+
+        Unbound session: send `expected_focus_revision`, the BASE revision; the
+        `handover` becomes the project's whole base focus and the successor is
+        unbound. A stale revision (`focus_revision_conflict`) changes nothing and
+        leaves the session open, unlike `end`, which closes anyway. SHRINK GUARD: a
+        handover under 70% of the current base focus is refused (`base_focus_shrink`,
+        both lengths in the message), because it REPLACES the whole base: carry the
+        durable content over. Only an operator relay may pass `allow_focus_shrink =
+        true`; a guard mod never can.
+
+        An equal replay returns the same successor with `replayed = true`; any other
+        payload on an ended session is `terminal_conflict`. The successor's next end
+        or relay sends `result.slot.revision` (bound: the SLOT revision, from bind,
+        resume, or relay) or `result.focus_revision` (unbound: the new BASE revision),
+        never `started_focus_revision` for a bound one.
 
         A guard mod the operator explicitly enabled may make this call as a standing
         user command, and only this one (Amendment — slot relay (ADR #34)); with
@@ -358,6 +376,8 @@ def register_session_lifecycle_tools(
             summary=summary,
             handover=handover,
             expected_slot_revision=expected_slot_revision,
+            expected_focus_revision=expected_focus_revision,
+            allow_focus_shrink=allow_focus_shrink,
             new_client_key=new_client_key,
             initiator=initiator,
             knowledge_ids=knowledge_ids,

@@ -75,9 +75,12 @@ LIGHTWEIGHT_OUTPUT_SCHEMA_TOOLS = frozenset(
 # Bumped by brain_session_bind (ADR #34), MEASURED: +352 on both sides — an unoptimized
 # tool raises the baseline by exactly what it raises the total, so the margin stays 35.
 # Bumped by brain_session_relay (ADR #34), MEASURED: +4287 on both sides; the margin stays 35.
+# Bumped by `BrainSessionRelayResult.slot` becoming optional and `focus_revision` (ticket 64ebd73a,
+# the base relay), MEASURED: +317 on both sides, the relay tool being an unoptimized one; the
+# margin stays 35 and the floor below does not move.
 # Bumped by `BrainSessionResumeResult.slot_closed` (ticket 16d3cf2f), MEASURED in situ: +49,
 # paid by the floor below, not by the margin.
-OUTPUT_SCHEMA_TOTAL = 10_139 + 352 + 4_287 + 49
+OUTPUT_SCHEMA_TOTAL = 10_139 + 352 + 4_287 + 317 + 49
 # Lowered from 10_000 to 9_500: the floor had been set against a THREE-state
 # machine, and the fourth state costs 600 bytes on its own — only 554 of margin
 # were left. The loosened floor is still a floor: the effective saving is 9_660
@@ -265,9 +268,13 @@ async def test_discovery_contract_keeps_tool_identity_inputs_and_schema_budget()
         "brain_session_resume": 2777,
         "brain_session_abandon": 2621,
         "brain_session_bind": 352,
-        "brain_session_relay": 4287,
+        "brain_session_relay": 4604,
     }
-    assert sum(baseline_lengths.values()) == baseline["output_schema_total"] == 19674 + 352 + 4287
+    assert (
+        sum(baseline_lengths.values())
+        == baseline["output_schema_total"]
+        == 19674 + 352 + 4287 + 317
+    )
     _assert_output_schema_presence(output_schemas)
     assert sum(final_lengths.values()) == OUTPUT_SCHEMA_TOTAL
     assert sum(final_lengths.values()) <= (

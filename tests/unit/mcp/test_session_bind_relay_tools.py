@@ -62,6 +62,8 @@ async def test_relay_forwards_then_adds_the_successor_briefing() -> None:
         summary="s",
         handover="h",
         expected_slot_revision=2,
+        expected_focus_revision=None,
+        allow_focus_shrink=False,
         new_client_key="new",
         initiator="guard_mod",
         knowledge_ids=[knowledge_id],
@@ -76,7 +78,16 @@ async def test_relay_schema_bounds_and_annotations() -> None:
     server, _, _ = _server()
     tool = await server.get_tool("brain_session_relay")
     properties = tool.parameters["properties"]
-    assert properties["handover"]["maxLength"] == 4000
+    # The base form's cap (`NEXT_FOCUS_MAX_LENGTH`); the slot form's 4,000 is the service's.
+    assert properties["handover"]["maxLength"] == 10_000
+    assert tool.parameters["required"] == [
+        "session_id",
+        "expected_client_key",
+        "summary",
+        "handover",
+        "new_client_key",
+        "initiator",
+    ]
     assert properties["summary"]["maxLength"] == 10_000
     assert properties["new_client_key"]["maxLength"] == 128
     assert properties["initiator"]["enum"] == ["operator", "guard_mod"]
@@ -101,6 +112,27 @@ async def test_relay_refuses_oversized_summary_and_handover() -> None:
     with pytest.raises(ValidationError):
         await tool.run(arguments)
     arguments["summary"] = "s"
-    arguments["handover"] = "h" * 4_001
+    arguments["handover"] = "h" * 10_001
     with pytest.raises(ValidationError):
         await tool.run(arguments)
+
+
+async def test_relay_forwards_the_base_form_and_the_shrink_override() -> None:
+    server, service, _ = _server()
+    result = MagicMock()
+    result.session.project_key = "brain-v42"
+    service.relay = AsyncMock(return_value=result)
+    tool = await server.get_tool("brain_session_relay")
+    await tool.fn(
+        session_id=uuid4(),
+        expected_client_key="old",
+        summary="s",
+        handover="h",
+        expected_focus_revision=7,
+        allow_focus_shrink=True,
+        new_client_key="new",
+        initiator="operator",
+    )
+    forwarded = service.relay.await_args.kwargs
+    assert (forwarded["expected_slot_revision"], forwarded["expected_focus_revision"]) == (None, 7)
+    assert forwarded["allow_focus_shrink"] is True

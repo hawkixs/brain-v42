@@ -1091,21 +1091,29 @@ class PgBrainSessionRepo(BasePgRepository):
         *,
         summary: str,
         handover: str,
-        expected_slot_revision: int,
+        expected_slot_revision: int | None,
+        expected_focus_revision: int | None,
+        allow_focus_shrink: bool,
         new_client_key: str,
         initiator: str,
         knowledge_ids: Sequence[UUID],
         nothing_to_capture_reason: str | None,
     ) -> BrainSessionRelayResult:
-        """End a bound session onto its slot and start its successor, in ONE transaction.
+        """End a session onto its slot or, unbound, onto the BASE, and start its successor.
 
-        Spec §4. Lock order: the old session row, then the slot; the base is read
+        Spec §4. A bound session sends `expected_slot_revision`, an unbound one
+        `expected_focus_revision`: the row says which, and the other one, or both,
+        or neither, is refused naming what to send (`relay_expects_*_revision`).
+
+        Slot form. Lock order: the old session row, then the slot; the base is read
         without a lock. Unlike `end`, a closed slot or a stale revision mutates
         nothing and leaves the session open (S8): closing would lose the handover,
         and with one open session per slot a conflict means a stale client that
         re-reads and retries. An ended session takes the replay path (S9). The
         slot is locked BEFORE the successor takes its `slot_id`, as `bind` does:
         `uq_brain_sessions_open_slot` stays the last word, never the only guard.
+
+        Base form: see `_relay_base`.
         """
         capture_ids = sorted(knowledge_ids, key=str)
         self._validate_capture_ids(capture_ids, require_nonempty=False)
@@ -1121,7 +1129,8 @@ class PgBrainSessionRepo(BasePgRepository):
                     model,
                     summary=summary,
                     handover=handover,
-                    expected=expected_slot_revision,
+                    expected_slot_revision=expected_slot_revision,
+                    expected_focus_revision=expected_focus_revision,
                     new_client_key=new_client_key,
                     knowledge_ids=capture_ids,
                 )
@@ -1131,10 +1140,30 @@ class PgBrainSessionRepo(BasePgRepository):
                 )
             slot_id = row.get("slot_id")
             if slot_id is None:
+                if expected_focus_revision is None or expected_slot_revision is not None:
+                    raise FocusSlotError(
+                        "relay_expects_focus_revision",
+                        f"session {model.id} is not bound to a focus slot: it relays onto the "
+                        "project base, so send expected_focus_revision (the BASE revision) and "
+                        "no expected_slot_revision",
+                    )
+                return await self._relay_base(
+                    session,
+                    model,
+                    summary=summary,
+                    handover=handover,
+                    expected_focus_revision=expected_focus_revision,
+                    allow_focus_shrink=allow_focus_shrink,
+                    new_client_key=new_client_key,
+                    initiator=initiator,
+                    capture_ids=capture_ids,
+                    nothing_to_capture_reason=nothing_to_capture_reason,
+                )
+            if expected_slot_revision is None or expected_focus_revision is not None:
                 raise FocusSlotError(
-                    "relay_requires_slot",
-                    f"session {model.id} is not bound to a focus slot: work without an anchor "
-                    "cannot be relayed; bind it to a slot, or end it explicitly",
+                    "relay_expects_slot_revision",
+                    f"session {model.id} is bound to slot {slot_id}: send expected_slot_revision "
+                    "(the SLOT revision) and no expected_focus_revision",
                 )
             slot = await lock_slot(session, slot_id)
             if slot is None:
@@ -1152,19 +1181,7 @@ class PgBrainSessionRepo(BasePgRepository):
                     f"slot {slot_id} is at revision {slot['revision']}, "
                     f"not {expected_slot_revision}",
                 )
-            # ONE locking pass over everything this relay will name or already
-            # holds: two passes, each ordered, would not be ordered together
-            # (ticket d85b4f66). What `_attach_captures` and the final check
-            # validate again below is already held, so they wait for nothing.
-            prior_ledger = await self._load_session_artifact_ids(session, model.id)
-            every_id = sorted({*prior_ledger, *capture_ids}, key=str)
-            if every_id:
-                await self._validate_captures(session, model, every_id)
-            if capture_ids:
-                await self._attach_captures(session, model, capture_ids)
-            ledger = await self._load_session_artifact_ids(session, model.id)
-            if ledger:
-                await self._validate_captures(session, model, ledger)
+            ledger = await self._relay_ledger(session, model, capture_ids)
             updated = await cas_slot_body(
                 session, slot_id=slot_id, expected=expected_slot_revision, body=handover
             )
@@ -1193,40 +1210,16 @@ class PgBrainSessionRepo(BasePgRepository):
             base = await self._load_focus(session, model.project_key)
             if base is None:
                 raise BrainSessionNotFoundError(f"Project {model.project_key!r} was not found")
-            boundary = ended.ended_at or datetime.now(UTC)
-            successor = (
-                (
-                    await session.execute(
-                        pg_insert(brain_sessions)
-                        .values(
-                            project_key=model.project_key,
-                            client_key=new_client_key,
-                            started_focus=base["current_focus"],
-                            started_focus_revision=base["focus_revision"],
-                            slot_id=slot_id,
-                            relayed_from_session_id=model.id,
-                            started_by_actor=f"relay:{initiator}",
-                            started_at=boundary,
-                            last_heartbeat_at=boundary,
-                        )
-                        .on_conflict_do_nothing(
-                            index_elements=[
-                                brain_sessions.c.project_key,
-                                brain_sessions.c.client_key,
-                            ]
-                        )
-                        .returning(brain_sessions)
-                    )
-                )
-                .mappings()
-                .one_or_none()
+            successor = await self._start_relay_successor(
+                session,
+                model,
+                ended,
+                new_client_key=new_client_key,
+                initiator=initiator,
+                slot_id=slot_id,
+                started_focus=base["current_focus"],
+                started_focus_revision=base["focus_revision"],
             )
-            if successor is None:  # raising rolls the whole relay back (S8)
-                raise FocusSlotError(
-                    "client_key_conflict",
-                    f"client_key {new_client_key!r} already names a session of "
-                    f"{model.project_key}; choose a new one",
-                )
             anchors = await load_anchors(session, [slot_id])
             return BrainSessionRelayResult(
                 ended_session_id=model.id,
@@ -1235,6 +1228,155 @@ class PgBrainSessionRepo(BasePgRepository):
                 replayed=False,
             )
 
+    async def _relay_base(
+        self,
+        session: AsyncSession,
+        model: BrainSession,
+        *,
+        summary: str,
+        handover: str,
+        expected_focus_revision: int,
+        allow_focus_shrink: bool,
+        new_client_key: str,
+        initiator: str,
+        capture_ids: Sequence[UUID],
+        nothing_to_capture_reason: str | None,
+    ) -> BrainSessionRelayResult:
+        """Relay an unbound session onto the project BASE (ticket 64ebd73a, ADR #34).
+
+        Lock order: the session row (held by `relay`), then `project_contexts` FOR
+        UPDATE, as an unbound `end` does. The handover REPLACES the whole base, so
+        the two refusals that guard it mutate nothing and leave the session open:
+        a stale revision is the slot relay's semantics (S8), deliberately NOT
+        `end`'s "close anyway, record a conflict", which would lose the handover;
+        and a handover under 70% of the current base is refused as a destructive
+        shrink (ticket 91faa1a8) unless the OPERATOR passes `allow_focus_shrink`.
+
+        The history row keeps the source `session_end`: `project_focus_history`'s
+        CHECK has no `session_relay`, and a new source is a migration.
+        """
+        base = await self._load_focus(session, model.project_key, for_update=True)
+        if base is None:
+            raise BrainSessionNotFoundError(f"Project {model.project_key!r} was not found")
+        if base["focus_revision"] != expected_focus_revision:
+            raise FocusSlotError(
+                "focus_revision_conflict",
+                f"the base focus of {model.project_key} is at revision {base['focus_revision']}, "
+                f"not {expected_focus_revision}: re-read it and retry",
+            )
+        current_length = len(base["current_focus"] or "")
+        if not allow_focus_shrink and len(handover.strip()) * 10 < current_length * 7:
+            raise FocusSlotError(
+                "base_focus_shrink",
+                f"the handover has {len(handover.strip())} characters against {current_length} "
+                "in the current base focus. The handover REPLACES the whole base focus: carry "
+                "the durable content over, or have the operator pass allow_focus_shrink",
+            )
+        ledger = await self._relay_ledger(session, model, capture_ids)
+        focus, outcome = await self._apply_focus_if_current(
+            session,
+            base,
+            project_key=model.project_key,
+            next_focus=handover,
+            expected_revision=expected_focus_revision,
+        )
+        if outcome is not BrainSessionFocusOutcome.APPLIED:  # held under its own lock
+            raise BrainSessionStateError(f"project {model.project_key!r} focus moved under lock")
+        ended = await self._mark_ended(
+            session,
+            model.id,
+            summary,
+            handover,
+            ledger,
+            nothing_to_capture_reason,
+            expected_focus_revision=expected_focus_revision,
+            focus_outcome=outcome,
+            focus_at_end=focus["current_focus"],
+            focus_revision_at_end=focus["focus_revision"],
+        )
+        successor = await self._start_relay_successor(
+            session,
+            model,
+            ended,
+            new_client_key=new_client_key,
+            initiator=initiator,
+            slot_id=None,
+            started_focus=focus["current_focus"],
+            started_focus_revision=focus["focus_revision"],
+        )
+        return BrainSessionRelayResult(
+            ended_session_id=model.id,
+            session=self._to_model(successor, attributed_ids=[]),
+            focus_revision=int(focus["focus_revision"]),
+            replayed=False,
+        )
+
+    async def _relay_ledger(
+        self, session: AsyncSession, model: BrainSession, capture_ids: Sequence[UUID]
+    ) -> builtins.list[UUID]:
+        """Attach what this relay names and return the whole ledger, in ONE locking pass.
+
+        Two passes, each ordered, would not be ordered together (ticket d85b4f66).
+        What `_attach_captures` and the final check validate again is already held,
+        so they wait for nothing.
+        """
+        prior_ledger = await self._load_session_artifact_ids(session, model.id)
+        every_id = sorted({*prior_ledger, *capture_ids}, key=str)
+        if every_id:
+            await self._validate_captures(session, model, every_id)
+        if capture_ids:
+            await self._attach_captures(session, model, capture_ids)
+        ledger = await self._load_session_artifact_ids(session, model.id)
+        if ledger:
+            await self._validate_captures(session, model, ledger)
+        return ledger
+
+    async def _start_relay_successor(
+        self,
+        session: AsyncSession,
+        model: BrainSession,
+        ended: BrainSession,
+        *,
+        new_client_key: str,
+        initiator: str,
+        slot_id: UUID | None,
+        started_focus: str | None,
+        started_focus_revision: int,
+    ) -> Row:
+        """Insert the successor at the instant its predecessor ended; a taken key rolls back (S8)."""
+        boundary = ended.ended_at or datetime.now(UTC)
+        successor = (
+            (
+                await session.execute(
+                    pg_insert(brain_sessions)
+                    .values(
+                        project_key=model.project_key,
+                        client_key=new_client_key,
+                        started_focus=started_focus,
+                        started_focus_revision=started_focus_revision,
+                        slot_id=slot_id,
+                        relayed_from_session_id=model.id,
+                        started_by_actor=f"relay:{initiator}",
+                        started_at=boundary,
+                        last_heartbeat_at=boundary,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=[brain_sessions.c.project_key, brain_sessions.c.client_key]
+                    )
+                    .returning(brain_sessions)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if successor is None:  # raising rolls the whole relay back (S8)
+            raise FocusSlotError(
+                "client_key_conflict",
+                f"client_key {new_client_key!r} already names a session of "
+                f"{model.project_key}; choose a new one",
+            )
+        return dict(successor)
+
     async def _replay_relay(
         self,
         session: AsyncSession,
@@ -1242,11 +1384,16 @@ class PgBrainSessionRepo(BasePgRepository):
         *,
         summary: str,
         handover: str,
-        expected: int,
+        expected_slot_revision: int | None,
+        expected_focus_revision: int | None,
         new_client_key: str,
         knowledge_ids: Sequence[UUID],
     ) -> BrainSessionRelayResult:
-        """S9: an equal payload returns the successor; anything else is terminal_conflict."""
+        """S9: an equal payload returns the successor; anything else is terminal_conflict.
+
+        The successor says which form this was: no slot, a base relay, whose
+        revision is the one the caller sent as `expected_focus_revision`.
+        """
         successor = (
             (
                 await session.execute(
@@ -1259,8 +1406,15 @@ class PgBrainSessionRepo(BasePgRepository):
             .one_or_none()
         )
         ledger = set(await self._load_session_artifact_ids(session, model.id))
+        base_form = successor is not None and successor["slot_id"] is None
+        expected, other = (
+            (expected_focus_revision, expected_slot_revision)
+            if base_form
+            else (expected_slot_revision, expected_focus_revision)
+        )
         exact = (
             successor is not None
+            and other is None
             and model.status == "ended"
             and successor["client_key"] == new_client_key
             and model.summary == summary
@@ -1275,6 +1429,17 @@ class PgBrainSessionRepo(BasePgRepository):
                 f"session {model.id} is already {model.status.value} with another terminal "
                 f"payload{named}",
             )
+        replayed = self._to_model(
+            successor,
+            attributed_ids=await self._load_session_artifact_ids(session, successor["id"]),
+        )
+        if base_form:
+            return BrainSessionRelayResult(
+                ended_session_id=model.id,
+                session=replayed,
+                focus_revision=model.focus_revision_at_end,
+                replayed=True,
+            )
         slot = (
             (
                 await session.execute(
@@ -1287,10 +1452,7 @@ class PgBrainSessionRepo(BasePgRepository):
         anchors = await load_anchors(session, [slot["id"]])
         return BrainSessionRelayResult(
             ended_session_id=model.id,
-            session=self._to_model(
-                successor,
-                attributed_ids=await self._load_session_artifact_ids(session, successor["id"]),
-            ),
+            session=replayed,
             slot=to_focus_slot(slot, anchors[slot["id"]]),
             replayed=True,
         )
