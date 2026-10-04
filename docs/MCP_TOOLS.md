@@ -568,7 +568,7 @@ Three implementation paths produce this behaviour:
 - **Inline `UUID()` parsing**: `brain_get`, `brain_update`, `brain_delete` (`crud_tools.py`) and `brain_refresh_entity`, `brain_merge_entities` (`decay_tools.py`).
 - **`resolve_entity_id()` from `entity_ids.py`** (the git-style prefix path, which calls `parse_uuid` itself and returns the same string when the value is neither a UUID nor a usable prefix): `brain_get_runbook`, `brain_execute_runbook`, `brain_ticket_get`. `brain_get` also reaches it, on its non-plan branch, and is counted once under the inline path above.
 
-All 19 go through `format_error`, which is typed `-> Never` and **raises** `ToolError`: none of them returns a string on this path, and the message is passed through unprefixed. Eighteen emit the malformed VALUE. `brain_merge_entities` is the exception — it formats the `ValueError` instead (`Invalid UUID: badly formed hexadecimal UUID string`), naming neither the value nor which of its two ids was bad.
+All 19 go through `format_error`, which is typed `-> Never` and **raises** `ToolError`: none of them returns a string on this path, and the message is passed through unprefixed. All 19 emit the malformed VALUE. `brain_merge_entities`, the only tool that takes two ids, converts each separately and appends the offending field: `Invalid UUID: <value> (source_id)` or `Invalid UUID: <value> (target_id)`.
 
 There is no `✗` in this path. The glyph appears nowhere in `src/`, and in `scripts/` only inside two Dream utilities that print their own console output; earlier versions of this page attributed it to a presentation layer that does not exist.
 
