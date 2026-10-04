@@ -342,6 +342,35 @@ async def _insert_referenced_pair(
         )
 
 
+@pytest_asyncio.fixture
+async def heap_order_scans(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[None]:
+    """Make the unordered capture lock in heap order, whatever the planner thinks.
+
+    Only the unfixed code depends on it (an index scan would hand it id order), so
+    this is what keeps the B<A case a reproduction of the deadlock and not of luck.
+    """
+    async with session_factory() as session:
+        database = await session.scalar(sa.text("SELECT quote_ident(current_database())"))
+    async with session_factory() as session:
+        conn = await session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
+        await conn.execute(
+            sa.text(f"ALTER DATABASE {database} SET enable_indexscan = off")  # nosec B608
+        )
+        await conn.execute(
+            sa.text(f"ALTER DATABASE {database} SET enable_bitmapscan = off")  # nosec B608
+        )
+    try:
+        yield
+    finally:
+        async with session_factory() as session:
+            conn = await session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
+            await conn.execute(sa.text(f"ALTER DATABASE {database} RESET enable_indexscan"))  # nosec B608
+            await conn.execute(sa.text(f"ALTER DATABASE {database} RESET enable_bitmapscan"))  # nosec B608
+
+
+@pytest.mark.usefixtures("heap_order_scans")
 @pytest.mark.parametrize("referrer_sorts_first", [True, False], ids=["A<B", "B<A"])
 async def test_scoped_delete_and_capture_of_the_same_pair_do_not_deadlock(
     session_factory: async_sessionmaker[AsyncSession], project: str, referrer_sorts_first: bool
@@ -436,3 +465,31 @@ async def test_delete_adopts_a_referrer_committed_while_it_waited_for_the_lock(
     assert row["superseded_by"] is None
     assert row["status"] == "active"
     assert not await _exists(session_factory, "decision", target_id)
+
+
+async def test_scoped_delete_of_another_projects_decision_takes_no_lock_on_it(
+    session_factory: async_sessionmaker[AsyncSession], project: str
+) -> None:
+    """A refused delete must not queue behind, or block, rows of a project it cannot touch."""
+    foreign_id = uuid4()
+    foreign_project = f"{project}-other"
+    async with session_factory.begin() as session:
+        await session.execute(
+            decisions.insert().values(
+                id=foreign_id, project_key=foreign_project, **_values("decision", project)
+            )
+        )
+    try:
+        async with session_factory() as holder:
+            async with holder.begin():
+                await holder.execute(
+                    sa.select(decisions.c.id).where(decisions.c.id == foreign_id).with_for_update()
+                )
+                deleted = await asyncio.wait_for(
+                    _delete_with("decision", session_factory, foreign_id, project), timeout=5
+                )
+        assert deleted is False
+        assert await _exists(session_factory, "decision", foreign_id)
+    finally:
+        async with session_factory.begin() as session:
+            await session.execute(decisions.delete().where(decisions.c.id == foreign_id))

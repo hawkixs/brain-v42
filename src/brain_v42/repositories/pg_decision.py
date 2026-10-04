@@ -36,6 +36,11 @@ from brain_v42.repositories.pg_base import BasePgRepository, Row, project_scope
 logger = structlog.get_logger(__name__)
 
 
+#: Passes `_lock_with_referrers` makes before giving up. Each repeat needs a fresh
+#: concurrent commit pointing at the decision, inside a window of a few statements.
+_MAX_LOCK_PASSES = 3
+
+
 class _ReferrerAppeared(Exception):
     """A decision started pointing at the one being deleted while its locks were taken."""
 
@@ -245,6 +250,14 @@ class PgDecisionRepo(BasePgRepository):
         """
         if project_key is not None:
             async with self.transaction(session) as sess:
+                # Read, unlocked, whose row this is: a delete that cannot touch
+                # it must not lock it. The check after the lock stays, because
+                # `DecisionUpdate` can still change a decision's project.
+                owner = await sess.execute(
+                    sa.select(decisions.c.project_key).where(decisions.c.id == decision_id)
+                )
+                if owner.scalar_one_or_none() != project_key:
+                    return False
                 locked = await self._lock_with_referrers(sess, decision_id)
                 target = next((row for row in locked if row["id"] == decision_id), None)
                 if target is None or target["project_key"] != project_key:
@@ -306,10 +319,11 @@ class PgDecisionRepo(BasePgRepository):
         a straggler, the savepoint is rolled back — releasing the locks, which
         is the only way to take the straggler's lock in id order — and the
         whole set is locked again, now with the straggler in it. Each pass
-        needs a fresh concurrent commit to repeat, so the loop ends.
+        needs a fresh concurrent commit to repeat; after `_MAX_LOCK_PASSES`
+        the delete refuses, changing nothing, and the caller can retry.
         """
         referenced = decisions.c.superseded_by == decision_id
-        while True:
+        for _ in range(_MAX_LOCK_PASSES):
             try:
                 async with sess.begin_nested():
                     rows = list(
@@ -337,6 +351,9 @@ class PgDecisionRepo(BasePgRepository):
                     return rows
             except _ReferrerAppeared:
                 continue
+        raise RuntimeError(
+            f"decision {decision_id} kept gaining referrers while its locks were taken; retry"
+        )
 
     # ── FULL-TEXT SEARCH ───────────────────────────────────────────────────
 
