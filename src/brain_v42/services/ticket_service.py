@@ -303,7 +303,7 @@ class TicketService:
         running_sha = self._running_sha_provider()
         live, total = (
             await self._repo.deployed_deliverables(ticket_id, running_sha)
-            if running_sha in shas
+            if running_sha is not None and running_sha in shas
             else (1, 1)
         )
         return ReleaseState(

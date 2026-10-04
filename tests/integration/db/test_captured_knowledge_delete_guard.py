@@ -353,15 +353,18 @@ async def heap_order_scans(
     """
     async with session_factory() as session:
         database = await session.scalar(sa.text("SELECT quote_ident(current_database())"))
-    async with session_factory() as session:
-        conn = await session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
-        await conn.execute(
-            sa.text(f"ALTER DATABASE {database} SET enable_indexscan = off")  # nosec B608
-        )
-        await conn.execute(
-            sa.text(f"ALTER DATABASE {database} SET enable_bitmapscan = off")  # nosec B608
-        )
     try:
+        # Inside the try: a failure or a cancellation between the two settings
+        # must still reset both, or the disposable database keeps them for every
+        # later test of the run.
+        async with session_factory() as session:
+            conn = await session.connection(execution_options={"isolation_level": "AUTOCOMMIT"})
+            await conn.execute(
+                sa.text(f"ALTER DATABASE {database} SET enable_indexscan = off")  # nosec B608
+            )
+            await conn.execute(
+                sa.text(f"ALTER DATABASE {database} SET enable_bitmapscan = off")  # nosec B608
+            )
         yield
     finally:
         async with session_factory() as session:
@@ -372,8 +375,12 @@ async def heap_order_scans(
 
 @pytest.mark.usefixtures("heap_order_scans")
 @pytest.mark.parametrize("referrer_sorts_first", [True, False], ids=["A<B", "B<A"])
-async def test_scoped_delete_and_capture_of_the_same_pair_do_not_deadlock(
-    session_factory: async_sessionmaker[AsyncSession], project: str, referrer_sorts_first: bool
+@SCOPES
+async def test_delete_and_capture_of_the_same_pair_do_not_deadlock(
+    session_factory: async_sessionmaker[AsyncSession],
+    project: str,
+    referrer_sorts_first: bool,
+    scoped: bool,
 ) -> None:
     low, high = sorted((uuid4(), uuid4()), key=str)
     referrer_id, target_id = (low, high) if referrer_sorts_first else (high, low)
@@ -392,7 +399,7 @@ async def test_scoped_delete_and_capture_of_the_same_pair_do_not_deadlock(
                 .with_for_update(key_share=True)
             )
             deleting = asyncio.create_task(
-                _delete_with("decision", session_factory, target_id, project)
+                _delete_with("decision", session_factory, target_id, project if scoped else None)
             )
             await _until(lambda: _lock_waiters_at_least(session_factory, 1), "delete parked")
             capturing = asyncio.create_task(
