@@ -203,8 +203,9 @@ async def test_a_lot_decides_a_mixed_slot_and_closes_on_the_observer_release(ses
 
 
 async def test_a_replayed_observer_release_is_idempotent(session_factory):
-    ticket, _, _, _ = await workflow(session_factory)
+    ticket, binding, _, number = await workflow(session_factory)
     await plan(session_factory, ticket.id, "8.4.3")
+    await integrate(session_factory, ticket.id, binding, number)  # a real release candidate
     opened = await open_slot(session_factory, SlotAnchor(kind="lot", target_release="8.4.3"))
     await release(session_factory, ticket.id, "v8.4.3")
     await release(session_factory, ticket.id, "v8.4.3")

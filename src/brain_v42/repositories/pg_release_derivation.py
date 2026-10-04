@@ -7,6 +7,7 @@ from typing import Protocol
 from uuid import UUID
 
 import sqlalchemy as sa
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.focus_slots import close_slots_satisfied_by
@@ -17,7 +18,10 @@ from brain_v42.db.tables import (
     tickets,
 )
 from brain_v42.delivery_config import DEFAULT_REPOSITORY_REGISTRY
+from brain_v42.repositories.pg_delivery import lock_workflows
 from brain_v42.repositories.pg_delivery_attestations import PgDeliveryAttestationsRepo
+
+logger = structlog.get_logger(__name__)
 
 OBSERVER_IDENTITY = "brain-v42-delivery-observer"
 BRAIN_V42_REPOSITORY_ID = next(iter(DEFAULT_REPOSITORY_REGISTRY["brain-v42"]))
@@ -111,6 +115,47 @@ class PgReleaseDerivationRepo:
         return [ReleaseCandidate(**row) for row in (await session.execute(stmt)).mappings()]
 
     async def record_released(
+        self,
+        session: AsyncSession,
+        candidate: ReleaseCandidate,
+        tag: _ReleaseTag,
+        tag_date: datetime,
+    ) -> None:
+        """Attest that `tag` contains the candidate's merge, if that merge is still current.
+
+        The candidate was picked in an earlier transaction, then the observer went to the
+        network: the binding may have been deactivated (a reopen) or rebound since. The ticket
+        row is locked FIRST, the lock every receipt writer takes and the one `brain_slot_open`
+        key-shares for a lot anchor, and the binding is re-read under it with the same predicate
+        `unreleased` used. A stale candidate is skipped: it would attest a release of a merge
+        that is no longer the ticket's, outside the set a concurrent open locks.
+        """
+        b, w = delivery_artifact_bindings, delivery_workflows
+        async with lock_workflows(session, (candidate.ticket_id,)):
+            current = await session.scalar(
+                sa.select(
+                    sa.exists().where(
+                        b.c.ticket_id == candidate.ticket_id,
+                        b.c.deliverable_key == candidate.deliverable_key,
+                        b.c.integration_sha == candidate.integration_sha,
+                        b.c.active.is_(True),
+                        w.c.ticket_id == b.c.ticket_id,
+                        w.c.current_revision == b.c.contract_revision,
+                        w.c.attempt == b.c.attempt,
+                    )
+                )
+            )
+            if not current:
+                logger.info(
+                    "release_candidate_stale",
+                    ticket_id=str(candidate.ticket_id),
+                    deliverable_key=candidate.deliverable_key,
+                    tag=tag.name,
+                )
+                return
+            await self._record_released_locked(session, candidate, tag, tag_date)
+
+    async def _record_released_locked(
         self,
         session: AsyncSession,
         candidate: ReleaseCandidate,

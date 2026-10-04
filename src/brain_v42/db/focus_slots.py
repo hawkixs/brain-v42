@@ -353,7 +353,10 @@ async def lock_anchor_tickets(
     Rows: a ticket anchor's own ticket; the ticket of every active binding of a PR anchor; for a
     lot anchor every ticket of the project that has an active binding with an integration SHA,
     the only rows the release observer nominates (`unreleased`), since the tag it measures need
-    not belong to a ticket planned for that release.
+    not belong to a ticket planned for that release. That set grows with the project's integrated
+    tickets: a cost in open's latency and in the rows it dirties, never in correctness.
+    `record_released` re-checks, under its own ticket lock, that its candidate is still in this
+    set, so a stale candidate cannot attest a release this lock did not see.
 
     Lock order, as the writers take it: the ticket rows first, ordered by id, in ONE statement
     (two writers' sets are always walked in the same order). The caller holds no other lock when

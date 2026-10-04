@@ -18,7 +18,8 @@ from uuid import uuid4
 import pytest
 import sqlalchemy as sa
 
-from brain_v42.db.tables import focus_slots
+from brain_v42.db.focus_slots import received_anchor
+from brain_v42.db.tables import delivery_artifact_bindings, delivery_attestations, focus_slots
 from brain_v42.models.focus_slot import FocusSlotError, SlotAnchor
 from tests.integration.db import test_delivery_focus_slots as _slots
 from tests.integration.db.test_delivery_focus_slot_receipts import (
@@ -39,17 +40,22 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 WAIT_SECONDS = 30
 
 
-async def wait_until_blocked_on(factory, holder_pid: int) -> int:
-    """Return the pid of a backend that waits for a lock the holder's transaction owns."""
+async def wait_until_blocked_on(factory, holder_pid: int, *, statement: str) -> int:
+    """Return the pid of a backend blocked on the holder, running a `statement` that names it.
+
+    Naming the statement keeps the wait honest: the backend we mean to see blocked, not any
+    other connection that happens to queue behind the holder.
+    """
     async with asyncio.timeout(WAIT_SECONDS):
         while True:
             async with factory() as session:
                 blocked = await session.scalar(
                     sa.text(
                         "SELECT min(pid) FROM pg_stat_activity "
-                        "WHERE :pid = ANY(pg_blocking_pids(pid))"
+                        "WHERE :pid = ANY(pg_blocking_pids(pid)) "
+                        "AND wait_event_type = 'Lock' AND query ILIKE :statement"
                     ),
-                    {"pid": holder_pid},
+                    {"pid": holder_pid, "statement": f"%{statement}%"},
                 )
             if blocked:
                 return int(blocked)
@@ -67,7 +73,7 @@ async def open_behind_uncommitted(factory, anchors, title: str, writer) -> None:
         await writer(holder)
         queued = asyncio.create_task(service(factory).open(EXECUTOR, title, "b", anchors))
         try:
-            await wait_until_blocked_on(factory, holder_pid)
+            await wait_until_blocked_on(factory, holder_pid, statement="FROM tickets")
         except TimeoutError:
             queued.cancel()
             raise AssertionError("open did not wait for the uncommitted receipt writer") from None
@@ -129,9 +135,13 @@ async def test_an_open_that_got_its_locks_first_makes_the_later_receipt_find_the
             focus_slots.insert().values(project_key=EXECUTOR, title=title, body="x")
         )
         opening = asyncio.create_task(service(session_factory).open(EXECUTOR, title, "b", anchors))
-        open_pid = await wait_until_blocked_on(session_factory, squatter_pid)
+        open_pid = await wait_until_blocked_on(
+            session_factory, squatter_pid, statement="INSERT INTO focus_slots"
+        )
         receipt = asyncio.create_task(integrate(session_factory, ticket.id, binding, number))
-        await wait_until_blocked_on(session_factory, open_pid)  # the writer queues on the open
+        await wait_until_blocked_on(
+            session_factory, open_pid, statement="FROM tickets"
+        )  # the writer queues on the open
         assert not receipt.done()
         await squatter.rollback()
     opened = await asyncio.wait_for(opening, timeout=WAIT_SECONDS)
@@ -147,3 +157,48 @@ async def test_an_open_that_got_its_locks_first_makes_the_later_receipt_find_the
             .one()
         )
     assert row["close_reason"] == f"receipt:{issued.id}" and row["closed_at"] is not None
+
+
+@pytest.mark.parametrize(
+    "staled",
+    [{"active": False}, {"integration_sha": None}],
+    ids=["reopened_binding_deactivated", "rebound_without_sha"],
+)
+async def test_a_release_from_a_stale_candidate_is_skipped_not_attested(session_factory, staled):
+    """The observer picks a candidate, goes to the network, and records in a NEW transaction: the
+    binding may have been deactivated or rebound meanwhile. The release must re-check under the
+    ticket lock and skip, else it commits an attestation the lot lock of an open never saw."""
+    ticket, binding, _, number = await workflow(session_factory)
+    release = f"9.{uuid4().int % 1000}.{uuid4().int % 1000}"
+    await plan(session_factory, ticket.id, release)
+    await integrate(session_factory, ticket.id, binding, number)
+    async with session_factory.begin() as session:  # what a reopen or a rebind does
+        await session.execute(
+            delivery_artifact_bindings.update()
+            .where(delivery_artifact_bindings.c.ticket_id == ticket.id)
+            .values(**staled)
+        )
+    anchors = [SlotAnchor(kind="lot", target_release=release)]
+    async with session_factory() as holder, holder.begin():
+        await release_in(holder, ticket.id, f"v{release}")
+        opened = await asyncio.wait_for(
+            service(session_factory).open(EXECUTOR, f"stale {uuid4().hex[:6]}", "b", anchors),
+            timeout=WAIT_SECONDS,
+        )
+    async with session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(focus_slots).where(focus_slots.c.id == opened.slot.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        received = await received_anchor(session, project_key=EXECUTOR, anchor=anchors[0])
+        attested = await session.scalar(
+            sa.select(sa.func.count())
+            .select_from(delivery_attestations)
+            .where(delivery_attestations.c.ticket_id == ticket.id)
+        )
+    assert received is None and attested == 0 and row["closed_at"] is None
