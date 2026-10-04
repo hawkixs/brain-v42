@@ -1152,6 +1152,14 @@ class PgBrainSessionRepo(BasePgRepository):
                     f"slot {slot_id} is at revision {slot['revision']}, "
                     f"not {expected_slot_revision}",
                 )
+            # ONE locking pass over everything this relay will name or already
+            # holds: two passes, each ordered, would not be ordered together
+            # (ticket d85b4f66). What `_attach_captures` and the final check
+            # validate again below is already held, so they wait for nothing.
+            prior_ledger = await self._load_session_artifact_ids(session, model.id)
+            every_id = sorted({*prior_ledger, *capture_ids}, key=str)
+            if every_id:
+                await self._validate_captures(session, model, every_id)
             if capture_ids:
                 await self._attach_captures(session, model, capture_ids)
             ledger = await self._load_session_artifact_ids(session, model.id)
