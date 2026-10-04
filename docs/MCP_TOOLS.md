@@ -992,9 +992,9 @@ Compare `expected_focus_revision` to the current project revision, then apply fo
 
 ### brain_list_projects (`project_context_tools.py`)
 ```
-brain_list_projects(project_group=None)
+brain_list_projects(project_group=None, full=False)
 ```
-List all known projects with focus and phase.
+List known projects with focus and phase, most recently updated first. Only the 20 most recent are rendered: the header then reads `## 20 of N projects` and a closing notice names the omitted count. `full=true` renders every project; `project_group` narrows the list.
 
 ### brain_focus_history (`project_context_tools.py`)
 ```

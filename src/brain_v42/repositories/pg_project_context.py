@@ -185,16 +185,27 @@ class PgProjectContextRepo(BasePgRepository):
 
     async def list_all(  # type: ignore[override]
         self,
-        limit: int = 20,
+        limit: int | None = None,
         offset: int = 0,
         project_group: str | None = None,
     ) -> list[ProjectContext]:
-        """List all project contexts, ordered by created_at DESC."""
+        """List project contexts, most recently updated first.
+
+        Unbounded by default: a hidden default page of 20 is what made
+        `brain_list_projects` drop 40 of 60 projects without a word (ticket
+        372324a6). A caller that wants a cut makes it explicitly, and says so.
+        """
         async with self.get_session() as session:
             stmt = sa.select(project_contexts)
             if project_group is not None:
                 stmt = stmt.where(project_contexts.c.project_group == project_group)
-            stmt = stmt.order_by(project_contexts.c.created_at.desc()).limit(limit).offset(offset)
+            stmt = stmt.order_by(
+                project_contexts.c.updated_at.desc(), project_contexts.c.project_key
+            )
+            if limit is not None:
+                stmt = stmt.limit(limit)
+            if offset:
+                stmt = stmt.offset(offset)
             result = await session.execute(stmt)
             rows = result.mappings().all()
             return [ProjectContext.model_validate(dict(r)) for r in rows]

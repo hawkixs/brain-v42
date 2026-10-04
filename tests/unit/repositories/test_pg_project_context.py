@@ -443,6 +443,23 @@ class TestListAll:
         assert all(isinstance(r, ProjectContext) for r in results)
 
     @pytest.mark.asyncio
+    async def test_list_all_is_newest_update_first_and_uncapped_by_default(self):
+        """The 20 that ticket 372324a6 measured came from a hidden `limit=20`
+        default, ordered by creation: the project updated that very day fell
+        out of the page. The cut now belongs to the tool, which names it."""
+        from brain_v42.repositories.pg_project_context import PgProjectContextRepo
+
+        mock_session = _make_mock_session()
+        repo = PgProjectContextRepo()
+        with _patch_factory(mock_session):
+            await repo.list_all()
+
+        sql = str(mock_session.execute.call_args.args[0].compile()).upper()
+        assert "ORDER BY PROJECT_CONTEXTS.UPDATED_AT DESC" in sql
+        assert "LIMIT" not in sql
+        assert "OFFSET" not in sql
+
+    @pytest.mark.asyncio
     async def test_list_all_empty_returns_empty_list(self):
         """list_all() returns empty list when no contexts exist."""
         from brain_v42.repositories.pg_project_context import PgProjectContextRepo

@@ -600,6 +600,43 @@ class TestBrainListProjects:
         assert isinstance(result, str)
         assert "0 projects" in result
 
+    async def test_a_cut_list_says_so_and_keeps_the_service_order(
+        self, tools: tuple[dict[str, Any], AsyncMock]
+    ) -> None:
+        """21 projects: 20 are rendered, the cut is named, nothing is reordered.
+
+        The service hands the rows over most recently updated first; a silent
+        cut read as "I saw everything" (ticket 372324a6: 20 of 60, with the
+        project updated that very day missing).
+        """
+        registered, svc = tools
+        svc.list_all.return_value = [
+            make_project_context(project_key=f"proj-{i:02d}", name=f"P{i}") for i in range(21)
+        ]
+
+        result = await registered["brain_list_projects"]()
+
+        assert "## 20 of 21 projects" in result
+        assert "1 project(s) omitted" in result
+        assert "full=True" in result
+        assert "proj-20" not in result
+        positions = [result.index(f"**proj-{i:02d}**") for i in range(20)]
+        assert positions == sorted(positions)
+
+    async def test_full_renders_every_project_without_a_notice(
+        self, tools: tuple[dict[str, Any], AsyncMock]
+    ) -> None:
+        registered, svc = tools
+        svc.list_all.return_value = [
+            make_project_context(project_key=f"proj-{i:02d}", name=f"P{i}") for i in range(21)
+        ]
+
+        result = await registered["brain_list_projects"](full=True)
+
+        assert "## 21 projects" in result
+        assert "proj-20" in result
+        assert "omitted" not in result
+
     async def test_includes_focus_and_phase(self, tools: tuple[dict[str, Any], AsyncMock]) -> None:
         """brain_list_projects includes current_focus and current_phase in output."""
         registered, svc = tools
