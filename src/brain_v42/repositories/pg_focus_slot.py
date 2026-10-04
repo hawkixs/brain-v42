@@ -22,6 +22,7 @@ from brain_v42.db.focus_slots import (
     anchor_states,
     close_slot,
     load_anchors,
+    lock_anchor_tickets,
     lock_slot,
     received_anchor,
     record_slot_history,
@@ -75,6 +76,15 @@ class PgFocusSlotRepo(BasePgRepository):
                 return self._replay_open(existing, body, anchors)
             for anchor in anchors:
                 await self._admit_anchor(session, project_key, anchor)
+            # Lock, THEN read the receipts, in a later statement (READ COMMITTED: a fresh
+            # snapshot per statement): a writer holding the lock has committed by the time the
+            # lock is ours, and one that comes later queues behind our commit and finds the slot.
+            await lock_anchor_tickets(session, project_key=project_key, anchors=anchors)
+            for anchor in anchors:
+                if await received_anchor(session, project_key=project_key, anchor=anchor):
+                    raise FocusSlotError(
+                        "anchor_already_received", f"{anchor.ref} already has its closing receipt"
+                    )
             inserted = (
                 (
                     await session.execute(
@@ -451,10 +461,6 @@ class PgFocusSlotRepo(BasePgRepository):
                     "anchor_lot_unplanned",
                     f"no ticket of {project_key} is planned for {anchor.target_release}",
                 )
-        if await received_anchor(session, project_key=project_key, anchor=anchor) is not None:
-            raise FocusSlotError(
-                "anchor_already_received", f"{anchor.ref} already has its closing receipt"
-            )
 
 
 async def _require_project(session: AsyncSession, project_key: str) -> None:

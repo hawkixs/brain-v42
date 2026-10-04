@@ -105,7 +105,8 @@ async def integrate(factory, ticket_id: UUID, binding, pr_number: int):
         return await integrate_in(factory, session, ticket_id, binding, pr_number)
 
 
-async def release(factory, ticket_id: UUID, tag: str) -> None:
+async def release_in(session, ticket_id: UUID, tag: str) -> None:
+    """Record the observer's release inside the caller's open transaction."""
     candidate = ReleaseCandidate(
         ticket_id=ticket_id,
         to_project=EXECUTOR,
@@ -114,10 +115,14 @@ async def release(factory, ticket_id: UUID, tag: str) -> None:
         repository_id=RID,
         integration_sha=C,
     )
+    await PgReleaseDerivationRepo().record_released(
+        session, candidate, SimpleNamespace(name=tag, sha="d" * 40), NOW
+    )
+
+
+async def release(factory, ticket_id: UUID, tag: str) -> None:
     async with factory() as session, session.begin():
-        await PgReleaseDerivationRepo().record_released(
-            session, candidate, SimpleNamespace(name=tag, sha="d" * 40), NOW
-        )
+        await release_in(session, ticket_id, tag)
 
 
 async def slot(factory, slot_id: UUID):

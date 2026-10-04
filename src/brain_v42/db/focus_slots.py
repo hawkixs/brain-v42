@@ -337,6 +337,61 @@ async def received_anchor(
     return value if isinstance(value, UUID) else None
 
 
+async def lock_anchor_tickets(
+    session: AsyncSession, *, project_key: str, anchors: Sequence[SlotAnchor]
+) -> None:
+    """`FOR KEY SHARE` on every ticket whose receipt writer could complete one of `anchors`.
+
+    The receipt writers (`issue_integration_receipt`, `accept`, `record_released`) all open with
+    `tickets ... FOR UPDATE` on the ticket they write for (`lock_decision_scope`,
+    `lock_workflows`), and only afterwards run `close_slots_satisfied_by`, whose snapshot cannot
+    see a slot that is not committed yet. `brain_slot_open` takes the conflicting lock on the SAME
+    rows BEFORE it reads `received_anchor`: it either waits for a writer that already holds the
+    row and then sees its committed receipt, or it commits first and the writer, queued behind
+    it, finds the slot. Either way no slot opens on an anchor already received.
+
+    Rows: a ticket anchor's own ticket; the ticket of every active binding of a PR anchor; for a
+    lot anchor every ticket of the project that has an active binding with an integration SHA,
+    the only rows the release observer nominates (`unreleased`), since the tag it measures need
+    not belong to a ticket planned for that release.
+
+    Lock order, as the writers take it: the ticket rows first, ordered by id, in ONE statement
+    (two writers' sets are always walked in the same order). The caller holds no other lock when
+    it calls: no slot row, which a writer takes only after its tickets. So no cycle can form
+    between an open and a writer, nor between two opens (an open reaches its slot insert, the
+    only wait it can then meet, only once it owns every ticket lock it needs).
+    """
+    b, t = delivery_artifact_bindings, tickets
+    touched: list[Any] = []
+    ticket_ids = [anchor.ticket_id for anchor in anchors if anchor.kind == "ticket"]
+    if ticket_ids:
+        touched.append(t.c.id.in_(ticket_ids))
+    for anchor in anchors:
+        if anchor.kind == "pr":
+            touched.append(
+                sa.exists().where(
+                    b.c.ticket_id == t.c.id,
+                    b.c.active.is_(True),
+                    b.c.repository_id == anchor.repository_id,
+                    b.c.pr_number == anchor.pr_number,
+                )
+            )
+    if any(anchor.kind == "lot" for anchor in anchors):
+        touched.append(
+            sa.exists().where(
+                b.c.ticket_id == t.c.id, b.c.active.is_(True), b.c.integration_sha.is_not(None)
+            )
+        )
+    if not touched:
+        return
+    await session.execute(
+        sa.select(t.c.id)
+        .where(t.c.to_project == project_key, sa.or_(*touched))
+        .order_by(t.c.id)
+        .with_for_update(read=True, key_share=True)
+    )
+
+
 def _decisive(states: Sequence[AnchorState]) -> list[AnchorState]:
     lots = [state for state in states if state.kind == "lot"]
     return lots or list(states)
