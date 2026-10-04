@@ -204,17 +204,25 @@ async def test_metrics_endpoint_merges_dream_promotions_counts(
     }
 
 
-async def test_metrics_endpoint_surfaces_promoted_health(
+# Byte budget of the scraped /metrics JSON on the fixture state below. Measured
+# live on 2026-10-04 at 72.8 KB, of which `dream.promoted_health` was 55.5 KB
+# (ticket 64debcad, red-monitor 817583e4): red-monitor's agent reads this payload
+# every 5 s. The fixture state is small, so the budget is NOT the live size; it
+# is a tripwire against a payload that grows with the number of promotions (the
+# state is 2.2 KB without that array, 150 promotions would add about 55 KB).
+_METRICS_PAYLOAD_BUDGET_BYTES = 8_000
+
+
+async def test_metrics_payload_does_not_grow_with_the_promotions_of_the_dream(
     aiohttp_client: Any, collector: MetricsCollector, mock_embedding_svc: MagicMock
 ) -> None:
-    """Dream block includes `promoted_health` when the collector returns rows.
+    """`dream.promoted_health` is not scraped: 150 promotions leave /metrics small.
 
-    ADR #4 v2 telemetry: post-promotion health signals (access_count,
-    superseded, days_since_promotion) per auto-promoted ADR/runbook,
-    surfaced via JSON only (per-target Prometheus labels would risk
-    unbounded cardinality).
+    The array held one entry per auto-promoted ADR/runbook, with titles and
+    float ages that change on every read, so the payload was unbounded and
+    never deduplicable. The collector is not even queried: the rows would be
+    computed on every cache refresh only to be dropped.
     """
-    server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
     collector.collect_dream_metrics = AsyncMock(  # type: ignore[method-assign]
         return_value={"last_run": {"date": "2026-04-27", "status": "success"}, "history": []}
     )
@@ -222,25 +230,28 @@ async def test_metrics_endpoint_surfaces_promoted_health(
         return_value=[
             {
                 "target_type": "adr",
-                "target_id": "abc-123",
-                "title": "Sample ADR",
+                "target_id": f"00000000-0000-0000-0000-{index:012d}",
+                "title": f"Promoted ADR number {index} with a realistically long title",
                 "status": "accepted",
                 "superseded": False,
-                "access_count": 4,
+                "access_count": index,
                 "days_since_promotion": 2.5,
                 "days_since_last_access": 1.0,
                 "promoted_at": "2026-04-25T06:14:00+00:00",
             }
+            for index in range(150)
         ]
     )
+    server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
     client = await aiohttp_client(server._build_app())
 
     resp = await client.get("/metrics")
-    data = await resp.json()
-    assert "promoted_health" in data["dream"]
-    assert len(data["dream"]["promoted_health"]) == 1
-    assert data["dream"]["promoted_health"][0]["target_type"] == "adr"
-    assert data["dream"]["promoted_health"][0]["superseded"] is False
+    body = await resp.read()
+
+    assert "promoted_health" not in json.loads(body)["dream"]
+    assert b"promoted_health" not in body
+    collector.collect_dream_promoted_health.assert_not_awaited()
+    assert len(body) < _METRICS_PAYLOAD_BUDGET_BYTES
 
 
 async def test_metrics_404_on_other_paths(

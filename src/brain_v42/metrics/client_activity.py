@@ -41,6 +41,14 @@ from brain_v42.metrics.client_observation import ClientObservation
 from brain_v42.metrics.codex_telemetry import _COMPLETION_EVENTS, _decode, _ProjectedRecord
 
 MAX_ACTIVE_CONVERSATIONS = 64
+# Live transport-keyed rows ONE actor may hold. The transport tier exists so that
+# a handful of engines sharing a directory, hence one declared actor, stay
+# distinct: four is the case it was built for, and 8 leaves that case a clear
+# margin while bounding what a client rotating connections can occupy to an eighth
+# of MAX_ACTIVE_CONVERSATIONS (ticket `9595d6c8`: red-rail opens one connection
+# per call, 135 in one 10-minute window against a capacity of 64). Beyond it, new
+# connections of that actor fold into its residual row; see ``record_observations``.
+MAX_TRANSPORT_ROWS_PER_ACTOR = 8
 ACTIVITY_TTL_SECONDS = 600.0
 MAX_FINGERPRINTS = 1_024
 FINGERPRINT_TTL_SECONDS = 600.0
@@ -129,6 +137,7 @@ class ClientActivityRegistry:
         # same registry.
         self._evictions: dict[str, int] = {"ttl": 0, "capacity": 0}
         self._evictions_bearing = 0
+        self._folded = 0
         self._fingerprints: dict[bytes, float] = {}
         self._receipt_order = 0
 
@@ -348,7 +357,9 @@ class ClientActivityRegistry:
 
         Its accepted trade-offs: between residuals, eviction stays destructive —
         a batch of 64 fresh actors does replace 63 older residuals, each
-        carrying its own ``brain_calls``. And a join survives only NON-joined
+        carrying its own ``brain_calls``. (One actor rotating connections can no
+        longer cause that by itself: see ``MAX_TRANSPORT_ROWS_PER_ACTOR``. It
+        takes as many distinct actors as there are rows to evict.) And a join survives only NON-joined
         entries: 65 genuinely joined sessions still compete for 64 slots, the
         oldest going first. The rank protects the row the panel exists to show,
         not every measurement.
@@ -372,6 +383,15 @@ class ClientActivityRegistry:
         # on healthy traffic.
         self._evictions_bearing += sum(1 for _, value in dropped if value.calls > 0)
         return dict(ranked[:MAX_ACTIVE_CONVERSATIONS])
+
+    @staticmethod
+    def _transport_rows(brain: dict[str, _BrainActivity], actor: str) -> int:
+        """Live transport-keyed rows currently held by ``actor``."""
+        return sum(
+            1
+            for key, value in brain.items()
+            if key.startswith(_TRANSPORT_KEY_PREFIX) and value.actor == actor
+        )
 
     def ingest_otlp_json(self, payload: bytes) -> None:
         """Validate a complete Codex batch, then atomically apply its projection."""
@@ -525,6 +545,17 @@ class ClientActivityRegistry:
         one without falls back to a per-actor residual row. The residual is the
         honest answer, not a degraded one: no client declares its session today.
 
+        A transport row costs a slot, and a client may mint connections without
+        limit (red-rail: one per call). An actor therefore holds at most
+        ``MAX_TRANSPORT_ROWS_PER_ACTOR`` live transport rows; its further NEW
+        connections fold into its residual row and are counted in
+        ``folded_observations_total``. What folding gives up is per-connection resolution
+        beyond the budget, never a call: the residual row accumulates the calls
+        of every connection it absorbed, so ``brain_calls`` there is a sum over
+        connections and several observations, not one connection's count. The
+        session tier is not budgeted, since a declared session joins and the
+        client controls how many it opens.
+
         The session key is agent-neutral because this side cannot observe an
         agent — see ``_session_key``.
 
@@ -548,6 +579,22 @@ class ClientActivityRegistry:
                     key = self._session_key(observation.session_id)
                 elif observation.transport is not None:
                     key = self._transport_key(observation.transport)
+                    # A connection NEW TO THIS ACTOR, when the actor is already
+                    # at its budget, folds into the actor's residual row, calls
+                    # included. A connection that already has its row under
+                    # this actor keeps accumulating on it: only creation is
+                    # bounded. "New to this actor" includes a known connection
+                    # now declaring another label (the actor is read from a
+                    # header on every request): taking it over is a creation
+                    # for the new actor, or relabelling would move rows from
+                    # one budget to another without bound. The prune above has
+                    # already expired stale rows, so they free their budget.
+                    held = brain.get(key)
+                    if (held is None or held.actor != actor) and self._transport_rows(
+                        brain, actor
+                    ) >= MAX_TRANSPORT_ROWS_PER_ACTOR:
+                        key = f"{_ACTOR_KEY_PREFIX}{actor}"
+                        self._folded += 1
                 else:
                     key = f"{_ACTOR_KEY_PREFIX}{actor}"
                 current = brain.get(key)
@@ -581,7 +628,23 @@ class ClientActivityRegistry:
         REOPENING CONDITION for that ticket, which these numbers exist to
         evaluate: `occupancy` above 48 of `capacity` sustained over 24 h, OR any
         non-zero `evictions_bearing_total`. Until one fires, neither fix has a
-        measured problem to solve.
+        measured problem to solve. The second clause fired on 2026-10-04 (ticket
+        `9595d6c8`); the per-actor transport budget answered it, and the clause
+        stays the acceptance check: since then it can only fire on pressure from
+        MANY actors, which is a capacity question rather than one client's
+        connection rotation. The budget is keyed on the declared actor LABEL, not
+        on the client: a client that rotates connections under several labels
+        holds up to that many budgets (red-rail can send four), so the guarantee
+        is per label. Asking such a client for one label and a reused connection
+        is the other half of the fix (red-rail ticket `dbcec4ba`).
+
+        `folded_observations_total` is not an eviction and is not in `evictions_total`: it
+        counts the observations that opened no row of their own because their
+        actor was at its transport budget. No call is lost by it, so it never
+        enters `evictions_bearing_total`. It counts OBSERVATIONS, not
+        connections: a connection that never got its own row adds one on each of
+        its calls, so it measures the per-connection resolution given up rather
+        than the number of rotated connections. Monotonic like the others.
 
         Two causes, because two is what the code can attribute: `ttl` from
         `_prune_brain`, `capacity` from `_trim_brain`. Transport rotation is why
@@ -597,6 +660,7 @@ class ClientActivityRegistry:
                 "evictions_bearing_total": self._evictions_bearing,
                 "occupancy": len(self._brain),
                 "capacity": MAX_ACTIVE_CONVERSATIONS,
+                "folded_observations_total": self._folded,
             }
 
     def snapshot(self) -> dict[str, object]:
@@ -681,6 +745,11 @@ class ClientActivityRegistry:
             # two. ``transport`` must stay DISTINCT from ``session`` in the
             # projection: a consumer reading ``kind == "session"`` expects OTLP
             # columns, and a transport row will never have any.
+            # The ``unattributed`` row is the per-actor bucket: observations
+            # that declared neither a session nor a connection, PLUS the
+            # connections folded in once the actor reached its transport
+            # budget. Its ``brain_calls`` is therefore a sum, not one
+            # connection's count.
             if key.startswith(_ACTOR_KEY_PREFIX):
                 row_id, kind = f"unattributed:{activity.actor}", "unattributed"
             elif key.startswith(_TRANSPORT_KEY_PREFIX):

@@ -18,6 +18,10 @@ occupancy above 48 of 64 sustained over 24 h, OR a single observed eviction of a
 bearing residue. Until one of them fires, neither (a) purge-on-DELETE nor (b)
 reversing `e5cda111` has a measured problem to solve.
 
+Ticket `9595d6c8` fired the second clause on 2026-10-04 (one client minting a
+connection per call) and was answered by a per-actor transport budget; see
+`test_client_activity_actor_budget.py`. The counters stay the acceptance check.
+
 Two causes and no more, because two is what the code can attribute: `ttl`, from
 `_prune_brain`, and `capacity`, from `_trim_brain`. "Transport rotation" is why
 rows APPEAR, never why they are dropped, and a counter that claimed to separate
@@ -58,10 +62,15 @@ def _registry(clock: _Clock) -> ClientActivityRegistry:
 
 
 def _transports(count: int, *, first: int = 0, calls: int = 1) -> tuple[ClientObservation, ...]:
-    """`count` distinct transports, each carrying `calls` measured calls."""
+    """`count` distinct transports, each carrying `calls` measured calls.
+
+    One ACTOR per transport: since the per-actor transport budget (ticket
+    `9595d6c8`) one actor can no longer fill the table alone, and these tests
+    exercise the GLOBAL cap, which only many actors can reach.
+    """
     return tuple(
         ClientObservation(
-            actor="brain-v42",
+            actor=f"actor-{index}",
             session_id=None,
             calls=calls,
             transport=f"{index:032x}",
@@ -204,6 +213,7 @@ class TestTheCountersReachTheOnlyExposureSite:
             "evictions_bearing_total",
             "occupancy",
             "capacity",
+            "folded_observations_total",
         }
 
     def test_the_totals_are_a_copy_and_not_the_live_dict(self) -> None:
