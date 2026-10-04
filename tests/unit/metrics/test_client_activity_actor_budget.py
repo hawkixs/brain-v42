@@ -98,11 +98,14 @@ class TestAFloodOfConnectionsOfOneActorIsBounded:
         assert registry.eviction_counters()["evictions_bearing_total"] == 0
         assert len(_rows(registry, "brain-v42")) == 4
 
-    def test_every_folded_connection_is_counted(self) -> None:
+    def test_every_folded_observation_is_counted(self) -> None:
         registry = _registry(_Clock())
         registry.record_observations(_connections("red-rail", 135))
 
-        assert registry.eviction_counters()["folded_total"] == 135 - MAX_TRANSPORT_ROWS_PER_ACTOR
+        assert (
+            registry.eviction_counters()["folded_observations_total"]
+            == 135 - MAX_TRANSPORT_ROWS_PER_ACTOR
+        )
 
 
 class TestTheTransportTierStillSeparatesRealEngines:
@@ -113,7 +116,7 @@ class TestTheTransportTierStillSeparatesRealEngines:
 
         rows = _rows(registry, "brain-v42")
         assert [row["kind"] for row in rows] == ["transport"] * 4
-        assert registry.eviction_counters()["folded_total"] == 0
+        assert registry.eviction_counters()["folded_observations_total"] == 0
 
     def test_a_connection_within_the_budget_keeps_accumulating_after_the_budget_fills(
         self,
@@ -164,4 +167,4 @@ class TestAnExpiredConnectionFreesItsBudget:
 
         rows = _rows(registry, "red-rail")
         assert [row["kind"] for row in rows] == ["transport"]
-        assert registry.eviction_counters()["folded_total"] == 2
+        assert registry.eviction_counters()["folded_observations_total"] == 2

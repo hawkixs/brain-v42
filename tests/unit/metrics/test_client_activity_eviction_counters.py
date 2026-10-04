@@ -213,7 +213,7 @@ class TestTheCountersReachTheOnlyExposureSite:
             "evictions_bearing_total",
             "occupancy",
             "capacity",
-            "folded_total",
+            "folded_observations_total",
         }
 
     def test_the_totals_are_a_copy_and_not_the_live_dict(self) -> None:

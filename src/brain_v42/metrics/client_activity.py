@@ -549,7 +549,7 @@ class ClientActivityRegistry:
         limit (red-rail: one per call). An actor therefore holds at most
         ``MAX_TRANSPORT_ROWS_PER_ACTOR`` live transport rows; its further NEW
         connections fold into its residual row and are counted in
-        ``folded_total``. What folding gives up is per-connection resolution
+        ``folded_observations_total``. What folding gives up is per-connection resolution
         beyond the budget, never a call: the residual row accumulates the calls
         of every connection it absorbed, so ``brain_calls`` there is a sum over
         connections and several observations, not one connection's count. The
@@ -627,14 +627,19 @@ class ClientActivityRegistry:
         `9595d6c8`); the per-actor transport budget answered it, and the clause
         stays the acceptance check: since then it can only fire on pressure from
         MANY actors, which is a capacity question rather than one client's
-        connection rotation.
+        connection rotation. The budget is keyed on the declared actor LABEL, not
+        on the client: a client that rotates connections under several labels
+        holds up to that many budgets (red-rail can send four), so the guarantee
+        is per label. Asking such a client for one label and a reused connection
+        is the other half of the fix (red-rail ticket `dbcec4ba`).
 
-        `folded_total` is not an eviction and is not in `evictions_total`: it
+        `folded_observations_total` is not an eviction and is not in `evictions_total`: it
         counts the observations that opened no row of their own because their
         actor was at its transport budget. No call is lost by it, so it never
-        enters `evictions_bearing_total`; it is the evidence that one client is
-        rotating connections, and the measure of the per-connection resolution
-        given up. Monotonic like the others.
+        enters `evictions_bearing_total`. It counts OBSERVATIONS, not
+        connections: a connection that never got its own row adds one on each of
+        its calls, so it measures the per-connection resolution given up rather
+        than the number of rotated connections. Monotonic like the others.
 
         Two causes, because two is what the code can attribute: `ttl` from
         `_prune_brain`, `capacity` from `_trim_brain`. Transport rotation is why
@@ -650,7 +655,7 @@ class ClientActivityRegistry:
                 "evictions_bearing_total": self._evictions_bearing,
                 "occupancy": len(self._brain),
                 "capacity": MAX_ACTIVE_CONVERSATIONS,
-                "folded_total": self._folded,
+                "folded_observations_total": self._folded,
             }
 
     def snapshot(self) -> dict[str, object]:
