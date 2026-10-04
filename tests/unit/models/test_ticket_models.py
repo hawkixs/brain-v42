@@ -34,6 +34,21 @@ def test_deployed_only_when_the_running_release_is_one_of_them() -> None:
     ]
 
 
+def test_a_ticket_with_one_deliverable_in_the_live_release_renders_exactly_as_before() -> None:
+    state = ReleaseState(deployed_shas=(L,), running_sha=L, deliverables=1, deliverables_live=1)
+    assert state.rendered_parts() == ["deployed"]
+
+
+def test_every_deliverable_in_the_live_release_is_deployed() -> None:
+    state = ReleaseState(deployed_shas=(L,), running_sha=L, deliverables=2, deliverables_live=2)
+    assert state.rendered_parts() == ["deployed"]
+
+
+def test_only_some_deliverables_in_the_live_release_is_said_partial() -> None:
+    state = ReleaseState(deployed_shas=(L,), running_sha=L, deliverables=2, deliverables_live=1)
+    assert state.rendered_parts() == ["partly deployed (1/2)"]
+
+
 def test_rollback_to_a_release_without_the_ticket_is_not_deployed() -> None:
     parts = ReleaseState(
         shipped_tags=("v0.6.3",), deployed_shas=(L,), running_sha=OLD

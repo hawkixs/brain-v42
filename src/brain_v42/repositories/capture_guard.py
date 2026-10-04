@@ -45,7 +45,17 @@ async def lock_unless_captured(
         lock = lock.where(table.c.project_key == project_key)
     if (await session.execute(lock.with_for_update())).scalar_one_or_none() is None:
         return False
+    await refuse_if_captured(session, knowledge_id)
+    return True
 
+
+async def refuse_if_captured(session: AsyncSession, knowledge_id: UUID) -> None:
+    """Raise `KnowledgeCapturedError` when the capture ledger holds this id.
+
+    The caller already holds the knowledge row's lock, which is what makes the
+    ledger read decisive (see `lock_unless_captured`). Split out for the one
+    delete that has to lock SEVERAL rows in a fixed order before reading it.
+    """
     owner = (
         await session.execute(
             sa.select(brain_session_artifacts.c.session_id).where(
@@ -55,4 +65,3 @@ async def lock_unless_captured(
     ).scalar_one_or_none()
     if owner is not None:
         raise KnowledgeCapturedError(knowledge_id, owner)
-    return True

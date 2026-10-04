@@ -316,6 +316,60 @@ async def test_same_origin_pagination_cannot_change_endpoint_filter_or_repeat_pa
     assert len(case.requests) == 2
 
 
+@pytest.mark.parametrize("family", ["check", "status", "review"])
+@pytest.mark.asyncio
+async def test_pagination_in_repository_id_form_is_followed(family):
+    case = GitHubCase(statuses=family == "status", approvals=int(family == "review"))
+    case.repository_id_next = True
+    if family == "check":
+        case.checks[H] = [[check()], [check(8002)]]
+    elif family == "status":
+        case.statuses[H] = [[status()], [status(8102)]]
+    else:
+        case.reviews = [[review()], [review(9102)]]
+    result = await case.collect()
+    records = {
+        "check": [item for item in result.checks if item.kind == "check_run"],
+        "status": [item for item in result.checks if item.kind == "commit_status"],
+        "review": result.reviews,
+    }[family]
+    assert len(records) == 2
+
+
+@pytest.mark.parametrize(
+    "next_url",
+    [
+        f"https://api.github.com/repositories/{RID + 1}/commits/{H}/check-runs?filter=all&per_page=100&page=2",
+        f"https://api.github.com/repositories/{RID}/commits/{S}/check-runs?filter=all&per_page=100&page=2",
+        f"https://api.github.com/repositories/{RID}/statuses/{H}?filter=all&per_page=100&page=2",
+        f"https://api.github.com/repositories/{RID}/commits/{H}/check-runs?filter=latest&per_page=100&page=2",
+        f"https://example.test/repositories/{RID}/commits/{H}/check-runs?filter=all&per_page=100&page=2",
+    ],
+)
+@pytest.mark.asyncio
+async def test_repository_id_pagination_cannot_change_id_endpoint_host_or_query(next_url):
+    case = GitHubCase()
+    case.checks[H] = [[check()], [check(8002)]]
+    case.bad_next = next_url
+    with pytest.raises(ProviderError) as failure:
+        await case.collect()
+    assert failure.value.code == "provider_invalid_response"
+    assert len(case.requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_statuses_pagination_keeps_the_commits_form_refused():
+    """GitHub moves this endpoint to /statuses/<sha>; the unmoved id form is not its."""
+    case = GitHubCase(statuses=True)
+    case.statuses[H] = [[status()], [status(8102)]]
+    case.bad_next = (
+        f"https://api.github.com/repositories/{RID}/commits/{H}/statuses?per_page=100&page=2"
+    )
+    with pytest.raises(ProviderError) as failure:
+        await case.collect()
+    assert failure.value.code == "provider_invalid_response"
+
+
 @pytest.mark.parametrize(
     "state,draft,expected",
     [("open", False, "open"), ("open", True, "open"), ("closed", False, "closed")],

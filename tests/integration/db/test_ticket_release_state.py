@@ -1,8 +1,10 @@
 """PostgreSQL contract for observer-only ticket release measurements."""
 
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
+import sqlalchemy as sa
 
 from brain_v42.db.tables import delivery_artifact_bindings
 from brain_v42.repositories.pg_release_derivation import OBSERVER_IDENTITY
@@ -232,3 +234,71 @@ async def test_observer_rows_issued_by_the_requester_project_are_not_shown(sessi
 
     # The observer writes as the executor project; the label alone proves nothing.
     assert await PgTicketRepo(session_factory).release_state(ticket.id) == (("v0.6.9",), (L,))
+
+
+async def _second_deliverable(session_factory, ticket_id, sha: str) -> None:
+    """A second active binding on the ticket, merged at `sha`."""
+    b = delivery_artifact_bindings
+    async with session_factory.begin() as session:
+        first = (
+            (await session.execute(sa.select(b).where(b.c.ticket_id == ticket_id).limit(1)))
+            .mappings()
+            .one()
+        )
+        await session.execute(
+            b.insert().values(
+                {
+                    **first,
+                    "id": uuid4(),
+                    "deliverable_key": "documentation",
+                    "pr_number": first["pr_number"] + 1,
+                    "integration_sha": sha,
+                }
+            )
+        )
+
+
+async def _deployed(service, ticket_id, live_sha: str, integration_sha: str) -> None:
+    await service.attest(
+        ticket_id,
+        actor_project="executor",
+        caller_identity=OBSERVER_IDENTITY,
+        kind="deployed",
+        payload={
+            "repository_id": 1,
+            "live_release_sha": live_sha,
+            "package_version": "0.6.9",
+            "integration_sha": integration_sha,
+        },
+        idempotency_key=f"deployed-{integration_sha[:4]}-{live_sha[:4]}-{ticket_id}",
+        emitted_at=NOW,
+        contract_revision=1,
+    )
+
+
+async def test_deliverables_are_counted_against_the_release_that_is_live(session_factory):
+    ticket, _binding, service = await _workflow(session_factory)
+    await _merged_at(session_factory, ticket.id)
+    repo = PgTicketRepo(session_factory)
+    assert await repo.deployed_deliverables(ticket.id, L) == (0, 1)
+
+    await _deployed(service, ticket.id, L, L)
+    assert await repo.deployed_deliverables(ticket.id, L) == (1, 1)
+
+    await _second_deliverable(session_factory, ticket.id, STALE)
+    assert await repo.deployed_deliverables(ticket.id, L) == (1, 2)
+    assert await repo.deployed_deliverables(ticket.id, STALE) == (0, 2)
+
+    await _deployed(service, ticket.id, L, STALE)
+    assert await repo.deployed_deliverables(ticket.id, L) == (2, 2)
+
+
+async def test_lot_tag_is_not_known_from_a_row_the_requester_project_issued(session_factory):
+    executor, requester = "executor", "requester"
+    planned, planned_svc = await _planned(session_factory, executor, "7.4.0")
+    await _released(planned_svc, planned.id, "v7.4.0", actor_project=requester)
+
+    lot = await PgTicketRepo(session_factory).shipped_by_release(executor, "7.4.0")
+
+    assert lot.tag_known is False
+    assert lot.not_shipped == ()

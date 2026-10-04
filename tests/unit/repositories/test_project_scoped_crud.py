@@ -238,10 +238,14 @@ async def test_scoped_adr_empty_update_still_carries_the_project_predicate() -> 
     assert "adrs.project_key =" in sql
 
 
+def _locked(*rows: tuple[uuid.UUID, str | None]) -> MagicMock:
+    return _result(rows=[{"id": row_id, "project_key": key} for row_id, key in rows])
+
+
 @pytest.mark.asyncio
-async def test_scoped_decision_delete_foreign_target_stops_after_locked_lookup() -> None:
+async def test_scoped_decision_delete_foreign_target_stops_before_any_lock() -> None:
     _assert_project_key_parameter(PgDecisionRepo.delete)
-    session = _session(_result(scalar=None))
+    session = _session(_result(scalar="sec1b-foreign"))
 
     deleted = await PgDecisionRepo().delete(
         ENTITY_ID,
@@ -251,28 +255,17 @@ async def test_scoped_decision_delete_foreign_target_stops_after_locked_lookup()
 
     assert deleted is False
     assert session.execute.await_count == 1
-    sql = _compiled_sql(session.execute.await_args_list[0])
-    assert "decisions.id =" in sql
-    assert "decisions.project_key =" in sql
-    assert "for update" in sql
+    owner_sql = _compiled_sql(session.execute.await_args_list[0])
+    assert "decisions.id =" in owner_sql
+    assert "for update" not in owner_sql
     session.begin_nested.assert_called_once_with()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("foreign_project_key", ["sec1b-foreign", None])
-async def test_scoped_decision_delete_foreign_reference_stops_before_mutation(
-    foreign_project_key: str | None,
-) -> None:
+async def test_scoped_decision_delete_target_moved_to_another_project_stops_after_lock() -> None:
+    """`DecisionUpdate` can change the project between the unlocked read and the lock."""
     session = _session(
-        _result(scalar=ENTITY_ID),
-        _result(),
-        _result(
-            rows=[
-                {"id": OWNED_REFERENCE_ID, "project_key": PROJECT_KEY},
-                {"id": FOREIGN_ID, "project_key": foreign_project_key},
-            ],
-            scalar=FOREIGN_ID,
-        ),
+        _result(scalar=PROJECT_KEY), _locked((ENTITY_ID, "sec1b-foreign")), _result()
     )
 
     deleted = await PgDecisionRepo().delete(
@@ -283,27 +276,52 @@ async def test_scoped_decision_delete_foreign_reference_stops_before_mutation(
 
     assert deleted is False
     assert session.execute.await_count == 3
-    target_lock_sql, _ledger_sql, reference_locks_sql = (
+    assert "for update" in _compiled_sql(session.execute.await_args_list[1])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("foreign_project_key", ["sec1b-foreign", None])
+async def test_scoped_decision_delete_foreign_reference_stops_before_mutation(
+    foreign_project_key: str | None,
+) -> None:
+    session = _session(
+        _result(scalar=PROJECT_KEY),
+        _locked(
+            (ENTITY_ID, PROJECT_KEY),
+            (OWNED_REFERENCE_ID, PROJECT_KEY),
+            (FOREIGN_ID, foreign_project_key),
+        ),
+        _result(),
+        _result(),
+    )
+
+    deleted = await PgDecisionRepo().delete(
+        ENTITY_ID,
+        project_key=PROJECT_KEY,
+        session=session,
+    )
+
+    assert deleted is False
+    assert session.execute.await_count == 4
+    _owner_sql, lock_sql, _straggler_sql, _ledger_sql = (
         _compiled_sql(call) for call in session.execute.await_args_list
     )
-    assert "for update" in target_lock_sql
-    assert "select decisions.id, decisions.project_key" in reference_locks_sql
-    assert "decisions.superseded_by =" in reference_locks_sql
-    assert "for update" in reference_locks_sql
-    assert "is distinct from" not in reference_locks_sql
-    assert "limit" not in reference_locks_sql
-    session.begin_nested.assert_called_once_with()
+    assert "select decisions.id, decisions.project_key" in lock_sql
+    assert "decisions.superseded_by =" in lock_sql
+    assert "order by decisions.id" in lock_sql
+    assert "for update" in lock_sql
+    assert "limit" not in lock_sql
+    assert session.begin_nested.call_count == 2
 
 
 @pytest.mark.asyncio
 async def test_scoped_decision_delete_keeps_lock_clear_and_delete_in_one_transaction() -> None:
     _assert_project_key_parameter(PgDecisionRepo.delete)
     session = _session(
-        _result(scalar=ENTITY_ID),
+        _result(scalar=PROJECT_KEY),
+        _locked((ENTITY_ID, PROJECT_KEY), (OWNED_REFERENCE_ID, PROJECT_KEY)),
         _result(),
-        _result(
-            rows=[{"id": OWNED_REFERENCE_ID, "project_key": PROJECT_KEY}],
-        ),
+        _result(),
         _result(),
         _result(scalar=ENTITY_ID),
     )
@@ -315,21 +333,33 @@ async def test_scoped_decision_delete_keeps_lock_clear_and_delete_in_one_transac
     )
 
     assert deleted is True
-    assert session.execute.await_count == 5
-    lock_sql, _ledger_sql, reference_locks_sql, clear_sql, delete_sql = (
+    assert session.execute.await_count == 6
+    _owner_sql, lock_sql, _straggler_sql, _ledger_sql, clear_sql, delete_sql = (
         _compiled_sql(call) for call in session.execute.await_args_list
     )
+    assert "select decisions.id, decisions.project_key" in lock_sql
+    assert "decisions.superseded_by =" in lock_sql
+    assert "order by decisions.id" in lock_sql
     assert "for update" in lock_sql
-    assert "select decisions.id, decisions.project_key" in reference_locks_sql
-    assert "decisions.superseded_by =" in reference_locks_sql
-    assert "for update" in reference_locks_sql
-    assert "is distinct from" not in reference_locks_sql
-    assert "limit" not in reference_locks_sql
+    assert "limit" not in lock_sql
     assert "decisions.superseded_by =" in clear_sql
     assert "decisions.project_key =" in clear_sql
     assert "decisions.id =" in delete_sql
     assert "decisions.project_key =" in delete_sql
-    session.begin_nested.assert_called_once_with()
+    assert session.begin_nested.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_decision_delete_gives_up_when_referrers_keep_appearing() -> None:
+    """Each retry needs a fresh concurrent commit; three passes are the bound."""
+    lock = _locked((ENTITY_ID, PROJECT_KEY))
+    straggler = _result(scalar=OWNED_REFERENCE_ID)
+    session = _session(_result(scalar=PROJECT_KEY), *[lock, straggler] * 3)
+
+    with pytest.raises(RuntimeError, match="kept gaining referrers"):
+        await PgDecisionRepo().delete(ENTITY_ID, project_key=PROJECT_KEY, session=session)
+
+    assert session.execute.await_count == 7
 
 
 def _plan_row() -> dict[str, Any]:

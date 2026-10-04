@@ -255,10 +255,17 @@ class GitHubClient:
     async def _records(
         self,
         path: str,
+        id_path: str,
         budget: _PageBudget,
         *,
         check_runs: bool = False,
     ) -> list[dict[str, Any]]:
+        """Read every page of `path`; `id_path` is the form GitHub puts in its Link header.
+
+        It names the repository by its numeric id (`/repositories/<id>/...`, and
+        `/statuses/<sha>` for the commit statuses) while the request used the
+        name, so `next` is accepted at either of exactly these two paths.
+        """
         query = {"per_page": "100", **({"filter": "all"} if check_runs else {})}
         page_number = 1
         records: list[dict[str, Any]] = []
@@ -293,7 +300,7 @@ class GitHubClient:
                 return records
             page_number += 1
             expected_query = {**query, "page": str(page_number)}
-            self._relative_next(page.next_url, {path}, expected_query)
+            self._relative_next(page.next_url, {path, id_path}, expected_query)
 
     async def release_tags(self, repository_id: int) -> list[ReleaseTag]:
         """Every ``vX.Y.Z`` tag; pre-releases and other names are not releases."""
@@ -499,6 +506,7 @@ class GitHubClient:
             raise ProviderError("provider_invalid_response")
         # A rename may change the address, never the registered numeric identity.
         root = "/repos/" + name
+        by_id = f"/repositories/{binding.repository_id}"
         head, base = opening["head_sha"], opening["base_sha"]
         associations: list[SyntheticMergeAssociation] = []
         if deliverable.required_checks:
@@ -535,6 +543,7 @@ class GitHubClient:
                     self._check(raw, root, sha)
                     for raw in await self._records(
                         f"{root}/commits/{sha}/check-runs",
+                        f"{by_id}/commits/{sha}/check-runs",
                         check_budget,
                         check_runs=True,
                     )
@@ -544,6 +553,7 @@ class GitHubClient:
                     self._status(raw, root, sha)
                     for raw in await self._records(
                         f"{root}/commits/{sha}/statuses",
+                        f"{by_id}/statuses/{sha}",
                         status_budget,
                     )
                 )
@@ -555,7 +565,9 @@ class GitHubClient:
         reviews: list[ReviewEvidence] = []
         if deliverable.review.required_approvals:
             for raw in await self._records(
-                f"{root}/pulls/{binding.pr_number}/reviews", _PageBudget()
+                f"{root}/pulls/{binding.pr_number}/reviews",
+                f"{by_id}/pulls/{binding.pr_number}/reviews",
+                _PageBudget(),
             ):
                 review = self._review(raw, root, binding.pr_number)
                 if review is not None:

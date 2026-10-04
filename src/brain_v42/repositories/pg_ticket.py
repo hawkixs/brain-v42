@@ -170,6 +170,31 @@ class PgTicketRepo(BasePgRepository):
         shas = tuple(row["sha"] for row in rows if row["kind"] == "deployed")
         return tags, shas
 
+    async def deployed_deliverables(self, ticket_id: UUID, running_sha: str) -> tuple[int, int]:
+        """Count the ticket's active merged deliverables, and those the live release carries.
+
+        A deliverable is live when the observer issued a ``deployed`` row for ITS
+        merge at ``running_sha``: the rows of the other deliverables do not speak
+        for it. Same observer scope as ``release_state``.
+        """
+        binding = delivery_artifact_bindings
+        live = delivery_attestations.alias("live_deployed")
+        carried = sa.exists().where(
+            live.c.ticket_id == binding.c.ticket_id,
+            live.c.kind == "deployed",
+            _measures_active_merge(live),
+            live.c.payload["integration_sha"].astext == binding.c.integration_sha,
+            live.c.payload["live_release_sha"].astext == running_sha,
+        )
+        query = sa.select(sa.func.count().filter(carried), sa.func.count()).where(
+            binding.c.ticket_id == ticket_id,
+            binding.c.active.is_(True),
+            binding.c.integration_sha.is_not(None),
+        )
+        async with self.get_session() as session:
+            carried_count, total = (await session.execute(query)).one()
+        return int(carried_count), int(total)
+
     async def shipped_by_release(self, project_key: str, target_release: str) -> LotShipping:
         """Compare planned tickets with observer tags; never alter either record."""
         observed = delivery_attestations.alias("observed_release")
@@ -181,6 +206,9 @@ class PgTicketRepo(BasePgRepository):
                 sa.exists().where(
                     tickets.c.id == observed.c.ticket_id,
                     tickets.c.to_project == project_key,
+                    # The identity label is only declared: the executor project
+                    # is the sole issuer the observer writes as.
+                    tickets.c.to_project == observed.c.issuer_project,
                 ),
             )
         )
