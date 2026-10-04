@@ -21,9 +21,9 @@
     "brain_session_abandon": 2621,
     "brain_session_checkpoint": 633,
     "brain_session_bind": 352,
-    "brain_session_relay": 4287
+    "brain_session_relay": 4604
   },
-  "output_schema_total": 24313,
+  "output_schema_total": 24630,
   "contracts": {
     "brain_session_start": {
       "version": "4.0",
@@ -432,13 +432,9 @@
             "type": "string"
           },
           "handover": {
-            "maxLength": 4000,
+            "maxLength": 10000,
             "minLength": 1,
             "type": "string"
-          },
-          "expected_slot_revision": {
-            "minimum": 0,
-            "type": "integer"
           },
           "new_client_key": {
             "description": "Stable identity for one intended session. Reuse it for every retry of that session; use a distinct stable key for each parallel session.",
@@ -452,6 +448,34 @@
               "guard_mod"
             ],
             "type": "string"
+          },
+          "expected_slot_revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "expected_focus_revision": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "allow_focus_shrink": {
+            "default": false,
+            "type": "boolean"
           },
           "knowledge_ids": {
             "anyOf": [
@@ -488,7 +512,6 @@
           "expected_client_key",
           "summary",
           "handover",
-          "expected_slot_revision",
           "new_client_key",
           "initiator"
         ],

@@ -112,8 +112,8 @@ brain-v42
 > `brain_session_end` or `brain_session_abandon` only
 > after the user's corresponding explicit command.
 > No hook, auto-close, work delivery or end of response closes a session on the agent or client side.
-> **Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly enabled counts as a standing user command for one gesture only: `brain_session_relay` of an open operator session bound to a focus slot, onto that same slot — capture, end and start of its successor under a new `client_key`, in one transaction. The model makes the call and chooses its captures, summary and handover; the mod only triggers the turn and replays the result at compaction. The standing command covers nothing else: not `brain_session_abandon`, not `brain_session_end` of any session, not the relay of an unbound session, not any write of the project base, not opening, closing or changing a slot, and not `start`, `resume` or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Hooks still never capture, close or commit on their own.
-> Cross-cutting work without a ticket cannot be relayed automatically: give it an anchor and a slot first.
+> **Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly enabled counts as a standing user command for one gesture only: `brain_session_relay` of an open operator session, onto its focus slot when it is bound to one and onto the project base when it is not — capture, end and start of its successor under a new `client_key`, in one transaction. The model makes the call and chooses its captures, summary and handover; the mod only triggers the turn and replays the result at compaction. The base form writes the handover as the project's whole base focus under a compare-and-swap on its revision, and refuses a handover under 70% of the current base (`base_focus_shrink`): only an operator relay may override that guard, never the mod. The standing command covers nothing else: not `brain_session_abandon`, not `brain_session_end` of any session, not the relay of a server-opened trace, not any write of the project base outside that relay, not opening, closing or changing a slot, and not `start`, `resume` or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Hooks still never capture, close or commit on their own.
+> Cross-cutting work without a ticket needs no anchor: left unbound, it is relayed onto the project base, under the same guards.
 > A delivered feature may update the roadmap, never close Brain.
 >
 > **Only exception, server-side:** the Dream `sweep` phase — shipped disabled and dry (`BRAIN_DREAM_SWEEP_ENABLED=false`, `BRAIN_DREAM_SWEEP_DRY_RUN=true`) — abandons an open session with no heartbeat for 7 days, with `abandonment_reason='auto_stale_7d'`.
@@ -132,7 +132,7 @@ brain-v42
 | `brain session heartbeat` | `brain_session_heartbeat(session_id=..., expected_client_key=...)` |
 | `brain session end` | `brain_session_end(session_id=..., expected_client_key=..., summary=..., next_focus=..., expected_focus_revision=...)` |
 | `brain session bind` | `brain_session_bind(session_id=..., expected_client_key=..., slot_id=...)` |
-| `brain session relay` | `brain_session_relay(session_id=..., expected_client_key=..., summary=..., handover=..., expected_slot_revision=..., new_client_key=..., initiator="operator")` |
+| `brain session relay` | bound: `brain_session_relay(session_id=..., expected_client_key=..., summary=..., handover=..., expected_slot_revision=..., new_client_key=..., initiator="operator")`; unbound, onto the project base: the same with `expected_focus_revision=...` in place of `expected_slot_revision` (and `allow_focus_shrink=true`, operator only, to pass the shrink guard) |
 | `brain session abandon` | `brain_session_abandon(session_id=..., expected_client_key=..., reason=...)` |
 
 The v4 lifecycle rests on migration 037, which itself depends on 036. It has been active
@@ -143,7 +143,11 @@ refuses an inconsistent pair before any mutation: it is a guard against mis-targ
 between parallel sessions, **not** authentication. Reuse the same `client_key` for the
 retries of one session; use a distinct key per parallel session. For a bound session
 (bind, relay), the revision to send at end or relay is the **slot** revision (from bind,
-resume, or relay's `slot.revision`), never `started_focus_revision`.
+resume, or relay's `slot.revision`), never `started_focus_revision`. An unbound session
+relays onto the project base: it sends the BASE revision as `expected_focus_revision` (a
+successor sends relay's `focus_revision`), and a stale one refuses `focus_revision_conflict`
+and leaves the session open, where `end` would close it anyway. The handover REPLACES the
+whole base focus, so a handover under 70% of it is refused `base_focus_shrink`; a base relay's successor is linked by client_key and start boundary, not by relayed_from_session_id (the 060 CHECK keeps that column slot-only).
 
 The capture ledger is **exclusive**: an artifact belongs to one session only. The server
 requires the same project and a creation later than the session start. Provenance is

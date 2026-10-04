@@ -167,11 +167,17 @@ class BrainSessionBindResult(BaseModel):
 
 
 class BrainSessionRelayResult(BaseModel):
-    """`brain_session_relay`: the ended session, its successor, the slot after the CAS."""
+    """`brain_session_relay`: the ended session, its successor, what the CAS wrote.
+
+    A slot relay carries the slot after the CAS and no `focus_revision`; a base relay
+    (an unbound session) carries no slot and the new BASE revision the successor must
+    send. Exactly one of the two is set.
+    """
 
     ended_session_id: UUID
     session: BrainSession
-    slot: FocusSlot
+    slot: FocusSlot | None = None
+    focus_revision: int | None = None
     replayed: bool
     briefing: str = ""
 

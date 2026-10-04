@@ -116,6 +116,7 @@ def test_bind_and_relay_result_models_pin_their_field_sets() -> None:
         "ended_session_id",
         "session",
         "slot",
+        "focus_revision",
         "replayed",
         "briefing",
     }
