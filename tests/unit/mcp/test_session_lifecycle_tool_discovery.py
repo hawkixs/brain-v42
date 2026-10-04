@@ -75,7 +75,9 @@ LIGHTWEIGHT_OUTPUT_SCHEMA_TOOLS = frozenset(
 # Bumped by brain_session_bind (ADR #34), MEASURED: +352 on both sides — an unoptimized
 # tool raises the baseline by exactly what it raises the total, so the margin stays 35.
 # Bumped by brain_session_relay (ADR #34), MEASURED: +4287 on both sides; the margin stays 35.
-OUTPUT_SCHEMA_TOTAL = 10_139 + 352 + 4_287
+# Bumped by `BrainSessionResumeResult.slot_closed` (ticket 16d3cf2f), MEASURED in situ: +49,
+# paid by the floor below, not by the margin.
+OUTPUT_SCHEMA_TOTAL = 10_139 + 352 + 4_287 + 49
 # Lowered from 10_000 to 9_500: the floor had been set against a THREE-state
 # machine, and the fourth state costs 600 bytes on its own — only 554 of margin
 # were left. The loosened floor is still a floor: the effective saving is 9_660
@@ -83,7 +85,15 @@ OUTPUT_SCHEMA_TOTAL = 10_139 + 352 + 4_287
 # budget loosened by 500 bytes, never a client contract: the seven tools keep
 # exactly the same public surface, and the three `output_schema=None` stay
 # three.
-OUTPUT_SCHEMA_MINIMUM_SAVINGS = 9_500
+# Lowered from 9_500 to 9_450 by the structured `slot_closed` flag of `brain_session_resume`
+# (ticket 16d3cf2f), a DELIBERATE and separate decision, MEASURED on 2026-10-04 against the
+# 35 bytes of margin: `slot_closed: bool = False` costs 49 bytes (`closed: bool` required, the
+# cheapest spelling, costs 37 and still overshoots; no existing field can carry the state
+# without lying about its type). Fifty bytes is the price of that one field plus one byte, so
+# the margin ends at 36, one above where it stood. It is the second time this floor moves, and the
+# comment above says what that means: the NEXT field on these tools goes to the briefing
+# TEXT, not to another loosening.
+OUTPUT_SCHEMA_MINIMUM_SAVINGS = 9_450
 SESSION_PUBLIC_FIELDS = {
     "id",
     # 046: `nature` alone enters the public contract. The migration's four other
@@ -389,8 +399,10 @@ async def test_tool_run_preserves_every_public_structured_content_contract() -> 
         "open_session_count",
         "current_focus",
         "current_focus_revision",
+        "slot_closed",
         "briefing",
     }
+    assert resume["slot_closed"] is False
     assert end is not None and set(end) == {
         "session",
         "replayed",

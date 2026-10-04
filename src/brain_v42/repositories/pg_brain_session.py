@@ -497,6 +497,7 @@ class PgBrainSessionRepo(BasePgRepository):
             open_session_count=open_count,
             current_focus=focus["current_focus"],
             current_focus_revision=focus["focus_revision"],
+            slot_closed=bool(focus.get("slot_closed", False)),
         )
 
     async def bind(
@@ -1815,6 +1816,7 @@ class PgBrainSessionRepo(BasePgRepository):
                     sa.select(
                         focus_slots.c.body.label("current_focus"),
                         focus_slots.c.revision.label("focus_revision"),
+                        focus_slots.c.closed_at.is_not(None).label("slot_closed"),
                     ).where(focus_slots.c.id == slot_id)
                 )
             )

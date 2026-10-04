@@ -419,6 +419,11 @@ class BrainSessionResumeResult(BaseModel):
     open_session_count: int = Field(..., ge=0)
     current_focus: str | None
     current_focus_revision: int = Field(..., ge=0)
+    #: A bound session whose slot a receipt has closed: `current_focus*` then describe the closed
+    #: slot at its post-close revision, and `end`/`relay` refuse with `slot_closed`. Always False
+    #: for an unbound session. A flag a client reads without parsing the briefing; its byte cost
+    #: against the lifecycle output-schema budget is recorded in the discovery contract test.
+    slot_closed: bool = False
     briefing: str = ""
 
 

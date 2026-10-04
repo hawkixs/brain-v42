@@ -105,7 +105,8 @@ async def integrate(factory, ticket_id: UUID, binding, pr_number: int):
         return await integrate_in(factory, session, ticket_id, binding, pr_number)
 
 
-async def release(factory, ticket_id: UUID, tag: str) -> None:
+async def release_in(session, ticket_id: UUID, tag: str) -> None:
+    """Record the observer's release inside the caller's open transaction."""
     candidate = ReleaseCandidate(
         ticket_id=ticket_id,
         to_project=EXECUTOR,
@@ -114,10 +115,14 @@ async def release(factory, ticket_id: UUID, tag: str) -> None:
         repository_id=RID,
         integration_sha=C,
     )
+    await PgReleaseDerivationRepo().record_released(
+        session, candidate, SimpleNamespace(name=tag, sha="d" * 40), NOW
+    )
+
+
+async def release(factory, ticket_id: UUID, tag: str) -> None:
     async with factory() as session, session.begin():
-        await PgReleaseDerivationRepo().record_released(
-            session, candidate, SimpleNamespace(name=tag, sha="d" * 40), NOW
-        )
+        await release_in(session, ticket_id, tag)
 
 
 async def slot(factory, slot_id: UUID):
@@ -198,8 +203,9 @@ async def test_a_lot_decides_a_mixed_slot_and_closes_on_the_observer_release(ses
 
 
 async def test_a_replayed_observer_release_is_idempotent(session_factory):
-    ticket, _, _, _ = await workflow(session_factory)
+    ticket, binding, _, number = await workflow(session_factory)
     await plan(session_factory, ticket.id, "8.4.3")
+    await integrate(session_factory, ticket.id, binding, number)  # a real release candidate
     opened = await open_slot(session_factory, SlotAnchor(kind="lot", target_release="8.4.3"))
     await release(session_factory, ticket.id, "v8.4.3")
     await release(session_factory, ticket.id, "v8.4.3")

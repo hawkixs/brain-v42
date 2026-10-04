@@ -225,6 +225,23 @@ Ticket `09d2b56e` measured the trace volume on 2026-09-22, over the six days bef
 it: about 1,400 agent traces opened per day, almost none closed. These are dated
 observations, not the current state.
 
+## Focus slots
+
+Focus slots (ADR #34) carry the topics in flight; the tools are described in
+[MCP tools](MCP_TOOLS.md#brain_slot_open). Two operator-visible rules:
+
+- **A slot's anchors must belong to the slot's project (spec D4).** Opening a slot of project
+  `red` on a ticket addressed to `brain-v42` is refused with `anchor_ticket_foreign`, and so is
+  an unknown ticket id. Anchor on a ticket addressed to the slot's own project, on a lot planned
+  by one of its tickets, or on a PR bound to one of them. When a cross-project ticket is the real
+  subject, open the slot in the project that owns the ticket.
+- **A receipt and an open cannot cross.** `brain_slot_open` takes a key-share lock on the tickets
+  whose receipts could complete its anchors before it reads those receipts, and the receipt
+  writers lock the same rows exclusively first. An open that meets a receipt being written waits
+  for it, then refuses with `anchor_already_received`; it never leaves an open slot with
+  `receipt_pending=true`. A slot found in that state came from a missed hook call: close it with
+  `brain_slot_close`.
+
 ## Network trust boundary (detailed)
 
 **Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to loopback; metrics and automation default to loopback. The versioned Compose target binds the embedding host publish to loopback and the live runtime matches it — measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and non-empty in the live server process, and `POST /mcp` answers `401` both without a bearer and with a wrong one. The dedicated Docker client network exists and carries the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. Repository-managed WAN isolation remains unproven — the repository manages no firewall rule at all. What would make this paragraph false again, and is watched by no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. `METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the decision, and under that opt-in the three POST receivers stay unregistered and say so on `/healthz`. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
