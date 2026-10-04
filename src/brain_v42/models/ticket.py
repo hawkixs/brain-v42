@@ -44,6 +44,11 @@ class ReleaseState(BaseModel, frozen=True):
     shipped_tags: tuple[str, ...] = ()
     deployed_shas: tuple[str, ...] = ()
     running_sha: str | None = None
+    # Active merged deliverables of the ticket, and how many of them the running
+    # release carries. 1/1 is the single-deliverable norm and renders as it
+    # always did; "deployed" is a claim about EVERY deliverable, never one.
+    deliverables: int = 1
+    deliverables_live: int = 1
 
     def rendered_parts(self) -> list[str]:
         parts: list[str] = []
@@ -54,7 +59,10 @@ class ReleaseState(BaseModel, frozen=True):
             if self.running_sha is None:
                 parts.append(f"deployed {self.deployed_shas[-1][:8]} (live release unmeasured)")
             elif self.running_sha in self.deployed_shas:
-                parts.append("deployed")
+                if self.deliverables_live < self.deliverables:
+                    parts.append(f"partly deployed ({self.deliverables_live}/{self.deliverables})")
+                else:
+                    parts.append("deployed")
             else:
                 parts.append(
                     f"deployed once ({self.deployed_shas[-1][:8]}), not in the live release"

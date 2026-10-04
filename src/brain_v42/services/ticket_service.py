@@ -300,8 +300,18 @@ class TicketService:
         tags, shas = await self._repo.release_state(ticket_id)
         if not tags and not shas:
             return None
+        running_sha = self._running_sha_provider()
+        live, total = (
+            await self._repo.deployed_deliverables(ticket_id, running_sha)
+            if running_sha in shas
+            else (1, 1)
+        )
         return ReleaseState(
-            shipped_tags=tags, deployed_shas=shas, running_sha=self._running_sha_provider()
+            shipped_tags=tags,
+            deployed_shas=shas,
+            running_sha=running_sha,
+            deliverables=total,
+            deliverables_live=live,
         )
 
     async def lot_shipping(self, project_key: str, target_release: str) -> LotShipping:
