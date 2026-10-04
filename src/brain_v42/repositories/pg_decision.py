@@ -30,10 +30,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.tables import decisions
 from brain_v42.models.decision import Decision, DecisionCreate, DecisionUpdate
-from brain_v42.repositories.capture_guard import lock_unless_captured
+from brain_v42.repositories.capture_guard import refuse_if_captured
 from brain_v42.repositories.pg_base import BasePgRepository, Row, project_scope
 
 logger = structlog.get_logger(__name__)
+
+
+class _ReferrerAppeared(Exception):
+    """A decision started pointing at the one being deleted while its locks were taken."""
 
 
 class PgDecisionRepo(BasePgRepository):
@@ -234,21 +238,19 @@ class PgDecisionRepo(BasePgRepository):
         Uses transaction() so both statements land in the same atomic commit.
         Raises KnowledgeCapturedError, changing nothing, when a session captured
         the decision.
+
+        Locks the decision AND its referrers in ascending id order, in one
+        statement (`_lock_with_referrers`): capture locks several decisions in the
+        same order, so the two can no longer wait on each other in a cycle.
         """
         if project_key is not None:
             async with self.transaction(session) as sess:
-                if not await lock_unless_captured(
-                    sess, decisions, decision_id, project_key=project_key
-                ):
+                locked = await self._lock_with_referrers(sess, decision_id)
+                target = next((row for row in locked if row["id"] == decision_id), None)
+                if target is None or target["project_key"] != project_key:
                     return False
-
-                reference_locks_stmt = (
-                    sa.select(decisions.c.id, decisions.c.project_key)
-                    .where(decisions.c.superseded_by == decision_id)
-                    .with_for_update()
-                )
-                reference_rows = (await sess.execute(reference_locks_stmt)).mappings().all()
-                if any(row["project_key"] != project_key for row in reference_rows):
+                await refuse_if_captured(sess, decision_id)
+                if any(row["project_key"] != project_key for row in locked):
                     return False
 
                 clear_stmt = (
@@ -272,9 +274,11 @@ class PgDecisionRepo(BasePgRepository):
                 return deleted is not None
 
         async with self.transaction() as sess:
-            # Refuse BEFORE touching other rows: a refusal must change nothing.
-            if not await lock_unless_captured(sess, decisions, decision_id):
+            locked = await self._lock_with_referrers(sess, decision_id)
+            if not any(row["id"] == decision_id for row in locked):
                 return False
+            # Refuse BEFORE touching other rows: a refusal must change nothing.
+            await refuse_if_captured(sess, decision_id)
             # Clear superseded_by refs pointing to this decision
             clear_stmt = (
                 decisions.update()
@@ -284,6 +288,55 @@ class PgDecisionRepo(BasePgRepository):
             await sess.execute(clear_stmt)
             # Delegate the actual DELETE to the base
             return await super().delete(decision_id, session=sess)
+
+    @staticmethod
+    async def _lock_with_referrers(sess: AsyncSession, decision_id: UUID) -> list[Any]:
+        """Lock a decision and the decisions pointing at it, ascending id, one statement.
+
+        The order is the contract: `_validate_captures` takes `FOR KEY SHARE` on
+        the decisions it captures in ascending id order too, so a delete and a
+        capture of the same pair queue behind one another instead of each
+        holding the row the other wants (ticket d85b4f66). `ORDER BY` sits under
+        the `LockRows` node: rows are locked in the order they are sorted.
+
+        The referrer set is read by the very statement that locks it, so a
+        referrer committed after that snapshot is not in it. Once the target is
+        locked no further one can appear (the foreign key check of its writer
+        needs `FOR KEY SHARE` on the target), so ONE re-read settles it. Finding
+        a straggler, the savepoint is rolled back — releasing the locks, which
+        is the only way to take the straggler's lock in id order — and the
+        whole set is locked again, now with the straggler in it. Each pass
+        needs a fresh concurrent commit to repeat, so the loop ends.
+        """
+        referenced = decisions.c.superseded_by == decision_id
+        while True:
+            try:
+                async with sess.begin_nested():
+                    rows = list(
+                        (
+                            await sess.execute(
+                                sa.select(
+                                    decisions.c.id,
+                                    decisions.c.project_key,
+                                )
+                                .where(sa.or_(decisions.c.id == decision_id, referenced))
+                                .order_by(decisions.c.id)
+                                .with_for_update()
+                            )
+                        )
+                        .mappings()
+                        .all()
+                    )
+                    straggler = await sess.execute(
+                        sa.select(decisions.c.id)
+                        .where(referenced, decisions.c.id.not_in([row["id"] for row in rows]))
+                        .limit(1)
+                    )
+                    if straggler.scalar_one_or_none() is not None:
+                        raise _ReferrerAppeared
+                    return rows
+            except _ReferrerAppeared:
+                continue
 
     # ── FULL-TEXT SEARCH ───────────────────────────────────────────────────
 

@@ -1577,6 +1577,9 @@ class PgBrainSessionRepo(BasePgRepository):
                     table.c.project_key == brain_session.project_key,
                     table.c.created_at >= brain_session.started_at,
                 )
+                # Ascending id, in ONE statement: the lock order every writer of
+                # several decision rows shares (see `PgDecisionRepo.delete`).
+                .order_by(table.c.id)
                 .with_for_update(read=True, key_share=True)
             )
             for knowledge_id in (await session.execute(stmt)).scalars().all():

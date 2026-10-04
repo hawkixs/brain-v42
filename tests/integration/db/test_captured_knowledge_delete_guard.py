@@ -287,3 +287,152 @@ async def test_delete_waits_for_an_in_flight_capture_then_refuses(
             await asyncio.wait_for(deleting, timeout=10)
 
     assert await _exists(session_factory, "decision", row_id)
+
+
+# ── Lock order: a scoped delete and a multi-decision capture must not deadlock ──
+#
+# Ticket d85b4f66. A.superseded_by = B. A scoped delete of B needs B and A; a
+# capture of {A, B} needs both as well. Locking them in opposite orders made
+# PostgreSQL abort one of the two with a raw deadlock error. Both paths now lock
+# the full set in ascending id order, in one statement.
+
+
+async def _lock_waiters(factory: async_sessionmaker[AsyncSession]) -> int:
+    async with factory() as session:
+        return int(
+            (
+                await session.execute(
+                    sa.text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                    )
+                )
+            ).scalar_one()
+        )
+
+
+async def _until(condition: Any, what: str) -> None:
+    async with asyncio.timeout(10):
+        while not await condition():
+            await asyncio.sleep(0.02)
+
+
+async def _insert_referenced_pair(
+    factory: async_sessionmaker[AsyncSession], project_key: str, referrer_id: UUID, target_id: UUID
+) -> None:
+    """A (the referrer) points at B (the target); B is touched last so a heap scan
+    meets A first, the order in which the unfixed capture locked them."""
+    async with factory.begin() as session:
+        await session.execute(
+            decisions.insert().values(
+                id=target_id, project_key=project_key, **_values("decision", project_key)
+            )
+        )
+        await session.execute(
+            decisions.insert().values(
+                id=referrer_id,
+                project_key=project_key,
+                status="superseded",
+                superseded_by=target_id,
+                **_values("decision", project_key),
+            )
+        )
+        await session.execute(
+            decisions.update().where(decisions.c.id == target_id).values(title="touched")
+        )
+
+
+@pytest.mark.parametrize("referrer_sorts_first", [True, False], ids=["A<B", "B<A"])
+async def test_scoped_delete_and_capture_of_the_same_pair_do_not_deadlock(
+    session_factory: async_sessionmaker[AsyncSession], project: str, referrer_sorts_first: bool
+) -> None:
+    low, high = sorted((uuid4(), uuid4()), key=str)
+    referrer_id, target_id = (low, high) if referrer_sorts_first else (high, low)
+    sessions = PgBrainSessionRepo(session_factory)
+    client_key = f"deadlock-{uuid4().hex[:8]}"
+    started = await sessions.start(project, client_key)
+    await _insert_referenced_pair(session_factory, project, referrer_id, target_id)
+
+    async with session_factory() as gate:
+        async with gate.begin():
+            # NO KEY UPDATE blocks the delete's FOR UPDATE on A but not the
+            # capture's FOR KEY SHARE: it parks the delete while it holds B.
+            await gate.execute(
+                sa.select(decisions.c.id)
+                .where(decisions.c.id == referrer_id)
+                .with_for_update(key_share=True)
+            )
+            deleting = asyncio.create_task(
+                _delete_with("decision", session_factory, target_id, project)
+            )
+            await _until(lambda: _lock_waiters_at_least(session_factory, 1), "delete parked")
+            capturing = asyncio.create_task(
+                sessions.capture(started.session.id, client_key, [referrer_id, target_id])
+            )
+            await _until(
+                lambda: _settled_or_parked(capturing, session_factory), "capture parked or done"
+            )
+
+    outcomes = await asyncio.wait_for(
+        asyncio.gather(deleting, capturing, return_exceptions=True), timeout=15
+    )
+
+    failures = [o for o in outcomes if isinstance(o, BaseException)]
+    assert not any("deadlock" in str(f).lower() for f in failures), failures
+    deleted_ok = outcomes[0] is True
+    captured_ok = not isinstance(outcomes[1], BaseException)
+    # Whichever commits first wins; the other one is refused cleanly.
+    assert deleted_ok != captured_ok, outcomes
+    if deleted_ok:
+        assert not await _exists(session_factory, "decision", target_id)
+    else:
+        assert isinstance(outcomes[0], KnowledgeCapturedError), outcomes
+        assert await _exists(session_factory, "decision", target_id)
+
+
+async def _lock_waiters_at_least(factory: async_sessionmaker[AsyncSession], count: int) -> bool:
+    return await _lock_waiters(factory) >= count
+
+
+async def _settled_or_parked(
+    task: asyncio.Task[Any], factory: async_sessionmaker[AsyncSession]
+) -> bool:
+    return task.done() or await _lock_waiters(factory) >= 2
+
+
+@SCOPES
+async def test_delete_adopts_a_referrer_committed_while_it_waited_for_the_lock(
+    session_factory: async_sessionmaker[AsyncSession], project: str, scoped: bool
+) -> None:
+    """The referrer is read by the locking statement, so one committed after that
+    snapshot is invisible to it: the delete must notice it, lock it and clear it."""
+    target_id = await _insert_row(session_factory, "decision", project)
+    referrer_id = uuid4()
+
+    async with session_factory() as writer:
+        async with writer.begin():
+            # The foreign key check key-shares the target: the delete queues behind it.
+            await writer.execute(
+                decisions.insert().values(
+                    id=referrer_id,
+                    project_key=project,
+                    status="superseded",
+                    superseded_by=target_id,
+                    **_values("decision", project),
+                )
+            )
+            deleting = asyncio.create_task(
+                _delete_with("decision", session_factory, target_id, project if scoped else None)
+            )
+            await _until(lambda: _lock_waiters_at_least(session_factory, 1), "delete parked")
+
+    assert await asyncio.wait_for(deleting, timeout=10) is True
+    async with session_factory() as session:
+        row = (
+            (await session.execute(sa.select(decisions).where(decisions.c.id == referrer_id)))
+            .mappings()
+            .one()
+        )
+    assert row["superseded_by"] is None
+    assert row["status"] == "active"
+    assert not await _exists(session_factory, "decision", target_id)

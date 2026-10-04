@@ -238,10 +238,14 @@ async def test_scoped_adr_empty_update_still_carries_the_project_predicate() -> 
     assert "adrs.project_key =" in sql
 
 
+def _locked(*rows: tuple[uuid.UUID, str | None]) -> MagicMock:
+    return _result(rows=[{"id": row_id, "project_key": key} for row_id, key in rows])
+
+
 @pytest.mark.asyncio
 async def test_scoped_decision_delete_foreign_target_stops_after_locked_lookup() -> None:
     _assert_project_key_parameter(PgDecisionRepo.delete)
-    session = _session(_result(scalar=None))
+    session = _session(_locked((ENTITY_ID, "sec1b-foreign")), _result())
 
     deleted = await PgDecisionRepo().delete(
         ENTITY_ID,
@@ -250,12 +254,13 @@ async def test_scoped_decision_delete_foreign_target_stops_after_locked_lookup()
     )
 
     assert deleted is False
-    assert session.execute.await_count == 1
-    sql = _compiled_sql(session.execute.await_args_list[0])
-    assert "decisions.id =" in sql
-    assert "decisions.project_key =" in sql
-    assert "for update" in sql
-    session.begin_nested.assert_called_once_with()
+    assert session.execute.await_count == 2
+    lock_sql = _compiled_sql(session.execute.await_args_list[0])
+    assert "decisions.id =" in lock_sql
+    assert "decisions.superseded_by =" in lock_sql
+    assert "order by decisions.id" in lock_sql
+    assert "for update" in lock_sql
+    assert session.begin_nested.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -264,15 +269,13 @@ async def test_scoped_decision_delete_foreign_reference_stops_before_mutation(
     foreign_project_key: str | None,
 ) -> None:
     session = _session(
-        _result(scalar=ENTITY_ID),
-        _result(),
-        _result(
-            rows=[
-                {"id": OWNED_REFERENCE_ID, "project_key": PROJECT_KEY},
-                {"id": FOREIGN_ID, "project_key": foreign_project_key},
-            ],
-            scalar=FOREIGN_ID,
+        _locked(
+            (ENTITY_ID, PROJECT_KEY),
+            (OWNED_REFERENCE_ID, PROJECT_KEY),
+            (FOREIGN_ID, foreign_project_key),
         ),
+        _result(),
+        _result(),
     )
 
     deleted = await PgDecisionRepo().delete(
@@ -283,27 +286,24 @@ async def test_scoped_decision_delete_foreign_reference_stops_before_mutation(
 
     assert deleted is False
     assert session.execute.await_count == 3
-    target_lock_sql, _ledger_sql, reference_locks_sql = (
+    lock_sql, _straggler_sql, _ledger_sql = (
         _compiled_sql(call) for call in session.execute.await_args_list
     )
-    assert "for update" in target_lock_sql
-    assert "select decisions.id, decisions.project_key" in reference_locks_sql
-    assert "decisions.superseded_by =" in reference_locks_sql
-    assert "for update" in reference_locks_sql
-    assert "is distinct from" not in reference_locks_sql
-    assert "limit" not in reference_locks_sql
-    session.begin_nested.assert_called_once_with()
+    assert "select decisions.id, decisions.project_key" in lock_sql
+    assert "decisions.superseded_by =" in lock_sql
+    assert "order by decisions.id" in lock_sql
+    assert "for update" in lock_sql
+    assert "limit" not in lock_sql
+    assert session.begin_nested.call_count == 2
 
 
 @pytest.mark.asyncio
 async def test_scoped_decision_delete_keeps_lock_clear_and_delete_in_one_transaction() -> None:
     _assert_project_key_parameter(PgDecisionRepo.delete)
     session = _session(
-        _result(scalar=ENTITY_ID),
+        _locked((ENTITY_ID, PROJECT_KEY), (OWNED_REFERENCE_ID, PROJECT_KEY)),
         _result(),
-        _result(
-            rows=[{"id": OWNED_REFERENCE_ID, "project_key": PROJECT_KEY}],
-        ),
+        _result(),
         _result(),
         _result(scalar=ENTITY_ID),
     )
@@ -316,20 +316,19 @@ async def test_scoped_decision_delete_keeps_lock_clear_and_delete_in_one_transac
 
     assert deleted is True
     assert session.execute.await_count == 5
-    lock_sql, _ledger_sql, reference_locks_sql, clear_sql, delete_sql = (
+    lock_sql, _straggler_sql, _ledger_sql, clear_sql, delete_sql = (
         _compiled_sql(call) for call in session.execute.await_args_list
     )
+    assert "select decisions.id, decisions.project_key" in lock_sql
+    assert "decisions.superseded_by =" in lock_sql
+    assert "order by decisions.id" in lock_sql
     assert "for update" in lock_sql
-    assert "select decisions.id, decisions.project_key" in reference_locks_sql
-    assert "decisions.superseded_by =" in reference_locks_sql
-    assert "for update" in reference_locks_sql
-    assert "is distinct from" not in reference_locks_sql
-    assert "limit" not in reference_locks_sql
+    assert "limit" not in lock_sql
     assert "decisions.superseded_by =" in clear_sql
     assert "decisions.project_key =" in clear_sql
     assert "decisions.id =" in delete_sql
     assert "decisions.project_key =" in delete_sql
-    session.begin_nested.assert_called_once_with()
+    assert session.begin_nested.call_count == 2
 
 
 def _plan_row() -> dict[str, Any]:

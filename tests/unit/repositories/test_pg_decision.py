@@ -110,6 +110,15 @@ def _make_mock_session(
     return session
 
 
+def _lock_returns(patch: pytest.MonkeyPatch, *ids: uuid.UUID) -> None:
+    """The ordered lock is pinned in test_project_scoped_crud and against PostgreSQL."""
+    patch.setattr(
+        PgDecisionRepo,
+        "_lock_with_referrers",
+        AsyncMock(return_value=[{"id": item, "project_key": "p"} for item in ids]),
+    )
+
+
 @asynccontextmanager
 async def _mock_get_session(session: AsyncMock):  # type: ignore[misc]
     """Async context manager that yields the given mock session."""
@@ -285,6 +294,7 @@ class TestDeleteTrue:
 
         with pytest.MonkeyPatch.context() as m:
             m.setattr(repo, "get_session", lambda: _mock_get_session(session))
+            _lock_returns(m, FIXED_UUID)
             result = await repo.delete(FIXED_UUID)
 
         assert result is True
@@ -309,6 +319,7 @@ class TestDeleteFalse:
 
         with pytest.MonkeyPatch.context() as m:
             m.setattr(repo, "get_session", lambda: _mock_get_session(session))
+            _lock_returns(m)
             result = await repo.delete(FIXED_UUID)
 
         assert result is False
@@ -333,6 +344,7 @@ class TestDeleteClearsSupersededBy:
 
         with pytest.MonkeyPatch.context() as m:
             m.setattr(repo, "get_session", lambda: _mock_get_session(session))
+            _lock_returns(m, SUPERSEDING_UUID)
             result = await repo.delete(SUPERSEDING_UUID)
 
         assert result is True
