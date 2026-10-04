@@ -435,7 +435,7 @@ migrations, and attaches both to the GitHub release.
 
 ## Versioning
 
-- The shipped version is **0.6.4**, and it stays `0.x` on purpose: a `1.0.0` would promise
+- The shipped version is **0.6.5**, and it stays `0.x` on purpose: a `1.0.0` would promise
   a stable interface and a way back, and this project has neither yet.
 - **No lossless downgrade is promised, at any version.** Several migrations protect stored
   history: **037** refuses when a session capture would be lost, **039** requires an explicit
@@ -446,7 +446,7 @@ migrations, and attaches both to the GitHub release.
   **059** refuses while a ticket carries a target_release, and **060** refuses while a
   focus slot, a slot history row or a slot-bound session exists (both accept a named
   operator opt-in).
-- Follow the release's operator runbook for recovery. For **0.6.4** (as for 0.6.3, 0.6.2, 0.6.1, 0.6.0 and 0.5.0), use the
+- Follow the release's operator runbook for recovery. For **0.6.5** (as for 0.6.4, 0.6.3, 0.6.2, 0.6.1, 0.6.0 and 0.5.0), use the
   compatible forward rollback section of that runbook (`docs/runbooks/2026-09-07-observable-
   delivery-workflows.md` in the private brain-v42-internal repository)
   and keep the repository's migration target in place: the head the release ships, never a
