@@ -13,6 +13,11 @@ from brain_v42.services.brain_graph_projection import (
     PostgresGraphSnapshotReader,
 )
 
+# Anti-hang net only: the reader's own (10 ms) deadline is what the tests assert on.
+# An outer deadline close to it fires on the SAME task after a loop stall, and the
+# two cancels make the inner timeout relay CancelledError instead of TimeoutError.
+_ANTI_HANG_NET = 5.0
+
 
 class FakeResult:
     def __init__(self, rows: list[dict[str, Any]]) -> None:
@@ -233,7 +238,7 @@ async def test_postgres_reader_timeout_covers_the_whole_result_load() -> None:
         timeout=0.01,
     )
 
-    result = await asyncio.wait_for(reader.read(10), timeout=0.1)
+    result = await asyncio.wait_for(reader.read(10), timeout=_ANTI_HANG_NET)
 
     assert result.status == "unavailable"
 
@@ -257,6 +262,6 @@ async def test_neo4j_reader_timeout_covers_result_iteration_not_only_connectivit
     driver.session.return_value = context
     reader = Neo4jGraphSnapshotReader(driver, timeout=0.01)
 
-    result = await asyncio.wait_for(reader.read(max_nodes=10, max_edges=10), timeout=0.1)
+    result = await asyncio.wait_for(reader.read(max_nodes=10, max_edges=10), timeout=_ANTI_HANG_NET)
 
     assert result.status == "unavailable"

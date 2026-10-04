@@ -4,8 +4,11 @@
 # repository runs on a self-hosted runner (ticket 03846021): pull-request code must
 # never execute on a machine shared with private repositories.
 #
-# The image build belongs to continuous-delivery.yml;
-# tests/unit/test_github_workflows.py holds the runner boundary and the job roster.
+# The image is published by continuous-delivery.yml only; `build-docker` below builds
+# the same image on the pull request and publishes nothing, so a broken Dockerfile
+# turns the PR red instead of the first run on main.
+# tests/unit/test_github_workflows.py holds the runner boundary and the job roster,
+# and pins that this build cannot drift from the delivery one.
 
 name: Continuous integration
 
@@ -251,6 +254,29 @@ jobs:
         run: >-
           .venv/bin/pytest tests/integration/ -v --tb=short
           -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
+
+  # The delivery build and smoke of continuous-delivery.yml, minus everything that
+  # leaves the runner: no registry login, no cache pulled from the registry, no
+  # publication tag, no push, no artifact, no secret. The job name is the one the
+  # image pin gate reserves for the CI smoke tag, and the build and the smoke stay
+  # in ONE shell process for the same reason as there (each GitHub step is its own
+  # process). Keep the two commands in step: a unit test compares them.
+  build-docker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Build and smoke the image
+        env:
+          CI_COMMIT_SHA: ${{ github.sha }}
+        run: |
+          docker build --build-arg UV_VERSION=$UV_VERSION -t brain-v42-ci-smoke:${CI_COMMIT_SHA} -f Dockerfile .
+          docker run --pull=never --rm brain-v42-ci-smoke:${CI_COMMIT_SHA} python -c 'import os, pathlib, sys; import brain_v42.mcp.server; venv = pathlib.Path("/app/.venv"); entrypoint = pathlib.Path(brain_v42.mcp.server.__file__); assert sys.executable == "/app/.venv/bin/python"; assert os.geteuid() == 1000; assert venv.stat().st_uid == 0; assert entrypoint.stat().st_uid == 0; assert not os.access(venv, os.W_OK); assert not os.access(entrypoint, os.W_OK)'
 
   # Dependency vulnerabilities. Audits the exported lock rather than the live venv,
   # so the scan covers exactly the graph that ships and stays reproducible. Every
