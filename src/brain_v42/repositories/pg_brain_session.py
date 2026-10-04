@@ -1414,7 +1414,18 @@ class PgBrainSessionRepo(BasePgRepository):
         Looked up only AFTER the slot lookup found nothing: both shapes at one boundary
         would otherwise be two rows for `one_or_none`, and a coincidence of two relays
         ending in the same microsecond must be a `terminal_conflict`, never an exception.
+
+        The boundary and the payload cannot prove the link: a plain `end` can record the
+        same summary, handover and expected revision at the same instant. The base
+        revision can. A base relay's predecessor always APPLIED the revision its successor
+        started at, and every base revision is produced by exactly one compare-and-swap,
+        so only that predecessor can own the successor. Anything else finds nothing.
         """
+        if (
+            model.focus_outcome != BrainSessionFocusOutcome.APPLIED
+            or model.focus_revision_at_end is None
+        ):
+            return None
         found = (
             (
                 await session.execute(
@@ -1424,6 +1435,7 @@ class PgBrainSessionRepo(BasePgRepository):
                         brain_sessions.c.started_at == model.ended_at,
                         brain_sessions.c.started_by_actor.like("relay:%"),
                         brain_sessions.c.relayed_from_session_id.is_(None),
+                        brain_sessions.c.started_focus_revision == model.focus_revision_at_end,
                     )
                 )
             )

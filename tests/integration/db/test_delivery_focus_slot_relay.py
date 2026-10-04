@@ -716,3 +716,49 @@ async def test_a_plain_ended_bound_session_never_replays_as_a_coincident_base_re
             handover="same body",
             new_client_key="b-plain",
         )
+
+
+async def test_a_plain_ended_unbound_session_never_replays_as_a_coincident_base_relay(
+    session_factory, slot_project
+):
+    """Round 3 review of #289: an unbound session closed by a plain `end` can carry every
+    terminal field a base relay writes (same summary, handover and expected revision, its
+    end recorded as a conflict), so the boundary and payload cannot tell them apart. The
+    outcome and the base revision can: a base relay's predecessor always APPLIED the very
+    revision its successor started at, and each revision has exactly one producer."""
+    plain, plain_key = await started(session_factory, slot_project)
+    loose, loose_key = await started(session_factory, slot_project)
+    revision = await set_base(session_factory, slot_project, "same body")
+    base = await base_relay(
+        session_factory,
+        loose,
+        loose_key,
+        revision,
+        summary="same summary",
+        handover="same body",
+        new_client_key="b-plain-u",
+    )
+    # A plain end with the same payload and the same (now stale) expected revision: conflict.
+    await sessions(session_factory).end(plain, plain_key, "same summary", "same body", revision)
+    plain_row = await row(session_factory, plain)
+    assert (plain_row["focus_outcome"], plain_row["focus_revision_at_end"]) == (
+        "conflict",
+        revision + 1,
+    )
+    # Only the instant is forged: the two ends coincide.
+    boundary = (await row(session_factory, loose))["ended_at"]
+    async with session_factory.begin() as session:
+        await session.execute(
+            brain_sessions.update().where(brain_sessions.c.id == plain).values(ended_at=boundary)
+        )
+    assert (await row(session_factory, base.session.id))["started_at"] == boundary
+    with pytest.raises(FocusSlotError, match="^terminal_conflict: "):
+        await base_relay(
+            session_factory,
+            plain,
+            plain_key,
+            revision,
+            summary="same summary",
+            handover="same body",
+            new_client_key="b-plain-u",
+        )
