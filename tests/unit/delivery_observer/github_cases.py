@@ -76,6 +76,20 @@ def review(record_id=9101, *, state="APPROVED", sha=H):
     }
 
 
+def repository_id_form(path: str) -> str:
+    """The path GitHub puts in a Link header, observed 2026-10-04 on live repositories.
+
+    `/repos/<owner>/<repo>/...` is requested, `/repositories/<id>/...` is returned, and
+    the commit-statuses endpoint also moves: `/commits/<sha>/statuses` comes back as
+    `/statuses/<sha>`.
+    """
+    path = path.replace(ROOT, f"/repositories/{RID}", 1)
+    commit_statuses = path.split("/commits/")
+    if len(commit_statuses) == 2 and commit_statuses[1].endswith("/statuses"):
+        return f"{commit_statuses[0]}/statuses/{commit_statuses[1].removesuffix('/statuses')}"
+    return path
+
+
 class GitHubCase:
     def __init__(self, *, merged=True, synthetic=False, approvals=0, statuses=False):
         payload = stored_contract_payload()
@@ -130,6 +144,7 @@ class GitHubCase:
         self.parent = {"sha": S, "parents": [{"sha": B}, {"sha": H}], "tree": {"sha": X}}
         self.requests = []
         self.bad_next = None
+        self.repository_id_next = False
         self.missing_records = False
         self.total_override = None
         self.elapsed = 0.0
@@ -141,9 +156,10 @@ class GitHubCase:
         if page < len(pages):
             query = dict(request.url.params)
             query["page"] = str(page + 1)
-            next_url = (
-                self.bad_next or f"https://api.github.com{request.url.path}?{urlencode(query)}"
-            )
+            next_path = request.url.path
+            if self.repository_id_next:
+                next_path = repository_id_form(next_path)
+            next_url = self.bad_next or f"https://api.github.com{next_path}?{urlencode(query)}"
             headers["Link"] = f'<{next_url}>; rel="next"'
         data = records
         if checks:
