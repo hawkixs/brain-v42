@@ -2480,28 +2480,35 @@ _CLOSED_INACTIVE_CHECK_SCOPE = (
     "(ticket `16314b31`, closed)."
 )
 
-# ADR #34, the slot-relay amendment, verbatim from the focus-slots spec §7. Its first
-# sentence is what the anti-widening scan sees (a session, `end`, a mod): it is
-# sanctioned by name in the three documents that carry it, and nowhere else.
+# ADR #34, the slot-relay amendment, verbatim from the focus-slots spec §7, extended on
+# 2026-10-04 (operator decision e9f01f8d, ticket 64ebd73a) to the base relay of an
+# unbound operator session. Its first sentence is what the anti-widening scan sees (a
+# session, `end`, a mod): it is sanctioned by name in the three documents that carry it,
+# and nowhere else.
 _SLOT_RELAY_FIRST_SENTENCE = (
     "**Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly "
     "enabled counts as a standing user command for one gesture only: `brain_session_relay` "
-    "of an open operator session bound to a focus slot, onto that same slot — capture, end "
-    "and start of its successor under a new `client_key`, in one transaction."
+    "of an open operator session, onto its focus slot when it is bound to one and onto the "
+    "project base when it is not — capture, end and start of its successor under a new "
+    "`client_key`, in one transaction."
 )
 _SLOT_RELAY_AMENDMENT = (
     f"{_SLOT_RELAY_FIRST_SENTENCE} The model makes the call and chooses its captures, summary "
     "and handover; the mod only triggers the turn and replays the result at compaction. The "
-    "standing command covers nothing else: not `brain_session_abandon`, not "
-    "`brain_session_end` of any session, not the relay of an unbound session, not any write "
-    "of the project base, not opening, closing or changing a slot, and not `start`, `resume` "
-    "or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is "
-    "false. Hooks still never capture, close or commit on their own."
+    "base form writes the handover as the project's whole base focus under a "
+    "compare-and-swap on its revision, and refuses a handover under 70% of the current base "
+    "(`base_focus_shrink`): only an operator relay may override that guard, never the mod. "
+    "The standing command covers nothing else: not `brain_session_abandon`, not "
+    "`brain_session_end` of any session, not the relay of a server-opened trace, not any write "
+    "of the project base outside that relay, not opening, closing or changing a slot, and "
+    "not `start`, `resume` or `bind` outside the relay. It is void while "
+    "`BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Hooks still never capture, close or "
+    "commit on their own."
 )
-# S14, red note (c).
-_CROSS_CUTTING_NEEDS_A_SLOT = (
-    "Cross-cutting work without a ticket cannot be relayed automatically: give it an anchor "
-    "and a slot first."
+# S14, red note (c), rewritten by the base relay: an unbound session is relayable.
+_CROSS_CUTTING_RELAYS_ONTO_THE_BASE = (
+    "Cross-cutting work without a ticket needs no anchor: left unbound, it is relayed onto "
+    "the project base, under the same guards."
 )
 
 # Each statement is anchored to the section that governs its reader, not the file.
@@ -2518,7 +2525,7 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
                     ("no-client-right", _SWEEP_GRANTS_NOTHING_TO_THE_CLIENT),
                     ("explicit-commands", _SESSION_COMMANDS_STAY_EXPLICIT),
                     ("slot-relay-amendment", _SLOT_RELAY_AMENDMENT),
-                    ("cross-cutting-needs-a-slot", _CROSS_CUTTING_NEEDS_A_SLOT),
+                    ("cross-cutting-relays-onto-the-base", _CROSS_CUTTING_RELAYS_ONTO_THE_BASE),
                 ),
             ),
             (
@@ -2554,7 +2561,7 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("inactivity-sweep", _INACTIVITY_SWEEP_RULE),
             ("closed-inactive-check-scope", _CLOSED_INACTIVE_CHECK_SCOPE),
             ("slot-relay-amendment", _SLOT_RELAY_AMENDMENT),
-            ("cross-cutting-needs-a-slot", _CROSS_CUTTING_NEEDS_A_SLOT),
+            ("cross-cutting-relays-onto-the-base", _CROSS_CUTTING_RELAYS_ONTO_THE_BASE),
         ),
     ),
     (
@@ -2587,7 +2594,7 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("stale-closes-nothing", _ARCHITECTURE_STALENESS_CLOSES_NOTHING),
             ("thresholds-24h-vs-7d", _ENGLISH_THRESHOLD_DISAMBIGUATION),
             ("slot-relay-amendment", _SLOT_RELAY_AMENDMENT),
-            ("cross-cutting-needs-a-slot", _CROSS_CUTTING_NEEDS_A_SLOT),
+            ("cross-cutting-relays-onto-the-base", _CROSS_CUTTING_RELAYS_ONTO_THE_BASE),
         ),
     ),
 )
