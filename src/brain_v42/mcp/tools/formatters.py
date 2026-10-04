@@ -499,20 +499,38 @@ def format_adr_detail(adr: ADR) -> str:
     return "\n".join(lines)
 
 
-def format_projects_list(contexts: list[ProjectContext]) -> str:
-    """Format project list summary (for brain_list_projects)."""
-    n = len(contexts)
-    s = "s" if n != 1 else ""
-    header = f"## {n} project{s}"
-    if n == 0:
+#: `brain_list_projects` renders at most this many projects unless `full=True`.
+_PROJECTS_LIST_MAX = 20
+
+
+def format_projects_list(contexts: list[ProjectContext], max_projects: int | None = None) -> str:
+    """Format project list summary (for brain_list_projects).
+
+    `contexts` arrives most recently updated first and is NOT reordered here.
+    A cut says so, in the header and in a closing notice: a silent one reads as
+    "I saw everything".
+    """
+    total = len(contexts)
+    rendered = contexts if max_projects is None else contexts[:max_projects]
+    omitted = total - len(rendered)
+    s = "s" if total != 1 else ""
+    header = f"## {len(rendered)} of {total} projects" if omitted else f"## {total} project{s}"
+    if total == 0:
         return header
     items: list[str] = []
-    for ctx in contexts:
+    for ctx in rendered:
         focus = f" — {ctx.current_focus}" if ctx.current_focus else ""
         phase = f" [{ctx.current_phase}]" if ctx.current_phase else ""
         group = f" (group: {ctx.project_group})" if ctx.project_group else ""
         items.append(f"- **{ctx.project_key}** ({ctx.name}){phase}{group}{focus}")
-    return header + "\n\n" + "\n".join(items)
+    out = header + "\n\n" + "\n".join(items)
+    if omitted:
+        out += (
+            f"\n\n\u2026 ({omitted} project(s) omitted, least recently updated first "
+            f"\u2014 use brain_list_projects(full=True) for every project, or "
+            f"project_group='\u2026' to narrow)"
+        )
+    return out
 
 
 def format_supersession_chain(chain: list[Decision]) -> str:

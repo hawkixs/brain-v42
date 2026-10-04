@@ -234,9 +234,12 @@ def register_decay_tools(
 
         try:
             src_uid = UUID(source_id)
+        except ValueError:
+            return format_error(f"Invalid UUID: {source_id} (source_id)")
+        try:
             tgt_uid = UUID(target_id)
-        except ValueError as e:
-            return format_error(f"Invalid UUID: {e}")
+        except ValueError:
+            return format_error(f"Invalid UUID: {target_id} (target_id)")
 
         if src_uid == tgt_uid:
             return format_error("Source and target must be different entities")

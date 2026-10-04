@@ -568,7 +568,7 @@ Three implementation paths produce this behaviour:
 - **Inline `UUID()` parsing**: `brain_get`, `brain_update`, `brain_delete` (`crud_tools.py`) and `brain_refresh_entity`, `brain_merge_entities` (`decay_tools.py`).
 - **`resolve_entity_id()` from `entity_ids.py`** (the git-style prefix path, which calls `parse_uuid` itself and returns the same string when the value is neither a UUID nor a usable prefix): `brain_get_runbook`, `brain_execute_runbook`, `brain_ticket_get`. `brain_get` also reaches it, on its non-plan branch, and is counted once under the inline path above.
 
-All 19 go through `format_error`, which is typed `-> Never` and **raises** `ToolError`: none of them returns a string on this path, and the message is passed through unprefixed. Eighteen emit the malformed VALUE. `brain_merge_entities` is the exception — it formats the `ValueError` instead (`Invalid UUID: badly formed hexadecimal UUID string`), naming neither the value nor which of its two ids was bad.
+All 19 go through `format_error`, which is typed `-> Never` and **raises** `ToolError`: none of them returns a string on this path, and the message is passed through unprefixed. All 19 emit the malformed VALUE. `brain_merge_entities`, the only tool that takes two ids, converts each separately and appends the offending field: `Invalid UUID: <value> (source_id)` or `Invalid UUID: <value> (target_id)`.
 
 There is no `✗` in this path. The glyph appears nowhere in `src/`, and in `scripts/` only inside two Dream utilities that print their own console output; earlier versions of this page attributed it to a presentation layer that does not exist.
 
@@ -992,9 +992,9 @@ Compare `expected_focus_revision` to the current project revision, then apply fo
 
 ### brain_list_projects (`project_context_tools.py`)
 ```
-brain_list_projects(project_group=None)
+brain_list_projects(project_group=None, full=False)
 ```
-List all known projects with focus and phase.
+List known projects with focus and phase, most recently updated first. Only the 20 most recent are rendered: the header then reads `## 20 of N projects` and a closing notice names the omitted count. `full=true` renders every project; `project_group` narrows the list.
 
 ### brain_focus_history (`project_context_tools.py`)
 ```

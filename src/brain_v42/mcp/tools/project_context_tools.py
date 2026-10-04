@@ -13,6 +13,7 @@ from pydantic import Field
 
 from brain_v42.db.focus_history import focus_diff
 from brain_v42.mcp.tools.formatters import (
+    _PROJECTS_LIST_MAX,
     format_confirmation,
     format_error,
     format_projects_list,
@@ -256,14 +257,18 @@ def register_project_context_tools(
     @mcp.tool(version="1.0", annotations=_READ_ANNOTATIONS)
     async def brain_list_projects(
         project_group: str | None = None,
+        full: bool = False,
     ) -> str:
-        """List all known projects with their current focus and phase.
+        """List known projects, most recently updated first, with focus and phase.
+
+        Only the 20 most recent are rendered; a closing notice names the cut.
 
         Args:
             project_group: Optional group name to filter projects belonging to that group.
+            full: Render every project instead of the 20 most recent.
         """
         contexts = await project_context_svc.list_all(project_group=project_group)
-        return format_projects_list(contexts)
+        return format_projects_list(contexts, None if full else _PROJECTS_LIST_MAX)
 
     @mcp.tool(version="2.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
     async def brain_update_project_focus(

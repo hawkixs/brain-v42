@@ -515,6 +515,27 @@ async def test_handler_rejects_invalid_requests_without_calling_job(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("bad_field", "bad_value"),
+    [("source_id", "not-a-source"), ("target_id", "not-a-target")],
+)
+async def test_handler_names_the_malformed_id_and_its_value(
+    bad_field: str,
+    bad_value: str,
+) -> None:
+    """Each id is converted on its own, so the error says WHICH one was bad."""
+    job = MagicMock()
+    job.merge = AsyncMock()
+    merge, _mcp = _registered_handler(job)
+    ids = {"source_id": str(uuid4()), "target_id": str(uuid4()), bad_field: bad_value}
+
+    result = await merge("decision", ids["source_id"], ids["target_id"])
+
+    assert result == f"Invalid UUID: {bad_value} ({bad_field})"
+    job.merge.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_handler_rejects_same_uuid_without_calling_job() -> None:
     entity_id = uuid4()
     job = MagicMock()

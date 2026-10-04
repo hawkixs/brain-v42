@@ -20,9 +20,14 @@ read time and can change after the write.
 from __future__ import annotations
 
 import pytest
+import structlog
 from pydantic import ValidationError
 
-from brain_v42.models.project_context import ProjectContextCreate, ProjectContextUpdate
+from brain_v42.models.project_context import (
+    ProjectContext,
+    ProjectContextCreate,
+    ProjectContextUpdate,
+)
 
 ABSOLUTE = "/home/user/hawkixs_infra/git_repo/brain_v42/docs"
 
@@ -84,3 +89,49 @@ class TestTheWriterRefusesWhatNoEnvironmentCanFix:
         """
         path = "/nonexistent/but/absolute/docs/plans"
         assert _create(plan_scan_paths=[path]).plan_scan_paths == [path]
+
+
+class TestTheReaderToleratesWhatTheWriterRefuses:
+    """Ticket 2f913741: one legacy entry must not shut a project to every caller.
+
+    `get_by_key` is the existence check of `brain_ticket_create` and of every
+    knowledge write, and it validates a full `ProjectContext`. A relative path
+    stored before the write-side validator existed therefore blocked all of
+    them, for a field none of them reads.
+    """
+
+    @staticmethod
+    def _row(paths: list[str]) -> dict[str, object]:
+        return {
+            "project_key": "red-gift",
+            "name": "red-gift",
+            "description": "legacy row",
+            "plan_scan_paths": paths,
+        }
+
+    def test_a_stored_relative_path_is_readable_and_unchanged(self) -> None:
+        read = ProjectContext.model_validate(self._row(["docs/plans", ABSOLUTE]))
+
+        assert read.plan_scan_paths == ["docs/plans", ABSOLUTE]
+
+    def test_the_legacy_entry_is_flagged_not_swallowed(self) -> None:
+        with structlog.testing.capture_logs() as logs:
+            ProjectContext.model_validate(self._row(["docs/plans", ABSOLUTE]))
+
+        assert [(e["event"], e["log_level"]) for e in logs] == [
+            ("project_context.legacy_relative_scan_path", "warning")
+        ]
+        assert logs[0]["project_key"] == "red-gift"
+        assert logs[0]["paths"] == ["docs/plans"]
+
+    def test_a_clean_row_logs_nothing(self) -> None:
+        with structlog.testing.capture_logs() as logs:
+            ProjectContext.model_validate(self._row([ABSOLUTE]))
+
+        assert logs == []
+
+    def test_the_write_models_stay_strict(self) -> None:
+        with pytest.raises(ValidationError):
+            _create(plan_scan_paths=["docs/plans"])
+        with pytest.raises(ValidationError):
+            ProjectContextUpdate(plan_scan_paths=["docs/plans"])

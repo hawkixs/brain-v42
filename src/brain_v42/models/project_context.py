@@ -4,10 +4,18 @@ from datetime import datetime
 from pathlib import PurePosixPath
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, field_validator
+import structlog
+from pydantic import BaseModel, Field, ValidationInfo, field_validator
 
 from brain_v42.models.base import TimestampMixin
 from brain_v42.models.project_key import ProjectKeyCanonicalMixin
+
+logger = structlog.get_logger(__name__)
+
+
+def _relative_scan_paths(value: list[str]) -> list[str]:
+    """The entries `is_absolute()` refuses, `~/...` included."""
+    return [path for path in value if not PurePosixPath(path).is_absolute()]
 
 
 def _validate_scan_paths(value: list[str] | None) -> list[str] | None:
@@ -33,16 +41,34 @@ def _validate_scan_paths(value: list[str] | None) -> list[str] | None:
     """
     if value is None:
         return None
-    for path in value:
-        if not PurePosixPath(path).is_absolute():
-            raise ValueError(
-                f"plan scan path must be absolute, got {path!r}"
-                + (
-                    " -- `~` is not expanded anywhere in the read path"
-                    if path.startswith("~")
-                    else ""
-                )
-            )
+    relative = _relative_scan_paths(value)
+    if relative:
+        path = relative[0]
+        raise ValueError(
+            f"plan scan path must be absolute, got {path!r}"
+            + (" -- `~` is not expanded anywhere in the read path" if path.startswith("~") else "")
+        )
+    return value
+
+
+def _flag_legacy_scan_paths(value: list[str], info: ValidationInfo) -> list[str]:
+    """Read-side counterpart of `_validate_scan_paths`: flag, never refuse.
+
+    A relative entry can only reach a stored row from before the write-side
+    validator existed (ticket 2f913741: red-gift's `docs/plans`). Refusing it on
+    READ turned one stale value in one unrelated column into a refusal of
+    `brain_ticket_create` and of every knowledge write toward that project,
+    because their existence check loads a full `ProjectContext`. The value is
+    kept as stored, so nothing is silently rewritten, and the log names it; the
+    plan indexer reads the raw column and keeps reporting `invalid_scan_path`.
+    """
+    legacy = _relative_scan_paths(value)
+    if legacy:
+        logger.warning(
+            "project_context.legacy_relative_scan_path",
+            project_key=info.data.get("project_key"),
+            paths=legacy,
+        )
     return value
 
 
@@ -67,13 +93,13 @@ class ProjectContextBase(BaseModel):
     gitlab_project_path: str | None = Field(None, max_length=200)
     project_group: str | None = Field(None, max_length=50)
 
-    _check_scan_paths = field_validator("plan_scan_paths")(_validate_scan_paths)
-
 
 class ProjectContextCreate(ProjectContextBase, ProjectKeyCanonicalMixin):
     # project_key canonicalization/validation comes from ProjectKeyCanonicalMixin
     # (single source of truth in brain_v42.models.project_key).
-    pass
+    # The strict scan-path check lives here and on Update, the two WRITE models,
+    # and not on the base: the read model `ProjectContext` flags instead.
+    _check_scan_paths = field_validator("plan_scan_paths")(_validate_scan_paths)
 
 
 class ProjectContextUpdate(BaseModel):
@@ -117,5 +143,7 @@ class ProjectContext(ProjectContextBase, TimestampMixin):
     snippets_count: int = 0
     runbooks_count: int = 0
     adrs_count: int = 0
+
+    _flag_scan_paths = field_validator("plan_scan_paths")(_flag_legacy_scan_paths)
 
     model_config = {"from_attributes": True}
