@@ -14,6 +14,8 @@ publishes to GHCR from a hosted runner with the workflow's own token.
 
 from __future__ import annotations
 
+import re
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -53,6 +55,7 @@ EXPECTED_CI_JOBS = {
     "security-pip-audit-embedding-supervisor",
     "security-bandit",
     "security-gitleaks",
+    "build-docker",
 }
 
 
@@ -299,3 +302,81 @@ def test_github_coverage_refuses_a_measurement_made_on_a_subset(
         "le job doit refuser une couverture mesurée sur un sous-ensemble ; sans ce "
         "garde-fou le chiffre redérive au prochain écart de recette"
     )
+
+
+def _image_step_script(workflow: dict[Any, Any]) -> str:
+    """The `run` script of the one step that builds the image, from the parsed workflow."""
+    scripts = [
+        str(step["run"])
+        for step in workflow["jobs"]["build-docker"]["steps"]
+        if "docker build" in str(step.get("run", ""))
+    ]
+    assert len(scripts) == 1, "exactly one step must build the image"
+    return scripts[0]
+
+
+def _command(script: str, prefix: str) -> list[str]:
+    lines = [line.strip() for line in script.splitlines() if line.strip().startswith(prefix)]
+    assert len(lines) == 1, f"expected exactly one `{prefix}` command"
+    return shlex.split(lines[0])
+
+
+def test_pull_request_rail_builds_the_image_without_publishing_anything(
+    ci_workflow: dict[Any, Any],
+) -> None:
+    """The Dockerfile must be exercised BEFORE the merge, with nothing leaving the runner.
+
+    Delivery is the only other place the image is built, and it runs on push to main:
+    a Dockerfile broken by a PR (the workspace member `uv sync --locked` could not
+    find, 2026-09-14 to 2026-09-23) was first seen after the merge. The job carries
+    the read-only default token, no registry login, no secret and no artifact.
+    """
+    job = ci_workflow["jobs"]["build-docker"]
+    assert job["permissions"] == {"contents": "read"}
+    body = yaml.safe_dump(job)
+    for forbidden in ("docker login", "docker push", "secrets.", "github.token", "upload-artifact"):
+        assert forbidden not in body
+
+
+def test_pull_request_image_build_cannot_drift_from_the_delivery_build(
+    ci_workflow: dict[Any, Any], cd_workflow: dict[Any, Any]
+) -> None:
+    """Both rails build the same Dockerfile with the same build arguments.
+
+    The registry-facing options (cache source, publication tags, OCI label) are the
+    only ones delivery may carry alone; the smoke command is the same line.
+    """
+    ci_script, cd_script = _image_step_script(ci_workflow), _image_step_script(cd_workflow)
+
+    def shared_options(script: str) -> list[str]:
+        words = _command(script, "docker build")
+        options: list[str] = []
+        index = 0
+        while index < len(words):
+            if words[index] in {"--cache-from", "--label", "-t", "--build-arg", "-f"}:
+                flag, value = words[index], words[index + 1]
+                index += 2
+                registry_only = flag in {"--cache-from", "--label", "-t"} or (
+                    flag == "--build-arg" and value.startswith("BUILDKIT_INLINE_CACHE")
+                )
+                if not registry_only:
+                    options.append(f"{flag} {value}")
+            else:
+                options.append(words[index])
+                index += 1
+        return options
+
+    assert shared_options(ci_script) == shared_options(cd_script)
+    assert _command(ci_script, "docker run") == _command(cd_script, "docker run")
+
+
+def test_the_default_dockerfile_stage_is_the_production_one() -> None:
+    """Neither rail passes `--target`: the image they build is the LAST stage."""
+    stages = re.findall(
+        r"^FROM\s+\S+\s+AS\s+(\S+)\s*$",
+        (REPO_ROOT / "Dockerfile").read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    assert stages[-1] == "production"
+    for path in (CI_WORKFLOW_PATH, CD_WORKFLOW_PATH):
+        assert "--target" not in path.read_text(encoding="utf-8")

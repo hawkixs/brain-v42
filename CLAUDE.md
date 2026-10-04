@@ -463,7 +463,9 @@ GitHub Actions is the **sole CI/CD authority** since the GitLab rail was retired
 **Three separate rails:**
 
 - `.github/workflows/continuous-integration.yml` — on `pull_request` **only**: lint, tests
-  and security on hosted `ubuntu-24.04`.
+  and security on hosted `ubuntu-24.04`, plus `build-docker`, which builds the image and
+  replays the delivery smoke without publishing anything (no registry login, no secret,
+  no artifact), so a broken Dockerfile fails the PR that broke it.
 - `.github/workflows/continuous-delivery.yml` — on `push` to `main` only: `build-docker`
   alone, on hosted `ubuntu-24.04`, publishing `ghcr.io/hawkixs/brain-v42` with the
   workflow's own token (`packages: write`, this job only). **No repository secret.**
