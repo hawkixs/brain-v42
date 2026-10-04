@@ -206,6 +206,9 @@ class PgTicketRepo(BasePgRepository):
                 sa.exists().where(
                     tickets.c.id == observed.c.ticket_id,
                     tickets.c.to_project == project_key,
+                    # The identity label is only declared: the executor project
+                    # is the sole issuer the observer writes as.
+                    tickets.c.to_project == observed.c.issuer_project,
                 ),
             )
         )

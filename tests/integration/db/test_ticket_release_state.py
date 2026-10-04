@@ -291,3 +291,14 @@ async def test_deliverables_are_counted_against_the_release_that_is_live(session
 
     await _deployed(service, ticket.id, L, STALE)
     assert await repo.deployed_deliverables(ticket.id, L) == (2, 2)
+
+
+async def test_lot_tag_is_not_known_from_a_row_the_requester_project_issued(session_factory):
+    executor, requester = "executor", "requester"
+    planned, planned_svc = await _planned(session_factory, executor, "7.4.0")
+    await _released(planned_svc, planned.id, "v7.4.0", actor_project=requester)
+
+    lot = await PgTicketRepo(session_factory).shipped_by_release(executor, "7.4.0")
+
+    assert lot.tag_known is False
+    assert lot.not_shipped == ()
