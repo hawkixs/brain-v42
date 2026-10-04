@@ -674,3 +674,45 @@ async def test_a_slot_retry_naming_a_coincident_base_successors_key_is_terminal_
     assert (await row(session_factory, base.session.id))["started_at"] == boundary
     with pytest.raises(FocusSlotError, match="^terminal_conflict: "):
         await relay(session_factory, anchored, anchored_key, new_client_key="b-key")
+
+
+async def test_a_plain_ended_bound_session_never_replays_as_a_coincident_base_relay(
+    session_factory, slot_project
+):
+    """The base fallback is for an UNBOUND predecessor only (round 2 review of #289)."""
+    anchored, anchored_key, _slot_id = await bound(session_factory, slot_project)
+    await sessions(session_factory).end(anchored, anchored_key, "same summary", "same body", 0)
+    loose, loose_key = await started(session_factory, slot_project)
+    revision = await set_base(session_factory, slot_project, "same body")
+    base = await base_relay(
+        session_factory,
+        loose,
+        loose_key,
+        revision,
+        summary="same summary",
+        handover="same body",
+        new_client_key="b-plain",
+    )
+    boundary = (await row(session_factory, loose))["ended_at"]
+    # Make the bound session's terminal payload equal to the base relay's, at its boundary.
+    async with session_factory.begin() as session:
+        await session.execute(
+            brain_sessions.update()
+            .where(brain_sessions.c.id == anchored)
+            .values(
+                ended_at=boundary,
+                end_expected_focus_revision=revision,
+                focus_revision_at_end=revision + 1,
+            )
+        )
+    assert (await row(session_factory, base.session.id))["started_at"] == boundary
+    with pytest.raises(FocusSlotError, match="^terminal_conflict: "):
+        await base_relay(
+            session_factory,
+            anchored,
+            anchored_key,
+            revision,
+            summary="same summary",
+            handover="same body",
+            new_client_key="b-plain",
+        )

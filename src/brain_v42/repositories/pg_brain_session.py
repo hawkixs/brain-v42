@@ -1133,6 +1133,7 @@ class PgBrainSessionRepo(BasePgRepository):
                     expected_focus_revision=expected_focus_revision,
                     new_client_key=new_client_key,
                     knowledge_ids=capture_ids,
+                    was_bound=row.get("slot_id") is not None,
                 )
             if model.nature == "agent":
                 raise FocusSlotError(
@@ -1442,6 +1443,7 @@ class PgBrainSessionRepo(BasePgRepository):
         expected_focus_revision: int | None,
         new_client_key: str,
         knowledge_ids: Sequence[UUID],
+        was_bound: bool,
     ) -> BrainSessionRelayResult:
         """S9: an equal payload returns the successor; anything else is terminal_conflict.
 
@@ -1453,7 +1455,10 @@ class PgBrainSessionRepo(BasePgRepository):
         `new_client_key` finds nothing and is `terminal_conflict`.
         """
         successor = await self._find_slot_successor(session, model)
-        if successor is None:
+        # Only an UNBOUND operator predecessor can have a base successor: a bound session
+        # ended by a plain `end` must never match an unrelated base relay that happens to
+        # share its boundary and payload.
+        if successor is None and not was_bound and model.nature != "agent":
             successor = await self._find_base_successor(session, model, new_client_key)
         ledger = set(await self._load_session_artifact_ids(session, model.id))
         # The form is read from the lineage column, not the slot: a base successor may
