@@ -60,7 +60,10 @@ def _is_compliant(
         elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and (
             node.name == "session_factory"
         ):
-            return "private_head_engine" in {a.arg for a in node.args.args}
+            # Its own dependencies must name the private head and no shared fixture: a
+            # self-named `session_factory` parameter is the PARENT fixture, on the shared head.
+            args = {a.arg for a in node.args.args + node.args.kwonlyargs}
+            return "private_head_engine" in args and not args & _SHARED_FIXTURES
         elif isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == "session_factory" for t in node.targets
         ):
@@ -244,4 +247,21 @@ def test_an_alias_does_not_excuse_a_test_on_the_shared_engine() -> None:
     problems = slot_module_problems(
         {_BASE: _PRIVATE_FIXTURE + "focus_slots = 1", _SIDECAR: _ALIASED_PLUS_SHARED_ENGINE}
     )
+    assert len(problems) == 1 and problems[0].startswith(_SIDECAR)
+
+
+_PRIVATE_NAME_INHERITED_FACTORY = """
+import pytest_asyncio
+
+@pytest_asyncio.fixture
+async def session_factory(private_head_engine, session_factory):
+    return session_factory
+
+focus_slots = 1
+"""
+
+
+def test_a_private_override_that_returns_the_inherited_shared_factory_is_refused() -> None:
+    """Independent review of #287, round 2: a self-named dependency is the parent fixture."""
+    problems = slot_module_problems({_SIDECAR: _PRIVATE_NAME_INHERITED_FACTORY})
     assert len(problems) == 1 and problems[0].startswith(_SIDECAR)
