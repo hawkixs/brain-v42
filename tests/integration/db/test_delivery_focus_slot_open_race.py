@@ -39,19 +39,20 @@ pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 WAIT_SECONDS = 30
 
 
-async def wait_until_blocked_on(factory, holder_pid: int) -> None:
-    """Return once some backend waits for a lock the holder's transaction owns."""
+async def wait_until_blocked_on(factory, holder_pid: int) -> int:
+    """Return the pid of a backend that waits for a lock the holder's transaction owns."""
     async with asyncio.timeout(WAIT_SECONDS):
         while True:
             async with factory() as session:
                 blocked = await session.scalar(
                     sa.text(
-                        "SELECT count(*) FROM pg_stat_activity WHERE :pid = ANY(pg_blocking_pids(pid))"
+                        "SELECT min(pid) FROM pg_stat_activity "
+                        "WHERE :pid = ANY(pg_blocking_pids(pid))"
                     ),
                     {"pid": holder_pid},
                 )
             if blocked:
-                return
+                return int(blocked)
             await asyncio.sleep(0.02)
 
 
@@ -111,3 +112,38 @@ async def test_a_lot_open_queues_behind_an_uncommitted_release_then_refuses(sess
         f"lot race {uuid4().hex[:6]}",
         lambda holder: release_in(holder, ticket.id, "v8.5.1"),
     )
+
+
+async def test_an_open_that_got_its_locks_first_makes_the_later_receipt_find_the_slot(
+    session_factory,
+):
+    """The other order: the open owns the ticket lock, so the receipt queues behind the open's
+    commit and its hook sees the committed slot. A squatter on the title holds the open between
+    its ticket lock and its slot insert, the one place a receipt can arrive."""
+    ticket, binding, _, number = await workflow(session_factory)
+    title = f"open first {uuid4().hex[:6]}"
+    anchors = [SlotAnchor(kind="ticket", ticket_id=ticket.id)]
+    async with session_factory() as squatter, squatter.begin():
+        squatter_pid = await squatter.scalar(sa.text("SELECT pg_backend_pid()"))
+        await squatter.execute(
+            focus_slots.insert().values(project_key=EXECUTOR, title=title, body="x")
+        )
+        opening = asyncio.create_task(service(session_factory).open(EXECUTOR, title, "b", anchors))
+        open_pid = await wait_until_blocked_on(session_factory, squatter_pid)
+        receipt = asyncio.create_task(integrate(session_factory, ticket.id, binding, number))
+        await wait_until_blocked_on(session_factory, open_pid)  # the writer queues on the open
+        assert not receipt.done()
+        await squatter.rollback()
+    opened = await asyncio.wait_for(opening, timeout=WAIT_SECONDS)
+    issued = await asyncio.wait_for(receipt, timeout=WAIT_SECONDS)
+    async with session_factory() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(focus_slots).where(focus_slots.c.id == opened.slot.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+    assert row["close_reason"] == f"receipt:{issued.id}" and row["closed_at"] is not None
