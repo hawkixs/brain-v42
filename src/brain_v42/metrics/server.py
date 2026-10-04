@@ -452,9 +452,10 @@ class MetricsServer:
                 "total": sum(promo_counts.values()),
                 "by_type": promo_counts,
             }
-        promoted_health = await self._collector.collect_dream_promoted_health()
-        if promoted_health:
-            dream_metrics["promoted_health"] = promoted_health
+        # `promoted_health` is deliberately NOT here: one entry per promotion,
+        # titles included, with float ages that differ on every read. It made
+        # 55.5 KB of a 72.8 KB payload scraped every 5 s, grew without bound,
+        # and no consumer read it (tickets 817583e4, 64debcad).
         return dream_metrics
 
     async def _handle_metrics(self, request: web.Request) -> web.Response:

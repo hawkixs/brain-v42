@@ -294,8 +294,12 @@ class _DreamCollectorsMixin:
         signals that distinguish a healthy auto-promotion (used, not
         superseded) from a regrettable one (ignored, superseded shortly after).
 
-        Surfaced via the JSON `/dream` endpoint (per-target cardinality is
-        unbounded; deliberately NOT a Prometheus labelled gauge).
+        NOT exposed: it left the scraped `/metrics` payload (one entry per
+        promotion, unbounded, 55.5 KB of 72.8 KB, read by nobody -- tickets
+        `817583e4` and `64debcad`), and no endpoint serves it. Per-target
+        cardinality is unbounded, so never a Prometheus labelled gauge either.
+        Serve it on demand, or reduce it to bounded aggregates, before wiring
+        it to a reader.
 
         Returns one dict per row:
             target_type: 'adr' | 'runbook'
