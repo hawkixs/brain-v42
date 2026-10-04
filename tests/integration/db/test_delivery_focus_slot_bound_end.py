@@ -114,6 +114,23 @@ async def test_resume_of_a_bound_session_returns_the_slot(session_factory, slot_
     session_id, key, _slot_id = await bound(session_factory, slot_project)
     resumed = await sessions(session_factory).resume(session_id, key)
     assert (resumed.current_focus, resumed.current_focus_revision) == ("slot body", 0)
+    assert resumed.slot_closed is False
+
+
+async def test_resume_of_a_session_whose_slot_a_receipt_closed_says_so(
+    session_factory, slot_project
+):
+    """A client that reads only the structured fields must be able to tell (ticket 16d3cf2f)."""
+    session_id, key, slot_id = await bound(session_factory, slot_project)
+    await _receipt_close(session_factory, slot_id)
+    resumed = await sessions(session_factory).resume(session_id, key)
+    assert resumed.slot_closed is True
+    assert (resumed.current_focus, resumed.current_focus_revision) == ("slot body", 1)
+
+
+async def test_resume_of_an_unbound_session_is_never_slot_closed(session_factory, slot_project):
+    session_id, key = await started(session_factory, slot_project)
+    assert (await sessions(session_factory).resume(session_id, key)).slot_closed is False
 
 
 async def test_ruling_1_post_close_revision_is_slot_closed_and_the_session_stays_open(

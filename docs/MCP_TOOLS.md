@@ -836,10 +836,11 @@ session UUID remains visible to the caller.
 ```
 brain_session_resume(session_id, expected_client_key)
 -> {session, open_session_count, current_focus,
-    current_focus_revision, briefing}
+    current_focus_revision, slot_closed, briefing}
 ```
 Attach to an existing `open` session after the UUID/client-key guard passes, without mutating it. Ended and abandoned sessions cannot be resumed. Resume does not refresh liveness; issue an explicit heartbeat for a long-running session. Use the returned current focus revision before attempting `brain_session_end`.
 For a bound session, `current_focus` and `current_focus_revision` are the slot's body and revision.
+`slot_closed` is true when a receipt has closed that slot (always false for an unbound session): `brain_session_end` and `brain_session_relay` then refuse with `slot_closed`, and the way out is the one the refusal names (`expected_focus_revision` set to the pre-close revision records a conflict, or abandon the session).
 The nested session also restores every existing ledger attribution in
 `attributed_knowledge_ids`, so a client can recover safely after losing local state.
 
