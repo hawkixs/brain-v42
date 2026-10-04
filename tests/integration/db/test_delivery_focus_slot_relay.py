@@ -24,7 +24,7 @@ from brain_v42.models.brain_session import (
 from brain_v42.models.focus_slot import FocusSlotError
 from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
 from tests.integration.db import test_delivery_focus_slots as _slots
-from tests.integration.db.test_delivery_focus_slot_binding import sessions, started
+from tests.integration.db.test_delivery_focus_slot_binding import open_slot, sessions, started
 from tests.integration.db.test_delivery_focus_slot_bound_end import bound, history
 from tests.integration.db.test_delivery_focus_slots import base_state
 
@@ -568,3 +568,21 @@ async def test_a_base_relay_successor_has_no_relayed_from_and_is_found_by_its_ke
     assert (again.replayed, again.session.id) == (True, first.session.id)
     with pytest.raises(FocusSlotError, match="^terminal_conflict: "):
         await base_relay(session_factory, session_id, key, revision, new_client_key="other-key")
+
+
+async def test_a_base_relay_still_replays_after_its_successor_bound_to_a_slot(
+    session_factory, slot_project
+):
+    revision = await set_base(session_factory, slot_project, "base")
+    session_id, key = await started(session_factory, slot_project)
+    first = await base_relay(session_factory, session_id, key, revision, new_client_key="succ-bd")
+    slot_id = await open_slot(session_factory, slot_project)
+    await sessions(session_factory).bind(first.session.id, "succ-bd", slot_id)
+    # The form is read from the lineage column, not the slot: a lost response retried after
+    # the successor bound must replay, not turn into terminal_conflict.
+    again = await base_relay(session_factory, session_id, key, revision, new_client_key="succ-bd")
+    assert (again.replayed, again.session.id, again.focus_revision) == (
+        True,
+        first.session.id,
+        revision + 1,
+    )

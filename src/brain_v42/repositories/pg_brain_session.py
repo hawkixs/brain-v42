@@ -1246,7 +1246,8 @@ class PgBrainSessionRepo(BasePgRepository):
 
         Lock order: the session row (held by `relay`), then `project_contexts` FOR
         UPDATE, as an unbound `end` does. The handover REPLACES the whole base, so
-        the two refusals that guard it mutate nothing and leave the session open:
+        the two refusals that guard it mutate nothing (beyond the derived-capture
+        absorption the service commits first, as for `end`) and leave the session open:
         a stale revision is the slot relay's semantics (S8), deliberately NOT
         `end`'s "close anyway, record a conflict", which would lose the handover;
         and a handover under 70% of the current base is refused as a destructive
@@ -1417,7 +1418,7 @@ class PgBrainSessionRepo(BasePgRepository):
                                 brain_sessions.c.client_key == new_client_key,
                                 brain_sessions.c.started_at == model.ended_at,
                                 brain_sessions.c.started_by_actor.like("relay:%"),
-                                brain_sessions.c.slot_id.is_(None),
+                                brain_sessions.c.relayed_from_session_id.is_(None),
                             ),
                         )
                     )
@@ -1427,7 +1428,9 @@ class PgBrainSessionRepo(BasePgRepository):
             .one_or_none()
         )
         ledger = set(await self._load_session_artifact_ids(session, model.id))
-        base_form = successor is not None and successor["slot_id"] is None
+        # The form is read from the lineage column, not the slot: a base successor may
+        # have bound to a slot since, and its retried relay must still replay.
+        base_form = successor is not None and successor["relayed_from_session_id"] is None
         expected, other = (
             (expected_focus_revision, expected_slot_revision)
             if base_form
