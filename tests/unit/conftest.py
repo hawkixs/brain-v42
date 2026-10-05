@@ -29,10 +29,14 @@ _UNREACHABLE_TEST_POSTGRES_URL = (
 def _default_postgres_url_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     """Give ``Settings()``/``get_settings()`` a harmless DSN when the shell has none.
 
-    Only a FALLBACK: a developer's own ``POSTGRES_URL`` (or ``BRAIN_POSTGRES_URL``,
-    which wins by alias priority -- see ``_brain_alias`` in ``brain_v42.config``) is
-    never overridden, so a shell already configured against a real database keeps
-    behaving exactly as before.
+    Only a FALLBACK for a shell with no database variable at all. A shell that DOES
+    configure one -- ``POSTGRES_URL``, ``BRAIN_POSTGRES_URL`` or a ``.env`` -- is
+    overridden, not respected: ``enforce_database_isolation`` (``pytest_configure``,
+    ``tests/database_guards.py``) already pointed ``POSTGRES_URL`` at
+    ``BRAIN_V42_TEST_DB_URL``, or at an unreachable address when that is unset, and
+    dropped ``BRAIN_POSTGRES_URL``. Code under test that builds its engine from
+    settings can therefore never open the application's real database (ticket
+    e3292865).
     """
     if not os.environ.get("BRAIN_POSTGRES_URL") and not os.environ.get("POSTGRES_URL"):
         monkeypatch.setenv("POSTGRES_URL", _UNREACHABLE_TEST_POSTGRES_URL)

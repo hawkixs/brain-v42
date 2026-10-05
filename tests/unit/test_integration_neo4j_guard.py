@@ -150,3 +150,95 @@ async def test_driver_failure_skip_never_exposes_url_or_exception(
     assert rendered == "Neo4j test database is not reachable"
     for secret in ("URL_PASSWORD_SECRET", "AUTH_PASSWORD_SECRET", "DRIVER_DETAIL_SECRET"):
         assert secret not in rendered
+
+
+def _load_neo4j_url_fixture_fn():
+    conftest_path = Path(__file__).parents[2] / "tests" / "integration" / "conftest.py"
+    tree = ast.parse(conftest_path.read_text())
+    imports = [node for node in tree.body if isinstance(node, (ast.Import, ast.ImportFrom))]
+    functions = [
+        node
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name in {"neo4j_url", "_resolve_integration_neo4j_config"}
+    ]
+    assert len(functions) == 2, "neo4j_url fixture or its resolver is missing"
+    for function in functions:
+        function.decorator_list = []
+    mini_module = ast.Module(body=imports + functions, type_ignores=[])
+    ast.fix_missing_locations(mini_module)
+    module = types.ModuleType("_integration_neo4j_url_mini")
+    exec(compile(mini_module, str(conftest_path), "exec"), module.__dict__)  # noqa: S102
+    return module.neo4j_url  # type: ignore[attr-defined]
+
+
+def _set_dedicated_variables(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    monkeypatch.setenv("BRAIN_V42_TEST_NEO4J_URL", url)
+    monkeypatch.setenv("BRAIN_V42_TEST_NEO4J_USER", "test-user")
+    monkeypatch.setenv("BRAIN_V42_TEST_NEO4J_PASSWORD", "test-password")
+
+
+@pytest.mark.parametrize("url", ["bolt://127.0.0.1:7687", "neo4j://localhost", "bolt://[::1]:7687"])
+def test_the_production_bolt_address_is_refused_by_identity(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    from tests.database_guards import UnsafeTestDatabase
+
+    _set_dedicated_variables(monkeypatch, url)
+
+    with pytest.raises(UnsafeTestDatabase, match="production Neo4j"):
+        _load_neo4j_resolver_fn()()
+
+
+def test_a_production_address_is_an_error_never_a_skip(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A skip would turn a misconfiguration into a green run."""
+    from tests.database_guards import UnsafeTestDatabase
+
+    _set_dedicated_variables(monkeypatch, "bolt://127.0.0.1:7687")
+
+    with pytest.raises(UnsafeTestDatabase):
+        _load_neo4j_url_fixture_fn()()
+
+
+@pytest.mark.asyncio
+async def test_a_neo4j_holding_production_data_is_refused_before_any_test_writes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import neo4j
+
+    from tests.database_guards import UnsafeTestDatabase
+
+    closed: list[bool] = []
+
+    class Result:
+        async def single(self) -> dict[str, str]:
+            return {"project_key": "brain-v42"}
+
+    class Session:
+        async def __aenter__(self) -> Session:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def run(self, *_args: object, **_kwargs: object) -> Result:
+            return Result()
+
+    class Driver:
+        def session(self) -> Session:
+            return Session()
+
+        async def close(self) -> None:
+            closed.append(True)
+
+    class GraphDatabase:
+        @staticmethod
+        def driver(*_args: object, **_kwargs: object) -> Driver:
+            return Driver()
+
+    monkeypatch.setattr(neo4j, "AsyncGraphDatabase", GraphDatabase)
+    generator = _load_neo4j_driver_fn()("bolt://127.0.0.1:17687", ("u", "p"))
+
+    with pytest.raises(UnsafeTestDatabase, match="production data"):
+        await generator.__anext__()
+    assert closed == [True]
