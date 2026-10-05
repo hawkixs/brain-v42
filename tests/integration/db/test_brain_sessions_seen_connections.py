@@ -18,8 +18,9 @@ from __future__ import annotations
 from uuid import UUID, uuid4
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from brain_v42.db.tables import brain_sessions
 from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
@@ -37,6 +38,16 @@ from tests.integration.db.test_brain_sessions_derived_absorption import (
 )
 
 pytestmark = pytest.mark.integration
+
+
+@pytest_asyncio.fixture
+async def session_factory(
+    private_head_engine: AsyncEngine,
+) -> async_sessionmaker[AsyncSession]:
+    """The module-private head: the relay test reaches the slot-aware relay path,
+    and the downgrading migration tests that run after this module must never
+    meet a row it left (tests/unit/test_slot_modules_use_the_private_head.py)."""
+    return async_sessionmaker(private_head_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 async def _close_tracer(session_factory: async_sessionmaker[AsyncSession], tracer) -> None:
