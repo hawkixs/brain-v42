@@ -56,10 +56,9 @@ async def _purge_unit_rows() -> None:  # type: ignore[misc]
     Silent when the variable is absent: most unit tests touch no database and must
     not pay for a connection because of this.
     """
-    yield  # type: ignore[misc]
-
     url = os.environ.get("BRAIN_V42_TEST_DB_URL")
     if not url or not url.strip():
+        yield  # type: ignore[misc]
         return
 
     import sqlalchemy as sa
@@ -70,20 +69,25 @@ async def _purge_unit_rows() -> None:  # type: ignore[misc]
     # and the divergence would only be seen the day one of them lets something
     # through. `tests` is a package and this crossing is already a repository pattern
     # (tests/integration/test_cleanup_purge_scope.py).
-    from tests.integration.conftest import purge_integration_rows
+    from tests.integration.conftest import shared_database_run
 
     engine = create_async_engine(url, poolclass=NullPool, echo=False)
     try:
         async with engine.connect() as conn:
             await conn.execute(sa.text("SELECT 1"))
+        reachable = True
     except Exception:  # noqa: BLE001 — unreachable database: nothing to clean, nothing to report
-        await engine.dispose()
-        return
-    try:
-        async with engine.begin() as conn:
-            await purge_integration_rows(conn)
+        reachable = False
     finally:
         await engine.dispose()
+    if not reachable:
+        yield  # type: ignore[misc]
+        return
+
+    # The run marker is taken BEFORE the first test writes, and the purge only
+    # runs if no other run on the same database is still going (ticket 8409719c).
+    async with shared_database_run(url):
+        yield  # type: ignore[misc]
 
 
 @pytest.fixture(autouse=True)

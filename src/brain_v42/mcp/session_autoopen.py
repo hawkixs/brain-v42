@@ -36,7 +36,7 @@ stateless mode there is no connection identifier, and this key falls away.
 
 from __future__ import annotations
 
-from collections import OrderedDict, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -102,6 +102,10 @@ SessionOpener = Callable[[AutoOpenIdentity], Awaitable[UUID | None]]
 #: under us", so a memo to discard, not a session to lose.
 SessionObserver = Callable[[UUID], Awaitable[bool]]
 
+#: A closer closes the open tracers of a connection whose transport has ended and
+#: returns their ids (ticket 09d2b56e).
+SessionCloser = Callable[[str], Awaitable[list[UUID]]]
+
 
 def resolve_auto_open_identity() -> tuple[AutoOpenIdentity | None, str]:
     """Resolve the current connection's identity, or say why not.
@@ -143,18 +147,28 @@ class SessionAutoOpener:
         self,
         opener: SessionOpener,
         observer: SessionObserver,
+        closer: SessionCloser | None = None,
         *,
         max_connections: int = DEFAULT_MAX_MEMOIZED_CONNECTIONS,
     ) -> None:
         self._opener = opener
         self._observer = observer
+        self._closer = closer
         self._max_connections = max_connections
         self._memo: OrderedDict[str, UUID] = OrderedDict()
+        # Connections whose transport has terminated. An Mcp-Session-Id is never
+        # reused, so membership is final; bounded like the memo, except that a
+        # marker never ages out while an operation on its connection is in flight
+        # (round 2 of #291: a late opening would otherwise slip through).
+        self._terminated: OrderedDict[str, None] = OrderedDict()
+        self._in_flight: Counter[str] = Counter()
         self.opened = 0
         self.memoized = 0
         self.reopened = 0
         self.failed = 0
         self.observe_failed = 0
+        self.closed = 0
+        self.close_failed = 0
         self.skipped: defaultdict[str, int] = defaultdict(int)
 
     async def ensure_open(self) -> UUID | None:
@@ -164,21 +178,38 @@ class SessionAutoOpener:
             self.skipped[reason] += 1
             return None
 
+        if identity.connection_id in self._terminated:
+            # A call that raced its own connection's end: never reopen a tracer
+            # for a connection that will never be seen again.
+            self.skipped["terminated"] += 1
+            return None
+
+        self._in_flight[identity.connection_id] += 1
+        try:
+            return await self._ensure_open(identity)
+        finally:
+            self._in_flight[identity.connection_id] -= 1
+            if not self._in_flight[identity.connection_id]:
+                del self._in_flight[identity.connection_id]
+
+    async def _ensure_open(self, identity: AutoOpenIdentity) -> UUID | None:
         memoized = self._memo.get(identity.connection_id)
         if memoized is not None:
             observed = await self._observe(memoized, identity)
             if observed is not False:
                 # ``None`` = the observation failed. We keep the memo: losing a
                 # stamp costs one clock line, losing the memo would cost this
-                # connection's session.
-                self._memo.move_to_end(identity.connection_id)
+                # connection's session. ``close`` may have dropped the entry
+                # during the await: tolerated, never a KeyError on a tool call.
+                if identity.connection_id in self._memo:
+                    self._memo.move_to_end(identity.connection_id)
                 self.memoized += 1
                 return memoized
             # The session was closed from under us — the case the signed shape
             # names. Nothing to repair: the UNIQUE key is PARTIAL
             # (``WHERE status = 'open'``), so the closed row does not block, and
             # reopening is the normal path, not a recovery.
-            del self._memo[identity.connection_id]
+            self._memo.pop(identity.connection_id, None)
             self.reopened += 1
 
         try:
@@ -208,6 +239,12 @@ class SessionAutoOpener:
             self.skipped["no_session"] += 1
             return None
 
+        if identity.connection_id in self._terminated:
+            # The connection terminated while this opening was in flight: its
+            # `close` ran before the tracer existed. Close the late tracer now
+            # rather than leave it open and memoized for a dead connection.
+            await self.close(identity.connection_id)
+            return None
         self._remember(identity.connection_id, session_id)
         self.opened += 1
         return session_id
@@ -232,6 +269,48 @@ class SessionAutoOpener:
                 exc_info=True,
             )
             return None
+
+    async def close(self, connection_id: str) -> None:
+        """Close the tracers of an ended connection. **Never raises**, like the rest.
+
+        Called from the transport's termination (DELETE, idle eviction,
+        shutdown). The memo entry goes first: the connection id is dead, and a
+        memo pointing at a closed tracer would only cost a reopening later. A
+        failed close leaves the tracer to the inactivity net, which closes it on
+        the same terms.
+        """
+        self._terminated[connection_id] = None
+        self._terminated.move_to_end(connection_id)
+        self._forget_old_terminations()
+        self._memo.pop(connection_id, None)
+        if self._closer is None:
+            return
+        try:
+            closed = await self._closer(connection_id)
+        except Exception:
+            self.close_failed += 1
+            logger.warning(
+                "session_autoopen.close_failed",
+                connection_id=connection_id,
+                exc_info=True,
+            )
+            return
+        self.closed += len(closed)
+
+    def _forget_old_terminations(self) -> None:
+        """Bound the terminated markers, oldest first, sparing any still in use.
+
+        A marker whose connection has an opening or an observation in flight is
+        what lets that operation close its late tracer: dropping it would leave
+        the tracer open and memoized for a dead connection. The spared markers
+        are bounded by the number of concurrent tool calls.
+        """
+        excess = len(self._terminated) - self._max_connections
+        if excess <= 0:
+            return
+        idle = [key for key in self._terminated if key not in self._in_flight]
+        for connection_id in idle[:excess]:
+            del self._terminated[connection_id]
 
     def _remember(self, connection_id: str, session_id: UUID) -> None:
         self._memo[connection_id] = session_id
@@ -265,17 +344,25 @@ def get_session_autoopener() -> SessionAutoOpener | None:
     return _autoopener
 
 
+async def close_connection_traces(connection_id: str) -> None:
+    """Close the tracers of a connection whose transport ended; inert while auto-open is off."""
+    autoopener = get_session_autoopener()
+    if autoopener is not None:
+        await autoopener.close(connection_id)
+
+
 def reset_session_autoopener() -> None:
     """Forget the memoized opener — a test entry point, never a production one."""
     global _autoopener
     _autoopener = None
 
 
-def _build_default_writers() -> tuple[SessionOpener, SessionObserver]:
-    """Wire the production opener AND observer onto the session repository.
+def _build_default_writers() -> tuple[SessionOpener, SessionObserver, SessionCloser]:
+    """Wire the production opener, observer AND closer onto the session repository.
 
-    Both come from the SAME repository, hence the same engine: an opener writing
-    somewhere other than the observer would produce a session nobody stamps.
+    All come from the SAME repository, hence the same engine: an opener writing
+    somewhere other than the observer would produce a session nobody stamps, and
+    one the closer could not close.
     """
     from brain_v42.db.engine import get_session_factory  # noqa: PLC0415
     from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo  # noqa: PLC0415
@@ -288,4 +375,7 @@ def _build_default_writers() -> tuple[SessionOpener, SessionObserver]:
     async def _observe(session_id: UUID) -> bool:
         return await repo.observe(session_id)
 
-    return _open, _observe
+    async def _close(connection_id: str) -> list[UUID]:
+        return await repo.close_agent_traces(connection_id)
+
+    return _open, _observe, _close

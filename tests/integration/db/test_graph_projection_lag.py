@@ -1,4 +1,12 @@
-"""Real PostgreSQL evidence for the graph projection lag fact."""
+"""Real PostgreSQL evidence for the graph projection lag fact.
+
+The fact counts ``graph_outbox`` database-wide, and the fixtures here rewrite the
+whole table and its singleton lease. On the shared ``brain_test`` that made every
+concurrent run's pending rows part of the measure, and each test here marked the
+other runs' rows delivered for a while (ticket a4044c4d). The module therefore
+measures a PRIVATE head database (``private_head_engine``), built for it and
+dropped after it.
+"""
 
 from __future__ import annotations
 
@@ -9,14 +17,23 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from brain_v42.facts import FactRegistry, FactTarget, Measured, SourceIdentity
 from brain_v42.facts.probes import GraphProjectionLagProbe
 from brain_v42.facts.sources import PostgresSourceFactory
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+
+
+@pytest_asyncio.fixture
+async def session_factory(
+    private_head_engine: AsyncEngine,
+) -> async_sessionmaker[AsyncSession]:
+    """Every measure and fixture of this module goes to its private database."""
+    return async_sessionmaker(private_head_engine, class_=AsyncSession, expire_on_commit=False)
 
 
 @dataclass
@@ -275,3 +292,33 @@ async def test_exhausted_rows_are_loud_but_not_pending(
     assert value["exhausted"] >= 1
     assert value["pending"] == 0
     assert type(value["lag_seconds"]) is int
+
+
+async def test_a_pending_row_from_another_writer_never_reaches_the_measure(
+    session_factory: async_sessionmaker[AsyncSession],
+    engine: AsyncEngine,
+) -> None:
+    """Ticket a4044c4d: this module must measure a database nobody else writes.
+
+    The fact counts ``graph_outbox`` database-wide, by contract, so a module that
+    measures the shared ``brain_test`` reads every concurrent run's pending rows
+    (measured 2026-10-04: ``assert 2 == 0``). The session-wide ``engine`` plays
+    that concurrent run here: it writes one pending row while the module
+    measures, and the row must land somewhere the measure cannot see.
+    """
+    foreign_factory = async_sessionmaker(engine, expire_on_commit=False)
+    foreign = _ProjectionFixture(undelivered_ids=[], lease=None)
+    try:
+        async with _projection_state(session_factory):
+            await _add_outbox_row(foreign_factory, foreign, age_seconds=5)
+            value = await _measure_value(session_factory)
+    finally:
+        async with foreign_factory() as session:
+            for entity_id in foreign.entity_ids:
+                await session.execute(
+                    sa.text("DELETE FROM brain_entities WHERE id = :entity_id"),
+                    {"entity_id": entity_id},
+                )
+            await session.commit()
+
+    assert value["pending"] == 0

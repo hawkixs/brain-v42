@@ -108,10 +108,14 @@ def _make_collector(
     """MetricsCollector with a mocked session factory (the test_dream_metrics idiom)."""
     collector = MetricsCollector.__new__(MetricsCollector)
     collector._session_factory = MagicMock()
-    mock_session = AsyncMock()
+    mock_session = MagicMock()
     mock_session.execute = AsyncMock(side_effect=side_effects)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    mock_session.begin = MagicMock(return_value=transaction)
     collector._session_factory.return_value = mock_session
     return collector
 
