@@ -26,7 +26,7 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from typing import Any, NamedTuple
 from weakref import WeakSet
@@ -56,6 +56,7 @@ from brain_v42.mcp.dream_project_authorization import (
 )
 from brain_v42.mcp.http_security import BearerTokenGuard, HostOriginGuard
 from brain_v42.mcp.provenance_middleware import ProvenanceMiddleware
+from brain_v42.mcp.session_autoopen import close_connection_traces
 from brain_v42.metrics.tool_instrumentation import instrument_registered_tools
 from brain_v42.release import package_version, shipped_alembic_head
 from brain_v42.repositories.pg_adr import PgADRRepo
@@ -820,6 +821,67 @@ def _install_session_idle_timeout(seconds: float) -> None:
     logger.info("brain_v42.server.session_idle_timeout", seconds=seconds)
 
 
+class TransportTerminationHookUnavailableError(RuntimeError):
+    """The SDK shape changed and terminated connections would no longer close their tracers."""
+
+
+# Marker carried by the injected transport subclass, for the same reason as the
+# idle-timeout one: recognise it, so a second installation does not stack.
+_TERMINATION_HOOK_MARKER = "_brain_v42_on_terminated"
+
+
+def _install_transport_termination_hook(
+    on_terminated: Callable[[str], Awaitable[None]],
+    *,
+    budget_seconds: float = 5.0,
+) -> None:
+    """Report every terminated stateful transport, by its ``Mcp-Session-Id``.
+
+    Ticket 09d2b56e. The SDK ends a stateful session through
+    ``StreamableHTTPServerTransport.terminate`` on its three nominal paths — a
+    client DELETE, the idle eviction, the server shutdown — and offers no
+    callback. The session manager instantiates the class from ITS module, so a
+    subclass substituted there sees every transport this server creates.
+
+    GUARDED like the idle deadline: no ``terminate`` upstream means a refusal to
+    start, never a server that believes it closes tracers. FAIL-OPEN and BOUNDED
+    on the report itself: closing a database row must never keep a connection
+    from terminating, nor hold a shutdown for longer than ``budget_seconds``. A
+    crashed session never reaches ``terminate``; the inactivity net covers it.
+    """
+    from mcp.server import streamable_http_manager  # noqa: PLC0415
+
+    base = streamable_http_manager.StreamableHTTPServerTransport
+    if not callable(getattr(base, "terminate", None)):
+        raise TransportTerminationHookUnavailableError(
+            "StreamableHTTPServerTransport.terminate is gone; "
+            "ended connections would leave their agent tracers open"
+        )
+    if getattr(base, _TERMINATION_HOOK_MARKER, None) is not None:
+        setattr(base, _TERMINATION_HOOK_MARKER, (on_terminated, budget_seconds))
+        return
+
+    class _ReportingTransport(base):  # type: ignore[misc, valid-type]
+        async def terminate(self) -> None:
+            first = not self.is_terminated
+            await super().terminate()
+            if not first or self.mcp_session_id is None:
+                return
+            report, budget = getattr(type(self), _TERMINATION_HOOK_MARKER)
+            try:
+                await asyncio.wait_for(report(self.mcp_session_id), timeout=budget)
+            except Exception as exc:  # noqa: BLE001 — fail-open by contract
+                logger.warning(
+                    "brain_v42.server.transport_termination_report_failed",
+                    error=type(exc).__name__,
+                )
+
+    setattr(_ReportingTransport, _TERMINATION_HOOK_MARKER, (on_terminated, budget_seconds))
+    # Same substitution, same justification as the idle deadline above.
+    streamable_http_manager.StreamableHTTPServerTransport = _ReportingTransport  # type: ignore[misc]
+    logger.info("brain_v42.server.transport_termination_hook", budget_seconds=budget_seconds)
+
+
 async def prepare_tools_for_transport(mcp: FastMCP, metrics_collector: Any | None) -> None:
     """Apply the transport-agnostic prelude every served tool must carry.
 
@@ -882,6 +944,7 @@ def plan_http_transport(
     )
     if not settings.mcp_http_stateless:
         _install_session_idle_timeout(settings.mcp_http_session_idle_seconds)
+        _install_transport_termination_hook(close_connection_traces)
     return HttpTransportPlan(
         middleware=middleware,
         stateless_http=settings.mcp_http_stateless,

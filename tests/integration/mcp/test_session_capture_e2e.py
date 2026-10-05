@@ -982,3 +982,44 @@ async def test_two_concurrent_user_sessions_leave_the_artifact_where_it_is(
     result = _end_result(payload)
     assert result["session"]["attributed_knowledge_ids"] == []
     assert result["unattributed_in_window"] >= 1
+
+
+_TRACER_STATUSES = sa.text(
+    "SELECT status, abandonment_reason FROM brain_sessions "
+    "WHERE project_key = :project_key AND nature = 'agent'"
+)
+
+
+@pytest.mark.asyncio(loop_scope="module")
+async def test_a_client_that_ends_its_connection_closes_its_tracer(
+    mcp_base_url: str, engine: AsyncEngine
+) -> None:
+    """Ticket 09d2b56e, end to end: the client's DELETE is what closes the tracer.
+
+    Measured 2026-10-05: the clients end their connections (1,183 DELETE in 24 h)
+    and the server left every tracer open until a Dream night. The scene: one
+    connection, one call, one tracer, then the client leaves.
+    """
+    project_key = f"integ-w20-{uuid4().hex[:10]}"
+    async with _Conn(mcp_base_url, project_key) as link:
+        await _bootstrap_project(link, project_key)
+        await _learning_id(link, project_key, f"w20 trace close {uuid4().hex[:8]}")
+        assert [
+            tuple(row)
+            for row in await _read_rows(engine, _TRACER_STATUSES, {"project_key": project_key})
+        ] == [("open", None)]
+
+    deadline = _LINK_BUDGET_SECONDS
+    rows: list[tuple[Any, ...]] = []
+    while deadline > 0:
+        rows = [
+            tuple(row)
+            for row in await _read_rows(engine, _TRACER_STATUSES, {"project_key": project_key})
+        ]
+        if rows == [("closed_inactive", None)]:
+            break
+        await asyncio.sleep(0.1)
+        deadline -= 0.1
+    assert rows == [("closed_inactive", None)], (
+        "the client ended its connection and its tracer stayed open"
+    )
