@@ -399,8 +399,15 @@ class Settings(BaseSettings):
     # A stateful session lives in an in-memory dict and is only released on the
     # client's DELETE. A client killed outright sends none: without a deadline,
     # its state survives until the next process restart.
+    #
+    # Eight hours, not fifteen minutes (ticket dc51c7b5). Claude Code recovers an
+    # evicted session by itself, but every recovery mints a new Mcp-Session-Id:
+    # a new agent tracer, and a connection exact absorption cannot link to the
+    # operator session (03291fdc). The 900 s deadline produced ~480 evictions a
+    # day; eight hours covers a working day's pauses and still releases a dead
+    # client's state the same day.
     mcp_http_session_idle_seconds: float = Field(
-        default=900.0, validation_alias=_brain_alias("MCP_HTTP_SESSION_IDLE_SECONDS")
+        default=8 * 3600.0, validation_alias=_brain_alias("MCP_HTTP_SESSION_IDLE_SECONDS")
     )
 
     # --- Client activity reporting (emitter on the MCP process side) ---

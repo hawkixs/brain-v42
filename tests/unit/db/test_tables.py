@@ -48,6 +48,7 @@ class TestMetadataAndTablePresence:
             "brain_session_checkpoints",
             "brain_sessions",
             "brain_session_artifacts",
+            "brain_session_connections",
             "search_log",
             "process_metrics",
             "features",

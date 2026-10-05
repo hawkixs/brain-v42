@@ -15,6 +15,7 @@ from scripts.wait_for_postgres import MAX_WAIT_SECONDS
 from tests.unit.deploy.test_systemd_sandbox_profiles import _directives, _section_directives
 
 LONG_RUNNING = {
+    "brain-metrics.service.tmpl": ("BRAIN_POSTGRES_URL", "POSTGRES_URL"),
     "brain-mcp-http.service.tmpl": ("BRAIN_POSTGRES_URL", "POSTGRES_URL"),
     "brain-v42-automation.service.tmpl": ("BRAIN_POSTGRES_URL", "POSTGRES_URL"),
     "brain-v42-delivery-observer.service.tmpl": ("BRAIN_DELIVERY_POSTGRES_URL", "POSTGRES_URL"),
