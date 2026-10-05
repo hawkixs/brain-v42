@@ -40,7 +40,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from brain_v42.config import Settings, get_settings
-from brain_v42.db.engine import dispose_engine, get_session_factory
+from brain_v42.db.engine import dispose_engine, get_session_factory, use_engine_profile
 from brain_v42.db.neo4j import close_neo4j_driver, create_neo4j_driver
 from brain_v42.facts.definitions_startup import register_fact_definitions
 from brain_v42.mcp.activity_reporter import close_activity_reporter
@@ -1401,6 +1401,9 @@ if __name__ == "__main__":
     _configure_stdio_logging()
     _setup_parent_death_signal()
     _apply_http_server_arg()  # MUST be before get_settings() -- sets env for lru_cache
+    # The MCP server is the long-lived interactive process: bounded session budgets.
+    # Here and not in build_server(): tests inject an engine and call build_server().
+    use_engine_profile("interactive")
 
     built = build_server()
 

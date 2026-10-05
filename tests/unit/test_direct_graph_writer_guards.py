@@ -65,3 +65,31 @@ async def test_reconcile_graph_report_remains_available_when_canonical_ledger_is
 
     with pytest.raises(ReadModeReached):
         await reconcile_graph.main()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("script", [init_graph, reconcile_graph])
+async def test_graph_writer_requires_password_after_postgres_read(
+    monkeypatch: pytest.MonkeyPatch, script: object
+) -> None:
+    monkeypatch.setenv("GRAPH_LEDGER_WRITE_ENABLED", "false")
+    monkeypatch.delenv("NEO4J_PASSWORD", raising=False)
+
+    class PostgresConnection:
+        closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    connection = PostgresConnection()
+    reached: list[bool] = []
+
+    async def pg_connect(*_args: object, **_kwargs: object) -> PostgresConnection:
+        reached.append(True)
+        return connection
+
+    monkeypatch.setattr(script.asyncpg, "connect", pg_connect)
+    with pytest.raises(RuntimeError, match="NEO4J_PASSWORD is required"):
+        await script.main()
+    assert reached == [True]
+    assert connection.closed

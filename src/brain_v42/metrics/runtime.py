@@ -29,6 +29,7 @@ from brain_v42.automation.ownership import (
     ProjectKeyResolver,
 )
 from brain_v42.config import Settings, get_settings
+from brain_v42.db.engine import pg_connect_args
 from brain_v42.db.neo4j import create_neo4j_driver
 from brain_v42.db.tables import project_contexts
 from brain_v42.metrics.brain_graph_server import BrainGraphMetricsServer
@@ -392,6 +393,7 @@ def build_metrics_runtime(
         pool_timeout=10,
         pool_recycle=1800,
         pool_pre_ping=True,
+        connect_args=pg_connect_args(effective_settings, "metrics"),
     )
     session_factory = async_sessionmaker(
         runtime_engine,

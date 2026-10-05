@@ -13,6 +13,9 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+MemoryHigh=2G
+MemoryMax=4G
+# Bound the long-running MCP server with headroom above its measured peak.
 
 # Production lifecycle is operator-managed: the normal install path generates and validates this
 # unit without changing its enable/start state. The explicit --uninstall path disables, stops and

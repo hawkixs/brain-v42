@@ -30,6 +30,11 @@ previous one exits with code `0`.
 
 ## Render modes
 
+The installer publishes `brain-v42-logs-rotate.service` and
+`brain-v42-logs-rotate.timer` without enabling or starting the timer. After reviewing
+the rendered log targets, an operator may run
+`systemctl --user enable --now brain-v42-logs-rotate.timer`.
+
 - A default install enables and starts only Dream and graph-recon timers whose unit
   files were absent before the run. Existing timers retain their enabled and active
   states, which the installer logs. `install.sh --enable-timers` explicitly enables

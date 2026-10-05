@@ -145,7 +145,9 @@ async def test_catalogues_publish_schema_and_dispatch_the_eleven_delivery_tools(
                 # list, which reads one ticket OR one issuer project.
                 if name not in {"brain_delivery_list", "brain_delivery_attestation_list"}:
                     assert "ticket_id" in required
-                assert tools[name].meta["fastmcp"]["version"] == "1.0"
+                assert tools[name].meta["fastmcp"]["version"] == (
+                    "2.0" if name == "brain_delivery_list" else "1.0"
+                )
                 assert tools[name].outputSchema["type"] == "object"
         result = await client.call_tool(
             "brain_call_tool" if compact else "brain_delivery_get",

@@ -79,6 +79,41 @@ class PgDeliveryQueue:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise ValueError("observer queue limit must be between 1 and 100")
         w, r, b = workflows, revisions, bindings
+        failed = confirmations.alias("failed_confirmations")
+        # failure_count runs per due row before the outer LIMIT; migration 062's partial error indexes make it an index lookup.
+        artifact_failures = (
+            sa.select(sa.func.count())
+            .select_from(failed)
+            .where(
+                failed.c.outcome == "error",
+                failed.c.subject_kind == "artifact_binding",
+                failed.c.binding_id == b.c.id,
+                sa.or_(
+                    b.c.last_success_at.is_(None),
+                    failed.c.collection_finished_at > b.c.last_success_at,
+                ),
+            )
+            .correlate(b)
+            .scalar_subquery()
+        )
+        context_failures = (
+            sa.select(sa.func.count())
+            .select_from(failed)
+            .where(
+                failed.c.outcome == "error",
+                failed.c.subject_kind == "repository_context",
+                failed.c.ticket_id == w.c.ticket_id,
+                failed.c.contract_revision == w.c.current_revision,
+                failed.c.attempt == w.c.attempt,
+                failed.c.context_set_digest == w.c.context_set_digest,
+                sa.or_(
+                    w.c.context_last_success_at.is_(None),
+                    failed.c.collection_finished_at > w.c.context_last_success_at,
+                ),
+            )
+            .correlate(w)
+            .scalar_subquery()
+        )
         current_revision = sa.and_(
             r.c.ticket_id == w.c.ticket_id, r.c.contract_revision == w.c.current_revision
         )
@@ -112,6 +147,7 @@ class PgDeliveryQueue:
                 sa.func.to_jsonb(b.table_valued()).label("binding_row"),
                 snapshots.c.evidence.label("previous"),
                 b.c.last_success_at.label("last_success_at"),
+                sa.func.least(artifact_failures, 6).label("failure_count"),
             )
             .select_from(
                 b.join(
@@ -144,6 +180,7 @@ class PgDeliveryQueue:
                 sa.cast(sa.null(), JSONB).label("binding_row"),
                 sa.cast(sa.null(), JSONB).label("previous"),
                 w.c.context_last_success_at.label("last_success_at"),
+                sa.func.least(context_failures, 6).label("failure_count"),
             )
             .select_from(w.join(r, current_revision).join(tickets, tickets.c.id == w.c.ticket_id))
             .where(eligible, context_due)
@@ -193,29 +230,12 @@ class PgDeliveryQueue:
                     if row["previous"] is None
                     else PullRequestEvidence.model_validate_json(json.dumps(row["previous"]))
                 )
+                failure_count = int(row["failure_count"])
             except (ValueError, KeyError, TypeError) as error:
                 if on_undecodable is None:
                     raise
                 on_undecodable(f"{row['kind']}:{row['subject_id']}", type(error).__name__)
                 continue
-            failed = sa.select(confirmations.c.id).where(confirmations.c.outcome == "error")
-            if binding is not None:
-                failed = failed.where(confirmations.c.binding_id == binding.id)
-            else:
-                failed = failed.where(
-                    confirmations.c.subject_kind == "repository_context",
-                    confirmations.c.ticket_id == row["ticket_id"],
-                    confirmations.c.contract_revision == contract.contract_revision,
-                    confirmations.c.attempt == row["attempt"],
-                    confirmations.c.context_set_digest == row["context_set_digest"],
-                )
-            if row["last_success_at"] is not None:
-                failed = failed.where(
-                    confirmations.c.collection_finished_at > row["last_success_at"]
-                )
-            failure_count = await session.scalar(
-                sa.select(sa.func.count()).select_from(failed.limit(6).subquery())
-            )
             jobs.append(
                 ObservationJob(
                     kind=row["kind"],
@@ -230,7 +250,7 @@ class PgDeliveryQueue:
                     context_set_digest=row["context_set_digest"],
                     binding=binding,
                     previous=previous,
-                    failure_count=int(failure_count or 0),
+                    failure_count=failure_count,
                 )
             )
         return tuple(jobs)
