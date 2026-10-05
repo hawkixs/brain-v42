@@ -267,6 +267,10 @@ def _absorb_router(
 
     def route(statement: Any) -> Any:
         sql = _sql(statement)
+        if sql.startswith("insert into brain_session_connections"):
+            return _result()
+        if sql.startswith("select brain_sessions.id"):
+            return _result(rows=[{"id": tracer}] if tracer is not None else [])
         if "from brain_sessions" in sql:
             return _result(scalar=tracer)
         if "count(" in sql:
@@ -306,14 +310,29 @@ class TestAbsorption:
         update = next(item for item in statements if "update brain_session_artifacts" in _sql(item))
         assert target.id in _params(update).values()
 
-    async def test_the_donor_can_only_be_an_open_agent_tracer(self, _open_flag: None) -> None:
+    async def test_the_donor_can_only_be_an_agent_tracer_of_a_seen_connection(
+        self, _open_flag: None
+    ) -> None:
         """The donor is `agent` ONLY: absorbing an `operator` session would move
-        one human's ledger to another human."""
+        one human's ledger to another human.
+
+        Decision 44c0b6bd (03291fdc): the exact stage reads every connection the
+        session was SEEN on, recorded first, and a `closed_inactive` tracer keeps
+        its ledger, so it stays a donor (its connection ended, 09d2b56e)."""
         session, statements = _session(_absorb_router(tracer=uuid4(), candidates=[uuid4()]))
         await _absorb(session)
 
-        values = set(_params(statements[0]).values())
-        assert {_PROJECT, _CONNECTION, "open", "agent"} <= values
+        recorded = _sql(statements[0])
+        assert recorded.startswith("insert into brain_session_connections")
+        assert _CONNECTION in _params(statements[0]).values()
+        donors = next(
+            item for item in statements if _sql(item).startswith("select brain_sessions.id")
+        )
+        values: list[Any] = []
+        for value in _params(donors).values():
+            values.extend(value if isinstance(value, list | tuple) else [value])
+        assert {_PROJECT, "open", "closed_inactive", "agent"} <= set(values)
+        assert "brain_session_connections" in _sql(donors)
 
     async def test_it_accepts_only_what_an_explicit_capture_would_have_accepted(
         self, _open_flag: None
@@ -509,8 +528,10 @@ def _two_stage_router(
         sql = _sql(statement)
         if "count(" in sql and "brain_session_artifacts" in sql and "update" not in sql:
             return _result(scalar=blocked if "rival" in sql else occupied)
+        if sql.startswith("insert into brain_session_connections"):
+            return _result()
         if sql.startswith("select brain_sessions.id"):
-            return _result(scalar=connection_tracer)
+            return _result(rows=[{"id": connection_tracer}] if connection_tracer else [])
         if "update brain_session_artifacts" in sql:
             # The stage is read from the MODE WRITTEN, taken from the
             # parameters. That is the semantic discriminant: the previous version
@@ -585,18 +606,22 @@ class TestTwoStageAbsorption:
         assert (outcome.moved_by_connection, outcome.moved_by_window) == (0, 1)
         assert outcome.total == 1
 
-    async def test_the_connection_stage_still_demands_an_open_tracer(
+    async def test_the_exact_stage_reads_the_connections_the_session_was_seen_on(
         self, _open_flag: None
     ) -> None:
-        """The EXACT stage does not change: it stays bounded to the current connection."""
+        """Decision 44c0b6bd: the exact stage is bounded to the session's SEEN set,
+        no longer to the current connection alone, and still to agent tracers."""
         session, statements = _session(
             _two_stage_router(connection_tracer=uuid4(), connection_moved=[uuid4()])
         )
         await _outcome(session)
 
-        exact = _sql(statements[0])
-        assert "connection_id" in exact
-        assert "status" in exact and "nature" in exact
+        exact = next(
+            item for item in statements if _sql(item).startswith("select brain_sessions.id")
+        )
+        sql = _sql(exact)
+        assert "brain_session_connections" in sql and "connection_id" in sql
+        assert "status" in sql and "nature" in sql
 
     async def test_the_window_stage_accepts_a_closed_inactive_donor(self, _open_flag: None) -> None:
         """The 4 h sweep moves a tracer out of `open` WHILE KEEPING its ledger.

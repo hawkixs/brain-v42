@@ -1020,6 +1020,31 @@ brain_sessions = Table(
     ),
 )
 
+# ─── brain_session_connections (exact absorption across transport changes) ──
+
+brain_session_connections = Table(
+    "brain_session_connections",
+    METADATA,
+    Column(
+        "session_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("brain_sessions.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    ),
+    Column("connection_id", String(64), primary_key=True, nullable=False),
+    Column(
+        "first_seen_at",
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=sa.text("clock_timestamp()"),
+    ),
+    sa.CheckConstraint(
+        "COALESCE(btrim(connection_id) <> '', false)",
+        name="brain_session_connections_connection_nonblank",
+    ),
+)
+
 # ─── brain_session_artifacts (explicit per-session provenance) ───────────────
 
 brain_session_artifacts = Table(

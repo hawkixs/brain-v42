@@ -1707,7 +1707,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_060_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_061_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1784,7 +1784,7 @@ def test_repository_head_060_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     head = _repository_head()
-    assert head == "060"
+    assert head == "061"
 
     # Everything below is DERIVED from that measured head. It used to be COPIED,
     # and that is precisely how `SCHEMA.md` came to announce 049 while the chain
@@ -2469,6 +2469,14 @@ _INACTIVITY_SWEEP_RULE = (
     "open `nature = 'agent'` traces whose `last_observed_at` is more than four hours old and "
     "moves them to `closed_inactive`."
 )
+# Ticket 09d2b56e: the server closes the traces it opens, on transport termination and
+# through its own four-hour net. Pinned in its section so it cannot drift silently.
+_SERVER_CLOSES_ITS_TRACES = (
+    "The server that opened an agent trace also closes it: when the transport of its "
+    "connection terminates (a client `DELETE`, the idle eviction, the server shutdown), and "
+    "through a net that moves to `closed_inactive` every open `nature = 'agent'` trace whose "
+    "`last_observed_at` is more than four hours old, every fifteen minutes."
+)
 # Since migration 060 the database bounds it too: the `closed_inactive` branch reads
 # `nature IS NOT NULL AND nature = 'agent'`, so a NULL nature is refused rather than
 # accepted as NULL (16314b31). The sentence avoids the word "agent" on purpose: with
@@ -2559,6 +2567,7 @@ _DOCTRINE_SECTIONS: tuple[tuple[str, str, tuple[tuple[str, str], ...]], ...] = (
             ("thresholds-24h-vs-7d", _ENGLISH_THRESHOLD_DISAMBIGUATION),
             ("two-natures", _TWO_NATURES_SCOPE),
             ("inactivity-sweep", _INACTIVITY_SWEEP_RULE),
+            ("server-closes-its-traces", _SERVER_CLOSES_ITS_TRACES),
             ("closed-inactive-check-scope", _CLOSED_INACTIVE_CHECK_SCOPE),
             ("slot-relay-amendment", _SLOT_RELAY_AMENDMENT),
             ("cross-cutting-relays-onto-the-base", _CROSS_CUTTING_RELAYS_ONTO_THE_BASE),

@@ -87,6 +87,7 @@ async def test_graph_outbox_projector_follows_server_lifecycle(monkeypatch) -> N
         decay_enabled=False,
         otel_tracing_enabled=False,
         plan_index_refresh_enabled=False,
+        brain_session_auto_open_enabled=False,
     )
     ensure_projection_schema = AsyncMock()
     monkeypatch.setattr(
@@ -133,6 +134,7 @@ async def test_startup_failure_unwinds_every_started_resource(monkeypatch) -> No
         decay_enabled=False,
         otel_tracing_enabled=False,
         plan_index_refresh_enabled=False,
+        brain_session_auto_open_enabled=False,
     )
     close_driver = AsyncMock()
     dispose_engine = AsyncMock()
