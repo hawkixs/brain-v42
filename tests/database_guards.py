@@ -51,12 +51,18 @@ _NEO4J_URL_NAMES = (
 # Compose publishes production bolt on 127.0.0.1:7687 (docker-compose.yml, neo4j).
 _COMPOSE_PRODUCTION_NEO4J = (_CANONICAL_LOOPBACK, 7687)
 _PROJECTOR_ENV_FILE = Path.home() / ".config" / "brain-v42" / "graph-projector.env"
+# domain_backfill, ticket_extract, roadmap_curate and canary_roadmap_model all
+# load this file through domain_backfill.load_env_file (os.environ.setdefault).
+_SETDEFAULT_ENV_FILES = (Path.home() / ".config" / "brain-v42" / "nvidia.env",)
 
 # Neo4j test data only ever carries these project-key prefixes: ``integ-`` (the
 # shared purge prefix, tests/unit/keys.py) and ``test-`` (test_graph_integration).
 TEST_NEO4J_PROJECT_PREFIXES = ("integ-", "test-")
 
-_TEST_DATABASE_NAME = re.compile(r"brain_(test|migration|fresh)(_[a-z0-9_]+)?|[a-z0-9_]+_test")
+_TEST_DATABASE_NAME = re.compile(
+    r"brain_(test|migration|fresh)(_[a-z0-9_]+)?|[a-z0-9_]+_test"
+    r"|brain_[a-z][a-z0-9]*(?:_[a-z0-9]+)*_[0-9a-f]{8,}"
+)
 _CONNECTION_OVERRIDES = frozenset({"database", "dbname", "host", "hostaddr", "port"})
 
 PostgresIdentity = tuple[str, int, str]
@@ -103,8 +109,11 @@ def neo4j_identity(url: str) -> Neo4jIdentity:
 
 
 def is_test_database_name(name: str) -> bool:
-    """True for ``brain_test``, ``brain_migration_*``, ``brain_fresh_*`` and ``*_test``."""
-    return _TEST_DATABASE_NAME.fullmatch(name.lower()) is not None
+    """Accept explicit test names and disposable ``brain_<words>_<hex8+>`` names."""
+    return (
+        name.lower() == "brain_unit_test_unreachable"
+        or _TEST_DATABASE_NAME.fullmatch(name.lower()) is not None
+    )
 
 
 def _configured(
@@ -127,19 +136,48 @@ def _neutralise_urls(
     names: Iterable[str],
     safe_url: str,
 ) -> None:
-    """Pin aliases and existing spellings so later setdefault-based loaders cannot restore them."""
+    """Remove all alias spellings, keeping only the safe canonical legacy variable.
+
+    Pinning BRAIN_ aliases would shadow explicit legacy values set later by tests
+    or passed to child processes. Files that could restore them are checked first.
+    """
     names = tuple(names)
     configured = _configured(environ, dotenv_files, names)
-    if not configured:
-        return
     guarded = {name.casefold() for name in names}
-    spellings = {
-        *names,
-        *(name for name, _value in configured),
-        *(name for name in environ if name.casefold() in guarded),
-    }
-    for name in spellings:
-        environ[name] = safe_url
+    if not configured and not any(name.casefold() in guarded for name in environ):
+        return
+    for name in list(environ):
+        if name.casefold() in guarded:
+            del environ[name]
+    environ[names[0]] = safe_url
+
+
+def _setdefault_env_values(path: Path) -> dict[str, str]:
+    """Match load_env_file's literal systemd parsing without importing its runtime.
+
+    python-dotenv expands variables and removes quotes; load_env_file does neither.
+    The preflight must inspect the values the loader would actually insert.
+    """
+    if not path.is_file():
+        return {}
+    values: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        values[key.strip()] = value
+    return values
+
+
+def _refuse_production_setdefault_values(values: Mapping[str, str]) -> None:
+    """Refuse aliases before their removal makes them available to a later loader."""
+    for name, value in _configured(values, [], _POSTGRES_URL_NAMES):
+        if postgres_identity(value) in _production_postgres:
+            raise UnsafeTestDatabase(f"{name} in a setdefault env file names a production database")
+    for name, value in _configured(values, [], _NEO4J_URL_NAMES):
+        if neo4j_identity(value) in _production_neo4j and value != UNREACHABLE_NEO4J_URL:
+            raise UnsafeTestDatabase(f"{name} in a setdefault env file names a production Neo4j")
 
 
 def production_postgres_identities(
@@ -194,7 +232,8 @@ def validate_test_database_url(
     if not is_test_database_name(name):
         raise UnsafeTestDatabase(
             f"'{name}' is not a test database: use brain_test, brain_migration_*, "
-            "brain_fresh_* or a name ending in _test"
+            "brain_fresh_*, brain_<words>_<hex suffix of at least 8 characters> "
+            "or a name ending in _test"
         )
     return url
 
@@ -244,12 +283,14 @@ def enforce_database_isolation(
     environ: MutableMapping[str, str] | None = None,
     dotenv_files: Iterable[Path] | None = None,
     projector_env_files: Iterable[Path] | None = None,
+    setdefault_env_files: Iterable[Path] | None = None,
 ) -> None:
     """Make this process unable to reach a production database, or raise.
 
-    1. Record the production identities (environment, ``.env``, projector file).
+    1. Record production identities from the environment and all loadable env files.
     2. Refuse ``BRAIN_V42_TEST_DB_URL`` / ``BRAIN_V42_TEST_NEO4J_URL`` naming one.
-    3. Point application settings at the test database, or at nothing: ``Settings``
+    3. Refuse production aliases in files that a setdefault loader could restore.
+    4. Point application settings at the test database, or at nothing: ``Settings``
        reads ``POSTGRES_URL`` (and ``.env``), so code under test that builds its own
        engine from settings would otherwise open the production database.
     """
@@ -260,9 +301,14 @@ def enforce_database_isolation(
     projector_files = (
         [_PROJECTOR_ENV_FILE] if projector_env_files is None else list(projector_env_files)
     )
+    loader_files = _SETDEFAULT_ENV_FILES if setdefault_env_files is None else setdefault_env_files
+    loader_values = [_setdefault_env_values(path) for path in loader_files]
 
     _production_postgres.update(production_postgres_identities(env, dotenvs))
     _production_neo4j.update(production_neo4j_identities(env, dotenvs, projector_files))
+    for values in loader_values:
+        _production_postgres.update(production_postgres_identities(values, []))
+        _production_neo4j.update(production_neo4j_identities(values, [], []))
 
     test_db_url = (env.get("BRAIN_V42_TEST_DB_URL") or "").strip()
     if test_db_url:
@@ -270,6 +316,9 @@ def enforce_database_isolation(
     test_neo4j_url = (env.get("BRAIN_V42_TEST_NEO4J_URL") or "").strip()
     if test_neo4j_url:
         _refuse("BRAIN_V42_TEST_NEO4J_URL", validate_test_neo4j_url, test_neo4j_url)
+
+    for values in loader_values:
+        _refuse_production_setdefault_values(values)
 
     _neutralise_urls(env, dotenvs, _POSTGRES_URL_NAMES, test_db_url or UNREACHABLE_POSTGRES_URL)
 

@@ -34,7 +34,7 @@ def _default_postgres_url_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     overridden, not respected: ``enforce_database_isolation`` (``pytest_configure``,
     ``tests/database_guards.py``) already pointed ``POSTGRES_URL`` at
     ``BRAIN_V42_TEST_DB_URL``, or at an unreachable address when that is unset, and
-    pinned ``BRAIN_POSTGRES_URL`` to the same safe value. Code under test that
+    removed every ``BRAIN_POSTGRES_URL`` alias spelling. Code under test that
     builds its engine from settings can therefore never open the application's
     real database (ticket e3292865).
     """

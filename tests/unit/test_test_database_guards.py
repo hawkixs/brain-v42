@@ -18,7 +18,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -71,13 +71,55 @@ def test_identity_ignores_credentials_scheme_and_loopback_spelling() -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["brain_test", "brain_migration_ab12cd", "brain_fresh_ab12cd", "scratch_test"]
+    "name",
+    [
+        "brain_test",
+        "brain_migration_ab12cd",
+        "brain_fresh_ab12cd",
+        "scratch_test",
+        "brain_unit_test_unreachable",
+        "brain_claimfact_b99da2ec3cc6",
+        "brain_claimlock_01234567",
+        "brain_claimnight_0123456789ab",
+        "brain_claims_0123456789ab",
+        "brain_claim_reads_0123456789ab",
+        "brain_claim_inventory_0123456789ab",
+        "brain_claim_verdicts_0123456789ab",
+        "brain_claim_extraction_0123456789ab",
+        "brain_claimbench_0123456789ab",
+        "brain_chainref_0123456789ab",
+        "brain_famref_0123456789ab",
+        "brain_fammut_0123456789ab",
+        "brain_famvirgin_0123456789",
+        "brain_aclmut_0123456789ab",
+        "brain_delivery_downgrade_0123456789ab",
+        *[
+            f"brain_v{version}_{kind}_0123456789ab"
+            for version in range(15, 20)
+            for kind in ("fresh", "src", "tgt", "locale")
+        ],
+    ],
 )
 def test_disposable_database_names_are_accepted(name: str) -> None:
     assert is_test_database_name(name)
 
 
-@pytest.mark.parametrize("name", ["brain", "postgres", "brain_v42", "brain_prod", "testbrain", ""])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "brain",
+        "postgres",
+        "brain_v42",
+        "brain_prod",
+        "testbrain",
+        "",
+        "brain_claimfact",
+        "brain_claimfact_0123456",
+        "brain_claimfact_0123456g",
+        "brain_claimfact_0123456789ab_extra",
+        "other_claimfact_0123456789ab",
+    ],
+)
 def test_everything_else_is_not_a_test_database(name: str) -> None:
     assert not is_test_database_name(name)
 
@@ -85,6 +127,12 @@ def test_everything_else_is_not_a_test_database(name: str) -> None:
 def test_a_test_url_naming_the_production_database_is_refused() -> None:
     with pytest.raises(UnsafeTestDatabase, match="same database as POSTGRES_URL"):
         validate_test_database_url(PROD_URL, production={PROD_IDENTITY})
+
+
+def test_a_disposable_name_cannot_override_a_registered_production_identity() -> None:
+    url = "postgresql://u:p@localhost:5433/brain_claimfact_b99da2ec3cc6"
+    with pytest.raises(UnsafeTestDatabase, match="same database as POSTGRES_URL"):
+        validate_test_database_url(url, production={postgres_identity(url)})
 
 
 def test_the_production_database_is_recognised_through_another_spelling() -> None:
@@ -184,9 +232,11 @@ def test_guarded_names_are_case_insensitive_and_every_spelling_is_neutralised(
     enforce_database_isolation(environ, dotenv_files=dotenvs, projector_env_files=[])
 
     for spelling in spellings:
-        safe = environ[spelling]
-        identity = postgres_identity(safe) if "POSTGRES" in name else neo4j_identity(safe)
-        assert identity[1] == 1
+        assert spelling not in environ
+    bare = "POSTGRES_URL" if "POSTGRES" in name else name.removeprefix("BRAIN_")
+    safe = environ[bare]
+    identity = postgres_identity(safe) if "POSTGRES" in name else neo4j_identity(safe)
+    assert identity[1] == 1
 
 
 # ---------------------------------------------------------------------------
@@ -204,28 +254,110 @@ def test_the_session_points_application_settings_at_the_test_database() -> None:
     enforce_database_isolation(environ, dotenv_files=[])
 
     assert environ["POSTGRES_URL"] == TEST_URL
-    assert environ["BRAIN_POSTGRES_URL"] == TEST_URL
+    assert "BRAIN_POSTGRES_URL" not in environ
     assert PROD_IDENTITY in registered_production_postgres_identities()
 
 
-@pytest.mark.parametrize("test_url", [None, TEST_URL])
-def test_later_env_loading_cannot_restore_a_production_settings_alias(test_url: str | None) -> None:
-    environ = {"POSTGRES_URL": PROD_URL, "NEO4J_URL": "bolt://localhost:7687"}
-    if test_url:
-        environ["BRAIN_V42_TEST_DB_URL"] = test_url
-
+def test_empty_alias_spellings_are_removed() -> None:
+    environ = {"brain_postgres_url": "", "Brain_Delivery_Postgres_Url": ""}
     enforce_database_isolation(environ, dotenv_files=[], projector_env_files=[])
-    # domain_backfill.load_env_file uses setdefault for each key it reads.
-    environ.setdefault("BRAIN_POSTGRES_URL", PROD_URL)
-    environ.setdefault("BRAIN_NEO4J_URL", "bolt://localhost:7687")
+    assert environ == {"POSTGRES_URL": database_guards.UNREACHABLE_POSTGRES_URL}
 
-    assert environ["BRAIN_POSTGRES_URL"] == environ["POSTGRES_URL"]
-    assert environ["BRAIN_NEO4J_URL"] == environ["NEO4J_URL"]
-    assert neo4j_identity(environ["BRAIN_NEO4J_URL"])[1] == 1
-    if test_url:
-        assert environ["BRAIN_POSTGRES_URL"] == test_url
-    else:
-        assert postgres_identity(environ["BRAIN_POSTGRES_URL"])[1] == 1
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "POSTGRES_URL",
+        "BRAIN_POSTGRES_URL",
+        "BRAIN_DELIVERY_POSTGRES_URL",
+        "NEO4J_URL",
+        "BRAIN_NEO4J_URL",
+        "GRAPH_PROJECTOR_NEO4J_URL",
+        "BRAIN_GRAPH_PROJECTOR_NEO4J_URL",
+    ],
+)
+@pytest.mark.parametrize("spelling", [str.upper, str.lower, str.title])
+def test_setdefault_env_file_with_production_urls_refuses_the_session(
+    tmp_path: Path, name: str, spelling: Callable[[str], str]
+) -> None:
+    env_file = tmp_path / "nvidia.env"
+    key = spelling(name)
+    url = PROD_URL if "POSTGRES" in name else "bolt://production-graph:7000"
+    env_file.write_text(f"{key}={url}\n")
+    environ = {
+        "POSTGRES_URL": TEST_URL,
+        key: TEST_URL if "POSTGRES" in name else database_guards.UNREACHABLE_NEO4J_URL,
+    }
+    before = environ.copy()
+
+    with pytest.raises(UnsafeTestDatabase, match="setdefault") as refused:
+        enforce_database_isolation(
+            environ, dotenv_files=[], projector_env_files=[], setdefault_env_files=[env_file]
+        )
+
+    assert environ == before
+    assert "SECRET-PW" not in str(refused.value)
+
+
+def test_default_setdefault_env_file_is_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env_file = tmp_path / "nvidia.env"
+    env_file.write_text(f"BRAIN_POSTGRES_URL={PROD_URL}\n")
+    monkeypatch.setattr(database_guards, "_SETDEFAULT_ENV_FILES", (env_file,), raising=False)
+    with pytest.raises(UnsafeTestDatabase, match="setdefault"):
+        enforce_database_isolation({}, dotenv_files=[], projector_env_files=[])
+
+
+def test_safe_setdefault_files_allow_the_session_and_explicit_postgres_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from brain_v42.config import Settings
+    from brain_v42.scripts.domain_backfill import load_env_file
+
+    env_file = tmp_path / "nvidia.env"
+    env_file.write_text("POSTGRES_URL=" + TEST_URL + "\nX_TEST_LOADER=loaded\n")
+    environ = {"POSTGRES_URL": PROD_URL, "BRAIN_POSTGRES_URL": PROD_URL}
+    enforce_database_isolation(
+        environ, dotenv_files=[], projector_env_files=[], setdefault_env_files=[env_file]
+    )
+    monkeypatch.setattr(os, "environ", environ)
+    explicit_url = "postgresql+asyncpg://u:p@localhost:5433/brain_claimfact_b99da2ec3cc6"
+    environ["POSTGRES_URL"] = explicit_url
+    load_env_file(env_file)
+
+    assert Settings(_env_file=None).postgres_url == explicit_url
+    assert environ["X_TEST_LOADER"] == "loaded"
+
+
+def test_child_settings_honour_an_explicit_postgres_url_after_enforcement() -> None:
+    environ = {
+        **os.environ,
+        "POSTGRES_URL": PROD_URL,
+        "BRAIN_POSTGRES_URL": PROD_URL,
+        "Brain_Postgres_Url": PROD_URL,
+    }
+    enforce_database_isolation(environ, dotenv_files=[], projector_env_files=[])
+    explicit_url = "postgresql+asyncpg://u:p@localhost:5433/brain_claimfact_b99da2ec3cc6"
+    environ["POSTGRES_URL"] = explicit_url
+    environ["PYTHONPATH"] = str(REPO_ROOT / "src") + os.pathsep + environ.get("PYTHONPATH", "")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from brain_v42.config import Settings; "
+            "assert Settings(_env_file=None).postgres_url == sys.argv[1]",
+            explicit_url,
+        ],
+        cwd=REPO_ROOT,
+        env=environ,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 def test_child_settings_cannot_read_production_from_case_variants_or_dotenv(tmp_path: Path) -> None:
@@ -278,8 +410,8 @@ def test_a_production_delivery_database_is_neutralised_in_the_session() -> None:
 
     enforce_database_isolation(environ, dotenv_files=[])
 
-    environ.setdefault("BRAIN_DELIVERY_POSTGRES_URL", PROD_URL)
-    assert postgres_identity(environ["BRAIN_DELIVERY_POSTGRES_URL"])[1] == 1
+    assert "BRAIN_DELIVERY_POSTGRES_URL" not in environ
+    assert postgres_identity(environ["POSTGRES_URL"])[1] == 1
 
 
 def test_a_production_test_database_url_fails_the_session() -> None:
