@@ -691,7 +691,7 @@ class TestGraphOutboxMetrics:
                 "armed": True,
                 "lease_active": True,
                 "recovery_active": False,
-                "healthy": True,
+                "healthy": False,
             },
         }
 

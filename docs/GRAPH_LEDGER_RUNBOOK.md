@@ -494,16 +494,20 @@ The JSON `/metrics` endpoint also exposes a fixed-cardinality block:
 temporally available and have no live lease, even though aggregate ordering can still block
 them, and `claimed` counts those with a live lease. The difference
 `pending - ready - claimed` therefore groups scheduled backoff and revisions blocked by
-ordering. `projector.healthy` means
-"generation armed, lease alive, no active recovery"; this signal alone does not prove the
-Neo4j content. `available=false` is a hard no-go: the associated default zeros constitute no
+ordering. `projector.healthy` means "generation armed, lease alive, no active recovery, no
+exhausted event, and no pending event older than 300 s" (ticket 1146a1db: the lease is renewed
+before Neo4j is contacted, so the lease alone stayed green while Neo4j was down); this signal
+alone does not prove the Neo4j content. `available=false` is a hard no-go: the associated default zeros constitute no
 proof. The repository keeps this existing JSON contract and adds no `prometheus_client`
 dependency.
 
 ## Incident and projection recovery 035
 
 An unarmed PostgreSQL generation, a `history_conflict`, a lost or doubtful projection, or an
-interrupted recovery marker require the 035 protocol. Never force arming, modify a generation,
+interrupted recovery marker require the 035 protocol. A `history_conflict` no longer holds the
+queue head forever: the event backs off like any failure and is exhausted after its tenth
+attempt (about 511 s), which unblocks the later revisions of its aggregate and turns
+`projector.healthy` false until the event is dealt with. Never force arming, modify a generation,
 delete the fence, empty Neo4j, or manually reset the cursors.
 The only published mutating path for a recovery/rebuild is
 `scripts/recover_graph_projection.py`.

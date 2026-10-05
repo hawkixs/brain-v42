@@ -64,8 +64,12 @@ class GraphOutboxProjector:
                 await asyncio.sleep(self._interval)
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.warning("graph_outbox_projector.batch_failed")
+            except Exception as exc:
+                logger.warning(
+                    "graph_outbox_projector.batch_failed",
+                    error=type(exc).__name__,
+                    exc_info=True,
+                )
                 await asyncio.sleep(self._interval)
 
     async def _project_batch(self) -> None:
@@ -171,6 +175,12 @@ class GraphOutboxProjector:
                         "graph_outbox_projector.history_conflict",
                         aggregate_revision=renewed.event.aggregate_revision,
                     )
+                    if not await self._repo.mark_failed(
+                        renewed,
+                        self._error_code(outcome),
+                        max_attempts=self._max_attempts,
+                    ):
+                        release_after_batch = True
                     return
                 if outcome in {
                     ProjectionOutcome.APPLIED,
