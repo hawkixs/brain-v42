@@ -935,6 +935,7 @@ async def shared_database_run(
     url: str,
     *,
     lock_key: int = SHARED_DB_RUN_LOCK_KEY,
+    only_project_keys: Sequence[str] | None = None,
 ) -> AsyncIterator[SharedDatabaseRun]:
     """Mark a test run on the shared database; the last run out purges.
 
@@ -948,6 +949,11 @@ async def shared_database_run(
     the last one erases every run's rows at once.
 
     Runs that do not take the marker (older checkouts) are not protected.
+
+    ``only_project_keys`` narrows the end-of-run purge. A test that probes this
+    context manager under a lock key of its own is always the last one out of
+    THAT key, so it MUST pass its keys: unnarrowed, it would erase every
+    concurrent run's rows mid-run.
     """
     run = SharedDatabaseRun()
     engine = create_async_engine(
@@ -975,7 +981,7 @@ async def shared_database_run(
             if last_out:
                 try:
                     async with purge.begin():
-                        await purge_integration_rows(purge)
+                        await purge_integration_rows(purge, only_project_keys=only_project_keys)
                     run.purged = True
                 finally:
                     await purge.execute(

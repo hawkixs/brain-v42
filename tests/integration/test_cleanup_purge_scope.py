@@ -185,7 +185,9 @@ async def test_the_end_of_run_purge_spares_a_run_still_in_progress(engine, db_se
     other_run = await engine.connect()
     try:
         await other_run.execute(sa.text("SELECT pg_advisory_lock_shared(:key)"), {"key": lock_key})
-        async with shared_database_run(INTEGRATION_DB_URL, lock_key=lock_key) as run:
+        async with shared_database_run(
+            INTEGRATION_DB_URL, lock_key=lock_key, only_project_keys=[key]
+        ) as run:
             pass
         assert run.purged is False
         assert await _count_learnings(engine, key) == 1, (
@@ -198,15 +200,29 @@ async def test_the_end_of_run_purge_spares_a_run_still_in_progress(engine, db_se
 
 
 async def test_the_last_run_out_purges(engine, db_session) -> None:
-    key = make_promote_project_key()
-    await _seed(db_session, key, access_count_human=1, age_days=1)
+    """The probe is the last run out of its OWN lock key, never of the real one.
+
+    Unnarrowed, its purge would erase every concurrent run's ``integ-`` rows in
+    the middle of their tests: the very failure ticket 8409719c removed.
+    """
+    mine, theirs = make_promote_project_key(), make_promote_project_key()
+    await _seed(db_session, mine, access_count_human=1, age_days=1)
+    await _seed(db_session, theirs, access_count_human=1, age_days=1)
     await db_session.commit()
+    try:
+        async with shared_database_run(
+            INTEGRATION_DB_URL, lock_key=_probe_lock_key(), only_project_keys=[mine]
+        ) as run:
+            pass
 
-    async with shared_database_run(INTEGRATION_DB_URL, lock_key=_probe_lock_key()) as run:
-        pass
-
-    assert run.purged is True
-    assert await _count_learnings(engine, key) == 0
+        assert run.purged is True
+        assert await _count_learnings(engine, mine) == 0
+        assert await _count_learnings(engine, theirs) == 1, (
+            "a probe of the end-of-run purge erased another run's integration key"
+        )
+    finally:
+        async with engine.begin() as conn:
+            await purge_integration_rows(conn, only_project_keys=[mine, theirs])
 
 
 async def test_a_narrowed_purge_leaves_the_other_integration_keys_alone(engine, db_session) -> None:
