@@ -28,6 +28,7 @@ from brain_v42.db.tables import (
     adrs,
     brain_session_artifacts,
     brain_session_checkpoints,
+    brain_session_connections,
     brain_sessions,
     decisions,
     focus_slots,
@@ -345,12 +346,46 @@ class PgBrainSessionRepo(BasePgRepository):
                 # identity error — the command is what will say "not found".
                 return AbsorptionOutcome(reason="unknown_session")
             self._assert_identity(self._to_model(row), expected_client_key)
+            # Only an OPEN operator session absorbs (03291fdc). The service
+            # absorbs BEFORE the command refuses a closed session, so without this
+            # a retried `end` of an ended predecessor would take its successor's
+            # work from a connection they share; and a tracer is a donor, never
+            # a target.
+            if row["status"] != BrainSessionStatus.OPEN.value:
+                return AbsorptionOutcome(reason="not_open")
+            if row["nature"] == "agent":
+                return AbsorptionOutcome(reason="agent_target")
             target = SimpleNamespace(
                 id=row["id"],
                 project_key=row["project_key"],
                 started_at=row["started_at"],
             )
             return await absorb_tracer_ledger(session, target, connection_id)
+
+    async def record_seen_connection(self, session_id: UUID | str, connection_id: str) -> bool:
+        """Record that an open operator session was seen on this connection.
+
+        For the lifecycle calls that do not absorb (``bind``): the exact stage of
+        derived capture reads this set (03291fdc). Returns whether a row was
+        written; an ended session or a tracer records nothing.
+        """
+        from brain_v42.db.session_derived_capture import seen_connection  # noqa: PLC0415
+
+        candidate = sa.select(
+            brain_sessions.c.id, sa.literal(seen_connection(connection_id))
+        ).where(
+            brain_sessions.c.id == session_id,
+            brain_sessions.c.status == BrainSessionStatus.OPEN.value,
+            sa.or_(brain_sessions.c.nature.is_(None), brain_sessions.c.nature != "agent"),
+        )
+        statement = (
+            pg_insert(brain_session_connections)
+            .from_select(["session_id", "connection_id"], candidate)
+            .on_conflict_do_nothing()
+            .returning(brain_session_connections.c.session_id)
+        )
+        async with self.transaction() as session:
+            return (await session.execute(statement)).first() is not None
 
     async def observe(self, session_id: UUID | str, *, now: datetime | None = None) -> bool:
         """Stamp the observation of an open `agent` tracer. Returns "still open".
@@ -392,6 +427,75 @@ class PgBrainSessionRepo(BasePgRepository):
         async with self.transaction() as session:
             observed = (await session.execute(statement)).scalar_one_or_none()
         return observed is not None
+
+    async def close_agent_traces(
+        self, connection_id: str, *, now: datetime | None = None
+    ) -> list[UUID]:
+        """Close the open tracers of a connection whose transport has ended.
+
+        Ticket 09d2b56e. The server opens one tracer per connection and is the
+        only party allowed to close it; the clients do end their connections
+        (DELETE, idle eviction), but nothing closed the row, so every tracer
+        waited for the Dream sweep — and none was closed while Dream was
+        suspended. The transport-termination hook calls this.
+
+        ``closed_inactive`` and nothing else, as the 4 h rule writes it: no
+        reason (046's CHECK forbids one) and the ledger kept, so the tracer
+        stays a donor for derived capture. ``nature = 'agent'`` is a HARD guard:
+        a connection id can never close an operator session. A connection may
+        carry one open tracer per project, hence a list.
+        """
+        reference = now or datetime.now(UTC)
+        statement = (
+            brain_sessions.update()
+            .where(
+                brain_sessions.c.connection_id == connection_id,
+                brain_sessions.c.status == "open",
+                brain_sessions.c.nature == "agent",
+            )
+            .values(
+                status=BrainSessionStatus.CLOSED_INACTIVE.value,
+                ended_at=reference,
+                updated_at=reference,
+            )
+            .returning(brain_sessions.c.id)
+        )
+        async with self.transaction() as session:
+            return list((await session.execute(statement)).scalars())
+
+    async def close_inactive_agent_traces(
+        self, *, inactive_after: timedelta, now: datetime | None = None
+    ) -> list[UUID]:
+        """The net for a connection that never terminated cleanly (crash, kill).
+
+        The 4 h observation rule of ``sweep_open_sessions``, run by the server
+        that opened the tracers instead of a Dream night. It differs from the
+        sweep on ONE point, on purpose: there is no 7-day branch here. Past
+        seven days a tracer is still a tracer — closed, ledger kept, no reason —
+        and an operator session is out of reach whatever its age: forgotten
+        human sessions stay for the explicit commands and the Dream sweep.
+        ``last_observed_at IS NULL`` stays out, as in the sweep.
+        """
+        if inactive_after <= timedelta(0):
+            raise BrainSessionInputError("inactive_after must be a positive interval")
+        reference = now or datetime.now(UTC)
+        statement = (
+            brain_sessions.update()
+            .where(
+                brain_sessions.c.status == "open",
+                brain_sessions.c.nature == "agent",
+                brain_sessions.c.last_observed_at.is_not(None),
+                brain_sessions.c.last_observed_at < reference - inactive_after,
+            )
+            .values(
+                status=BrainSessionStatus.CLOSED_INACTIVE.value,
+                ended_at=reference,
+                updated_at=reference,
+            )
+            .returning(brain_sessions.c.id)
+        )
+        async with self.transaction() as session:
+            return list((await session.execute(statement)).scalars())
 
     async def get_by_id(  # type: ignore[override]
         self, session_id: UUID | str

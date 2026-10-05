@@ -78,6 +78,8 @@ class BrainSessionRepository(Protocol):
         self, session_id: UUID, expected_client_key: str, slot_id: UUID
     ) -> BrainSessionBindResult: ...
 
+    async def record_seen_connection(self, session_id: UUID, connection_id: str) -> bool: ...
+
     async def relay(
         self,
         session_id: UUID,
@@ -319,9 +321,17 @@ class BrainSessionService:
     async def bind(
         self, session_id: UUID, expected_client_key: str, slot_id: UUID
     ) -> BrainSessionBindResult:
-        """Bind an open operator session to one focus slot. Not a boundary: no absorption."""
+        """Bind an open operator session to one focus slot. Not a boundary: no absorption.
+
+        It still records its connection: the exact stage of derived capture reads
+        every connection a session was seen on (03291fdc).
+        """
         identity = _normalize_expected_client_key(expected_client_key)
-        return await self.repo.bind(session_id, identity, slot_id)
+        bound = await self.repo.bind(session_id, identity, slot_id)
+        connection_id = self._absorption_connection()
+        if connection_id is not None:
+            await self.repo.record_seen_connection(session_id, connection_id)
+        return bound
 
     async def relay(
         self,
@@ -391,7 +401,7 @@ class BrainSessionService:
         captured = _normalize_captured_ids(knowledge_ids) or []
         reason = _normalize_capture_reason(nothing_to_capture_reason)
         await self._absorb_derived(session_id, identity)
-        return await self.repo.relay(
+        relayed = await self.repo.relay(
             session_id,
             identity,
             summary=normalized_summary,
@@ -404,6 +414,11 @@ class BrainSessionService:
             knowledge_ids=captured,
             nothing_to_capture_reason=reason,
         )
+        # The SUCCESSOR is the session that will need this connection: record it
+        # the way `start` does, by absorbing (empty at birth) on it (03291fdc).
+        if self._absorption_connection() is not None:
+            await self._absorb_derived(relayed.session.id, successor_key)
+        return relayed
 
     async def capture(
         self,
