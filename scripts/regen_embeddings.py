@@ -359,7 +359,9 @@ def parse_args() -> argparse.Namespace:
     )
     args = parser.parse_args()
     if args.postgres_url and urlsplit(args.postgres_url).password is not None:
-        parser.error("--postgres-url must not contain a password; use POSTGRES_URL in the environment")
+        parser.error(
+            "--postgres-url must not contain a password; use POSTGRES_URL in the environment"
+        )
     return args
 
 
