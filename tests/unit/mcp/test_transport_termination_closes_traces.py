@@ -511,3 +511,32 @@ def test_the_real_fastmcp_shutdown_reports_every_live_transport() -> None:
     asyncio.run(scenario())
 
     assert sorted(reported) == ["conn-l0", "conn-l1", "conn-l2"]
+
+
+# --- Round 3 closure of PR 291 (carry-forward verified in source) -----------
+
+
+def test_concurrent_reports_do_not_each_draw_the_whole_budget() -> None:
+    """Round 3: each report read the remaining budget before awaiting, so N
+    terminations at once (DELETE, eviction) each ran for the whole budget against
+    a stuck database. Reports are serialised: the first one spends the budget,
+    the ones that waited behind it find it spent and leave their tracers to the
+    inactivity net."""
+    from brain_v42.mcp.server import _install_transport_termination_hook
+
+    calls: list[str] = []
+
+    async def on_terminated(session_id: str) -> None:
+        calls.append(session_id)
+        await asyncio.sleep(30)
+
+    _install_transport_termination_hook(on_terminated, budget_seconds=0.1)
+    transports = [_transport_class()(mcp_session_id=f"conn-c{i}") for i in range(5)]
+
+    async def scenario() -> None:
+        await asyncio.gather(*(transport.terminate() for transport in transports))
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=1))
+
+    assert calls == ["conn-c0"]
+    assert all(transport.is_terminated for transport in transports)

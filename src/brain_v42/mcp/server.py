@@ -28,6 +28,7 @@ import signal
 import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 from weakref import WeakSet
 
@@ -890,15 +891,29 @@ def _assert_transport_shape(base: Any) -> None:
         )
 
 
-def _new_report_ledger() -> dict[str, float]:
-    return {"window_start": float("-inf"), "spent": 0.0}
+@dataclass
+class _ReportLedger:
+    """The time every termination report of one window draws on, and its turn.
+
+    One per installation, so reinstalling (tests) starts from a fresh budget.
+    """
+
+    window_start: float = float("-inf")
+    spent: float = 0.0
+    turn: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def remaining(self, budget: float, now: float) -> float:
+        if now - self.window_start >= _TERMINATION_REPORT_WINDOW_SECONDS:
+            self.window_start = now
+            self.spent = 0.0
+        return budget - self.spent
 
 
 async def _report_termination(
     report: Callable[[str], Awaitable[None]],
     session_id: str,
     budget: float,
-    ledger: dict[str, float],
+    ledger: _ReportLedger,
 ) -> None:
     """Run one report within the time every report of the window shares.
 
@@ -910,26 +925,40 @@ async def _report_termination(
     net, which closes them on the same terms. A report that raises spends the
     rest of the budget. In normal operation a report takes milliseconds and the
     budget is never reached.
+
+    Reports take turns (round 3 of #291): otherwise concurrent terminations, a
+    burst of DELETEs or evictions, would each read the same remaining budget and
+    each hold a stuck database for all of it. Waiting for the turn is itself
+    bounded by the budget left when the termination arrived.
     """
     loop = asyncio.get_running_loop()
-    now = loop.time()
-    if now - ledger["window_start"] >= _TERMINATION_REPORT_WINDOW_SECONDS:
-        ledger["window_start"] = now
-        ledger["spent"] = 0.0
-    remaining = budget - ledger["spent"]
+    remaining = ledger.remaining(budget, loop.time())
     if remaining <= 0:
         logger.debug("brain_v42.server.transport_termination_report_skipped")
         return
     try:
-        await asyncio.wait_for(report(session_id), timeout=remaining)
-    except Exception as exc:  # noqa: BLE001 — fail-open by contract
-        ledger["spent"] = budget
-        logger.warning(
-            "brain_v42.server.transport_termination_report_failed",
-            error=type(exc).__name__,
-        )
+        await asyncio.wait_for(ledger.turn.acquire(), timeout=remaining)
+    except TimeoutError:
+        logger.debug("brain_v42.server.transport_termination_report_skipped")
         return
-    ledger["spent"] += loop.time() - now
+    try:
+        now = loop.time()
+        remaining = ledger.remaining(budget, now)
+        if remaining <= 0:
+            logger.debug("brain_v42.server.transport_termination_report_skipped")
+            return
+        try:
+            await asyncio.wait_for(report(session_id), timeout=remaining)
+        except Exception as exc:  # noqa: BLE001 — fail-open by contract
+            ledger.spent = budget
+            logger.warning(
+                "brain_v42.server.transport_termination_report_failed",
+                error=type(exc).__name__,
+            )
+            return
+        ledger.spent += loop.time() - now
+    finally:
+        ledger.turn.release()
 
 
 def _install_transport_termination_hook(
@@ -956,9 +985,7 @@ def _install_transport_termination_hook(
     base = streamable_http_manager.StreamableHTTPServerTransport
     _assert_transport_shape(base)
     if getattr(base, _TERMINATION_HOOK_MARKER, None) is not None:
-        setattr(
-            base, _TERMINATION_HOOK_MARKER, (on_terminated, budget_seconds, _new_report_ledger())
-        )
+        setattr(base, _TERMINATION_HOOK_MARKER, (on_terminated, budget_seconds, _ReportLedger()))
         return
 
     class _ReportingTransport(base):  # type: ignore[misc, valid-type]
@@ -974,7 +1001,7 @@ def _install_transport_termination_hook(
     setattr(
         _ReportingTransport,
         _TERMINATION_HOOK_MARKER,
-        (on_terminated, budget_seconds, _new_report_ledger()),
+        (on_terminated, budget_seconds, _ReportLedger()),
     )
     # Same substitution, same justification as the idle deadline above.
     streamable_http_manager.StreamableHTTPServerTransport = _ReportingTransport  # type: ignore[misc]
