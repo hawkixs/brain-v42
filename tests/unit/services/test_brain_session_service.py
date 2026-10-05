@@ -185,6 +185,7 @@ async def test_end_delegates_normalized_payload() -> None:
         "Implement MCP tools",
         7,
         nothing_to_capture_reason=None,
+        allow_focus_shrink=False,
     )
     assert actual is expected
 
@@ -211,8 +212,20 @@ async def test_end_accepts_explicit_nothing_to_capture_reason() -> None:
         "Continue B3",
         4,
         nothing_to_capture_reason="No durable finding",
+        allow_focus_shrink=False,
     )
     assert actual is expected
+
+
+async def test_end_forwards_the_operator_shrink_override() -> None:
+    repo = _repo()
+    repo.end.return_value = _result(replayed=False)
+
+    await _service(repo).end(
+        uuid4(), "task-a", "Summary", "Short hand-off", 4, allow_focus_shrink=True
+    )
+
+    assert repo.end.await_args.kwargs["allow_focus_shrink"] is True
 
 
 @pytest.mark.parametrize(

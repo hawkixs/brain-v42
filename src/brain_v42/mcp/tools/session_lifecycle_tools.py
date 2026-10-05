@@ -120,7 +120,10 @@ FocusArg = Annotated[
             "une échéance et sa raison, une décision opérateur à respecter). N'y "
             "recopie pas l'état mesurable (révision de schéma, HEAD git, arbre propre, "
             "résultat de suite de tests) : il est déjà recalculé à chaque briefing "
-            "depuis la source réelle, et une copie manuelle se périme en silence."
+            "depuis la source réelle, et une copie manuelle se périme en silence. "
+            "Pour une session non liée à un slot, ce texte REMPLACE tout le focus du "
+            "projet : sous 70 % de sa longueur actuelle, il est refusé "
+            "(`base_focus_shrink`) sauf `allow_focus_shrink=true` (opérateur uniquement)."
         ),
     ),
 ]
@@ -288,6 +291,18 @@ def register_session_lifecycle_tools(
         next_focus: FocusArg,
         expected_focus_revision: FocusRevisionArg,
         nothing_to_capture_reason: ReasonArg | None = None,
+        allow_focus_shrink: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Operator only. An UNBOUND session's `next_focus` REPLACES the whole "
+                    "project focus, and one under 70% of the current length is refused "
+                    "(`base_focus_shrink`, both sizes in the message, session left open); "
+                    "true lets that shrink through. `end` is only ever an operator command, "
+                    "so this flag is an operator gesture; a bound session never meets the guard."
+                )
+            ),
+        ] = False,
     ) -> BrainSessionEndResult:
         """End a session from an explicit user command, on judgement alone.
 
@@ -308,6 +323,14 @@ def register_session_lifecycle_tools(
         For a bound session, `expected_focus_revision` is the SLOT revision (from
         bind, resume, or relay's `slot.revision`), never `started_focus_revision`.
 
+        For an UNBOUND session, `next_focus` REPLACES the project's whole base focus
+        under a compare-and-swap on `expected_focus_revision`. SHRINK GUARD: a
+        `next_focus` under 70% of the current base focus is refused before any write
+        (`base_focus_shrink`, current, proposed and floor in the message) and the
+        session stays open, so carry the durable content over and call again. Only
+        the operator may pass `allow_focus_shrink = true`. A stale revision is still
+        recorded as a conflict and closes the session, since nothing is written.
+
         An agent tracer is the only session the server opens or closes on
         its own; no hook and no auto-close may invoke this lifecycle
         boundary.
@@ -319,6 +342,7 @@ def register_session_lifecycle_tools(
             next_focus=next_focus,
             expected_focus_revision=expected_focus_revision,
             nothing_to_capture_reason=nothing_to_capture_reason,
+            allow_focus_shrink=allow_focus_shrink,
         )
 
     @mcp.tool(version="4.0", annotations=_TERMINAL_ANNOTATIONS)

@@ -34,6 +34,7 @@ from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.services.roadmap_service import (
     ProjectFocusConflictError,
     ProjectFocusNotFoundError,
+    ProjectFocusShrinkError,
     ProjectFocusValidationError,
 )
 
@@ -278,13 +279,38 @@ def register_project_context_tools(
     @mcp.tool(version="2.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
     async def brain_update_project_focus(
         project_key: str,
-        current_focus: ProjectFocusArg,
+        current_focus: Annotated[
+            ProjectFocusArg,
+            Field(
+                description=(
+                    "New current focus. It REPLACES the whole project focus, and a text "
+                    "under 70% of the current length is refused (`base_focus_shrink`) "
+                    "unless `allow_focus_shrink` is true (operator only)."
+                )
+            ),
+        ],
         expected_focus_revision: FocusRevisionArg,
         blockers: ShortTextList | None = None,
         feature_status: dict[str, str] | None = None,
         unpin: ShortTextList | None = None,
+        allow_focus_shrink: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Operator only. True lets a `current_focus` under 70% of the current "
+                    "focus length through; otherwise it is refused (`base_focus_shrink`, "
+                    "both sizes in the message) and nothing is written, roadmap changes "
+                    "included."
+                )
+            ),
+        ] = False,
     ) -> str:
         """Atomically update project focus and optional roadmap state with CAS.
+
+        `current_focus` REPLACES the project's whole focus. SHRINK GUARD: a replacement
+        under 70% of the current length is refused as `base_focus_shrink`, the same
+        rule as an unbound `brain_session_end` and a base `brain_session_relay`; carry
+        the durable content over, or have the operator pass `allow_focus_shrink`.
 
         Args:
             project_key: The project key to update.
@@ -295,6 +321,7 @@ def register_project_context_tools(
                 Example: {"Core Monitoring": "deployed", "GPU Collector": "building"}
                 Features in this dict are automatically pinned.
             unpin: Optional list of feature names to unpin (set pinned=false).
+            allow_focus_shrink: Operator only: let a shrinking focus through.
         """
         project_key = canonicalize_project_key(project_key, strict=False)
         logger.debug("mcp.brain_update_project_focus", project_key=project_key)
@@ -308,7 +335,10 @@ def register_project_context_tools(
                 blockers=blockers,
                 feature_status=feature_status,
                 unpin=unpin,
+                allow_focus_shrink=allow_focus_shrink,
             )
+        except ProjectFocusShrinkError as exc:
+            return format_error(f"base_focus_shrink: {exc}")
         except ProjectFocusConflictError as exc:
             return format_error(
                 f"Focus conflict: current revision {exc.current_revision}, "
