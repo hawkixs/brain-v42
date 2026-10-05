@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.focus_history import record_focus_history, render_focus_diff
+from brain_v42.db.focus_shrink import focus_shrink_refusal
 from brain_v42.db.focus_slots import (
     cas_slot_body,
     load_anchors,
@@ -1089,8 +1090,19 @@ class PgBrainSessionRepo(BasePgRepository):
         next_focus: str,
         expected_focus_revision: int,
         nothing_to_capture_reason: str | None,
+        allow_focus_shrink: bool = False,
     ) -> BrainSessionEndResult:
-        """End atomically while treating a stale shared focus as data."""
+        """End atomically while treating a stale shared focus as data.
+
+        An UNBOUND end writes `next_focus` as the project's whole base focus, so it
+        meets the relay's destructive-shrink guard (ticket 91faa1a8) unless the
+        operator passes `allow_focus_shrink`. The refusal is raised before any write
+        and leaves the session open, like the identity and capture errors: closing it
+        would lose the hand-off, and the caller can fix the text and retry. It applies
+        only where the base would actually be written: a stale revision is recorded as
+        a conflict first (nothing destroyed, `next_focus` stays on the session row),
+        and a bound or already-ended session never reaches it.
+        """
         normalized_summary = summary.strip()
         normalized_focus = next_focus.strip()
         normalized_reason = self._normalize_optional(nothing_to_capture_reason)
@@ -1136,6 +1148,13 @@ class PgBrainSessionRepo(BasePgRepository):
             capture_ids = await self._load_session_artifact_ids(session, model.id)
             if capture_ids:
                 await self._validate_captures(session, model, capture_ids)
+
+            if not allow_focus_shrink and focus_before["focus_revision"] == expected_focus_revision:
+                refusal = focus_shrink_refusal(
+                    focus_before["current_focus"], normalized_focus, subject="next_focus"
+                )
+                if refusal is not None:
+                    raise FocusSlotError("base_focus_shrink", refusal)
 
             focus, focus_outcome = await self._apply_focus_if_current(
                 session,
@@ -1372,14 +1391,10 @@ class PgBrainSessionRepo(BasePgRepository):
                 f"the base focus of {model.project_key} is at revision {base['focus_revision']}, "
                 f"not {expected_focus_revision}: re-read it and retry",
             )
-        current_length = len(base["current_focus"] or "")
-        if not allow_focus_shrink and len(handover.strip()) * 10 < current_length * 7:
-            raise FocusSlotError(
-                "base_focus_shrink",
-                f"the handover has {len(handover.strip())} characters against {current_length} "
-                "in the current base focus. The handover REPLACES the whole base focus: carry "
-                "the durable content over, or have the operator pass allow_focus_shrink",
-            )
+        if not allow_focus_shrink:
+            refusal = focus_shrink_refusal(base["current_focus"], handover, subject="the handover")
+            if refusal is not None:
+                raise FocusSlotError("base_focus_shrink", refusal)
         ledger = await self._relay_ledger(session, model, capture_ids)
         focus, outcome = await self._apply_focus_if_current(
             session,
