@@ -33,7 +33,33 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("database", ["brain", "brain_live"])
+def test_rebinding_the_test_url_to_production_is_an_error_at_runtime(
+    monkeypatch: pytest.MonkeyPatch, database: str
+) -> None:
+    from tests.database_guards import UnsafeTestDatabase
+    from tests.integration.conftest import _get_integration_db_url_or_skip
+
+    monkeypatch.setenv("BRAIN_V42_TEST_DB_URL", "postgresql://u:p@localhost:5433/brain_test")
+    assert _get_integration_db_url_or_skip().endswith("/brain_test")
+    monkeypatch.setenv("BRAIN_V42_TEST_DB_URL", f"postgresql://u:p@localhost:5433/{database}")
+
+    with pytest.raises(UnsafeTestDatabase):
+        _get_integration_db_url_or_skip()
+
+
+def test_missing_test_url_still_skips_at_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.integration.conftest import _get_integration_db_url_or_skip
+
+    monkeypatch.delenv("BRAIN_V42_TEST_DB_URL", raising=False)
+
+    with pytest.raises(pytest.skip.Exception, match="BRAIN_V42_TEST_DB_URL is not set"):
+        _get_integration_db_url_or_skip()
 
 
 class TestTheSummaryLineIsBuiltHonestly:

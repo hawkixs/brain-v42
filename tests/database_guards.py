@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Iterable, Mapping, MutableMapping
+from ipaddress import IPv6Address, ip_address
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, unquote, urlparse
@@ -72,7 +73,17 @@ _production_neo4j: set[Neo4jIdentity] = {_COMPOSE_PRODUCTION_NEO4J}
 
 def _normalise_host(host: str | None) -> str:
     lowered = (host or "").lower()
-    return _CANONICAL_LOOPBACK if lowered in _LOOPBACK_HOSTS else lowered
+    if lowered in _LOOPBACK_HOSTS:
+        return _CANONICAL_LOOPBACK
+    try:
+        address = ip_address(lowered)
+    except ValueError:
+        return lowered
+    if isinstance(address, IPv6Address) and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    if address.is_loopback or str(address) in _LOOPBACK_HOSTS:
+        return _CANONICAL_LOOPBACK
+    return str(address)
 
 
 def postgres_identity(url: str) -> PostgresIdentity:
@@ -98,19 +109,37 @@ def is_test_database_name(name: str) -> bool:
 
 def _configured(
     environ: Mapping[str, str], dotenv_files: Iterable[Path], names: Iterable[str]
-) -> dict[str, str]:
-    """Value of each name found in the environment, else in the first dotenv carrying it."""
-    found: dict[str, str] = {}
-    for name in names:
-        value = environ.get(name)
-        if not value:
-            for path in dotenv_files:
-                value = dotenv_values(path).get(name) if path.is_file() else None
-                if value:
-                    break
-        if value:
-            found[name] = value
-    return found
+) -> list[tuple[str, str]]:
+    """Every spelling and value from every source, without applying source precedence."""
+    guarded = {name.casefold() for name in names}
+    sources = [environ, *(dotenv_values(path) for path in dotenv_files if path.is_file())]
+    return [
+        (name, value)
+        for source in sources
+        for name, value in source.items()
+        if name.casefold() in guarded and value
+    ]
+
+
+def _neutralise_urls(
+    environ: MutableMapping[str, str],
+    dotenv_files: Iterable[Path],
+    names: Iterable[str],
+    safe_url: str,
+) -> None:
+    """Pin aliases and existing spellings so later setdefault-based loaders cannot restore them."""
+    names = tuple(names)
+    configured = _configured(environ, dotenv_files, names)
+    if not configured:
+        return
+    guarded = {name.casefold() for name in names}
+    spellings = {
+        *names,
+        *(name for name, _value in configured),
+        *(name for name in environ if name.casefold() in guarded),
+    }
+    for name in spellings:
+        environ[name] = safe_url
 
 
 def production_postgres_identities(
@@ -123,7 +152,7 @@ def production_postgres_identities(
     """
     identities = {
         postgres_identity(value)
-        for value in _configured(environ, dotenv_files, _POSTGRES_URL_NAMES).values()
+        for _name, value in _configured(environ, dotenv_files, _POSTGRES_URL_NAMES)
     }
     return frozenset(i for i in identities if not is_test_database_name(i[2]))
 
@@ -136,7 +165,7 @@ def production_neo4j_identities(
     ``env_files`` (the projector's private file) are read for the URL keys only.
     """
     values = _configured(environ, [*dotenv_files, *env_files], _NEO4J_URL_NAMES)
-    return frozenset({_COMPOSE_PRODUCTION_NEO4J, *(neo4j_identity(v) for v in values.values())})
+    return frozenset({_COMPOSE_PRODUCTION_NEO4J, *(neo4j_identity(v) for _name, v in values)})
 
 
 def registered_production_postgres_identities() -> frozenset[PostgresIdentity]:
@@ -184,9 +213,10 @@ def validate_test_neo4j_url(url: str, production: Iterable[Neo4jIdentity] | None
 async def refuse_neo4j_holding_production_data(driver: Any) -> None:
     """Refuse a Neo4j that holds a project the tests could not have written.
 
-    The address rule cannot see production reached through a tunnel or another
-    hostname; its CONTENT can. Test data carries ``integ-``/``test-`` project keys
-    only, and every production entity belongs to a real project. Read-only.
+    The address rule is the primary guard: an empty production graph passes this
+    probe, so it cannot prove a graph is a test graph. This read-only check is
+    defence in depth for production reached through a tunnel or another hostname.
+    Test data carries ``integ-``/``test-`` project keys only.
     """
     async with driver.session() as session:
         result = await session.run(
@@ -241,14 +271,9 @@ def enforce_database_isolation(
     if test_neo4j_url:
         _refuse("BRAIN_V42_TEST_NEO4J_URL", validate_test_neo4j_url, test_neo4j_url)
 
-    if _configured(env, dotenvs, ("POSTGRES_URL", "BRAIN_POSTGRES_URL")):
-        env["POSTGRES_URL"] = test_db_url or UNREACHABLE_POSTGRES_URL
-        env.pop("BRAIN_POSTGRES_URL", None)
-    delivery = env.get("BRAIN_DELIVERY_POSTGRES_URL")
-    if delivery and postgres_identity(delivery) in _production_postgres:
-        del env["BRAIN_DELIVERY_POSTGRES_URL"]
+    _neutralise_urls(env, dotenvs, _POSTGRES_URL_NAMES, test_db_url or UNREACHABLE_POSTGRES_URL)
 
     for bare in ("NEO4J_URL", "GRAPH_PROJECTOR_NEO4J_URL"):
-        if _configured(env, dotenvs, (bare, f"BRAIN_{bare}")):
-            env[bare] = UNREACHABLE_NEO4J_URL
-            env.pop(f"BRAIN_{bare}", None)
+        _neutralise_urls(
+            env, [*dotenvs, *projector_files], (bare, f"BRAIN_{bare}"), UNREACHABLE_NEO4J_URL
+        )

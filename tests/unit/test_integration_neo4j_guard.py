@@ -178,7 +178,15 @@ def _set_dedicated_variables(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
     monkeypatch.setenv("BRAIN_V42_TEST_NEO4J_PASSWORD", "test-password")
 
 
-@pytest.mark.parametrize("url", ["bolt://127.0.0.1:7687", "neo4j://localhost", "bolt://[::1]:7687"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "bolt://127.0.0.1:7687",
+        "neo4j://localhost",
+        "bolt://[::1]:7687",
+        "bolt://[::ffff:127.0.0.1]:7687",
+    ],
+)
 def test_the_production_bolt_address_is_refused_by_identity(
     monkeypatch: pytest.MonkeyPatch, url: str
 ) -> None:

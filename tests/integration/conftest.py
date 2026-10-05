@@ -3,8 +3,8 @@
 Provides async fixtures against a real PostgreSQL+pgvector instance.
 The DB URL is resolved exclusively from BRAIN_V42_TEST_DB_URL. Defaults and
 POSTGRES_URL fallback are intentionally absent — if the dedicated variable is
-unset, or if it points at the production `brain` database, the suite skips
-loudly rather than silently corrupting prod.
+unset, the suite skips loudly. A production target is an error, including when
+the variable is rebound after startup.
 
 All tests in this suite require a running PostgreSQL instance with the
 brain_v42 schema applied. Tests are skipped gracefully when the DB is
@@ -84,9 +84,8 @@ def _resolve_integration_db_url() -> str:
     ignored so a developer shell configured for a live database cannot redirect
     the integration suite.
 
-    Raises ValueError if:
-    - The dedicated test env var is unset
-    - The resolved URL points at the production database (db name == 'brain')
+    Raises ValueError if the dedicated test env var is unset or malformed.
+    Raises UnsafeTestDatabase if it names a production or non-test database.
 
     This is an importable helper so it can be unit-tested without triggering
     pytest.skip inside a fixture. Fixes Bug 2: the previous code defaulted to
@@ -109,9 +108,9 @@ def _resolve_integration_db_url() -> str:
             "Unsafe integration DB URL — database override query parameters are forbidden"
         )
     if db_name == _PROD_DB_NAME:
-        raise ValueError(
+        raise UnsafeTestDatabase(
             f"Resolved URL targets the prod '{_PROD_DB_NAME}' database — "
-            "skipping integration tests to avoid polluting prod. "
+            "refusing integration tests to avoid polluting prod. "
             "Set BRAIN_V42_TEST_DB_URL to a test database (e.g. brain_test)."
         )
     # Same validator as the session hook (tests/database_guards.py): a test that
@@ -120,12 +119,14 @@ def _resolve_integration_db_url() -> str:
 
 
 def _get_integration_db_url_or_skip() -> str:
-    """Return the integration DB URL, or call pytest.skip() if it is unsafe.
+    """Return the integration DB URL; skip missing configuration, refuse production.
 
     Used by session-scoped fixtures that need the URL at fixture-setup time.
     """
     try:
         return _resolve_integration_db_url()
+    except UnsafeTestDatabase:
+        raise  # a production target is an error even after the session started
     except ValueError as exc:
         pytest.skip(str(exc))
 

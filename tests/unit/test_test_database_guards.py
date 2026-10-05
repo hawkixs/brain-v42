@@ -142,6 +142,53 @@ def test_a_test_named_postgres_url_is_not_a_production_identity() -> None:
     assert production_postgres_identities({"POSTGRES_URL": TEST_URL}, []) == frozenset()
 
 
+def test_postgres_identities_include_every_source_even_when_shadowed(tmp_path: Path) -> None:
+    first = tmp_path / "first.env"
+    first.write_text("POSTGRES_URL=postgresql://u:p@first-host/brain\n")
+    second = tmp_path / "second.env"
+    second.write_text("POSTGRES_URL=postgresql://u:p@second-host/brain\n")
+
+    found = production_postgres_identities({"POSTGRES_URL": TEST_URL}, [first, second])
+
+    assert found == {("first-host", 5432, "brain"), ("second-host", 5432, "brain")}
+
+
+@pytest.mark.parametrize("source", ["environment", "dotenv"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "POSTGRES_URL",
+        "BRAIN_POSTGRES_URL",
+        "BRAIN_DELIVERY_POSTGRES_URL",
+        "NEO4J_URL",
+        "BRAIN_NEO4J_URL",
+        "GRAPH_PROJECTOR_NEO4J_URL",
+        "BRAIN_GRAPH_PROJECTOR_NEO4J_URL",
+    ],
+)
+def test_guarded_names_are_case_insensitive_and_every_spelling_is_neutralised(
+    tmp_path: Path, source: str, name: str
+) -> None:
+    url = PROD_URL if "POSTGRES" in name else "bolt://production-graph:7000"
+    spellings = (name.lower(), name.title())
+    configured = dict.fromkeys(spellings, url)
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("".join(f"{key}={value}\n" for key, value in configured.items()))
+    environ = configured.copy() if source == "environment" else {}
+    dotenvs = [dotenv] if source == "dotenv" else []
+    if "POSTGRES" in name:
+        assert PROD_IDENTITY in production_postgres_identities(environ, dotenvs)
+    else:
+        assert ("production-graph", 7000) in production_neo4j_identities(environ, dotenvs, [])
+
+    enforce_database_isolation(environ, dotenv_files=dotenvs, projector_env_files=[])
+
+    for spelling in spellings:
+        safe = environ[spelling]
+        identity = postgres_identity(safe) if "POSTGRES" in name else neo4j_identity(safe)
+        assert identity[1] == 1
+
+
 # ---------------------------------------------------------------------------
 # Session entry point
 # ---------------------------------------------------------------------------
@@ -157,8 +204,64 @@ def test_the_session_points_application_settings_at_the_test_database() -> None:
     enforce_database_isolation(environ, dotenv_files=[])
 
     assert environ["POSTGRES_URL"] == TEST_URL
-    assert "BRAIN_POSTGRES_URL" not in environ
+    assert environ["BRAIN_POSTGRES_URL"] == TEST_URL
     assert PROD_IDENTITY in registered_production_postgres_identities()
+
+
+@pytest.mark.parametrize("test_url", [None, TEST_URL])
+def test_later_env_loading_cannot_restore_a_production_settings_alias(test_url: str | None) -> None:
+    environ = {"POSTGRES_URL": PROD_URL, "NEO4J_URL": "bolt://localhost:7687"}
+    if test_url:
+        environ["BRAIN_V42_TEST_DB_URL"] = test_url
+
+    enforce_database_isolation(environ, dotenv_files=[], projector_env_files=[])
+    # domain_backfill.load_env_file uses setdefault for each key it reads.
+    environ.setdefault("BRAIN_POSTGRES_URL", PROD_URL)
+    environ.setdefault("BRAIN_NEO4J_URL", "bolt://localhost:7687")
+
+    assert environ["BRAIN_POSTGRES_URL"] == environ["POSTGRES_URL"]
+    assert environ["BRAIN_NEO4J_URL"] == environ["NEO4J_URL"]
+    assert neo4j_identity(environ["BRAIN_NEO4J_URL"])[1] == 1
+    if test_url:
+        assert environ["BRAIN_POSTGRES_URL"] == test_url
+    else:
+        assert postgres_identity(environ["BRAIN_POSTGRES_URL"])[1] == 1
+
+
+def test_child_settings_cannot_read_production_from_case_variants_or_dotenv(tmp_path: Path) -> None:
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(f"Brain_Postgres_Url={PROD_URL}\nBrain_Neo4J_Url=bolt://localhost:7687\n")
+    environ = {
+        **os.environ,
+        "brain_postgres_url": PROD_URL,
+        "brain_neo4j_url": "bolt://localhost:7687",
+    }
+    for name in ("BRAIN_V42_TEST_DB_URL", "BRAIN_V42_TEST_NEO4J_URL"):
+        environ.pop(name, None)
+    enforce_database_isolation(environ, dotenv_files=[dotenv], projector_env_files=[])
+    environ["PYTHONPATH"] = str(REPO_ROOT / "src") + os.pathsep + environ.get("PYTHONPATH", "")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from brain_v42.config import Settings; "
+            "settings = Settings(_env_file=sys.argv[1]); "
+            "assert settings.postgres_url == sys.argv[2]; "
+            "assert settings.neo4j_url == sys.argv[3]",
+            str(dotenv),
+            database_guards.UNREACHABLE_POSTGRES_URL,
+            database_guards.UNREACHABLE_NEO4J_URL,
+        ],
+        cwd=REPO_ROOT,
+        env=environ,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_without_a_test_database_application_settings_point_at_nothing() -> None:
@@ -170,12 +273,13 @@ def test_without_a_test_database_application_settings_point_at_nothing() -> None
     assert postgres_identity(environ["POSTGRES_URL"])[1] == 1
 
 
-def test_a_production_delivery_database_is_dropped_from_the_session() -> None:
+def test_a_production_delivery_database_is_neutralised_in_the_session() -> None:
     environ = {"BRAIN_DELIVERY_POSTGRES_URL": "postgresql://u:p@localhost:5433/brain"}
 
     enforce_database_isolation(environ, dotenv_files=[])
 
-    assert "BRAIN_DELIVERY_POSTGRES_URL" not in environ
+    environ.setdefault("BRAIN_DELIVERY_POSTGRES_URL", PROD_URL)
+    assert postgres_identity(environ["BRAIN_DELIVERY_POSTGRES_URL"])[1] == 1
 
 
 def test_a_production_test_database_url_fails_the_session() -> None:
@@ -215,7 +319,7 @@ def test_ambient_neo4j_settings_are_pointed_at_nothing(tmp_path: Path) -> None:
 def test_an_unconfigured_neo4j_stays_unconfigured() -> None:
     environ: dict[str, str] = {}
 
-    enforce_database_isolation(environ, dotenv_files=[])
+    enforce_database_isolation(environ, dotenv_files=[], projector_env_files=[])
 
     assert environ == {}
 
@@ -256,8 +360,11 @@ def test_pytest_refuses_to_start_on_a_production_test_database() -> None:
         check=False,
     )
 
-    assert result.returncode != 0
-    assert "BRAIN_V42_TEST_DB_URL" in result.stderr + result.stdout
+    output = result.stderr + result.stdout
+    assert result.returncode == pytest.ExitCode.USAGE_ERROR, output
+    assert "BRAIN_V42_TEST_DB_URL refused" in output
+    assert "the test sessions never touch a production database" in output
+    assert "INTERNALERROR" not in output
     assert "collected" not in result.stdout
 
 
@@ -295,6 +402,51 @@ def test_production_neo4j_comes_from_settings_the_projector_file_and_dotenv(tmp_
         ("shell-host", 7002),
         ("127.0.0.1", 7687),
     } <= found
+
+
+def test_neo4j_identities_include_every_source_even_when_shadowed(tmp_path: Path) -> None:
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("GRAPH_PROJECTOR_NEO4J_URL=bolt://dotenv-host:7000\n")
+    projector = tmp_path / "graph-projector.env"
+    projector.write_text("GRAPH_PROJECTOR_NEO4J_URL=bolt://production-graph:7001\n")
+    environ = {"GRAPH_PROJECTOR_NEO4J_URL": "bolt://shell-host:7002"}
+
+    assert {
+        ("dotenv-host", 7000),
+        ("production-graph", 7001),
+        ("shell-host", 7002),
+    } <= production_neo4j_identities(environ, [dotenv], [projector])
+
+    environ["BRAIN_V42_TEST_NEO4J_URL"] = "bolt://production-graph:7001"
+    with pytest.raises(UnsafeTestDatabase, match="production Neo4j"):
+        enforce_database_isolation(environ, dotenv_files=[dotenv], projector_env_files=[projector])
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "localhost",
+        "127.42.1.9",
+        "0.0.0.0",
+        "[::1]",
+        "[::ffff:127.0.0.1]",
+        "[::ffff:7f2a:109]",
+    ],
+)
+def test_all_loopback_spellings_share_postgres_and_neo4j_identities(host: str) -> None:
+    assert postgres_identity(f"postgresql://u:p@{host}:5433/brain") == PROD_IDENTITY
+    assert neo4j_identity(f"bolt://{host}:7687") == ("127.0.0.1", 7687)
+    with pytest.raises(UnsafeTestDatabase, match="production Neo4j"):
+        validate_test_neo4j_url(f"bolt://{host}:7687", production={("127.0.0.1", 7687)})
+
+
+def test_ipv4_mapped_remote_addresses_share_the_ipv4_identity() -> None:
+    assert neo4j_identity("bolt://[::ffff:192.0.2.1]:7000") == ("192.0.2.1", 7000)
+    assert postgres_identity("postgresql://u:p@[::ffff:192.0.2.1]/brain") == (
+        "192.0.2.1",
+        5432,
+        "brain",
+    )
 
 
 @pytest.mark.parametrize(
