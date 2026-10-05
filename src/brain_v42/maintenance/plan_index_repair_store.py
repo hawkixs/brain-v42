@@ -253,13 +253,18 @@ if TYPE_CHECKING:
 # 060 adds no trigger, no CHECK and no column on `project_contexts`,
 # `indexed_plans` or `indexed_plan_chunks` (`grep -c` → 0 for the latter two).
 #
+# Bumped to 061 after reviewing the complete migration, inert by TABLE: its
+# only new table is `brain_session_connections`, with a cascading foreign key
+# to `brain_sessions`. It changes no existing table and creates no trigger;
+# `indexed_plans`, `indexed_plan_chunks` and `project_contexts` are untouched.
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "060"
+_REQUIRED_ALEMBIC_HEAD = "061"
 
 
 class RepairStore:

@@ -114,14 +114,19 @@ operator session. An agent trace never carries a `summary`, a `next_focus` or a 
 outcome, and `connection_id` is never set on an operator row.
 
 **Derived capture** (`src/brain_v42/db/session_derived_capture.py`, flag
-`BRAIN_SESSION_DERIVED_CAPTURE_ENABLED`, migrations 047 and 048). An artifact created on
+`BRAIN_SESSION_DERIVED_CAPTURE_ENABLED`, migrations 047, 048 and 061). An artifact created on
 a connection is deposited in that connection's trace at creation time. An operator
-session absorbs what traces hold on `resume`, `capture`, `heartbeat` and `end`, in two
+session absorbs what traces hold on `start`, `resume`, `capture`, `heartbeat`, `end` and `relay`, in two
 stages, and only artifacts of the same project created at or after the session started,
 which is what an explicit capture would accept. Absorption is attempted only on a call
 that carries a connection identifier, so never under stdio or in stateless HTTP mode.
-The connection stage takes the artifacts held by the open trace of the current
-connection, when there is one. The window stage then runs whenever ledger capacity
+The connection stage records each connection seen by one of those lifecycle calls
+in `brain_session_connections` and takes artifacts from the project's `open` or
+`closed_inactive` traces on every recorded connection, bounded by the session's start.
+That start excludes artifacts produced by a predecessor on the same connection; the
+exact match works even when a coordinating session makes every instant ambiguous.
+A connection that saw no lifecycle call still falls back to the window stage.
+The window stage then runs whenever ledger capacity
 remains (100 artifacts per session, minus those already attributed), whether or not the
 current connection still has a trace. Its donors are the project's `open` or
 `closed_inactive` traces opened by a human actor, never an abandoned trace and never one
