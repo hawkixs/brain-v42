@@ -139,6 +139,12 @@ asyncio_mode = "auto"
 # spin disposable Postgres containers on every push. The bench is run on demand,
 # locally, with `-m bench_docker` — and its report says when it last ran.
 addopts = "-v --tb=short --strict-markers -m 'not bench_docker and not boundary_host and not live'"
+# A never-awaited coroutine signals a mis-shaped test double; finalizer warnings
+# need unraisable-exception escalation so pytest reports them as failures.
+filterwarnings = [
+    "error:coroutine .* was never awaited:RuntimeWarning",
+    "error::pytest.PytestUnraisableExceptionWarning",
+]
 markers = [
     "bench_docker: spins disposable Docker containers; excluded by default, run with -m bench_docker",
     # Reads THIS host: listening sockets, published ports, a live bearer refusal.
