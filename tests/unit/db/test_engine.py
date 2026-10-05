@@ -36,6 +36,9 @@ def mock_settings(monkeypatch):
     mock.pg_maintenance_lock_timeout_ms = 300_000
     mock.pg_maintenance_idle_in_transaction_session_timeout_ms = 0
     mock.metrics_pg_statement_timeout_ms = 10_000
+    mock.embedding_timeout = 30.0
+    mock.reranker_timeout = 10.0
+    mock.neo4j_timeout = 5.0
     monkeypatch.setattr("brain_v42.db.engine.get_settings", lambda: mock)
     return mock
 
@@ -282,3 +285,37 @@ async def test_dispose_resets_profile(captured_engine_kwargs):
 
 async def _async_noop() -> None:
     return None
+
+
+def test_idle_budget_is_never_shorter_than_the_longest_external_call(mock_settings):
+    """A transaction may wait on embedding/rerank/Neo4j: idle must outlive that call.
+
+    The dedup job holds a FOR UPDATE transaction across an embedding call bounded by
+    BRAIN_EMBEDDING_TIMEOUT; an idle budget below it would kill a healthy request.
+    """
+    from brain_v42.db.engine import pg_server_settings
+
+    mock_settings.embedding_timeout = 600.0
+    interactive = pg_server_settings(mock_settings, "interactive")
+    metrics = pg_server_settings(mock_settings, "metrics")
+
+    # 600 s call + 30 s margin, for the interactive default (300 s) and the metrics one.
+    assert interactive["idle_in_transaction_session_timeout"] == "630000"
+    assert metrics["idle_in_transaction_session_timeout"] == "630000"
+
+
+def test_a_larger_configured_idle_budget_is_kept(mock_settings):
+    from brain_v42.db.engine import pg_server_settings
+
+    mock_settings.pg_idle_in_transaction_session_timeout_ms = 900_000
+    settings = pg_server_settings(mock_settings, "interactive")
+    assert settings["idle_in_transaction_session_timeout"] == "900000"
+
+
+def test_a_disabled_idle_budget_stays_disabled(mock_settings):
+    """0 means no limit, which is trivially longer than any call: never raised."""
+    from brain_v42.db.engine import pg_server_settings
+
+    mock_settings.embedding_timeout = 600.0
+    settings = pg_server_settings(mock_settings, "maintenance")
+    assert settings["idle_in_transaction_session_timeout"] == "0"

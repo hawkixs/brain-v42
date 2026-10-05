@@ -18,8 +18,8 @@ Usage:
 
 Measure the base asset against a database the alembic chain just built to head
 062, and the `-pgrestore` twin against a real custom-format `pg_dump`/`pg_restore`
-of a disposable 061 source migrated to 062 after the restore. The mint refuses a
-database whose name is `brain` or `brain_test`. Never regenerates.
+of a disposable 061 source migrated to 062 after the restore. The mint refuses any DSN
+that is not a disposable `brain_<tag>` database, then re-checks `current_database()`. Never regenerates.
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import asyncpg
 
@@ -43,7 +44,45 @@ EXTENSION_NAMES = ["pg_stat_statements", "plpgsql", "vector"]
 OLD_INVENTORY = "plpgsql 1.0, vector 0.8.2"
 OLD_NAMES = '["plpgsql", "vector"]'
 NEW_NAMES = '["pg_stat_statements", "plpgsql", "vector"]'
+# Only a database this mint (or the tests) created: generated names are `brain_<tag>_...`
+# and the two shared databases never match the second half of the rule.
+DISPOSABLE_DATABASE = re.compile(r"brain_[a-z0-9_]+")
 PROTECTED_DATABASES = ("brain", "brain_test")
+
+
+def assert_disposable_dsn(dsn: str) -> str:
+    """Refuse any DSN that is not exactly a disposable database, parsed like asyncpg does.
+
+    A naive `rsplit("/")` misreads `.../brain?application_name=x/y` (it inspects `y`
+    while the driver connects to `brain`) and cannot see `/%62rain`. The path is
+    parsed and percent-decoded, and any query parameter is refused outright: a
+    `dbname=` or `host=` override would redirect the connection after the check.
+    """
+    parts = urlsplit(dsn)
+    if parts.query:
+        raise SystemExit("refusing a DSN with query parameters: it could override the database")
+    name = unquote(parts.path)
+    if not name.startswith("/") or "/" in name[1:]:
+        raise SystemExit(f"refusing a DSN whose path is not a single database name: {name!r}")
+    database = name[1:]
+    if database in PROTECTED_DATABASES or not DISPOSABLE_DATABASE.fullmatch(database):
+        raise SystemExit(f"refusing to mint against {database!r}: not a disposable database")
+    return database
+
+
+async def connect(dsn: str) -> asyncpg.Connection:
+    """Connect, then verify what the server says we are connected to, before any use."""
+    assert_disposable_dsn(dsn)
+    connection = await asyncpg.connect(dsn)
+    try:
+        current = await connection.fetchval("SELECT current_database()")
+        if current in PROTECTED_DATABASES or not DISPOSABLE_DATABASE.fullmatch(str(current)):
+            raise SystemExit(f"connected to {current!r}, which is not a disposable database")
+    except BaseException:
+        await connection.close()
+        raise
+    return connection
+
 
 PAIRS = [
     ("expected_table_columns", "observed_table_columns"),
@@ -107,7 +146,7 @@ def _difference_query(lines: list[str], expected_name: str, observed_name: str) 
 
 async def measure(dsn: str, lines: list[str]) -> dict[str, dict[str, list[tuple]]]:
     result: dict[str, dict[str, list[tuple]]] = {}
-    connection = await asyncpg.connect(dsn)
+    connection = await connect(dsn)
     try:
         for expected_name, observed_name in PAIRS:
             rows = await connection.fetch(_difference_query(lines, expected_name, observed_name))
@@ -181,7 +220,7 @@ def split_delta(name: str, missing: list[tuple], stale: list[tuple]) -> tuple[li
 
 
 async def scalar_rows(dsn: str, query: str) -> list[tuple]:
-    connection = await asyncpg.connect(dsn)
+    connection = await connect(dsn)
     try:
         return [tuple(r) for r in await connection.fetch(query)]
     finally:
@@ -297,9 +336,7 @@ def mint_manifest(src: Path, dst: Path) -> None:
 
 
 async def main(dsn: str, src: Path, dst: Path) -> int:
-    database = dsn.rsplit("/", 1)[-1].split("?")[0]
-    if database in PROTECTED_DATABASES:
-        raise SystemExit(f"refusing to mint against the shared database {database!r}")
+    assert_disposable_dsn(dsn)
     lines = src.read_text(encoding="utf-8").split("\n")
     print(f"measuring {src.name} against the 062 database ...", flush=True)
     deltas = await measure(dsn, lines)

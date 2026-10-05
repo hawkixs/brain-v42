@@ -10,6 +10,7 @@ Pool configuration:
 
 from __future__ import annotations
 
+import math
 from typing import Any, Literal
 
 import structlog
@@ -30,6 +31,8 @@ EngineProfile = Literal["interactive", "maintenance", "metrics"]
 # or an idle transaction there is a bug, so these two are constants, not knobs.
 _METRICS_LOCK_TIMEOUT_MS = 5_000
 _METRICS_IDLE_IN_TRANSACTION_TIMEOUT_MS = 60_000
+# Margin added on top of the longest external client timeout, see _idle_budget_ms.
+_IDLE_MARGIN_MS = 30_000
 
 # Module-level singletons
 _engine: AsyncEngine | None = None
@@ -38,6 +41,21 @@ _session_factory: async_sessionmaker[AsyncSession] | None = None
 # bare is never cut short; only a long-lived interactive process opts into the
 # tight profile, in its own entry point (never in a library function).
 _profile: EngineProfile = "maintenance"
+
+
+def _idle_budget_ms(settings: Settings, configured_ms: int) -> int:
+    """Never let the idle-in-transaction budget undercut an external call made inside one.
+
+    Some jobs hold a transaction open across an embedding, rerank or Neo4j call (the
+    dedup job keeps a FOR UPDATE transaction across both), bounded by their own client
+    timeouts. An idle budget shorter than that call would kill a healthy request, so a
+    non-zero budget is raised to the longest such timeout plus a margin. 0 means no
+    limit and stays 0.
+    """
+    if configured_ms == 0:
+        return 0
+    longest_s = max(settings.embedding_timeout, settings.reranker_timeout, settings.neo4j_timeout)
+    return max(configured_ms, math.ceil(longest_s * 1000) + _IDLE_MARGIN_MS)
 
 
 def pg_server_settings(settings: Settings, profile: EngineProfile) -> dict[str, str]:
@@ -62,7 +80,7 @@ def pg_server_settings(settings: Settings, profile: EngineProfile) -> dict[str, 
     return {
         "statement_timeout": str(statement),
         "lock_timeout": str(lock),
-        "idle_in_transaction_session_timeout": str(idle),
+        "idle_in_transaction_session_timeout": str(_idle_budget_ms(settings, idle)),
         "application_name": f"brain-v42-{profile}",
     }
 

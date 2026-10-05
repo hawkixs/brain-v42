@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -185,3 +186,105 @@ async def test_downgrade_refuses_foreign_objects_in_monitoring(
     finally:
         async with engine.begin() as connection:
             await connection.execute(sa.text("DROP TABLE IF EXISTS monitoring.operator_probe"))
+
+
+async def _private_run(url: str, *statements: str) -> None:
+    import asyncpg
+
+    from tests.integration.disposable_db import asyncpg_dsn
+
+    connection = await asyncpg.connect(asyncpg_dsn(url))
+    try:
+        for statement in statements:
+            await connection.execute(statement)
+    finally:
+        await connection.close()
+
+
+def _alembic_on(url: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+        env={**os.environ, "POSTGRES_URL": url},
+        timeout=180,
+    )
+
+
+async def _private_scalar(url: str, sql: str) -> object:
+    from sqlalchemy.ext.asyncio import create_async_engine
+    from sqlalchemy.pool import NullPool
+
+    private = create_async_engine(url, poolclass=NullPool)
+    try:
+        return await _scalar(private, sql)
+    finally:
+        await private.dispose()
+
+
+async def test_upgrade_relocates_an_extension_already_installed_in_public(
+    _private_module_head: str,
+) -> None:
+    """CREATE EXTENSION IF NOT EXISTS would leave it in public, PUBLIC grants included."""
+    url = _private_module_head
+    assert _alembic_on(url, "downgrade", "061").returncode == 0
+    await _private_run(url, "CREATE EXTENSION pg_stat_statements")
+    assert (
+        await _private_scalar(
+            url,
+            "SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace "
+            "WHERE e.extname = 'pg_stat_statements'",
+        )
+        == "public"
+    )
+
+    up = _alembic_on(url, "upgrade", "head")
+
+    assert up.returncode == 0, up.stderr
+    assert (
+        await _private_scalar(
+            url,
+            "SELECT n.nspname FROM pg_extension e JOIN pg_namespace n ON n.oid = e.extnamespace "
+            "WHERE e.extname = 'pg_stat_statements'",
+        )
+        == "monitoring"
+    )
+    assert await _private_scalar(url, "SELECT to_regclass('public.pg_stat_statements')") is None
+    assert (
+        await _private_scalar(
+            url,
+            "SELECT count(*) FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace "
+            "WHERE n.nspname = 'public' AND p.proname LIKE 'pg_stat_statements%'",
+        )
+        == 0
+    )
+
+
+async def test_downgrade_gives_up_on_a_held_lock_and_stays_at_062(
+    _private_module_head: str,
+) -> None:
+    """DROP INDEX needs ACCESS EXCLUSIVE; env.py disables the statement timeout, so the
+    revision must bound its own wait, and fail atomically (the extension drop rolls back)."""
+    import asyncpg
+
+    from tests.integration.disposable_db import asyncpg_dsn
+
+    url = _private_module_head
+    holder = await asyncpg.connect(asyncpg_dsn(url))
+    try:
+        transaction = holder.transaction()
+        await transaction.start()
+        await holder.execute("LOCK TABLE delivery_confirmations IN ACCESS SHARE MODE")
+
+        down = await asyncio.to_thread(_alembic_on, url, "downgrade", "061")
+
+        await transaction.rollback()
+    finally:
+        await holder.close()
+
+    assert down.returncode != 0
+    assert "lock timeout" in down.stderr
+    assert await _private_scalar(url, "SELECT version_num FROM alembic_version") == "062"
+    assert await _private_scalar(url, "SELECT to_regclass('monitoring.pg_stat_statements')")

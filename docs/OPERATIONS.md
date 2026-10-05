@@ -426,6 +426,11 @@ observer's budgets are constants.
   `get_engine()` bare gets the generous maintenance profile; the maintenance profile has no
   idle limit because some jobs hold a transaction open on purpose (the embedding-backfill
   advisory-lock session).
+- A non-zero idle-in-transaction budget is raised at engine build to the longest external
+  client timeout (`BRAIN_EMBEDDING_TIMEOUT`, `RERANKER_TIMEOUT`, `NEO4J_TIMEOUT`) plus 30 s,
+  because some jobs (the dedup job) hold a transaction across an embedding and a rerank
+  call. So `BRAIN_EMBEDDING_TIMEOUT=600` yields at least a 630000 ms idle budget on every
+  profile; `0` stays `0`.
 - `scripts/dream/*.py` build their own engines and stay unbounded on purpose: they are batch
   jobs.
 - The sidecar's legacy dedup job, if ever enabled, shares the metrics budget (10 s).
@@ -488,6 +493,10 @@ applying it:
   the revision sets `lock_timeout = 30s` so a stuck lock holder fails the migration atomically.
   The observer's own inserts carry a 5 s `lock_timeout` (SQLSTATE `55P03`): stop
   `brain-v42-delivery-observer` while `alembic upgrade 062` runs, or accept one lost pass.
+- **Relocation.** If `pg_stat_statements` already exists in another schema (for instance
+  `public`), the migration moves it with `ALTER EXTENSION ... SET SCHEMA monitoring` (it is
+  relocatable, and this needs the extension owner) instead of leaving it where ACL v11
+  refuses its PUBLIC grants.
 - **Superuser.** `pg_stat_statements` is not a trusted extension. Under a least-privilege
   migration role, a superuser pre-creates it first:
   `CREATE SCHEMA monitoring; CREATE EXTENSION pg_stat_statements WITH SCHEMA monitoring;`.
@@ -504,7 +513,8 @@ applying it:
 - **Downgrade.** Drops the extension, then the schema (RESTRICT): an object of your own in
   `monitoring` stops it with an error instead of being dropped. It drops both even when a
   superuser pre-created them and needs the extension owner, so a rollback to 0.6.7
-  (downgrade 061) needs a superuser. The statistics live in shared
+  (downgrade 061) needs a superuser. The downgrade runs under a 30 s `lock_timeout` and rolls
+  back entirely if a concurrent transaction holds `delivery_confirmations`. The statistics live in shared
   memory, so nothing durable is lost.
 
 The 038→039 cutover was conducted with

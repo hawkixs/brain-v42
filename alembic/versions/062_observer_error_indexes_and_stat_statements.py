@@ -27,7 +27,10 @@ Operational facts, measured rather than assumed:
 * Privileges. ``pg_stat_statements`` is not a trusted extension: CREATE EXTENSION
   needs a superuser. Under a least-privilege migration role, a superuser pre-creates
   it (``CREATE SCHEMA monitoring; CREATE EXTENSION pg_stat_statements WITH SCHEMA
-  monitoring``) and both steps then become no-ops. The schema step is guarded by a
+  monitoring``) and both steps then become no-ops. An extension that already lives in
+  another schema (for instance ``public``, whose PUBLIC grants ACL v11 refuses) is
+  RELOCATED with ``ALTER EXTENSION ... SET SCHEMA monitoring`` (it is relocatable;
+  refusing would only block the cutover) and needs the extension owner. The schema step is guarded by a
   ``pg_namespace`` lookup rather than ``CREATE SCHEMA IF NOT EXISTS``, because the
   latter checks the CREATE privilege on the database BEFORE it checks existence and
   would still fail for a role without it; ``CREATE EXTENSION IF NOT EXISTS`` checks
@@ -41,7 +44,8 @@ Operational facts, measured rather than assumed:
   being dropped. Dropping the extension loses nothing durable, the statistics live in
   shared memory. It drops the extension and the schema even if a superuser pre-created
   them, and needs the extension owner: a rollback to the 061 code (downgrade 061)
-  therefore needs a superuser.
+  therefore needs a superuser. The downgrade also runs under a 30 s ``lock_timeout``
+  and rolls back entirely if a concurrent transaction holds ``delivery_confirmations``.
 * Delivery observer. Its inserts carry a 5 s lock_timeout; stop it while 062 holds
   its SHARE lock, or accept one lost pass (SQLSTATE 55P03).
 """
@@ -74,12 +78,27 @@ def upgrade() -> None:
         "IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'monitoring') THEN "
         "CREATE SCHEMA monitoring; END IF; END $$"
     )
-    op.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA monitoring")
+    # IF NOT EXISTS alone would silently leave an extension that already lives
+    # elsewhere (typically `public`, with its PUBLIC grants, which ACL v11 refuses)
+    # and `monitoring.pg_stat_statements` would not exist. The extension is
+    # relocatable, so it is moved: refusing would block the cutover for nothing.
+    op.execute(
+        "DO $$ BEGIN "
+        "IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements') THEN "
+        "IF (SELECT extnamespace::regnamespace::text FROM pg_extension "
+        "WHERE extname = 'pg_stat_statements') <> 'monitoring' THEN "
+        "ALTER EXTENSION pg_stat_statements SET SCHEMA monitoring; END IF; "
+        "ELSE CREATE EXTENSION pg_stat_statements WITH SCHEMA monitoring; END IF; END $$"
+    )
     op.execute("SET LOCAL lock_timeout TO DEFAULT")
 
 
 def downgrade() -> None:
+    # DROP INDEX needs ACCESS EXCLUSIVE and env.py disables the statement timeout, so
+    # the revision bounds its own wait; a timeout rolls the whole downgrade back.
+    op.execute("SET LOCAL lock_timeout = '30s'")
     op.execute("DROP EXTENSION IF EXISTS pg_stat_statements")
     op.execute("DROP SCHEMA IF EXISTS monitoring")
     op.execute("DROP INDEX IF EXISTS idx_delivery_confirmations_context_errors")
     op.execute("DROP INDEX IF EXISTS idx_delivery_confirmations_binding_errors")
+    op.execute("SET LOCAL lock_timeout TO DEFAULT")
