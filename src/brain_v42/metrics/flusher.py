@@ -169,6 +169,7 @@ class MetricsFlusher:
         # Snapshot counters first so rps derivation has a fresh anchor point.
         self._collector.snapshot_counters()
 
+        dirty_versions = self._collector.get_dirty_versions()
         flush_data = self._collector.get_flush_data(dirty_only=True)
         started_at = datetime.fromtimestamp(self._started_at, tz=UTC)
         rss = _get_rss_bytes()
@@ -250,6 +251,6 @@ class MetricsFlusher:
 
         # Only after a successful commit: drop the flushed real agents from the
         # dirty set so idle agents are not re-upserted next cycle.
-        self._collector.mark_flushed(flushed_agent_names)
+        self._collector.mark_flushed(flushed_agent_names, dirty_versions)
 
         logger.debug("metrics_flusher.flushed", pid=self._pid, agents=len(rows))

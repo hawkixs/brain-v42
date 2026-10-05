@@ -264,11 +264,22 @@ class MetricsRuntime:
 
 def build_sidecar_structlog_processors(collector: MetricsCollector) -> list[Any]:
     """Return the structlog chain used only by the metrics sidecar."""
+    priorities = {"critical": 3, "exception": 3, "error": 3, "warning": 4, "info": 6, "debug": 7}
+    console_renderer = safe_console_renderer()
+
+    def render_lines(_logger: Any, method: str, event_dict: dict[str, Any]) -> str:
+        level = event_dict.get("level", method)
+        priority = priorities.get(level if isinstance(level, str) else "", 6)
+        rendered = console_renderer(_logger, method, event_dict)
+        lines = rendered.split("\n")
+        return "\n".join(f"<{priority}> {line}" if line.strip() else line for line in lines)
+
     return [
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),
         RecentLogProcessor(collector, min_level="info"),
-        safe_console_renderer(),
+        structlog.processors.format_exc_info,
+        render_lines,
     ]
 
 
@@ -415,6 +426,7 @@ def build_metrics_runtime(
             webhook_secret=effective_settings.gitlab_webhook_secret,
             graph_svc=graph_svc,
             graph_projection_svc=graph_projection_svc,
+            fail_on_bind_error=True,
             nonloopback_posture=effective_settings.metrics_nonloopback_posture,
             allow_non_loopback=effective_settings.metrics_allow_non_loopback,
             slow_block_cache_ttl_seconds=effective_settings.metrics_slow_block_cache_ttl_seconds,

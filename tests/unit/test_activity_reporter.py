@@ -566,6 +566,49 @@ async def test_a_repeated_refusal_warns_once_per_distinct_status() -> None:
 
 
 @pytest.mark.asyncio
+async def test_repeated_loss_signature_throttles_but_new_signature_speaks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity")
+    now = 10.0
+    monkeypatch.setattr("brain_v42.mcp.activity_reporter.time.monotonic", lambda: now)
+    with patch.object(reporter, "_client") as client, capture_logs() as logs:
+        for status in (404, 404, 503, 503):
+            client.post = AsyncMock(return_value=httpx.Response(status_code=status))
+            reporter.report("actor", None)
+            await reporter.drain()
+        now += 60
+        client.post = AsyncMock(return_value=httpx.Response(status_code=404))
+        reporter.report("actor", None)
+        await reporter.drain()
+    await reporter.close()
+    assert [e.get("status") for e in logs if e["log_level"] == "warning"] == [404, 503, 404]
+
+
+@pytest.mark.asyncio
+async def test_successful_post_resets_loss_warning_throttle() -> None:
+    reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity")
+    now = 10.0
+    with patch("brain_v42.mcp.activity_reporter.time.monotonic", side_effect=lambda: now):
+        with patch.object(reporter, "_client") as client, capture_logs() as logs:
+            for status in (404, 204, 404):
+                client.post = AsyncMock(return_value=httpx.Response(status_code=status))
+                reporter.report("actor", None)
+                await reporter.drain()
+    await reporter.close()
+    assert [e.get("status") for e in logs if e["log_level"] == "warning"] == [404, 404]
+
+
+@pytest.mark.asyncio
+async def test_malformed_internal_body_is_swallowed() -> None:
+    reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity")
+    with patch.object(reporter, "_client") as client:
+        client.post = AsyncMock(return_value=httpx.Response(status_code=503))
+        await reporter._post("[]")
+    await reporter.close()
+
+
+@pytest.mark.asyncio
 async def test_a_run_that_lost_nothing_closes_silently() -> None:
     """THE NOMINAL CASE IS MUTE. Nothing lost, nothing said — not even a "0"."""
     reporter = ActivityReporter(url="http://127.0.0.1:9200/v1/client-activity")

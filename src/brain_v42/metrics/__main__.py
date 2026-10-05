@@ -24,7 +24,7 @@ async def main(stop_event: asyncio.Event | None = None) -> int:
     runtime = build_metrics_runtime()
     structlog.configure(
         processors=build_sidecar_structlog_processors(runtime._resources.collector),
-        wrapper_class=structlog.BoundLogger,
+        wrapper_class=structlog.make_filtering_bound_logger(0),
         logger_factory=structlog.PrintLoggerFactory(),
         cache_logger_on_first_use=True,
     )

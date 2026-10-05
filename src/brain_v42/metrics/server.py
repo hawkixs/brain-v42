@@ -241,10 +241,12 @@ class MetricsServer:
         slow_block_cache_ttl_seconds: float = 30.0,
         slow_block_cache_error_ttl_seconds: float = 5.0,
         slow_block_cache: SlowBlockCache | None = None,
+        fail_on_bind_error: bool = False,
     ) -> None:
         self._collector = collector
         self._embedding_svc = embedding_svc
         self._port = port
+        self._fail_on_bind_error = fail_on_bind_error
         self._host = host
         self._gitlab_ingestor = gitlab_ingestor
         self._project_key_resolver = project_key_resolver
@@ -669,7 +671,10 @@ class MetricsServer:
         try:
             await site.start()
         except OSError as exc:
-            logger.warning(
+            # Fatal for the standalone sidecar, so it must be loud; the
+            # in-process server only loses an optional panel.
+            log = logger.error if self._fail_on_bind_error else logger.warning
+            log(
                 "metrics_server.port_in_use",
                 host=self._host,
                 port=self._port,
@@ -677,6 +682,8 @@ class MetricsServer:
             )
             await self._runner.cleanup()
             self._runner = None
+            if self._fail_on_bind_error:
+                raise RuntimeError("metrics sidecar failed to bind") from exc
             return
         logger.info(
             "metrics_server.started",

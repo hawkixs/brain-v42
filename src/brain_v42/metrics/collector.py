@@ -131,6 +131,7 @@ class MetricsCollector(
         # Tracks agents that had a tool call since the last flush.
         # The flusher (Task 3.2) calls mark_flushed() after a successful upsert.
         self._dirty_agents: set[str] = set()
+        self._dirty_versions: dict[str, int] = {}
         # ── overflow-warned flag (cardinality cap, M1) ──
         # ONE warn per process lifetime: a per-agent set would itself grow
         # unbounded under a spoofed high-cardinality X-Brain-Agent stream
@@ -200,6 +201,7 @@ class MetricsCollector(
 
         # Mark dirty AFTER remap so spoofed _process marks _process_collision, never _process.
         self._dirty_agents.add(agent)
+        self._dirty_versions[agent] = self._dirty_versions.get(agent, 0) + 1
         agent_bucket = self._tool_stats.setdefault(agent, {})
         if tool_name not in agent_bucket:
             agent_bucket[tool_name] = {
@@ -506,15 +508,20 @@ class MetricsCollector(
         }
         return result
 
-    def mark_flushed(self, agents: Iterable[str]) -> None:
+    def get_dirty_versions(self) -> dict[str, int]:
+        """Snapshot versions so an in-flight flush cannot acknowledge newer data."""
+        return {agent: self._dirty_versions[agent] for agent in self._dirty_agents}
+
+    def mark_flushed(self, agents: Iterable[str], versions: dict[str, int] | None = None) -> None:
         """Remove successfully flushed agents from the dirty set.
 
-        Uses ``difference_update`` rather than ``clear()`` so any agent that
-        became dirty DURING the flush cycle (between get_flush_data and this
-        call) is not lost — only the acked agents are removed.  The flusher
-        (Task 3.2) passes the set of agent keys it successfully upserted.
+        When version snapshots are supplied, clear an agent only if it has not
+        changed since the flush snapshot. The flusher passes the versions it
+        successfully upserted, preserving newer concurrent updates.
         """
-        self._dirty_agents.difference_update(agents)
+        for agent in agents:
+            if versions is None or self._dirty_versions.get(agent) == versions.get(agent):
+                self._dirty_agents.discard(agent)
 
     def get_metrics(self) -> dict[str, Any]:
         """Assemble the complete metrics dict (without DB stats — those are async)."""
