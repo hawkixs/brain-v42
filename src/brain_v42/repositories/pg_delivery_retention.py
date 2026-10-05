@@ -42,11 +42,11 @@ _PROTECTED = (
     "WITH protected(id) AS (\n"
     + "\nUNION\n".join(
         [
-            f"SELECT {column}::text FROM {table} WHERE {column} IS NOT NULL"
+            f"SELECT {column}::text FROM {table} WHERE {column} IS NOT NULL"  # nosec B608 # {table}/{column} iterate _POINTERS, a module tuple of string literals; no caller input (audited 2026-10-05)
             for table, column in _POINTERS
         ]
         + [
-            f"SELECT value #>> '{{}}' FROM {table} "
+            f"SELECT value #>> '{{}}' FROM {table} "  # nosec B608 # {table}/{column}/{key} iterate _JSON_SOURCES and a literal tuple; no caller input (audited 2026-10-05)
             f"CROSS JOIN LATERAL jsonb_path_query({column}, 'lax $.**.{key}') AS refs(value)"
             for table, column in _JSON_SOURCES
             for key in ("success_confirmation_id", "latest_attempt_confirmation_id")
