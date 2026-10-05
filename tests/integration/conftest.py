@@ -134,19 +134,6 @@ except ValueError:
 _PROJECT_ROOT = Path(__file__).parents[2]
 
 
-# ---------------------------------------------------------------------------
-# pytest marker registration
-# ---------------------------------------------------------------------------
-
-
-def pytest_configure(config: pytest.Config) -> None:
-    """Register the 'integration' marker to avoid PytestUnknownMarkWarning."""
-    config.addinivalue_line(
-        "markers",
-        "integration: marks tests as integration tests (require real PostgreSQL)",
-    )
-
-
 def format_missing_db_url_summary(skipped: int, reason: str | None = None) -> str | None:
     """The end-of-session line for a suite that measured nothing, or None.
 
