@@ -269,6 +269,11 @@ def _base_collector_stubs(collector: MetricsCollector) -> None:
     collector.collect_dream_promoted_health = AsyncMock(return_value=[])  # type: ignore[method-assign]
     collector.collect_nightly_ops = AsyncMock(return_value={})  # type: ignore[method-assign]
     collector.collect_session_slots = AsyncMock(return_value={})  # type: ignore[method-assign]
+    # Left real, the ticket block ran on a mocked session and failed on a
+    # never-awaited `mappings()`, dropped by its cache (29e9d695).
+    collector.collect_ticket_counts = AsyncMock(  # type: ignore[method-assign]
+        return_value={"categories": [], "projects": []}
+    )
 
 
 class TestServerEmbeddingServicePayload:
