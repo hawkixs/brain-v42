@@ -9,7 +9,7 @@
 #   ./deploy/systemd/install.sh --check-only # isolated render + mandatory verify
 #   ./deploy/systemd/install.sh --render-dir /absolute/new/path
 #   ./deploy/systemd/install.sh --uninstall # stop, disable, remove every managed unit
-# WARNING: --uninstall affects every managed unit, including production MCP HTTP.
+# WARNING: --uninstall affects every managed unit, including production MCP HTTP and brain-metrics.
 #
 # The service template contains __REPO_ROOT__ placeholders that are
 # replaced with the absolute path of this repository at install time.
@@ -124,7 +124,8 @@ while (($# > 0)); do
         echo "ERROR: --help cannot be combined with installer modes." >&2
         exit 2
       fi
-      sed -n '3,20p' "$0"
+      # The whole leading comment block: a fixed line range cut it mid-sentence.
+      awk 'NR >= 3 && !/^#/ { exit } NR >= 3' "$0"
       exit 0
       ;;
     *)
@@ -1002,14 +1003,27 @@ declare -A PRESERVED_TIMER_STATES=()
 if [[ "$MODE" == "install" ]]; then
   for unit in "${UNITS[@]}"; do
     timer="$unit.timer"
-    if ! $ENABLE_TIMERS && [[ -e "$USER_UNIT_DIR/$timer" || -L "$USER_UNIT_DIR/$timer" ]]; then
+    if [[ -e "$USER_UNIT_DIR/$timer" || -L "$USER_UNIT_DIR/$timer" ]]; then
       timer_enabled="$(unit_state is-enabled "$timer")"
-      timer_active="$(unit_state is-active "$timer")"
-      TIMERS_TO_PRESERVE+=("$timer")
-      PRESERVED_TIMER_STATES["$timer"]="enabled=$timer_enabled, active=$timer_active"
-    else
-      TIMERS_TO_ENABLE+=("$timer")
+      # A mask is the unit file itself: publishing would replace it, and a leftover
+      # wants link would re-arm the timer. Unmasking is the operator's gesture.
+      case "$timer_enabled" in
+        masked|masked-runtime)
+          echo "ERROR: $timer is $timer_enabled; unmask it deliberately (systemctl --user unmask $timer) before reinstalling. No units were changed." >&2
+          exit 1
+          ;;
+      esac
+      if ! $ENABLE_TIMERS; then
+        timer_active="$(unit_state is-active "$timer")"
+        TIMERS_TO_PRESERVE+=("$timer")
+        PRESERVED_TIMER_STATES["$timer"]="enabled=$timer_enabled, active=$timer_active"
+        if [[ "$timer_enabled" == "disabled" ]]; then
+          PRESERVED_TIMER_STATES["$timer"]+="; re-run with --enable-timers to arm it"
+        fi
+        continue
+      fi
     fi
+    TIMERS_TO_ENABLE+=("$timer")
   done
 fi
 STAGING_DIR="$(mktemp -d "$USER_UNIT_DIR/.brain-v42-install.XXXXXX")"

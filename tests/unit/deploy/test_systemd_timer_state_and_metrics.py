@@ -198,3 +198,39 @@ def test_a_masked_timer_is_refused_before_anything_is_published(tmp_path: Path) 
     assert (unit_dir / TIMERS[0]).read_text() == "existing timer\n"
     calls = systemctl_log.read_text().splitlines() if systemctl_log.exists() else []
     assert not any(call.split()[1] in {"enable", "start", "daemon-reload"} for call in calls)
+
+
+def test_a_masked_timer_is_refused_even_with_enable_timers(tmp_path: Path) -> None:
+    """--enable-timers asks to arm a timer, not to unmask one: a mask is an operator
+    gesture the installer must not undo by overwriting its symlink."""
+    environment, systemctl_log, unit_dir = _fake_systemd_environment(tmp_path)
+    make_directory(unit_dir, parents=True)
+    (unit_dir / TIMERS[0]).write_text("existing timer\n")
+    environment = {**environment, "DREAM_TIMER_ENABLED_STATE": "masked"}
+
+    result = _run_installer(environment, "--enable-timers")
+
+    assert result.returncode != 0
+    assert "masked" in result.stderr
+    assert (unit_dir / TIMERS[0]).read_text() == "existing timer\n"
+    calls = systemctl_log.read_text().splitlines() if systemctl_log.exists() else []
+    assert not any(call.split()[1] in {"enable", "start", "daemon-reload"} for call in calls)
+
+
+def test_help_ends_on_a_whole_sentence(tmp_path: Path) -> None:
+    environment, _, _ = _fake_systemd_environment(tmp_path)
+
+    result = _run_installer(environment, "--help")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.rstrip().endswith("."), result.stdout.rstrip().splitlines()[-1]
+
+
+def test_help_warns_that_uninstall_also_stops_metrics(tmp_path: Path) -> None:
+    """brain-metrics.service is managed now: --uninstall stops and removes it too."""
+    environment, _, _ = _fake_systemd_environment(tmp_path)
+
+    result = _run_installer(environment, "--help")
+
+    warning = next(line for line in result.stdout.splitlines() if "WARNING: --uninstall" in line)
+    assert "brain-metrics" in warning

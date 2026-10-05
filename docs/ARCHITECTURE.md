@@ -809,8 +809,9 @@ An authorized operator can activate the dormant boundary with this quiescent seq
    `systemctl --user disable --no-reload brain-mcp-http-watchdog.timer`, atomically publish only
    the required basenames from that artifact, and only then run `systemctl --user daemon-reload`.
    Follow the repository systemd runbooks; do not use normal install or the historical
-   `--dry-run`, because both publish the complete managed set and normal install starts the Dream
-   timer.
+   `--dry-run`, because both publish the complete managed set. Normal install keeps the state of a
+   timer that already exists, but arms a timer it installs for the first time, and every timer under
+   `--enable-timers`.
 3. Edit `~/.config/brain-v42/mcp-token.env` privately with the enabled flag and a complete
    registry that defines all six phases for each of two distinct real projects. Set its mode
    to `0600`. Never print, log, or commit its values.
