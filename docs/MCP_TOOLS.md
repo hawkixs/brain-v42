@@ -411,7 +411,7 @@ catalog gateways.
 | `brain_delivery_contract_set` | `ticket_id`, `contract`, `expected_revision` (0 for create), `idempotency_key`, required `reason` | `ContractRevision` |
 | `brain_delivery_bind_pr` | `ticket_id`, `deliverable_key`, `repository_id`, `pr_number`, `expected_revision`, `expected_workflow_version`, `idempotency_key` | `ArtifactBinding` |
 | `brain_delivery_get` | `ticket_id`, `history_limit=20`, `history_cursor=None` | `DeliveryView` |
-| `brain_delivery_list` | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None` | `DeliveryPage` |
+| `brain_delivery_list` (v2.0) | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None`, `detail="summary"` (`"full"` opt-in) | `DeliveryListPage` |
 | `brain_delivery_refresh` | `ticket_id` | `{status: "queued", view: DeliveryView}` |
 | `brain_delivery_claim` | `ticket_id`, `owner_key`, `work_kind`, `expected_workflow_version`, `expected_assessment_id`, `ttl_seconds=900` | `ClaimResult` |
 | `brain_delivery_claim_renew` | `ticket_id`, `owner_key`, `claim_token`, `epoch`, `ttl_seconds=900` | `ClaimState` |
@@ -419,6 +419,11 @@ catalog gateways.
 | `brain_delivery_accept` | `ticket_id`, `rationale`, `expected_revision`, `expected_attempt`, `expected_delivery_digest` | `MilestoneReceipt` |
 | `brain_delivery_attest` | `ticket_id`, `kind`, `payload`, `idempotency_key`, `emitted_at`, `contract_revision=None` | `DeliveryAttestation` |
 | `brain_delivery_attestation_list` | `ticket_id=None`, `issuer_project=None`, `kind=None`, `since=None`, `until=None`, `limit=20`, `cursor=None` | `DeliveryAttestationPage` |
+
+`brain_delivery_list` summaries omit blocker details, proofs and context snapshots.
+Each summary keeps at most 32 blocker references; `blockers_omitted` counts the
+remaining blockers. With `detail="full"`, the full view is nested under
+`items[i].view`, whose `attestations` is `null`.
 
 The requester sets/amends contracts and accepts deliveries. The executor binds
 PRs and claims executor work; either ticket participant can read or refresh.
@@ -474,8 +479,9 @@ no filter, so the caller keeps the same filters across pages; `omitted_count` co
 the rows matching the same filters beyond the page. The read stays available while
 `BRAIN_DELIVERY_ENABLED=false` pauses the mutation. `brain_delivery_get` carries the
 newest `history_limit` attestations with their digest in `view.attestations`, so a
-consumer can spot a local receipt without its attestation; `brain_delivery_list`
-leaves that field `null`.
+consumer can spot a local receipt without its attestation. `brain_delivery_list`
+returns summaries; with `detail="full"` the full view is nested under `items[i].view`
+and `items[i].view.attestations` is `null`.
 
 `expected_workflow_version` is `view.assessment.assessment_version` and the claim
 comparison uses `view.assessment.assessment_id`. That version is the workflow's
