@@ -130,6 +130,14 @@ def test_mark_flushed_difference_update_preserves_concurrent_dirty(
     assert "agent-a" not in fd
 
 
+def test_mark_flushed_preserves_agent_updated_during_flush(collector: MetricsCollector) -> None:
+    collector.record_tool_call("brain_search", 50.0, agent="agent-a")
+    snapshot = collector.get_dirty_versions()
+    collector.record_tool_call("brain_learn", 30.0, agent="agent-a")
+    collector.mark_flushed({"agent-a"}, snapshot)
+    assert "agent-a" in collector.get_flush_data(dirty_only=True)
+
+
 def test_get_flush_data_idempotent_does_not_clear_dirty_set(
     collector: MetricsCollector,
 ) -> None:

@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 
 import httpx
 import structlog
@@ -98,27 +99,16 @@ class ActivityReporter:
         # and "every observation refused" indistinguishable.
         self.dropped = 0  # local back-pressure: in-flight slots saturated
         self.refused = 0  # the receiver answered something other than a 2xx
-        # These two counters live in the MCP process; the panel reads the
+        self.lost = 0  # observations not accepted by the receiver or transport
+        # These counters live in the MCP process; the panel reads the
         # SIDECAR's registry, another process. They therefore reached no human.
         # And they CANNOT travel through the POST they measure: under a
         # permanent 404 — the very scenario that makes them useful — that POST
         # is precisely the one being refused. The log is the only honest
         # channel.
         #
-        # One line per loss is excluded: this is the hot path of EVERY tool
-        # call, and the measured refusal is PERMANENT, not transient.
-        #
-        # But "one line only, never more" would leave the MAGNITUDE invisible —
-        # an operator could not tell three losses from a million. The count
-        # cannot exist only at shutdown either: `close_activity_reporter` has
-        # been wired into `app_lifecycle` since batch d5e4bd73, but an abrupt
-        # stop (kill, OOM) does not run it — a shutdown summary ALONE would be a
-        # measurement that disappears with its own worst scenarios.
-        #
-        # Hence the escalation by decade: we speak on the 1st, 10th, 100th…
-        # loss. Bounded in log10 — fifteen lines for a trillion — and the order
-        # of magnitude always stays readable.
-        self._warned_refusals: set[int] = set()
+        # Keep outage logs useful without generating one line per tool call.
+        self._loss_warning_signatures: dict[tuple[str, object], float] = {}
         # Coalescing buffer. The in-flight bound is not raised: it protects the
         # sidecar. What changes is what we do BEHIND it — aggregate instead of
         # discard. The wire format already carried the two necessary levers and
@@ -199,9 +189,16 @@ class ActivityReporter:
 
     def _emit(self, observations: list[dict[str, object]]) -> None:
         body = json.dumps({"observations": observations})
+        # Counted here, from the batch just built, so that ``_post`` never has
+        # to parse a body outside its own guard. One observation per reported
+        # call, as ``dropped`` and ``coalesced`` count them: a coalesced entry
+        # carries its ``calls``.
+        observation_count = sum(
+            calls if isinstance(calls := item.get("calls", 1), int) else 1 for item in observations
+        )
         # Reference retained in _pending: without it, the GC can collect the
         # task before it runs (the loop holds only a weakref).
-        task = asyncio.create_task(self._post(body))
+        task = asyncio.create_task(self._post(body, observation_count))
         self._pending.add(task)
         task.add_done_callback(self._on_post_done)
 
@@ -223,14 +220,16 @@ class ActivityReporter:
             if self._buffer and len(self._pending) < self._max_in_flight:
                 self._emit(self._take_buffer())
 
-    async def _post(self, body: str) -> None:
+    async def _post(self, body: str, observation_count: int = 0) -> None:
         try:
             response = await self._client.post(
                 self._url,
                 content=body,
                 headers={"Content-Type": "application/json"},
             )
-            if not response.is_success:
+            if response.is_success:
+                self._loss_warning_signatures.clear()
+            else:
                 # ``httpx`` does not raise on 4xx/5xx: without this read, a
                 # refusal comes back through the nominal path and disappears
                 # without a trace. The measured case is permanent, not
@@ -241,27 +240,30 @@ class ActivityReporter:
                 # ``response.text``: the body of a refusal is uncontrolled
                 # input, and many receivers echo the request back into it —
                 # session UUID included.
-                self.refused += 1
-                # An UNSEEN signature always speaks: a 503 after a thousand
-                # 404s is a new fact, and waiting for the next decade would
-                # drown it. Otherwise, the same escalation as back-pressure.
-                first_of_its_kind = response.status_code not in self._warned_refusals
-                self._warned_refusals.add(response.status_code)
-                if first_of_its_kind or _is_a_decade(self.refused):
-                    logger.warning(
-                        "activity_reporter.refused",
-                        status=response.status_code,
-                        refused=self.refused,
-                    )
+                self.refused += observation_count
+                self.lost += observation_count
+                self._warn_loss(
+                    "activity_reporter.refused",
+                    status=response.status_code,
+                    refused=self.refused,
+                    lost=self.lost,
+                )
         except Exception as exc:
-            # Type only, never ``exc_info``. The production chain's exception
-            # rendering (rich, via ConsoleRenderer) prints every frame's local
-            # variables: ``body`` copies the observation there, session UUID
-            # included, and the frame path names the project. A single failed
-            # POST wrote 456 lines that way — on the hot path of EVERY tool
-            # call, and for an emitter that promises never to slow the caller
-            # down. The type is enough to diagnose a dead sidecar.
-            logger.debug("activity_reporter.post_failed", error=type(exc).__name__)
+            self.lost += observation_count
+            # Do not pass exc_info: traceback frame locals can contain the session UUID.
+            self._warn_loss(
+                "activity_reporter.post_failed", error=type(exc).__name__, lost=self.lost
+            )
+
+    def _warn_loss(self, event: str, **fields: object) -> None:
+        """Report each new loss signature; throttle repeats for one minute."""
+        now = time.monotonic()
+        discriminator = fields.get("status", fields.get("error", ""))
+        signature = (event, str(discriminator))
+        last = self._loss_warning_signatures.get(signature)
+        if last is None or now - last >= 60.0:
+            self._loss_warning_signatures[signature] = now
+            logger.warning(event, **fields)
 
     async def drain(self) -> None:
         """Wait for in-flight emissions. Reserved for tests and shutdown.

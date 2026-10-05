@@ -74,6 +74,23 @@ def test_sidecar_chain_never_renders_frame_locals() -> None:
     _assert_traceback_without_locals(buffer.getvalue())
 
 
+def test_sidecar_exception_path_never_renders_frame_locals() -> None:
+    buffer = io.StringIO()
+    structlog.configure(
+        processors=build_sidecar_structlog_processors(MagicMock()),
+        # The sidecar entrypoint's wrapper: only it turns ``exception()`` into
+        # ``exc_info=True``; the generic ``structlog.BoundLogger`` does not.
+        wrapper_class=structlog.make_filtering_bound_logger(0),
+        logger_factory=structlog.PrintLoggerFactory(file=buffer),
+    )
+    log = structlog.get_logger("test.no_locals")
+    try:
+        _connect()
+    except ConnectionRefusedError:
+        log.exception("sidecar.failure")
+    _assert_traceback_without_locals(buffer.getvalue())
+
+
 def test_mcp_logging_never_renders_frame_locals(monkeypatch: pytest.MonkeyPatch) -> None:
     buffer = io.StringIO()
     monkeypatch.setattr(sys, "stderr", buffer)

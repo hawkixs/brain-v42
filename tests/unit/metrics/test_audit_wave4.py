@@ -490,6 +490,40 @@ def test_sidecar_structlog_chain_populates_recent_log(collector: MetricsCollecto
     )
 
 
+def test_sidecar_exception_has_traceback_and_syslog_priority(collector: MetricsCollector) -> None:
+    import io
+
+    from brain_v42.metrics.runtime import build_sidecar_structlog_processors  # noqa: PLC0415
+
+    output = io.StringIO()
+    structlog.configure(
+        processors=build_sidecar_structlog_processors(collector),
+        wrapper_class=structlog.make_filtering_bound_logger(10),
+        logger_factory=structlog.PrintLoggerFactory(file=output),
+        cache_logger_on_first_use=False,
+    )
+    try:
+        try:
+            raise ValueError("sidecar failure")
+        except ValueError:
+            log = structlog.get_logger("test.sidecar")
+            log.exception("failure")
+        log.warning("warning")
+        log.info("info")
+        log.debug("debug")
+    finally:
+        structlog.reset_defaults()
+    rendered = output.getvalue()
+    assert rendered.startswith("<3>")
+    assert "ValueError: sidecar failure" in rendered
+    assert "Traceback (most recent call last)" in rendered
+    error_lines = rendered.split("<4>", maxsplit=1)[0].splitlines()
+    assert all(line.startswith("<3>") for line in error_lines)
+    assert rendered.count("<4>") == 1
+    assert rendered.count("<6>") == 1
+    assert rendered.count("<7>") == 1
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # B2. MetricsFlusher must persist decay block in the _process DB row
 # ──────────────────────────────────────────────────────────────────────────────
