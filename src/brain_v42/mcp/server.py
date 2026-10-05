@@ -844,8 +844,11 @@ class TransportTerminationHookUnavailableError(RuntimeError):
 _TERMINATION_HOOK_MARKER = "_brain_v42_on_terminated"
 
 
-#: Seconds during which termination reports are skipped after one failed.
-_TERMINATION_REPORT_COOLDOWN_SECONDS = 30.0
+#: Window over which every termination report shares one time budget.
+_TERMINATION_REPORT_WINDOW_SECONDS = 30.0
+
+#: The value ``mcp_session_id`` is given on the probe instance the guard builds.
+_SHAPE_PROBE_SESSION_ID = "brain-v42-transport-shape-probe"
 
 
 def _assert_transport_shape(base: Any) -> None:
@@ -868,12 +871,65 @@ def _assert_transport_shape(base: Any) -> None:
         problems.append("is_terminated is not a property")
     if "mcp_session_id" not in inspect.signature(base.__init__).parameters:
         problems.append("__init__ takes no mcp_session_id")
+    if not problems:
+        # A signature says what the constructor accepts, not what the instance
+        # carries: build one and read the two attributes the hook reads.
+        try:
+            probe = base(mcp_session_id=_SHAPE_PROBE_SESSION_ID)
+            if getattr(probe, "mcp_session_id", None) != _SHAPE_PROBE_SESSION_ID:
+                problems.append("the instance does not carry mcp_session_id")
+            elif probe.is_terminated is not False:
+                problems.append("a new instance is not reported live by is_terminated")
+        except Exception as exc:  # noqa: BLE001 — any failure is a changed shape
+            problems.append(f"a probe instance could not be built ({type(exc).__name__})")
     if problems:
         raise TransportTerminationHookUnavailableError(
             "StreamableHTTPServerTransport changed shape ("
             + "; ".join(problems)
             + "); ended connections would leave their agent tracers open"
         )
+
+
+def _new_report_ledger() -> dict[str, float]:
+    return {"window_start": float("-inf"), "spent": 0.0}
+
+
+async def _report_termination(
+    report: Callable[[str], Awaitable[None]],
+    session_id: str,
+    budget: float,
+    ledger: dict[str, float],
+) -> None:
+    """Run one report within the time every report of the window shares.
+
+    FastMCP's shutdown terminates the live transports one after the other, and
+    the report swallows its own database errors, so neither a timeout nor an
+    exception is a reliable signal: what is bounded is TIME. Every report of a
+    window draws on one ``budget``; once it is spent, the next reports are
+    skipped until the window ends, and their tracers are left to the inactivity
+    net, which closes them on the same terms. A report that raises spends the
+    rest of the budget. In normal operation a report takes milliseconds and the
+    budget is never reached.
+    """
+    loop = asyncio.get_running_loop()
+    now = loop.time()
+    if now - ledger["window_start"] >= _TERMINATION_REPORT_WINDOW_SECONDS:
+        ledger["window_start"] = now
+        ledger["spent"] = 0.0
+    remaining = budget - ledger["spent"]
+    if remaining <= 0:
+        logger.debug("brain_v42.server.transport_termination_report_skipped")
+        return
+    try:
+        await asyncio.wait_for(report(session_id), timeout=remaining)
+    except Exception as exc:  # noqa: BLE001 — fail-open by contract
+        ledger["spent"] = budget
+        logger.warning(
+            "brain_v42.server.transport_termination_report_failed",
+            error=type(exc).__name__,
+        )
+        return
+    ledger["spent"] += loop.time() - now
 
 
 def _install_transport_termination_hook(
@@ -900,36 +956,26 @@ def _install_transport_termination_hook(
     base = streamable_http_manager.StreamableHTTPServerTransport
     _assert_transport_shape(base)
     if getattr(base, _TERMINATION_HOOK_MARKER, None) is not None:
-        setattr(base, _TERMINATION_HOOK_MARKER, (on_terminated, budget_seconds))
+        setattr(
+            base, _TERMINATION_HOOK_MARKER, (on_terminated, budget_seconds, _new_report_ledger())
+        )
         return
-
-    # Circuit breaker: shutdown terminates every transport in turn, so a dead
-    # database would otherwise cost one full budget PER connection. After a
-    # failed report, the next ones are skipped for a cooldown: N connections
-    # cost one budget. A skipped tracer is left to the inactivity net.
-    breaker = {"open_until": 0.0}
 
     class _ReportingTransport(base):  # type: ignore[misc, valid-type]
         async def terminate(self) -> None:
             first = not self.is_terminated
             await super().terminate()
-            if not first or self.mcp_session_id is None:
+            session_id = getattr(self, "mcp_session_id", None)
+            if not first or session_id is None:
                 return
-            loop = asyncio.get_running_loop()
-            if loop.time() < breaker["open_until"]:
-                logger.debug("brain_v42.server.transport_termination_report_skipped")
-                return
-            report, budget = getattr(type(self), _TERMINATION_HOOK_MARKER)
-            try:
-                await asyncio.wait_for(report(self.mcp_session_id), timeout=budget)
-            except Exception as exc:  # noqa: BLE001 — fail-open by contract
-                breaker["open_until"] = loop.time() + _TERMINATION_REPORT_COOLDOWN_SECONDS
-                logger.warning(
-                    "brain_v42.server.transport_termination_report_failed",
-                    error=type(exc).__name__,
-                )
+            report, budget, ledger = getattr(type(self), _TERMINATION_HOOK_MARKER)
+            await _report_termination(report, session_id, budget, ledger)
 
-    setattr(_ReportingTransport, _TERMINATION_HOOK_MARKER, (on_terminated, budget_seconds))
+    setattr(
+        _ReportingTransport,
+        _TERMINATION_HOOK_MARKER,
+        (on_terminated, budget_seconds, _new_report_ledger()),
+    )
     # Same substitution, same justification as the idle deadline above.
     streamable_http_manager.StreamableHTTPServerTransport = _ReportingTransport  # type: ignore[misc]
     logger.info("brain_v42.server.transport_termination_hook", budget_seconds=budget_seconds)

@@ -36,7 +36,7 @@ stateless mode there is no connection identifier, and this key falls away.
 
 from __future__ import annotations
 
-from collections import OrderedDict, defaultdict
+from collections import Counter, OrderedDict, defaultdict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Literal
@@ -157,8 +157,11 @@ class SessionAutoOpener:
         self._max_connections = max_connections
         self._memo: OrderedDict[str, UUID] = OrderedDict()
         # Connections whose transport has terminated. An Mcp-Session-Id is never
-        # reused, so membership is final; bounded like the memo.
+        # reused, so membership is final; bounded like the memo, except that a
+        # marker never ages out while an operation on its connection is in flight
+        # (round 2 of #291: a late opening would otherwise slip through).
         self._terminated: OrderedDict[str, None] = OrderedDict()
+        self._in_flight: Counter[str] = Counter()
         self.opened = 0
         self.memoized = 0
         self.reopened = 0
@@ -181,6 +184,15 @@ class SessionAutoOpener:
             self.skipped["terminated"] += 1
             return None
 
+        self._in_flight[identity.connection_id] += 1
+        try:
+            return await self._ensure_open(identity)
+        finally:
+            self._in_flight[identity.connection_id] -= 1
+            if not self._in_flight[identity.connection_id]:
+                del self._in_flight[identity.connection_id]
+
+    async def _ensure_open(self, identity: AutoOpenIdentity) -> UUID | None:
         memoized = self._memo.get(identity.connection_id)
         if memoized is not None:
             observed = await self._observe(memoized, identity)
@@ -269,8 +281,7 @@ class SessionAutoOpener:
         """
         self._terminated[connection_id] = None
         self._terminated.move_to_end(connection_id)
-        while len(self._terminated) > self._max_connections:
-            self._terminated.popitem(last=False)
+        self._forget_old_terminations()
         self._memo.pop(connection_id, None)
         if self._closer is None:
             return
@@ -285,6 +296,21 @@ class SessionAutoOpener:
             )
             return
         self.closed += len(closed)
+
+    def _forget_old_terminations(self) -> None:
+        """Bound the terminated markers, oldest first, sparing any still in use.
+
+        A marker whose connection has an opening or an observation in flight is
+        what lets that operation close its late tracer: dropping it would leave
+        the tracer open and memoized for a dead connection. The spared markers
+        are bounded by the number of concurrent tool calls.
+        """
+        excess = len(self._terminated) - self._max_connections
+        if excess <= 0:
+            return
+        idle = [key for key in self._terminated if key not in self._in_flight]
+        for connection_id in idle[:excess]:
+            del self._terminated[connection_id]
 
     def _remember(self, connection_id: str, session_id: UUID) -> None:
         self._memo[connection_id] = session_id
