@@ -167,3 +167,34 @@ def test_metrics_template_declares_standalone_restart_policy() -> None:
     assert dict(_section_directives(unit, "Unit"))["Description"] == (
         "brain-v42 standalone metrics server (:9200)"
     )
+
+
+def test_a_preserved_disabled_timer_says_how_to_arm_it(tmp_path: Path) -> None:
+    """A `--dry-run` then a plain install leaves both timers disabled, by design:
+    the only signal is the log line, so it must name the way out."""
+    environment, _, unit_dir = _fake_systemd_environment(tmp_path)
+    make_directory(unit_dir, parents=True)
+    (unit_dir / TIMERS[0]).write_text("existing timer\n")
+
+    result = _run_installer(environment)
+
+    assert result.returncode == 0, result.stderr
+    assert f"{TIMERS[0]}: preserved enabled=disabled" in result.stdout
+    assert "re-run with --enable-timers to arm it" in result.stdout
+
+
+def test_a_masked_timer_is_refused_before_anything_is_published(tmp_path: Path) -> None:
+    """Publishing would replace the mask with the real unit file and a leftover
+    wants link would re-arm the timer: refuse instead of claiming "preserved"."""
+    environment, systemctl_log, unit_dir = _fake_systemd_environment(tmp_path)
+    make_directory(unit_dir, parents=True)
+    (unit_dir / TIMERS[0]).write_text("existing timer\n")
+    environment = {**environment, "DREAM_TIMER_ENABLED_STATE": "masked"}
+
+    result = _run_installer(environment)
+
+    assert result.returncode != 0
+    assert "masked" in result.stderr
+    assert (unit_dir / TIMERS[0]).read_text() == "existing timer\n"
+    calls = systemctl_log.read_text().splitlines() if systemctl_log.exists() else []
+    assert not any(call.split()[1] in {"enable", "start", "daemon-reload"} for call in calls)

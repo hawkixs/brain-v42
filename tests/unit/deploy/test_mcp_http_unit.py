@@ -324,6 +324,8 @@ def _fake_systemd_environment(tmp_path: Path) -> tuple[dict[str, str], Path, Pat
         'printf "%s\\n" "${WATCHDOG_TIMER_ENABLED_STATE:-disabled}"; exit 0 ;;\n'
         '  "--user is-enabled brain-mcp-http-watchdog.service") '
         'printf "%s\\n" "${WATCHDOG_SERVICE_ENABLED_STATE:-static}"; exit 0 ;;\n'
+        '  "--user is-enabled brain-v42-dream.timer") '
+        'printf "%s\\n" "${DREAM_TIMER_ENABLED_STATE:-disabled}"; exit 1 ;;\n'
         '  "--user is-active "*) printf "inactive\\n"; exit 3 ;;\n'
         '  "--user is-enabled "*) printf "disabled\\n"; exit 1 ;;\n'
         "esac\n",
