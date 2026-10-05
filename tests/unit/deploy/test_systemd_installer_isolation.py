@@ -34,6 +34,7 @@ EXPECTED_UNITS = frozenset(
         "brain-v42-graph-recon.service",
         "brain-v42-graph-recon.timer",
         "brain-mcp-http.service",
+        "brain-metrics.service",
         "brain-mcp-http-watchdog.service",
         "brain-mcp-http-watchdog.timer",
         "brain-v42-automation.service",
@@ -1218,6 +1219,7 @@ def test_render_dir_publishes_exact_verified_artifacts_atomically(tmp_path: Path
             {
                 "brain-v42-graph-recon.service",
                 "brain-mcp-http.service",
+                "brain-metrics.service",
                 "brain-v42-automation.service",
             },
         ),

@@ -1,0 +1,45 @@
+[Unit]
+Description=brain-v42 standalone metrics server (:9200)
+Documentation=file://__REPO_ROOT__/deploy/systemd/README.md
+# Backoff bounds the restart rate without latching the unit after a database outage.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO_ROOT__
+EnvironmentFile=__REPO_ROOT__/.env
+# A user unit cannot order after the system docker.service; wait within the start timeout.
+ExecStartPre=__REPO_ROOT__/.venv/bin/python __REPO_ROOT__/scripts/wait_for_postgres.py --url-env BRAIN_POSTGRES_URL --url-env POSTGRES_URL --timeout 90
+ExecStart=__REPO_ROOT__/.venv/bin/python -m brain_v42.metrics
+UMask=0077
+NoNewPrivileges=true
+PrivateUsers=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectClock=true
+ProtectControlGroups=true
+ProtectKernelLogs=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+KeyringMode=private
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=brain-metrics
+Restart=always
+RestartSec=2
+RestartSteps=6
+RestartMaxDelaySec=60
+TimeoutStartSec=120
+TimeoutStopSec=15
+
+[Install]
+WantedBy=default.target

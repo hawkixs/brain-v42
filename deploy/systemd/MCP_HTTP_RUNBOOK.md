@@ -10,6 +10,13 @@ An override of `Settings.mcp_http_port` remains possible for development outside
 but the installer and the production service refuse any other value so that server,
 clients, healthchecks, and watchdog cannot diverge.
 
+The watchdog leaves an `inactive` service stopped because that state represents an operator
+stop. It recovers a `failed` service with `reset-failed` followed by `start`. If the HTTP
+probe cannot run, it exits 3 and records the probe failure in the watchdog journal without
+restarting the service. An operator stop that ends in `failed` (for example, SIGKILL after
+`TimeoutStopSec`) will be restarted by the watchdog; stop
+`brain-mcp-http-watchdog.timer` first when quiescing the service, as the sequences below do.
+
 > **Destructive scope of the uninstall.** `deploy/systemd/install.sh --uninstall`
 > stops, disables, and removes **all** units managed by the script: MCP HTTP,
 > watchdog, Dream, graph-recon, and automation. Do not use it as a simple MCP rollback.
