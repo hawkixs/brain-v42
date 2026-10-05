@@ -25,10 +25,11 @@ from brain_v42.models.delivery import (
     DeliveryAttestation,
     DeliveryAttestationPage,
     DeliveryError,
-    DeliveryPage,
+    DeliveryListPage,
     DeliveryRefreshResult,
     DeliveryView,
     MilestoneReceipt,
+    summarize_view,
 )
 from brain_v42.provenance import UNEXPANDED_ACTOR, UNKNOWN_ACTOR, get_current_actor
 from brain_v42.services.delivery_service import DeliveryService
@@ -129,7 +130,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
             history_cursor=history_cursor,
         )
 
-    @delivery.tool(version="1.0", annotations=_READ_ANNOTATIONS)
+    @delivery.tool(version="2.0", annotations=_READ_ANNOTATIONS)
     async def brain_delivery_list(
         actor_project: Project,
         limit: Limit = 20,
@@ -138,15 +139,26 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         blocker: Annotated[str, Field(strict=True, pattern=r"^[a-z][a-z0-9_]{0,99}$")]
         | None = None,
         stage: Stage | None = None,
-    ) -> DeliveryPage:
-        """List a participant's observed deliveries, filtered before bounded pagination."""
-        return await delivery_svc.list(
+        detail: Literal["summary", "full"] = "summary",
+    ) -> DeliveryListPage:
+        """List compact delivery state and claim inputs, filtered before pagination.
+
+        With `detail="full"`, each item's `view` includes the complete persisted
+        delivery view; its attestations remain null. Summary mode omits proof
+        bodies, pinned context snapshots and blocker explanations.
+        """
+        page = await delivery_svc.list(
             actor_project=actor_project,
             limit=limit,
             cursor=cursor,
             work=work,
             blocker=blocker,
             stage=stage,
+        )
+        return DeliveryListPage(
+            items=tuple(summarize_view(view, include_view=detail == "full") for view in page.items),
+            next_cursor=page.next_cursor,
+            omitted_count=page.omitted_count,
         )
 
     @delivery.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)

@@ -720,6 +720,47 @@ running from a checkout says "live release unmeasured" instead of guessing.
 whether `v0.6.3` was observed, the tickets planned but not shipped in it, and those
 shipped under another tag.
 
+## Delivery confirmation retention
+
+The maintenance CLI keeps every error confirmation (observer backoff depends on
+them), every snapshot, and every success referenced by a binding or workflow's
+latest attempt/success pointer. It also protects confirmation IDs named under
+`success_confirmation_id` or `latest_attempt_confirmation_id` anywhere in receipt
+proofs or event payloads/results, including nested JSON arrays.
+
+Preview the eligible successes older than 14 days:
+
+```bash
+python -m brain_v42.maintenance.delivery_confirmation_retention
+```
+
+Arming is an operator gesture; take it after a red-backup dump. No timer ships.
+After reviewing the dry report, explicitly arm deletion:
+
+```bash
+python -m brain_v42.maintenance.delivery_confirmation_retention --execute
+```
+
+The window is at least seven days (`--older-than-days`, default 14). Each transaction
+deletes at most `--batch-size` rows (default 5000, range 1–50000); `--max-batches`
+defaults to 100. Locked candidates are skipped. The report names the cutoff,
+candidates and deleted rows: dry mode counts all eligible rows; execute mode counts
+the rows selected within its batch budget. A later invocation can process remaining
+rows. Exit codes are 0 for success, 1 for runtime failure, and 2 for invalid arguments.
+Earlier batches remain committed if a later batch fails.
+
+Receipt issuance freezes its pointer under `lock_workflows`, the observer never
+moves pointers back to old confirmations, and receipts require evidence fresh
+within ten minutes. This makes the old retention candidates safe without a workflow
+lock. Measure the confirmation table's row count before and after retention on the
+target database:
+
+```sql
+SELECT count(*) FROM delivery_confirmations;
+```
+
+Deleted successes remain recoverable from the preceding backup dump.
+
 ## Automation service
 
 The `brain-v42-automation.service` unit is generated and verified, but stays dormant.

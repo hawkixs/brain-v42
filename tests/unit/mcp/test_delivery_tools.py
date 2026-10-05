@@ -13,6 +13,41 @@ from brain_v42.models.delivery import DeliveryError
 MARKER = "delivery-claim-secret-that-must-never-be-logged"
 
 
+@pytest.mark.parametrize("profile", ["native", "compact"])
+async def test_list_defaults_to_summary_and_full_is_opt_in(profile):
+    from brain_v42.models.delivery import DeliveryPage, summarize_view
+    from tests.unit.models.test_delivery_summary import summary_view
+
+    view = summary_view()
+    service = AsyncMock()
+    service.list.return_value = DeliveryPage(items=(view,), next_cursor="next", omitted_count=3)
+    app = await _app(service, profile)
+    for detail in (None, "full"):
+        arguments = {"actor_project": "brain-v42", "work": "repair", "limit": 5}
+        if detail is not None:
+            arguments["detail"] = detail
+        result = await _call(app, profile, "brain_delivery_list", arguments)
+        assert not result.is_error
+        payload = result.structured_content
+        assert payload["items"] == [
+            summarize_view(view, include_view=detail == "full").model_dump(mode="json")
+        ]
+        assert payload["next_cursor"] == "next" and payload["omitted_count"] == 3
+    service.list.assert_awaited_with(
+        actor_project="brain-v42", limit=5, cursor=None, work="repair", blocker=None, stage=None
+    )
+
+
+async def test_list_is_published_as_version_two():
+    app = await _app(AsyncMock(), "native")
+    async with Client(app) as client:
+        tools = {tool.name: tool for tool in await client.list_tools()}
+    tool = tools["brain_delivery_list"]
+    assert tool.meta["fastmcp"]["version"] == "2.0"
+    assert tool.outputSchema["type"] == "object"
+    assert tool.inputSchema["properties"]["detail"]["default"] == "summary"
+
+
 async def _app(service, profile):
     from brain_v42.mcp.tools.delivery_tools import register_delivery_tools
 
