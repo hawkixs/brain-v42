@@ -473,6 +473,30 @@ nullable and none is backfilled: `NULL` means "before 046". Migration 045 widens
 fit in 30 characters, and an overflow loses the whole row rather than the column
 (the INSERT being best-effort).
 
+Migration 062 adds two partial indexes on `delivery_confirmations`
+(`idx_delivery_confirmations_binding_errors`, `idx_delivery_confirmations_context_errors`;
+the observer's failure count reads them) and creates `pg_stat_statements` in a dedicated
+schema, `monitoring`. It must not be created in `public`: the extension grants SELECT on its
+view to PUBLIC, and recovery contract ACL v11 counts that as a mismatch. Facts to know before
+applying it:
+
+- **Lock.** Plain `CREATE INDEX` inside the migration transaction takes a SHARE lock, so the
+  observer's inserts wait; on about a hundred thousand rows this is well under a second, and
+  the revision sets `lock_timeout = 30s` so a stuck lock holder fails the migration atomically.
+- **Superuser.** `pg_stat_statements` is not a trusted extension. Under a least-privilege
+  migration role, a superuser pre-creates it first:
+  `CREATE SCHEMA monitoring; CREATE EXTENSION pg_stat_statements WITH SCHEMA monitoring;`.
+  The migration's `IF NOT EXISTS` then makes that step a no-op, and the downgrade needs the
+  extension owner. Reading `monitoring.pg_stat_statements` needs `pg_read_all_stats` and
+  USAGE on `monitoring`.
+- **Preload.** Creating the extension does not need `shared_preload_libraries`; reading the
+  view does (SQLSTATE `55000` otherwise).
+- **Contrib files.** The server image must ship the contrib extension files, and so must the
+  image that restores a dump: a 062 dump carries `CREATE EXTENSION pg_stat_statements`.
+- **Downgrade.** Drops the extension, then the schema (RESTRICT): an object of your own in
+  `monitoring` stops it with an error instead of being dropped. The statistics live in shared
+  memory, so nothing durable is lost.
+
 The 038→039 cutover was conducted with
 [`docs/PLAN_INDEX_REPAIR_RUNBOOK.md`](PLAN_INDEX_REPAIR_RUNBOOK.md) (isolated restore,
 migration, repair, restart-last gates).
