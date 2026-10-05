@@ -16,6 +16,18 @@ import pytest
 from scripts import mcp_http_watchdog as watchdog
 
 
+@pytest.fixture(autouse=True)
+def _no_real_systemctl(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A test that forgets its systemctl double must fail, not reach the real user
+    manager: on a host running brain-mcp-http it would read, and past the failure
+    threshold restart, the live unit."""
+
+    def refuse(*args: object, **kwargs: object) -> object:
+        raise AssertionError(f"a watchdog test reached the real systemctl: {args!r}")
+
+    monkeypatch.setattr(watchdog.subprocess, "run", refuse)
+
+
 def _connection_error(*args: object, **kwargs: object) -> object:
     raise ConnectionError()
 
@@ -176,10 +188,21 @@ def test_timeout_counts_as_unhealthy(tmp_path: Path, monkeypatch: pytest.MonkeyP
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     monkeypatch.setenv("STATE_DIRECTORY", str(tmp_path))
+    calls: list[list[str]] = []
+
+    def systemctl(argv: list[str], **kwargs: object) -> object:
+        # Never the real user manager: on a host running brain-mcp-http this test
+        # would otherwise read (and, past the threshold, restart) the live unit.
+        calls.append(argv)
+        return SimpleNamespace(returncode=0, stdout="LoadState=loaded\nActiveState=active\n")
+
     try:
-        result = watchdog.main(["--port", str(server.server_port), "--timeout", "0.02"])
+        result = watchdog.main(
+            ["--port", str(server.server_port), "--timeout", "0.02"], systemctl=systemctl
+        )
         assert result == 0
         assert (tmp_path / "consecutive-failures").read_text().strip() == "1"
+        assert [call[2] for call in calls] == ["show"]
     finally:
         server.shutdown()
         thread.join()
