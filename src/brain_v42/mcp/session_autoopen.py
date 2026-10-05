@@ -156,6 +156,9 @@ class SessionAutoOpener:
         self._closer = closer
         self._max_connections = max_connections
         self._memo: OrderedDict[str, UUID] = OrderedDict()
+        # Connections whose transport has terminated. An Mcp-Session-Id is never
+        # reused, so membership is final; bounded like the memo.
+        self._terminated: OrderedDict[str, None] = OrderedDict()
         self.opened = 0
         self.memoized = 0
         self.reopened = 0
@@ -172,21 +175,29 @@ class SessionAutoOpener:
             self.skipped[reason] += 1
             return None
 
+        if identity.connection_id in self._terminated:
+            # A call that raced its own connection's end: never reopen a tracer
+            # for a connection that will never be seen again.
+            self.skipped["terminated"] += 1
+            return None
+
         memoized = self._memo.get(identity.connection_id)
         if memoized is not None:
             observed = await self._observe(memoized, identity)
             if observed is not False:
                 # ``None`` = the observation failed. We keep the memo: losing a
                 # stamp costs one clock line, losing the memo would cost this
-                # connection's session.
-                self._memo.move_to_end(identity.connection_id)
+                # connection's session. ``close`` may have dropped the entry
+                # during the await: tolerated, never a KeyError on a tool call.
+                if identity.connection_id in self._memo:
+                    self._memo.move_to_end(identity.connection_id)
                 self.memoized += 1
                 return memoized
             # The session was closed from under us — the case the signed shape
             # names. Nothing to repair: the UNIQUE key is PARTIAL
             # (``WHERE status = 'open'``), so the closed row does not block, and
             # reopening is the normal path, not a recovery.
-            del self._memo[identity.connection_id]
+            self._memo.pop(identity.connection_id, None)
             self.reopened += 1
 
         try:
@@ -216,6 +227,12 @@ class SessionAutoOpener:
             self.skipped["no_session"] += 1
             return None
 
+        if identity.connection_id in self._terminated:
+            # The connection terminated while this opening was in flight: its
+            # `close` ran before the tracer existed. Close the late tracer now
+            # rather than leave it open and memoized for a dead connection.
+            await self.close(identity.connection_id)
+            return None
         self._remember(identity.connection_id, session_id)
         self.opened += 1
         return session_id
@@ -250,6 +267,10 @@ class SessionAutoOpener:
         failed close leaves the tracer to the inactivity net, which closes it on
         the same terms.
         """
+        self._terminated[connection_id] = None
+        self._terminated.move_to_end(connection_id)
+        while len(self._terminated) > self._max_connections:
+            self._terminated.popitem(last=False)
         self._memo.pop(connection_id, None)
         if self._closer is None:
             return

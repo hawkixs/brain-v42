@@ -844,6 +844,38 @@ class TransportTerminationHookUnavailableError(RuntimeError):
 _TERMINATION_HOOK_MARKER = "_brain_v42_on_terminated"
 
 
+#: Seconds during which termination reports are skipped after one failed.
+_TERMINATION_REPORT_COOLDOWN_SECONDS = 30.0
+
+
+def _assert_transport_shape(base: Any) -> None:
+    """Refuse to start unless the transport still has the shape the hook relies on.
+
+    The subclass calls ``terminate()`` with no argument and awaits it, reads
+    ``is_terminated`` before and ``mcp_session_id`` after. Any of these changing
+    upstream would make termination raise OUTSIDE the fail-open report, on the
+    DELETE, eviction and shutdown paths: better no server than that.
+    """
+    terminate = getattr(base, "terminate", None)
+    problems: list[str] = []
+    if not inspect.iscoroutinefunction(terminate):
+        problems.append("terminate is not a coroutine function")
+    else:
+        parameters = list(inspect.signature(terminate).parameters.values())
+        if [p.name for p in parameters] != ["self"]:
+            problems.append("terminate takes arguments")
+    if not isinstance(inspect.getattr_static(base, "is_terminated", None), property):
+        problems.append("is_terminated is not a property")
+    if "mcp_session_id" not in inspect.signature(base.__init__).parameters:
+        problems.append("__init__ takes no mcp_session_id")
+    if problems:
+        raise TransportTerminationHookUnavailableError(
+            "StreamableHTTPServerTransport changed shape ("
+            + "; ".join(problems)
+            + "); ended connections would leave their agent tracers open"
+        )
+
+
 def _install_transport_termination_hook(
     on_terminated: Callable[[str], Awaitable[None]],
     *,
@@ -866,14 +898,16 @@ def _install_transport_termination_hook(
     from mcp.server import streamable_http_manager  # noqa: PLC0415
 
     base = streamable_http_manager.StreamableHTTPServerTransport
-    if not callable(getattr(base, "terminate", None)):
-        raise TransportTerminationHookUnavailableError(
-            "StreamableHTTPServerTransport.terminate is gone; "
-            "ended connections would leave their agent tracers open"
-        )
+    _assert_transport_shape(base)
     if getattr(base, _TERMINATION_HOOK_MARKER, None) is not None:
         setattr(base, _TERMINATION_HOOK_MARKER, (on_terminated, budget_seconds))
         return
+
+    # Circuit breaker: shutdown terminates every transport in turn, so a dead
+    # database would otherwise cost one full budget PER connection. After a
+    # failed report, the next ones are skipped for a cooldown: N connections
+    # cost one budget. A skipped tracer is left to the inactivity net.
+    breaker = {"open_until": 0.0}
 
     class _ReportingTransport(base):  # type: ignore[misc, valid-type]
         async def terminate(self) -> None:
@@ -881,10 +915,15 @@ def _install_transport_termination_hook(
             await super().terminate()
             if not first or self.mcp_session_id is None:
                 return
+            loop = asyncio.get_running_loop()
+            if loop.time() < breaker["open_until"]:
+                logger.debug("brain_v42.server.transport_termination_report_skipped")
+                return
             report, budget = getattr(type(self), _TERMINATION_HOOK_MARKER)
             try:
                 await asyncio.wait_for(report(self.mcp_session_id), timeout=budget)
             except Exception as exc:  # noqa: BLE001 — fail-open by contract
+                breaker["open_until"] = loop.time() + _TERMINATION_REPORT_COOLDOWN_SECONDS
                 logger.warning(
                     "brain_v42.server.transport_termination_report_failed",
                     error=type(exc).__name__,
