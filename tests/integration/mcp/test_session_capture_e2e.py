@@ -36,6 +36,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import socket
 from collections.abc import AsyncIterator, Iterator
 from contextlib import AsyncExitStack, contextmanager, suppress
@@ -50,6 +51,8 @@ from _pytest.outcomes import Failed
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from tests.integration.conftest import SHARED_DB_RUN_APPLICATION_NAME
+
+_E2E_TOKEN = secrets.token_hex(32)
 
 pytestmark = pytest.mark.integration
 
@@ -312,7 +315,7 @@ async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
         patch.setenv("METRICS_ENABLED", "false")
         patch.setenv("CLIENT_ACTIVITY_REPORTING_ENABLED", "false")
         patch.setenv("BRAIN_DREAM_CAPABILITY_ENFORCEMENT", "false")
-        patch.delenv("MCP_HTTP_TOKEN", raising=False)
+        patch.setenv("MCP_HTTP_TOKEN", _E2E_TOKEN)
 
         from brain_v42.config import get_settings
 
@@ -447,6 +450,7 @@ class _Conn:
         transport = StreamableHttpTransport(
             url=f"{self._base_url}/mcp/",
             headers={
+                "Authorization": f"Bearer {_E2E_TOKEN}",
                 "x-brain-tool-profile": "native",
                 "x-brain-agent": self._project_key,
             },

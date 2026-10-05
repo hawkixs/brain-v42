@@ -13,6 +13,7 @@ import structlog
 from brain_v42.db.tables import adrs, decisions, indexed_plans, learnings, runbooks, snippets
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.formatters import (
+    clamp_list_limit,
     format_confirmation,
     format_consolidation_candidates,
     format_decay_status,
@@ -199,19 +200,20 @@ def register_decay_tools(
         if consolidation_job is None:
             return format_error("Consolidation not configured")
 
+        capped, notice = clamp_list_limit(limit)
         scope = get_dream_project_scope()
         if scope is None:
             candidates = await consolidation_job.find_candidates(
                 entity_type=entity_type,
-                limit=limit,
+                limit=capped,
             )
         else:
             candidates = await consolidation_job.find_candidates(
                 entity_type=entity_type,
-                limit=limit,
+                limit=capped,
                 project_key=scope.project_key,
             )
-        return format_consolidation_candidates(candidates)
+        return format_consolidation_candidates(candidates) + notice
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
     async def brain_merge_entities(

@@ -400,6 +400,44 @@ Rollback, once the previous image is tagged before the build:
 docker tag <previous-image-id> brain_v42_embedding_shim:pre-bearer-<date>
 ```
 
+## MCP HTTP input bounds and residuals
+
+`MCP_HTTP_MAX_BODY_BYTES` defaults to 2,097,152 bytes (2 MiB), with allowed values
+from 65,536 to 67,108,864. Declared oversize requests get 413 without reading the
+body; streamed bodies are buffered up to the cap before reaching MCP and get the
+same `{"detail": "Request body too large"}` response if they exceed it. Invalid or
+negative `Content-Length` returns 400 with `{"detail": "Invalid Content-Length"}`.
+Tool fields separately have character/list bounds documented in
+[MCP_TOOLS.md](MCP_TOOLS.md#input-bounds); values are refused, never truncated.
+
+HTTP startup raises `HttpAuthConfigurationError` when `MCP_HTTP_TOKEN` is empty or
+blank unless `MCP_HTTP_ALLOW_UNAUTHENTICATED=true`. This opt-out is **development
+only**, refused alongside a non-empty token and under Dream capability enforcement;
+it must never appear in the production systemd unit. Clearing the production token
+now causes an outage through startup refusal rather than unauthenticated access.
+The measured network-boundary paragraph above still describes that configuration
+drift literally; its measurements have not been changed. There is no minimum token
+length and the systemd preflight is unchanged in this release.
+
+`/health` remains auth-exempt and retains status, version, alembic_head and pool.
+Concurrent probes share one database round trip, with no TTL cache; sequential probes
+always check the database again.
+
+Residuals retained for follow-up:
+
+- `X-Brain-Agent` and `X-Brain-Session` are attribution, not authorisation.
+- One shared admin bearer remains; per-client scoped admin bearers need a future ticket.
+- `SHIM_BEARER_MODE=optional` remains pending ticket `9ef5c69d`.
+- There is no body-read deadline or ingress concurrency cap. In capability enforcement
+  mode, authentication rejects at the route inside user middleware, so unauthenticated
+  clients can cause buffering up to the cap before receiving 401. Host checks still run.
+  In ordinary bearer mode, authentication precedes buffering. The transport is loopback.
+- FastMCP may log the full rejected argument at WARNING, bounded by the HTTP body cap.
+- ADR deprecation builds an `ADRUpdate`: existing consequences within about 2,000
+  characters of the 50,000-character cap can refuse the appended reason. This is accepted
+  headroom risk; the measured maximum was 2,279 characters.
+- Backfill similarity thresholds retain their existing semantics and are not clamped.
+
 ## Migration history
 
 The repository migration target is 046. No page in this repository proves a live

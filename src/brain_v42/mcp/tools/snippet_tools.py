@@ -30,6 +30,12 @@ from brain_v42.mcp.tools.tool_annotations import (
     _DESTRUCTIVE_ANNOTATIONS,
     _HEARTBEAT_ANNOTATIONS,
 )
+from brain_v42.models.input_bounds import (
+    KnowledgeText,
+    RelationList,
+    ShortTextList,
+    TagList,
+)
 from brain_v42.models.relation import RelationInput
 from brain_v42.models.snippet import SnippetLanguage
 from brain_v42.provenance import get_current_actor
@@ -66,15 +72,15 @@ def register_snippet_tools(
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_save_snippet(
         title: str,
-        intention: str,
-        code: str,
+        intention: KnowledgeText,
+        code: KnowledgeText,
         language: SnippetLanguage,
-        dependencies: list[str] | None = None,
-        usage_example: str | None = None,
-        gotchas: str | None = None,
+        dependencies: ShortTextList | None = None,
+        usage_example: KnowledgeText | None = None,
+        gotchas: KnowledgeText | None = None,
         project_key: str | None = None,
-        tags: list[str] | None = None,
-        related_to: list[dict] | None = None,
+        tags: TagList | None = None,
+        related_to: RelationList | None = None,
         claims: list[dict] | None = None,
     ) -> str:
         """Save a reusable code snippet keyed by its intention (semantic).

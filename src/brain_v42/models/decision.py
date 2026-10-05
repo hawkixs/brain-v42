@@ -6,6 +6,11 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from brain_v42.models.base import DecayMixin, TimestampMixin
+from brain_v42.models.input_bounds import (
+    KnowledgeText,
+    ShortTextList,
+    TagList,
+)
 from brain_v42.models.project_key import ProjectKeyCanonicalMixin
 
 DecisionStatus = Literal["active", "superseded", "deprecated"]
@@ -35,12 +40,12 @@ class DecisionUpdate(ProjectKeyCanonicalMixin):
     model_config = {"extra": "forbid"}
 
     title: str | None = Field(None, max_length=200)
-    description: str | None = None
-    reasoning: str | None = None
-    alternatives: list[str] | None = None
-    consequences: str | None = None
+    description: KnowledgeText | None = None
+    reasoning: KnowledgeText | None = None
+    alternatives: ShortTextList | None = None
+    consequences: KnowledgeText | None = None
     project_key: str | None = Field(None, max_length=50)
-    tags: list[str] | None = None
+    tags: TagList | None = None
     status: DecisionStatus | None = None
     metadata: dict | None = None
     freshness_status: Literal["fresh", "stale", "archived"] | None = None

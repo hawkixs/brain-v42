@@ -9,8 +9,29 @@ from __future__ import annotations
 import pytest
 
 
+def test_allow_unauthenticated_defaults_false() -> None:
+    from brain_v42.config import Settings
+
+    assert Settings.model_fields["mcp_http_allow_unauthenticated"].default is False
+
+
+@pytest.mark.parametrize(
+    "alias", ["MCP_HTTP_ALLOW_UNAUTHENTICATED", "BRAIN_MCP_HTTP_ALLOW_UNAUTHENTICATED"]
+)
+def test_allow_unauthenticated_reads_both_aliases(
+    alias: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from brain_v42.config import Settings
+
+    monkeypatch.setenv(alias, "true")
+    settings = Settings(
+        postgres_url="postgresql+asyncpg://unused:unused@localhost/unused", _env_file=None
+    )
+    assert settings.mcp_http_allow_unauthenticated is True
+
+
 class TestBearerTokenConfig:
-    """mcp_http_token setting: opt-in bearer auth (disabled when empty)."""
+    """Settings accepts an empty bearer; the HTTP boundary refuses it."""
 
     def test_mcp_http_token_field_exists(self) -> None:
         """mcp_http_token field must exist in Settings."""
@@ -19,7 +40,7 @@ class TestBearerTokenConfig:
         assert "mcp_http_token" in Settings.model_fields
 
     def test_mcp_http_token_default_empty(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """mcp_http_token default is empty string (auth disabled by default)."""
+        """The config default remains empty; HTTP startup validates authentication."""
         monkeypatch.delenv("MCP_HTTP_TOKEN", raising=False)
         from brain_v42.config import Settings
 
@@ -40,8 +61,10 @@ class TestBearerTokenConfig:
         )
         assert s.mcp_http_token == "supersecrettoken"
 
-    def test_mcp_http_token_empty_means_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Explicitly setting MCP_HTTP_TOKEN='' keeps auth disabled."""
+    def test_mcp_http_token_empty_remains_a_settings_value(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Settings is shared with stdio and accepts an explicitly empty token."""
         monkeypatch.setenv("MCP_HTTP_TOKEN", "")
         from brain_v42.config import Settings
 
@@ -50,7 +73,7 @@ class TestBearerTokenConfig:
             _env_file=None,  # type: ignore[call-arg]
         )
         assert s.mcp_http_token == ""
-        # Empty token signals no auth — bool check used by server wiring
+        # An empty Settings value is accepted; HTTP startup refuses it by default.
         assert not s.mcp_http_token
 
 

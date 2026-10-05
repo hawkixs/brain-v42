@@ -49,6 +49,7 @@ ENTRYPOINT_CALLS = frozenset(
         "log_server_starting",
         "run",  # asyncio.run
         "run_server",
+        "plan_http_transport",
     }
 )
 

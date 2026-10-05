@@ -34,6 +34,13 @@ from brain_v42.mcp.tools.tool_annotations import (
     _HEARTBEAT_ANNOTATIONS,
     _READ_ANNOTATIONS,
 )
+from brain_v42.models.input_bounds import (
+    KnowledgeText,
+    ShortText,
+    ShortTextList,
+    StepList,
+    TagList,
+)
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.runbook import ExecutionStatus, RunbookCreate
 from brain_v42.provenance import get_current_actor
@@ -100,14 +107,14 @@ def register_runbook_tools(
     @mcp.tool(version="2.0", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_create_runbook(
         title: str,
-        description: str,
+        description: KnowledgeText,
         project_key: str,
-        trigger: str,
-        steps: list[dict],
-        prerequisites: list[str] | None = None,
-        rollback_steps: list[dict] | None = None,
+        trigger: ShortText,
+        steps: StepList,
+        prerequisites: ShortTextList | None = None,
+        rollback_steps: StepList | None = None,
         estimated_duration: str | None = None,
-        tags: list[str] | None = None,
+        tags: TagList | None = None,
         claims: list[dict] | None = None,
     ) -> str:
         """Create an operational runbook.
@@ -233,15 +240,15 @@ def register_runbook_tools(
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_promote_runbook(
         title: str,
-        description: str,
+        description: KnowledgeText,
         project_key: str,
-        trigger: str,
-        steps: list[dict],
+        trigger: ShortText,
+        steps: StepList,
         source_learning_id: str,
-        prerequisites: list[str] | None = None,
-        rollback_steps: list[dict] | None = None,
+        prerequisites: ShortTextList | None = None,
+        rollback_steps: StepList | None = None,
         estimated_duration: str | None = None,
-        tags: list[str] | None = None,
+        tags: TagList | None = None,
         dream_run_id: int | None = None,
     ) -> str:
         """Graduate a mature learning into a runbook (Dream promotion path).
