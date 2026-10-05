@@ -411,7 +411,7 @@ catalog gateways.
 | `brain_delivery_contract_set` | `ticket_id`, `contract`, `expected_revision` (0 for create), `idempotency_key`, required `reason` | `ContractRevision` |
 | `brain_delivery_bind_pr` | `ticket_id`, `deliverable_key`, `repository_id`, `pr_number`, `expected_revision`, `expected_workflow_version`, `idempotency_key` | `ArtifactBinding` |
 | `brain_delivery_get` | `ticket_id`, `history_limit=20`, `history_cursor=None` | `DeliveryView` |
-| `brain_delivery_list` | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None` | `DeliveryPage` |
+| `brain_delivery_list` (v2.0) | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None`, `detail="summary"` (`"full"` opt-in) | `DeliveryListPage` |
 | `brain_delivery_refresh` | `ticket_id` | `{status: "queued", view: DeliveryView}` |
 | `brain_delivery_claim` | `ticket_id`, `owner_key`, `work_kind`, `expected_workflow_version`, `expected_assessment_id`, `ttl_seconds=900` | `ClaimResult` |
 | `brain_delivery_claim_renew` | `ticket_id`, `owner_key`, `claim_token`, `epoch`, `ttl_seconds=900` | `ClaimState` |
@@ -419,6 +419,11 @@ catalog gateways.
 | `brain_delivery_accept` | `ticket_id`, `rationale`, `expected_revision`, `expected_attempt`, `expected_delivery_digest` | `MilestoneReceipt` |
 | `brain_delivery_attest` | `ticket_id`, `kind`, `payload`, `idempotency_key`, `emitted_at`, `contract_revision=None` | `DeliveryAttestation` |
 | `brain_delivery_attestation_list` | `ticket_id=None`, `issuer_project=None`, `kind=None`, `since=None`, `until=None`, `limit=20`, `cursor=None` | `DeliveryAttestationPage` |
+
+`brain_delivery_list` summaries omit blocker details, proofs and context snapshots.
+Each summary keeps at most 32 blocker references; `blockers_omitted` counts the
+remaining blockers. With `detail="full"`, the full view is nested under
+`items[i].view`, whose `attestations` is `null`.
 
 The requester sets/amends contracts and accepts deliveries. The executor binds
 PRs and claims executor work; either ticket participant can read or refresh.
@@ -474,8 +479,9 @@ no filter, so the caller keeps the same filters across pages; `omitted_count` co
 the rows matching the same filters beyond the page. The read stays available while
 `BRAIN_DELIVERY_ENABLED=false` pauses the mutation. `brain_delivery_get` carries the
 newest `history_limit` attestations with their digest in `view.attestations`, so a
-consumer can spot a local receipt without its attestation; `brain_delivery_list`
-leaves that field `null`.
+consumer can spot a local receipt without its attestation. `brain_delivery_list`
+returns summaries; with `detail="full"` the full view is nested under `items[i].view`
+and `items[i].view.attestations` is `null`.
 
 `expected_workflow_version` is `view.assessment.assessment_version` and the claim
 comparison uses `view.assessment.assessment_id`. That version is the workflow's
@@ -898,7 +904,7 @@ An open session becomes `is_stale=true` when its last heartbeat is at least 24 h
 ```
 brain_session_end(session_id, expected_client_key, summary, next_focus,
                   expected_focus_revision,
-                  nothing_to_capture_reason=None)
+                  nothing_to_capture_reason=None, allow_focus_shrink=False)
 -> {session, replayed, remaining_open_session_count,
     current_focus, current_focus_revision, focus_outcome,
     focus_at_end, focus_revision_at_end}
@@ -913,6 +919,8 @@ The capture outcome is an exclusive choice:
 Invalid or missing capture evidence rolls back the transaction and leaves the session open. A focus revision mismatch is instead a normal terminal outcome: focus remains unchanged, the session still becomes `ended`, and `focus_outcome="conflict"` is persisted with the observed `focus_at_end` and `focus_revision_at_end`. A matching revision applies `next_focus`, increments the revision even when the text is unchanged, and persists `focus_outcome="applied"` with the resulting focus snapshot.
 
 For a session bound to a focus slot (`brain_session_bind`), `expected_focus_revision` is the slot revision and `next_focus` becomes the slot body (at most 4,000 characters, else `slot_body_too_long` before any write); the project base is not written. A stale revision or a closed slot closes the session with `conflict` and leaves the slot untouched, except a closed slot at exactly `expected_focus_revision`, which refuses `slot_closed` and leaves the session open: end with `expected_focus_revision` minus 1 (the pre-close slot revision; a close bumps the revision by exactly 1) to record a conflict, or abandon it.
+
+For an unbound session, `next_focus` REPLACES the project's whole base focus, so the relay's shrink guard applies: a `next_focus` shorter than 70% of the current base focus is refused `base_focus_shrink` before any write, and the message gives the proposed length, the current length and the floor. The refusal is fail-closed like the identity and capture errors: the session stays `open`, so the caller carries the durable content over and ends again. `allow_focus_shrink=true` lifts the guard; `end` is only ever an operator command, so the flag is an operator gesture (the guard mod may relay but never end, and the relay's own override stays operator-only). An empty current focus is never guarded. The guard only runs where the base would be written: a stale `expected_focus_revision` is still recorded as a `conflict` (nothing is destroyed; `next_focus` stays on the session row), a bound session writes its slot and never meets the base guard, and a replay of an already ended session is not re-evaluated.
 
 Replaying the exact terminal payload returns `replayed=true` and the original persisted focus outcome/snapshot; a different payload conflicts. `current_focus` and `current_focus_revision` report the project state at response time (for a bound session, the slot body and revision) and may therefore differ from the persisted end snapshot on a later replay.
 
@@ -996,9 +1004,10 @@ Upsert by `project_key`. `plan_scan_paths` drive `PlanIndexer`; `gitlab_project_
 ### brain_update_project_focus (`project_context_tools.py`)
 ```
 brain_update_project_focus(project_key, current_focus, expected_focus_revision,
-                           blockers=None, feature_status=None, unpin=None)
+                           blockers=None, feature_status=None, unpin=None,
+                           allow_focus_shrink=False)
 ```
-Compare `expected_focus_revision` to the current project revision, then apply focus, blockers, feature statuses, and pins in one PostgreSQL transaction. `feature_status` uses exact feature names and the canonical statuses `planned | research | design | building | deployed | done | archived`. An invalid status, missing or ambiguous feature, merged-feature reactivation, overlap with `unpin`, or revision conflict rolls back the complete batch. Every successful composite mutation consumes the revision, even when the focus text is unchanged. The project's dynamic CLAUDE.md section is updated afterward on a best-effort basis and is not part of the transaction.
+Compare `expected_focus_revision` to the current project revision, then apply focus, blockers, feature statuses, and pins in one PostgreSQL transaction. `current_focus` REPLACES the whole project focus, so the same shrink guard as an unbound `brain_session_end` and a base `brain_session_relay` applies: after the revision check and before any write, a `current_focus` shorter than 70% of the current focus is refused `base_focus_shrink` (both lengths and the floor in the message) and the whole batch, roadmap changes included, is left unwritten. `allow_focus_shrink=true` is the operator's override. `feature_status` uses exact feature names and the canonical statuses `planned | research | design | building | deployed | done | archived`. An invalid status, missing or ambiguous feature, merged-feature reactivation, overlap with `unpin`, or revision conflict rolls back the complete batch. Every successful composite mutation consumes the revision, even when the focus text is unchanged. The project's dynamic CLAUDE.md section is updated afterward on a best-effort basis and is not part of the transaction.
 
 ### brain_list_projects (`project_context_tools.py`)
 ```

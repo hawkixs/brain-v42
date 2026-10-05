@@ -1,0 +1,18 @@
+[Unit]
+Description=brain-v42 90-day log retention
+
+[Service]
+Type=oneshot
+MemoryHigh=512M
+MemoryMax=1G
+# Bound find and file metadata work to a modest maintenance envelope.
+ExecStart=__REPO_ROOT__/scripts/logs-rotate.sh
+NoNewPrivileges=true
+PrivateUsers=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=-__REPO_ROOT__/logs -%h/.local/share/brain-v42/releases
+Nice=19
+IOSchedulingClass=idle
+IOSchedulingPriority=7

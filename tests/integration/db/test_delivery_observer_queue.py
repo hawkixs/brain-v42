@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from brain_v42.db.tables import (
     delivery_artifact_bindings,
+    delivery_confirmations,
     delivery_contract_revisions,
     delivery_workflows,
     tickets,
@@ -34,6 +35,149 @@ def _queue():
     from brain_v42.repositories.pg_delivery_queue import PgDeliveryQueue
 
     return PgDeliveryQueue()
+
+
+async def _errors(session, *, binding=None, workflow=None, times):
+    for at in times:
+        subject = (
+            {"subject_kind": "artifact_binding", "binding_id": binding.id}
+            if binding is not None
+            else {"subject_kind": "repository_context", **workflow}
+        )
+        await session.execute(
+            delivery_confirmations.insert().values(
+                **subject,
+                outcome="error",
+                error_code="provider_unavailable",
+                collection_started_at=at,
+                collection_finished_at=at,
+            )
+        )
+
+
+async def test_due_issues_one_statement_for_many_jobs(engine, session_factory):
+    case = ObserverCase(engine, session_factory)
+    for number in range(501, 504):
+        await case.create(number=number)
+    await case.create(number=504, context=True)
+    statements = []
+
+    def record(*args):
+        statements.append(args[2])
+
+    async with session_factory() as session:
+        sa.event.listen(session.bind.sync_engine, "before_cursor_execute", record)
+        try:
+            jobs = await _queue().due(session)
+        finally:
+            sa.event.remove(session.bind.sync_engine, "before_cursor_execute", record)
+    assert len(jobs) == 4
+    assert len(statements) == 1
+
+
+@pytest.mark.parametrize(("after", "expected"), [(8, 6), (2, 2)])
+async def test_failure_count_caps_at_six_and_ignores_errors_before_last_success(
+    engine, session_factory, after, expected
+):
+    _, binding, _ = await ObserverCase(engine, session_factory).create()
+    success_at = datetime.now(UTC) - timedelta(hours=1)
+    async with session_factory.begin() as session:
+        await session.execute(
+            delivery_artifact_bindings.update()
+            .where(delivery_artifact_bindings.c.id == binding.id)
+            .values(last_success_at=success_at)
+        )
+        await _errors(
+            session,
+            binding=binding,
+            times=[success_at - timedelta(seconds=1)] * 3
+            + [success_at + timedelta(seconds=1)] * after,
+        )
+        jobs = await _queue().due(session)
+    assert len(jobs) == 1
+    assert jobs[0].failure_count == expected
+
+
+async def test_failure_count_is_correlated_per_binding(engine, session_factory):
+    case = ObserverCase(engine, session_factory)
+    _, first, _ = await case.create(number=510)
+    _, second, _ = await case.create(number=511)
+    async with session_factory.begin() as session:
+        await _errors(session, binding=first, times=[datetime.now(UTC)] * 3)
+        jobs = await _queue().due(session)
+    assert {job.subject_id: job.failure_count for job in jobs} == {first.id: 3, second.id: 0}
+
+
+async def test_context_failure_count_matches_its_generation(engine, session_factory):
+    case = ObserverCase(engine, session_factory)
+    ticket, _, original_contract = await case.create(context=True)
+    await case.service.set_contract(
+        ticket.id,
+        actor_project="brain-v42",
+        expected_revision=original_contract.contract_revision,
+        idempotency_key=f"observer-context-amend-{ticket.id}",
+        contract=_contract(
+            refs=(
+                original_contract.context_refs[0].model_copy(update={"path": "docs/revised.md"}),
+            ),
+            checks=original_contract.deliverables[0].required_checks,
+        ),
+    )
+    async with session_factory.begin() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(delivery_workflows).where(delivery_workflows.c.ticket_id == ticket.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        identity = {
+            "ticket_id": ticket.id,
+            "contract_revision": row["current_revision"],
+            "attempt": row["attempt"],
+            "context_set_digest": row["context_set_digest"],
+        }
+        original_digest = (
+            await session.execute(
+                sa.select(delivery_contract_revisions.c.context_set_digest).where(
+                    delivery_contract_revisions.c.ticket_id == ticket.id,
+                    delivery_contract_revisions.c.contract_revision
+                    == original_contract.contract_revision,
+                )
+            )
+        ).scalar_one()
+        assert row["current_revision"] == original_contract.contract_revision + 1
+        assert original_digest != row["context_set_digest"]
+        at = datetime.now(UTC) - timedelta(seconds=1)
+        await session.execute(
+            delivery_workflows.update()
+            .where(delivery_workflows.c.ticket_id == ticket.id)
+            .values(context_last_success_at=at)
+        )
+        await _errors(session, workflow=identity, times=[at + timedelta(seconds=1)] * 2)
+        await _errors(session, workflow=identity, times=[at, at - timedelta(seconds=1)])
+        await _errors(
+            session,
+            workflow=identity | {"attempt": row["attempt"] + 1},
+            times=[at + timedelta(seconds=1)] * 8,
+        )
+        await _errors(
+            session,
+            # The FK permits only the registered digest for each ticket/revision.
+            # A superseded revision is the valid case for a different context digest.
+            workflow=identity
+            | {
+                "contract_revision": original_contract.contract_revision,
+                "context_set_digest": original_digest,
+            },
+            times=[at + timedelta(seconds=1)] * 8,
+        )
+        jobs = await _queue().due(session)
+    assert len(jobs) == 1
+    assert jobs[0].kind == "repository_context"
+    assert jobs[0].failure_count == 2
 
 
 async def test_due_order_is_stable_oldest_first_with_exclusions_and_limit(engine, session_factory):

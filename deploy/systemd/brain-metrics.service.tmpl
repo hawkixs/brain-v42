@@ -6,6 +6,9 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+MemoryHigh=1G
+MemoryMax=1536M
+# Bound the long-running metrics process with headroom above its measured peak.
 WorkingDirectory=__REPO_ROOT__
 EnvironmentFile=__REPO_ROOT__/.env
 # A user unit cannot order after the system docker.service; wait within the start timeout.

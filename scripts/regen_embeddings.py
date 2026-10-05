@@ -5,13 +5,13 @@ Reads rows from brain_v42 PostgreSQL tables, sends text batches to the GPU
 embedding service (POST /embed), and writes the resulting vectors back.
 
 Usage:
-    python scripts/regen_embeddings.py                          # All tables
-    python scripts/regen_embeddings.py --dry-run                # Count only
+    python scripts/regen_embeddings.py                           # Dry-run by default
+    python scripts/regen_embeddings.py --apply                  # Write embeddings
     python scripts/regen_embeddings.py --entity-types decisions  # Single table
     python scripts/regen_embeddings.py --batch-size 20          # Batch size
 
 Environment variables:
-    POSTGRES_URL              PostgreSQL connection URL (default: postgresql://brain:brain@localhost:5433/brain)
+    POSTGRES_URL              PostgreSQL connection URL (required unless passed explicitly)
     EMBEDDING_SERVICE_URL     GPU embedding service URL (default: http://localhost:8003)
 """
 
@@ -24,6 +24,7 @@ import os
 import sys
 import time
 from typing import Any
+from urllib.parse import urlsplit
 
 import asyncpg
 import httpx
@@ -303,9 +304,9 @@ def parse_args() -> argparse.Namespace:
         epilog=__doc__,
     )
     parser.add_argument(
-        "--dry-run",
+        "--apply",
         action="store_true",
-        help="Count rows only; do NOT call embedding service or update DB.",
+        help="Write regenerated embeddings (default is dry-run).",
     )
     parser.add_argument(
         "--entity-types",
@@ -344,8 +345,7 @@ def parse_args() -> argparse.Namespace:
         "--postgres-url",
         default=None,
         help=(
-            "PostgreSQL URL (default: reads POSTGRES_URL env var, "
-            "fallback: postgresql://brain:brain@localhost:5433/brain). "
+            "PostgreSQL URL (default: reads POSTGRES_URL env var). "
             "Note: +asyncpg suffix is stripped automatically."
         ),
     )
@@ -357,12 +357,18 @@ def parse_args() -> argparse.Namespace:
             "fallback: http://localhost:8003)."
         ),
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.postgres_url and urlsplit(args.postgres_url).password is not None:
+        parser.error(
+            "--postgres-url must not contain a password; use POSTGRES_URL in the environment"
+        )
+    return args
 
 
 async def main() -> int:
     """Main async entry point. Returns exit code (0=success, 1=errors)."""
     args = parse_args()
+    args.dry_run = not args.apply
 
     # Resolve entity types
     if args.entity_types:
@@ -385,9 +391,10 @@ async def main() -> int:
             return 1
 
     # Resolve URLs
-    postgres_url = args.postgres_url or os.environ.get(
-        "POSTGRES_URL", "postgresql://brain:brain@localhost:5433/brain"
-    )
+    postgres_url = args.postgres_url or os.environ.get("POSTGRES_URL")
+    if not postgres_url:
+        print("ERROR: set POSTGRES_URL or pass --postgres-url")
+        return 1
     postgres_url = clean_postgres_url(postgres_url)
 
     # Built once, then reported — reading the endpoint back off the client is

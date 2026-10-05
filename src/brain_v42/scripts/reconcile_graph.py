@@ -230,9 +230,11 @@ async def main() -> int:
     pg_url = pg_url.replace("postgresql+asyncpg://", "postgresql://")
     neo4j_url = os.getenv("NEO4J_URL", "bolt://localhost:7687")
     neo4j_user = os.getenv("NEO4J_USER", "neo4j")
-    neo4j_password = os.getenv("NEO4J_PASSWORD", "brain_v42_graph")
-
     pg = await asyncpg.connect(pg_url)
+    neo4j_password = os.getenv("NEO4J_PASSWORD")
+    if not neo4j_password:
+        await pg.close()
+        raise RuntimeError("NEO4J_PASSWORD is required to reconcile the graph")
     driver = AsyncGraphDatabase.driver(neo4j_url, auth=(neo4j_user, neo4j_password))
 
     total_missing = 0
