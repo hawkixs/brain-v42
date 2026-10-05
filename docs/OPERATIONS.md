@@ -153,6 +153,18 @@ Each run writes its count to `dream_runs.closed_inactive_count` (migration 049),
 apart from abandonments. The four-hour rule writes only when the phase itself runs
 wet (`BRAIN_DREAM_SWEEP_ENABLED=true` and `BRAIN_DREAM_SWEEP_DRY_RUN=false`).
 
+**Closing by the server** (`src/brain_v42/mcp/server.py`,
+`src/brain_v42/services/agent_trace_net.py`, ticket `09d2b56e`). The server that opened an agent trace also closes it: when the transport of its connection terminates (a client `DELETE`, the idle eviction, the server shutdown), and through a net that moves to `closed_inactive` every open `nature = 'agent'` trace whose `last_observed_at` is more than four hours old, every fifteen minutes.
+The transport path reaches every connection that ends cleanly; the net catches the
+ones that never do (a crashed client, a killed server), with its first pass at
+startup. Both write exactly what the four-hour rule writes, `closed_inactive` with no
+reason and the capture ledger kept, so a closed trace stays a donor for derived
+capture. Neither has a seven-day branch and neither can reach an operator row. Both
+run wherever auto-opening runs (stateful HTTP, `BRAIN_SESSION_AUTO_OPEN_ENABLED`) and
+have no flag of their own; the Dream rule above then only meets what they have not
+closed yet. A failed close is logged (`session_autoopen.close_failed`,
+`agent_trace_net.sweep_failed`) and never holds the connection or the shutdown.
+
 **Arming state is measured, not documented.** This document deliberately does not
 state whether the four flags are armed: drop-ins change, and a copied value cannot
 tell it has aged. Measure each flag in the process that reads it. Auto-opening,

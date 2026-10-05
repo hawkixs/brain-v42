@@ -26,8 +26,9 @@ import logging
 import os
 import signal
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Any, NamedTuple
 from weakref import WeakSet
 
@@ -56,6 +57,7 @@ from brain_v42.mcp.dream_project_authorization import (
 )
 from brain_v42.mcp.http_security import BearerTokenGuard, HostOriginGuard
 from brain_v42.mcp.provenance_middleware import ProvenanceMiddleware
+from brain_v42.mcp.session_autoopen import close_connection_traces
 from brain_v42.metrics.tool_instrumentation import instrument_registered_tools
 from brain_v42.release import package_version, shipped_alembic_head
 from brain_v42.repositories.pg_adr import PgADRRepo
@@ -67,6 +69,7 @@ from brain_v42.repositories.pg_snippet import PgSnippetRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
 from brain_v42.safe_logging import safe_console_renderer
 from brain_v42.services.adr_service import ADRService
+from brain_v42.services.agent_trace_net import AgentTraceNet, agent_trace_net_is_armed
 from brain_v42.services.auto_linker import AutoLinker
 from brain_v42.services.brain_service import BrainService
 from brain_v42.services.decision_service import DecisionService
@@ -302,6 +305,19 @@ async def app_lifecycle(
             )
             cleanup.push_async_callback(plan_index_refresher.stop)
             await plan_index_refresher.start()
+
+        if agent_trace_net_is_armed(settings):
+            from brain_v42.repositories.pg_brain_session import (  # noqa: PLC0415
+                PgBrainSessionRepo,
+            )
+
+            agent_trace_net = AgentTraceNet(
+                close_inactive=PgBrainSessionRepo(
+                    get_session_factory()
+                ).close_inactive_agent_traces,
+            )
+            cleanup.push_async_callback(agent_trace_net.stop)
+            await agent_trace_net.start()
 
         # Keep a strong reference so the GC cannot collect the task mid-flight.
         # This one-shot covers t=0; the refresher above, when armed, sleeps its
@@ -820,6 +836,178 @@ def _install_session_idle_timeout(seconds: float) -> None:
     logger.info("brain_v42.server.session_idle_timeout", seconds=seconds)
 
 
+class TransportTerminationHookUnavailableError(RuntimeError):
+    """The SDK shape changed and terminated connections would no longer close their tracers."""
+
+
+# Marker carried by the injected transport subclass, for the same reason as the
+# idle-timeout one: recognise it, so a second installation does not stack.
+_TERMINATION_HOOK_MARKER = "_brain_v42_on_terminated"
+
+
+#: Window over which every termination report shares one time budget.
+_TERMINATION_REPORT_WINDOW_SECONDS = 30.0
+
+#: The value ``mcp_session_id`` is given on the probe instance the guard builds.
+_SHAPE_PROBE_SESSION_ID = "brain-v42-transport-shape-probe"
+
+
+def _assert_transport_shape(base: Any) -> None:
+    """Refuse to start unless the transport still has the shape the hook relies on.
+
+    The subclass calls ``terminate()`` with no argument and awaits it, reads
+    ``is_terminated`` before and ``mcp_session_id`` after. Any of these changing
+    upstream would make termination raise OUTSIDE the fail-open report, on the
+    DELETE, eviction and shutdown paths: better no server than that.
+    """
+    terminate = getattr(base, "terminate", None)
+    problems: list[str] = []
+    if not inspect.iscoroutinefunction(terminate):
+        problems.append("terminate is not a coroutine function")
+    else:
+        parameters = list(inspect.signature(terminate).parameters.values())
+        if [p.name for p in parameters] != ["self"]:
+            problems.append("terminate takes arguments")
+    if not isinstance(inspect.getattr_static(base, "is_terminated", None), property):
+        problems.append("is_terminated is not a property")
+    if "mcp_session_id" not in inspect.signature(base.__init__).parameters:
+        problems.append("__init__ takes no mcp_session_id")
+    if not problems:
+        # A signature says what the constructor accepts, not what the instance
+        # carries: build one and read the two attributes the hook reads.
+        try:
+            probe = base(mcp_session_id=_SHAPE_PROBE_SESSION_ID)
+            if getattr(probe, "mcp_session_id", None) != _SHAPE_PROBE_SESSION_ID:
+                problems.append("the instance does not carry mcp_session_id")
+            elif probe.is_terminated is not False:
+                problems.append("a new instance is not reported live by is_terminated")
+        except Exception as exc:  # noqa: BLE001 — any failure is a changed shape
+            problems.append(f"a probe instance could not be built ({type(exc).__name__})")
+    if problems:
+        raise TransportTerminationHookUnavailableError(
+            "StreamableHTTPServerTransport changed shape ("
+            + "; ".join(problems)
+            + "); ended connections would leave their agent tracers open"
+        )
+
+
+@dataclass
+class _ReportLedger:
+    """The time every termination report of one window draws on, and its turn.
+
+    One per installation, so reinstalling (tests) starts from a fresh budget.
+    """
+
+    window_start: float = float("-inf")
+    spent: float = 0.0
+    turn: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+    def remaining(self, budget: float, now: float) -> float:
+        if now - self.window_start >= _TERMINATION_REPORT_WINDOW_SECONDS:
+            self.window_start = now
+            self.spent = 0.0
+        return budget - self.spent
+
+
+async def _report_termination(
+    report: Callable[[str], Awaitable[None]],
+    session_id: str,
+    budget: float,
+    ledger: _ReportLedger,
+) -> None:
+    """Run one report within the time every report of the window shares.
+
+    FastMCP's shutdown terminates the live transports one after the other, and
+    the report swallows its own database errors, so neither a timeout nor an
+    exception is a reliable signal: what is bounded is TIME. Every report of a
+    window draws on one ``budget``; once it is spent, the next reports are
+    skipped until the window ends, and their tracers are left to the inactivity
+    net, which closes them on the same terms. A report that raises spends the
+    rest of the budget. In normal operation a report takes milliseconds and the
+    budget is never reached.
+
+    Reports take turns (round 3 of #291): otherwise concurrent terminations, a
+    burst of DELETEs or evictions, would each read the same remaining budget and
+    each hold a stuck database for all of it. Waiting for the turn is itself
+    bounded by the budget left when the termination arrived.
+    """
+    loop = asyncio.get_running_loop()
+    remaining = ledger.remaining(budget, loop.time())
+    if remaining <= 0:
+        logger.debug("brain_v42.server.transport_termination_report_skipped")
+        return
+    try:
+        await asyncio.wait_for(ledger.turn.acquire(), timeout=remaining)
+    except TimeoutError:
+        logger.debug("brain_v42.server.transport_termination_report_skipped")
+        return
+    try:
+        now = loop.time()
+        remaining = ledger.remaining(budget, now)
+        if remaining <= 0:
+            logger.debug("brain_v42.server.transport_termination_report_skipped")
+            return
+        try:
+            await asyncio.wait_for(report(session_id), timeout=remaining)
+        except Exception as exc:  # noqa: BLE001 — fail-open by contract
+            ledger.spent = budget
+            logger.warning(
+                "brain_v42.server.transport_termination_report_failed",
+                error=type(exc).__name__,
+            )
+            return
+        ledger.spent += loop.time() - now
+    finally:
+        ledger.turn.release()
+
+
+def _install_transport_termination_hook(
+    on_terminated: Callable[[str], Awaitable[None]],
+    *,
+    budget_seconds: float = 5.0,
+) -> None:
+    """Report every terminated stateful transport, by its ``Mcp-Session-Id``.
+
+    Ticket 09d2b56e. The SDK ends a stateful session through
+    ``StreamableHTTPServerTransport.terminate`` on its three nominal paths — a
+    client DELETE, the idle eviction, the server shutdown — and offers no
+    callback. The session manager instantiates the class from ITS module, so a
+    subclass substituted there sees every transport this server creates.
+
+    GUARDED like the idle deadline: no ``terminate`` upstream means a refusal to
+    start, never a server that believes it closes tracers. FAIL-OPEN and BOUNDED
+    on the report itself: closing a database row must never keep a connection
+    from terminating, nor hold a shutdown for longer than ``budget_seconds``. A
+    crashed session never reaches ``terminate``; the inactivity net covers it.
+    """
+    from mcp.server import streamable_http_manager  # noqa: PLC0415
+
+    base = streamable_http_manager.StreamableHTTPServerTransport
+    _assert_transport_shape(base)
+    if getattr(base, _TERMINATION_HOOK_MARKER, None) is not None:
+        setattr(base, _TERMINATION_HOOK_MARKER, (on_terminated, budget_seconds, _ReportLedger()))
+        return
+
+    class _ReportingTransport(base):  # type: ignore[misc, valid-type]
+        async def terminate(self) -> None:
+            first = not self.is_terminated
+            await super().terminate()
+            session_id = getattr(self, "mcp_session_id", None)
+            if not first or session_id is None:
+                return
+            report, budget, ledger = getattr(type(self), _TERMINATION_HOOK_MARKER)
+            await _report_termination(report, session_id, budget, ledger)
+
+    setattr(
+        _ReportingTransport,
+        _TERMINATION_HOOK_MARKER,
+        (on_terminated, budget_seconds, _ReportLedger()),
+    )
+    # Same substitution, same justification as the idle deadline above.
+    streamable_http_manager.StreamableHTTPServerTransport = _ReportingTransport  # type: ignore[misc]
+    logger.info("brain_v42.server.transport_termination_hook", budget_seconds=budget_seconds)
+
+
 async def prepare_tools_for_transport(mcp: FastMCP, metrics_collector: Any | None) -> None:
     """Apply the transport-agnostic prelude every served tool must carry.
 
@@ -882,6 +1070,7 @@ def plan_http_transport(
     )
     if not settings.mcp_http_stateless:
         _install_session_idle_timeout(settings.mcp_http_session_idle_seconds)
+        _install_transport_termination_hook(close_connection_traces)
     return HttpTransportPlan(
         middleware=middleware,
         stateless_http=settings.mcp_http_stateless,
