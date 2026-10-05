@@ -27,16 +27,23 @@ Operational facts, measured rather than assumed:
 * Privileges. ``pg_stat_statements`` is not a trusted extension: CREATE EXTENSION
   needs a superuser. Under a least-privilege migration role, a superuser pre-creates
   it (``CREATE SCHEMA monitoring; CREATE EXTENSION pg_stat_statements WITH SCHEMA
-  monitoring``) and ``IF NOT EXISTS`` makes this step a no-op; the downgrade then
-  needs the extension owner. Reading the view needs ``pg_read_all_stats`` and USAGE
-  on ``monitoring``.
+  monitoring``) and both steps then become no-ops. The schema step is guarded by a
+  ``pg_namespace`` lookup rather than ``CREATE SCHEMA IF NOT EXISTS``, because the
+  latter checks the CREATE privilege on the database BEFORE it checks existence and
+  would still fail for a role without it; ``CREATE EXTENSION IF NOT EXISTS`` checks
+  existence first. Reading the view needs USAGE on ``monitoring``;
+  ``pg_read_all_stats`` is only needed to see other roles' query text.
 * Preload. CREATE EXTENSION does not need ``shared_preload_libraries``; only reading
   the view does. On a server without the library the objects exist and the view
   raises SQLSTATE 55000 until it is preloaded.
 * Downgrade drops the extension, then the schema with RESTRICT (the default): an
   operator's own object in ``monitoring`` makes the downgrade fail loudly instead of
   being dropped. Dropping the extension loses nothing durable, the statistics live in
-  shared memory.
+  shared memory. It drops the extension and the schema even if a superuser pre-created
+  them, and needs the extension owner: a rollback to the 061 code (downgrade 061)
+  therefore needs a superuser.
+* Delivery observer. Its inserts carry a 5 s lock_timeout; stop it while 062 holds
+  its SHARE lock, or accept one lost pass (SQLSTATE 55P03).
 """
 
 from __future__ import annotations
@@ -62,7 +69,11 @@ def upgrade() -> None:
         "(ticket_id, contract_revision, attempt, context_set_digest, collection_finished_at) "
         "WHERE outcome = 'error' AND subject_kind = 'repository_context'"
     )
-    op.execute("CREATE SCHEMA IF NOT EXISTS monitoring")
+    op.execute(
+        "DO $$ BEGIN "
+        "IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'monitoring') THEN "
+        "CREATE SCHEMA monitoring; END IF; END $$"
+    )
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements WITH SCHEMA monitoring")
     op.execute("SET LOCAL lock_timeout TO DEFAULT")
 

@@ -22,7 +22,9 @@ ROOT = Path(__file__).parents[3]
 BINDING_INDEX = "idx_delivery_confirmations_binding_errors"
 CONTEXT_INDEX = "idx_delivery_confirmations_context_errors"
 
-# The literal predicate SQL the observer's failure count uses. Written out here, on
+# The predicate SQL the observer's failure count uses once the set-based queue PR
+# (feat/delivery-queue-summary-retention, commit 1f8c426b, merged BEFORE this one) is in:
+# its binding branch names subject_kind = 'artifact_binding'. Written out here, on
 # purpose and independent of the repository code: a partial index is usable only when
 # the query's own clauses imply its predicate, and CHECK constraints do not count.
 BINDING_QUERY = """

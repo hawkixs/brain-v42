@@ -438,8 +438,8 @@ observer's budgets are constants.
 A request cut by a budget fails with SQLSTATE `57014` (statement timeout), `55P03` (lock not
 available) or `25P03` (idle-in-transaction session timeout). To retune, read the slowest
 statements from `monitoring.pg_stat_statements` (`max_exec_time`, `calls`) after a week of
-traffic; the view needs `shared_preload_libraries = pg_stat_statements` on the server and the
-`pg_read_all_stats` role.
+traffic; the view needs `shared_preload_libraries = pg_stat_statements` on the server and USAGE
+on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text).
 
 ## Migration history
 
@@ -474,8 +474,11 @@ fit in 30 characters, and an overflow loses the whole row rather than the column
 (the INSERT being best-effort).
 
 Migration 062 adds two partial indexes on `delivery_confirmations`
-(`idx_delivery_confirmations_binding_errors`, `idx_delivery_confirmations_context_errors`;
-the observer's failure count reads them) and creates `pg_stat_statements` in a dedicated
+(`idx_delivery_confirmations_binding_errors`, `idx_delivery_confirmations_context_errors`).
+The observer's failure count reads them once the set-based queue change
+(`feat/delivery-queue-summary-retention`, which merges first) is in: its binding branch
+must repeat `subject_kind = 'artifact_binding'` for the planner to use the partial index.
+062 also creates `pg_stat_statements` in a dedicated
 schema, `monitoring`. It must not be created in `public`: the extension grants SELECT on its
 view to PUBLIC, and recovery contract ACL v11 counts that as a mismatch. Facts to know before
 applying it:
@@ -483,18 +486,25 @@ applying it:
 - **Lock.** Plain `CREATE INDEX` inside the migration transaction takes a SHARE lock, so the
   observer's inserts wait; on about a hundred thousand rows this is well under a second, and
   the revision sets `lock_timeout = 30s` so a stuck lock holder fails the migration atomically.
+  The observer's own inserts carry a 5 s `lock_timeout` (SQLSTATE `55P03`): stop
+  `brain-v42-delivery-observer` while `alembic upgrade 062` runs, or accept one lost pass.
 - **Superuser.** `pg_stat_statements` is not a trusted extension. Under a least-privilege
   migration role, a superuser pre-creates it first:
   `CREATE SCHEMA monitoring; CREATE EXTENSION pg_stat_statements WITH SCHEMA monitoring;`.
-  The migration's `IF NOT EXISTS` then makes that step a no-op, and the downgrade needs the
-  extension owner. Reading `monitoring.pg_stat_statements` needs `pg_read_all_stats` and
-  USAGE on `monitoring`.
+  The migration then skips both steps (the schema step checks `pg_namespace` first, because
+  `CREATE SCHEMA IF NOT EXISTS` demands the CREATE privilege on the database even when the
+  schema exists). Reading `monitoring.pg_stat_statements` needs USAGE on `monitoring`;
+  `pg_read_all_stats` is only needed to see other roles' query text.
 - **Preload.** Creating the extension does not need `shared_preload_libraries`; reading the
   view does (SQLSTATE `55000` otherwise).
 - **Contrib files.** The server image must ship the contrib extension files, and so must the
-  image that restores a dump: a 062 dump carries `CREATE EXTENSION pg_stat_statements`.
+  image that restores a dump: a 062 dump carries `CREATE EXTENSION pg_stat_statements`. The
+  red-backup restore sandbox must be PostgreSQL 16 with contrib (`pg_stat_statements 1.10` is
+  pinned in the v20 extension inventory).
 - **Downgrade.** Drops the extension, then the schema (RESTRICT): an object of your own in
-  `monitoring` stops it with an error instead of being dropped. The statistics live in shared
+  `monitoring` stops it with an error instead of being dropped. It drops both even when a
+  superuser pre-created them and needs the extension owner, so a rollback to 0.6.7
+  (downgrade 061) needs a superuser. The statistics live in shared
   memory, so nothing durable is lost.
 
 The 038→039 cutover was conducted with
