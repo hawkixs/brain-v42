@@ -61,6 +61,8 @@ MANAGED_UNIT_FILES=(
   brain-v42-automation.service
   brain-v42-embedding-backfill.service
   brain-v42-embedding-backfill.timer
+  brain-v42-logs-rotate.service
+  brain-v42-logs-rotate.timer
 )
 
 # Keep retired units on install: the live immutable release and a rollback still
@@ -558,6 +560,8 @@ sync_userns_compat_dropins() {
 if $UNINSTALL; then
   log "stopping + disabling managed units"
   systemctl --user show-environment >/dev/null
+  disable_and_stop_unit brain-v42-logs-rotate.timer
+  disable_and_stop_unit brain-v42-logs-rotate.service
   for unit in "${RETIRED_TIMERS[@]}"; do
     disable_and_stop_unit "$unit.timer"
     disable_and_stop_unit "$unit.service"
@@ -585,6 +589,7 @@ if $UNINSTALL; then
   rm -f "$USER_UNIT_DIR/brain-v42-automation.service"
   rm -f "$USER_UNIT_DIR/brain-v42-embedding-backfill.service"
   rm -f "$USER_UNIT_DIR/brain-v42-embedding-backfill.timer"
+  rm -f "$USER_UNIT_DIR/brain-v42-logs-rotate.service" "$USER_UNIT_DIR/brain-v42-logs-rotate.timer"
   rm -f "$USER_UNIT_DIR/brain-mcp-http.service"
   rm -f "$USER_UNIT_DIR/brain-mcp-http-watchdog.service"
   rm -f "$USER_UNIT_DIR/brain-mcp-http-watchdog.timer"
@@ -809,7 +814,16 @@ render_isolated_units() {
     "$BACKFILL_TEMPLATE" \
     > "$ISOLATED_RENDER_DIR/brain-v42-embedding-backfill.service"
   cp "$BACKFILL_TIMER" "$ISOLATED_RENDER_DIR/brain-v42-embedding-backfill.timer"
+  render_logs_rotation "$ISOLATED_RENDER_DIR"
   sync_userns_compat_dropins "$ISOLATED_RENDER_DIR"
+}
+
+render_logs_rotation() {
+  local render_dir="$1"
+  sed "s|__REPO_ROOT__|$REPO_ROOT|g" \
+    "$SCRIPT_DIR/brain-v42-logs-rotate.service.tmpl" \
+    > "$render_dir/brain-v42-logs-rotate.service"
+  cp "$SCRIPT_DIR/brain-v42-logs-rotate.timer" "$render_dir/brain-v42-logs-rotate.timer"
 }
 
 validate_isolated_artifacts() {
@@ -1190,6 +1204,7 @@ sed "s|__REPO_ROOT__|$REPO_ROOT|g" \
   "$BACKFILL_TEMPLATE" \
   > "$RENDER_DIR/brain-v42-embedding-backfill.service"
 cp "$BACKFILL_TIMER" "$RENDER_DIR/brain-v42-embedding-backfill.timer"
+render_logs_rotation "$RENDER_DIR"
 log "rendered brain-v42-embedding-backfill.service + timer (operator-managed)"
 
 # --- Validate with systemd-analyze ---
@@ -1205,6 +1220,8 @@ if command -v systemd-analyze >/dev/null; then
   systemd-analyze --user verify "$RENDER_DIR/brain-v42-automation.service"
   systemd-analyze --user verify "$RENDER_DIR/brain-v42-embedding-backfill.service"
   systemd-analyze --user verify "$RENDER_DIR/brain-v42-embedding-backfill.timer"
+  systemd-analyze --user verify "$RENDER_DIR/brain-v42-logs-rotate.service"
+  systemd-analyze --user verify "$RENDER_DIR/brain-v42-logs-rotate.timer"
   log "systemd-analyze verify: OK"
 fi
 

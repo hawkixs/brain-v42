@@ -47,6 +47,7 @@ async def test_identity_guard_is_normalized_on_every_targeted_operation() -> Non
         "next",
         3,
         nothing_to_capture_reason="no durable artifact",
+        allow_focus_shrink=False,
     )
     repo.abandon.assert_awaited_once_with(session_id, "task-a", "superseded")
 
@@ -88,6 +89,7 @@ async def test_end_allows_repository_to_resolve_attached_capture_outcome() -> No
         "proposal",
         4,
         nothing_to_capture_reason=None,
+        allow_focus_shrink=False,
     )
 
 

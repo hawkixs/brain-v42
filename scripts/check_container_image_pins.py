@@ -10553,14 +10553,27 @@ class _DockerRunVisitor(ast.NodeVisitor):
         ):
             return False
         keywords = {keyword.arg: keyword.value for keyword in node.keywords if keyword.arg}
-        if len(keywords) != len(node.keywords) or set(keywords) != {
+        required_keywords = {
             "input",
             "capture_output",
             "check",
             "text",
             "cwd",
             "env",
-        }:
+        }
+        if (
+            len(keywords) != len(node.keywords)
+            or not required_keywords <= set(keywords)
+            or set(keywords) - required_keywords not in (set(), {"timeout"})
+            or (
+                "timeout" in keywords
+                and not (
+                    isinstance(keywords["timeout"], ast.Constant)
+                    and type(keywords["timeout"].value) is int
+                    and keywords["timeout"].value > 0
+                )
+            )
+        ):
             return False
         if not (
             self._diagnostic_source == "scripts/rotate_codex_gateway_credentials.py"

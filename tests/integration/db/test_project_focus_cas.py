@@ -208,8 +208,8 @@ async def test_concurrent_same_revision_has_one_winner_and_no_silent_overwrite(
     second = roadmap_service.RoadmapService(session_factory)
 
     outcomes = await asyncio.gather(
-        first.update_project_focus(project_key, "focus A", expected_focus_revision=0),
-        second.update_project_focus(project_key, "focus B", expected_focus_revision=0),
+        first.update_project_focus(project_key, "initial focus A", expected_focus_revision=0),
+        second.update_project_focus(project_key, "initial focus B", expected_focus_revision=0),
         return_exceptions=True,
     )
 
@@ -220,7 +220,7 @@ async def test_concurrent_same_revision_has_one_winner_and_no_silent_overwrite(
     assert len(successes) == 1
     assert len(conflicts) == 1
     context, _ = await _state(session_factory, project_key)
-    assert context["current_focus"] in {"focus A", "focus B"}
+    assert context["current_focus"] in {"initial focus A", "initial focus B"}
     assert context["focus_revision"] == 1
     assert conflicts[0].current_revision == 1
 
@@ -260,3 +260,51 @@ async def test_same_focus_still_consumes_revision_for_composite_mutation(
     assert context["blockers"] in (["blocker A"], ["blocker B"])
     assert context["focus_revision"] == 1
     assert conflicts[0].current_revision == 1
+
+
+async def test_a_shrinking_focus_is_refused_and_writes_nothing(
+    session_factory: async_sessionmaker[AsyncSession],
+    focus_project: tuple[str, dict[str, UUID]],
+) -> None:
+    project_key, _ = focus_project
+    service = roadmap_service.RoadmapService(session_factory)
+    before = await _state(session_factory, project_key)
+
+    with pytest.raises(roadmap_service.ProjectFocusShrinkError, match="REPLACES") as refused:
+        await service.update_project_focus(
+            project_key,
+            "short",
+            expected_focus_revision=0,
+            blockers=["changed"],
+            feature_status={"Alpha": "done"},
+        )
+
+    assert "5 characters against 13" in str(refused.value)
+    assert await _state(session_factory, project_key) == before
+
+
+async def test_the_operator_override_lets_a_shrinking_focus_through(
+    session_factory: async_sessionmaker[AsyncSession],
+    focus_project: tuple[str, dict[str, UUID]],
+) -> None:
+    project_key, _ = focus_project
+    service = roadmap_service.RoadmapService(session_factory)
+
+    result = await service.update_project_focus(
+        project_key, "short", expected_focus_revision=0, allow_focus_shrink=True
+    )
+
+    context, _ = await _state(session_factory, project_key)
+    assert (result.current_focus, result.focus_revision) == ("short", 1)
+    assert context["current_focus"] == "short"
+
+
+async def test_a_stale_revision_is_reported_before_the_shrink_guard(
+    session_factory: async_sessionmaker[AsyncSession],
+    focus_project: tuple[str, dict[str, UUID]],
+) -> None:
+    project_key, _ = focus_project
+    service = roadmap_service.RoadmapService(session_factory)
+
+    with pytest.raises(roadmap_service.ProjectFocusConflictError):
+        await service.update_project_focus(project_key, "short", expected_focus_revision=7)

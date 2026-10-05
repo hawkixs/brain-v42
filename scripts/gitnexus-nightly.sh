@@ -7,7 +7,15 @@
 set -u  # note: NOT -e — we want the script to keep going past a single reindex failure so the rotation step still runs.
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-LOG_DIR="/tmp"
+STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/brain-v42"
+if [[ -L "$STATE_ROOT" ]]; then
+  echo "ERROR: refusing symlink state directory: $STATE_ROOT" >&2
+  exit 2
+fi
+mkdir -p "$STATE_ROOT" || exit 2
+chmod 700 "$STATE_ROOT" || exit 2
+[[ -O "$STATE_ROOT" ]] || { echo "ERROR: state directory is not owned by current user" >&2; exit 2; }
+LOG_DIR="$STATE_ROOT"
 LOG_FILE="${LOG_DIR}/gitnexus-nightly.log"
 # Literal, not "${GITNEXUS_BIN:-...}" and not "$HOME/...": test_container_image_pins.py
 # (test_repository_consumers_match_catalog) refuses an executable path built from ANY

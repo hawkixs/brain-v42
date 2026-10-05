@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily brain-v42 log retention
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=false
+Unit=brain-v42-logs-rotate.service
+
+[Install]
+WantedBy=timers.target

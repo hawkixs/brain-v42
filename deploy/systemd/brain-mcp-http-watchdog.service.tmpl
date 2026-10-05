@@ -4,6 +4,9 @@ After=brain-mcp-http.service
 
 [Service]
 Type=oneshot
+MemoryHigh=512M
+MemoryMax=1G
+# Bound this short-lived health probe and any child process it starts.
 # Bound the oneshot even if the peer trickles response bytes.
 TimeoutStartSec=60
 StateDirectory=brain-mcp-http-watchdog
