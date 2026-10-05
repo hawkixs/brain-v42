@@ -399,7 +399,9 @@ async def set_base(factory, project: str, text: str) -> int:
     """Put `text` on the project base through a plain unbound end; return the new revision."""
     session_id, key = await started(factory, project)
     revision = (await base_state(factory, project))[1]
-    await sessions(factory).end(session_id, key, "seed the base", text, revision)
+    await sessions(factory).end(
+        session_id, key, "seed the base", text, revision, allow_focus_shrink=True
+    )
     return revision + 1
 
 

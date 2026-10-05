@@ -411,9 +411,63 @@ class TestBrainUpdateProjectFocus:
             blockers=["none"],
             feature_status={"Core Monitoring": "deployed"},
             unpin=None,
+            allow_focus_shrink=False,
         )
         ctx_svc.update_focus.assert_not_awaited()
         assert "focus_revision:4" in result
+
+    async def test_forwards_the_operator_shrink_override(
+        self,
+        tools_with_roadmap: tuple[dict[str, Any], AsyncMock, AsyncMock],
+    ) -> None:
+        registered, _, roadmap_svc = tools_with_roadmap
+
+        await registered["brain_update_project_focus"](
+            project_key="brain-v42",
+            current_focus="Short",
+            expected_focus_revision=3,
+            allow_focus_shrink=True,
+        )
+
+        assert roadmap_svc.update_project_focus.await_args.kwargs["allow_focus_shrink"] is True
+
+    async def test_a_shrink_refusal_names_its_code_and_writes_nothing_else(
+        self,
+        tools_with_roadmap: tuple[dict[str, Any], AsyncMock, AsyncMock],
+    ) -> None:
+        from brain_v42.services import roadmap_service
+
+        registered, ctx_svc, roadmap_svc = tools_with_roadmap
+        roadmap_svc.update_project_focus.side_effect = roadmap_service.ProjectFocusShrinkError(
+            "the new focus has 5 characters against 100 in the current base focus"
+        )
+
+        result = await registered["brain_update_project_focus"](
+            project_key="brain-v42",
+            current_focus="Short",
+            expected_focus_revision=3,
+        )
+
+        assert result and result[0].isalnum()
+        assert "base_focus_shrink" in result
+        assert "5 characters against 100" in result
+        ctx_svc.update_focus.assert_not_awaited()
+
+    async def test_publishes_the_replacement_and_the_shrink_guard(self) -> None:
+        from brain_v42.mcp.tools.project_context_tools import register_project_context_tools
+
+        server = FastMCP("project-focus-shrink-doc-test")
+        register_project_context_tools(server, AsyncMock(), roadmap_svc=AsyncMock())
+        tool = await server.get_tool("brain_update_project_focus")
+        assert tool is not None
+        properties = tool.parameters["properties"]
+
+        assert properties["allow_focus_shrink"]["type"] == "boolean"
+        assert properties["allow_focus_shrink"]["default"] is False
+        override = properties["allow_focus_shrink"]["description"]
+        assert "operator" in override.lower() and "70%" in override
+        replaces = properties["current_focus"]["description"]
+        assert "REPLACES the whole project focus" in replaces and "70%" in replaces
 
     async def test_conflict_is_actionable_and_does_not_fallback_to_unsafe_write(
         self,
@@ -505,6 +559,7 @@ class TestBrainUpdateProjectFocus:
             blockers=None,
             feature_status=None,
             unpin=None,
+            allow_focus_shrink=False,
         )
 
     async def test_passes_blockers_and_roadmap_changes_in_one_call(
@@ -520,6 +575,7 @@ class TestBrainUpdateProjectFocus:
             blockers=["ONNX not loaded"],
             feature_status={"Core Monitoring": "deployed", "GPU Collector": "building"},
             unpin=["Old Feature"],
+            allow_focus_shrink=False,
         )
 
         roadmap_svc.update_project_focus.assert_awaited_once_with(
@@ -529,6 +585,7 @@ class TestBrainUpdateProjectFocus:
             blockers=["ONNX not loaded"],
             feature_status={"Core Monitoring": "deployed", "GPU Collector": "building"},
             unpin=["Old Feature"],
+            allow_focus_shrink=False,
         )
         roadmap_svc.update_feature_statuses.assert_not_awaited()
         roadmap_svc.unpin_features.assert_not_awaited()
