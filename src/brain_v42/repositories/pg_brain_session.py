@@ -393,6 +393,75 @@ class PgBrainSessionRepo(BasePgRepository):
             observed = (await session.execute(statement)).scalar_one_or_none()
         return observed is not None
 
+    async def close_agent_traces(
+        self, connection_id: str, *, now: datetime | None = None
+    ) -> list[UUID]:
+        """Close the open tracers of a connection whose transport has ended.
+
+        Ticket 09d2b56e. The server opens one tracer per connection and is the
+        only party allowed to close it; the clients do end their connections
+        (DELETE, idle eviction), but nothing closed the row, so every tracer
+        waited for the Dream sweep — and none was closed while Dream was
+        suspended. The transport-termination hook calls this.
+
+        ``closed_inactive`` and nothing else, as the 4 h rule writes it: no
+        reason (046's CHECK forbids one) and the ledger kept, so the tracer
+        stays a donor for derived capture. ``nature = 'agent'`` is a HARD guard:
+        a connection id can never close an operator session. A connection may
+        carry one open tracer per project, hence a list.
+        """
+        reference = now or datetime.now(UTC)
+        statement = (
+            brain_sessions.update()
+            .where(
+                brain_sessions.c.connection_id == connection_id,
+                brain_sessions.c.status == "open",
+                brain_sessions.c.nature == "agent",
+            )
+            .values(
+                status=BrainSessionStatus.CLOSED_INACTIVE.value,
+                ended_at=reference,
+                updated_at=reference,
+            )
+            .returning(brain_sessions.c.id)
+        )
+        async with self.transaction() as session:
+            return list((await session.execute(statement)).scalars())
+
+    async def close_inactive_agent_traces(
+        self, *, inactive_after: timedelta, now: datetime | None = None
+    ) -> list[UUID]:
+        """The net for a connection that never terminated cleanly (crash, kill).
+
+        The 4 h observation rule of ``sweep_open_sessions``, run by the server
+        that opened the tracers instead of a Dream night. It differs from the
+        sweep on ONE point, on purpose: there is no 7-day branch here. Past
+        seven days a tracer is still a tracer — closed, ledger kept, no reason —
+        and an operator session is out of reach whatever its age: forgotten
+        human sessions stay for the explicit commands and the Dream sweep.
+        ``last_observed_at IS NULL`` stays out, as in the sweep.
+        """
+        if inactive_after <= timedelta(0):
+            raise BrainSessionInputError("inactive_after must be a positive interval")
+        reference = now or datetime.now(UTC)
+        statement = (
+            brain_sessions.update()
+            .where(
+                brain_sessions.c.status == "open",
+                brain_sessions.c.nature == "agent",
+                brain_sessions.c.last_observed_at.is_not(None),
+                brain_sessions.c.last_observed_at < reference - inactive_after,
+            )
+            .values(
+                status=BrainSessionStatus.CLOSED_INACTIVE.value,
+                ended_at=reference,
+                updated_at=reference,
+            )
+            .returning(brain_sessions.c.id)
+        )
+        async with self.transaction() as session:
+            return list((await session.execute(statement)).scalars())
+
     async def get_by_id(  # type: ignore[override]
         self, session_id: UUID | str
     ) -> BrainSession | None:
