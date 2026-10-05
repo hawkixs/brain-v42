@@ -174,6 +174,44 @@ class Settings(BaseSettings):
     postgres_url: str = Field(validation_alias=_brain_alias("POSTGRES_URL"))
     """PostgreSQL connection URL. Must use postgresql+asyncpg:// scheme."""
 
+    # Session budgets sent to PostgreSQL at connection time, in MILLISECONDS; 0
+    # disables, exactly as in PostgreSQL. Three profiles because three very
+    # different jobs share the engine factory (see ``brain_v42.db.engine``):
+    # the long-lived interactive processes (MCP server, codex gateway, automation
+    # runtime) are tight, so a stuck query or lock wait fails in minutes instead of
+    # exhausting the pool; maintenance jobs and scripts are generous and carry NO
+    # idle-in-transaction limit, because some hold a transaction open on purpose
+    # (the embedding-backfill advisory-lock session); the metrics sidecar's scrape
+    # path is the tightest. Retune from ``monitoring.pg_stat_statements`` and an
+    # environment override, without a release.
+    pg_statement_timeout_ms: int = Field(
+        default=120_000, ge=0, validation_alias=_brain_alias("PG_STATEMENT_TIMEOUT_MS")
+    )
+    pg_lock_timeout_ms: int = Field(
+        default=30_000, ge=0, validation_alias=_brain_alias("PG_LOCK_TIMEOUT_MS")
+    )
+    pg_idle_in_transaction_session_timeout_ms: int = Field(
+        default=300_000,
+        ge=0,
+        validation_alias=_brain_alias("PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS"),
+    )
+    pg_maintenance_statement_timeout_ms: int = Field(
+        default=1_800_000,
+        ge=0,
+        validation_alias=_brain_alias("PG_MAINTENANCE_STATEMENT_TIMEOUT_MS"),
+    )
+    pg_maintenance_lock_timeout_ms: int = Field(
+        default=300_000, ge=0, validation_alias=_brain_alias("PG_MAINTENANCE_LOCK_TIMEOUT_MS")
+    )
+    pg_maintenance_idle_in_transaction_session_timeout_ms: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=_brain_alias("PG_MAINTENANCE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS"),
+    )
+    metrics_pg_statement_timeout_ms: int = Field(
+        default=10_000, ge=0, validation_alias=_brain_alias("METRICS_PG_STATEMENT_TIMEOUT_MS")
+    )
+
     # --- Logging ---
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", validation_alias=_brain_alias("LOG_LEVEL")

@@ -117,6 +117,15 @@ async def run_async_migrations() -> None:
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        # A migration must never inherit a short budget, even from a future
+        # ALTER ROLE/DATABASE SET: settings sent at connection time win over those.
+        # lock_timeout stays unset; a migration that waits on a lock bounds itself.
+        connect_args={
+            "server_settings": {
+                "statement_timeout": "0",
+                "idle_in_transaction_session_timeout": "0",
+            }
+        },
     )
 
     async with connectable.connect() as connection:

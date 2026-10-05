@@ -53,7 +53,11 @@ class TestCreateNeo4jDriver:
                 enabled=True,
             )
             mock_factory.assert_called_once_with(
-                "bolt://localhost:7687", auth=("neo4j", "test"), max_connection_pool_size=20
+                "bolt://localhost:7687",
+                auth=("neo4j", "test"),
+                max_connection_pool_size=20,
+                connection_timeout=5.0,
+                connection_acquisition_timeout=10.0,
             )
             assert result is mock_driver
 
@@ -71,6 +75,8 @@ class TestCreateNeo4jDriver:
                 "bolt://localhost:7687",
                 auth=("neo4j", ""),
                 max_connection_pool_size=20,
+                connection_timeout=5.0,
+                connection_acquisition_timeout=10.0,
             )
 
     def test_creates_driver_passes_max_connection_pool_size(self) -> None:
@@ -91,6 +97,25 @@ class TestCreateNeo4jDriver:
             create_neo4j_driver(url="bolt://localhost:7687", user="neo4j", password="pw")
 
         assert captured["kwargs"].get("max_connection_pool_size") == 20
+
+    def test_creates_driver_bounds_connect_and_acquisition(self) -> None:
+        """A dead Neo4j must fail in seconds, not the driver's 30s connect / 60s acquire."""
+        from brain_v42.db.neo4j import create_neo4j_driver
+
+        captured: dict = {}
+
+        def capturing_stub(url, **kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch(
+            "brain_v42.db.neo4j.AsyncGraphDatabase.driver",
+            side_effect=capturing_stub,
+        ):
+            create_neo4j_driver(url="bolt://localhost:7687")
+
+        assert captured["connection_timeout"] == 5.0
+        assert captured["connection_acquisition_timeout"] == 10.0
 
 
 class TestCloseNeo4jDriver:

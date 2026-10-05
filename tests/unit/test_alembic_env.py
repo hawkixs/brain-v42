@@ -238,6 +238,28 @@ class TestAlembicEnvPy:
         content = self.env_content
         assert "run_sync" in content, "env.py must use conn.run_sync() for migration execution"
 
+    def test_env_disables_statement_and_idle_timeouts_for_migrations(self) -> None:
+        """Migrations never inherit a short budget, even from ALTER ROLE/DATABASE SET.
+
+        Settings sent at connection time win over role/database defaults, so the
+        override has to travel in connect_args.
+        """
+        tree = ast.parse(self.env_content)
+        calls = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "async_engine_from_config"
+        ]
+        assert len(calls) == 1
+        connect_args = next(kw.value for kw in calls[0].keywords if kw.arg == "connect_args")
+        assert ast.literal_eval(connect_args) == {
+            "server_settings": {
+                "statement_timeout": "0",
+                "idle_in_transaction_session_timeout": "0",
+            }
+        }
+
 
 def test_migration_heads_to_latest() -> None:
     """After upgrade, alembic_version table points at the latest revision.

@@ -74,6 +74,9 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
 # rows can never be deleted, so a 060 downgrade on the shared head would be refused.
 # They declare themselves so the tree census still sees them, and they need no fence.
 PRIVATE_HEAD_DOWNGRADING_FILES: tuple[str, ...] = (
+    # Downgrades its own module-private database to prove alembic/env.py ignores a
+    # 1 ms database statement_timeout; the shared head is never touched.
+    "tests/integration/db/test_alembic_env_overrides_database_timeouts.py",
     "tests/integration/db/test_migration_060_focus_slots.py",
 )
 
