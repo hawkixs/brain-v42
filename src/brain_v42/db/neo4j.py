@@ -32,7 +32,16 @@ def create_neo4j_driver(
     if not url or not enabled:
         return None
     log.info("neo4j.driver.creating", url=url, user=user)
-    return AsyncGraphDatabase.driver(url, auth=(user, password), max_connection_pool_size=20)
+    # The driver defaults (30 s to connect, 60 s to acquire a pooled connection) let a
+    # dead Neo4j hold a request for a minute; per-query budgets already exist
+    # (``neo4j_timeout``), these two bound the part before the query starts.
+    return AsyncGraphDatabase.driver(
+        url,
+        auth=(user, password),
+        max_connection_pool_size=20,
+        connection_timeout=5.0,
+        connection_acquisition_timeout=10.0,
+    )
 
 
 async def close_neo4j_driver(driver: AsyncDriver | None) -> None:

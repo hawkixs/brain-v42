@@ -1707,7 +1707,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_061_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_062_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1717,7 +1717,9 @@ def test_repository_head_061_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 060 on 2026-10-03 — focus slots (ADR #34): three tables, two
+    silently. Bumped to 062 on 2026-10-05 — two partial indexes on
+    `delivery_confirmations` and `pg_stat_statements` in the new schema `monitoring`;
+    no new table, and not applied to production at the time of writing. Previously bumped to 060 on 2026-10-03 — focus slots (ADR #34): three tables, two
     nullable brain_sessions columns with their CHECKs and partial unique indexes, and
     the 16314b31 fix of the closed_inactive branch; its downgrade refuses to destroy
     slots without the named opt-in. Bumped to 059 on 2026-10-03 — nullable
@@ -1784,7 +1786,7 @@ def test_repository_head_061_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     head = _repository_head()
-    assert head == "061"
+    assert head == "062"
 
     # Everything below is DERIVED from that measured head. It used to be COPIED,
     # and that is precisely how `SCHEMA.md` came to announce 049 while the chain

@@ -27,6 +27,7 @@ from brain_v42.automation.ownership import (
 from brain_v42.automation.server import AutomationServer
 from brain_v42.automation.webhook import GitLabWebhookEndpoint
 from brain_v42.config import Settings, get_settings
+from brain_v42.db.engine import pg_connect_args
 from brain_v42.db.tables import project_contexts
 from brain_v42.services.cluster_guard import ClusterGuard
 from brain_v42.services.embedding_factory import (
@@ -204,6 +205,7 @@ def build_automation_runtime(
         pool_timeout=10,
         pool_recycle=1800,
         pool_pre_ping=True,
+        connect_args=pg_connect_args(effective_settings, "interactive"),
     )
     session_factory = async_sessionmaker(
         runtime_engine,

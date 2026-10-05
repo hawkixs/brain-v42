@@ -316,6 +316,23 @@ def register_delivery_tables(metadata: sa.MetaData) -> dict[str, sa.Table]:
             "subject_kind <> 'repository_context' OR attempt >= 1",
             name="delivery_confirmations_context_attempt_valid",
         ),
+        # 062: the observer counts recent failures per job; both are PARTIAL, so the
+        # query must repeat the subject_kind clause for the planner to use them.
+        sa.Index(
+            "idx_delivery_confirmations_binding_errors",
+            "binding_id",
+            "collection_finished_at",
+            postgresql_where=sa.text("outcome = 'error' AND subject_kind = 'artifact_binding'"),
+        ),
+        sa.Index(
+            "idx_delivery_confirmations_context_errors",
+            "ticket_id",
+            "contract_revision",
+            "attempt",
+            "context_set_digest",
+            "collection_finished_at",
+            postgresql_where=sa.text("outcome = 'error' AND subject_kind = 'repository_context'"),
+        ),
         sa.ForeignKeyConstraint(
             ["snapshot_id", "binding_id"],
             ["delivery_snapshots.id", "delivery_snapshots.binding_id"],

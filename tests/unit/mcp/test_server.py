@@ -115,6 +115,37 @@ def test_build_services_returns_all_services() -> None:
         }
 
 
+def test_main_block_selects_interactive_before_build_server() -> None:
+    """The long-lived MCP process opts into the bounded profile, in its entry point.
+
+    The opt-in must not live in build_server(): tests inject an engine and call
+    it, and a library function must not decide the profile of its host process.
+    """
+    import ast
+    import inspect
+
+    import brain_v42.mcp.server as server
+
+    tree = ast.parse(inspect.getsource(server))
+    main_if = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Compare)
+        and getattr(node.test.left, "id", "") == "__name__"
+    )
+    called = [
+        (call.func.id, [ast.literal_eval(a) for a in call.args if isinstance(a, ast.Constant)])
+        for stmt in main_if.body
+        for call in ast.walk(stmt)
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+    ]
+    names = [name for name, _ in called]
+    assert ("use_engine_profile", ["interactive"]) in called
+    assert names.index("_apply_http_server_arg") < names.index("use_engine_profile")
+    assert names.index("use_engine_profile") < names.index("build_server")
+
+
 def test_main_module_importable() -> None:
     """src/brain_v42/__main__.py exists and is importable."""
     import brain_v42.__main__  # noqa: F401

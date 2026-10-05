@@ -12,6 +12,7 @@ from pydantic import SecretStr
 from brain_v42.codex_gateway.app import create_production_app
 from brain_v42.codex_gateway.auth import require_non_empty_token
 from brain_v42.config import get_settings
+from brain_v42.db.engine import use_engine_profile
 
 _TOKEN_KEY = "BRAIN_CODEX_GATEWAY_TOKEN"
 _TOKEN_FILE_KEY = "BRAIN_CODEX_GATEWAY_TOKEN_FILE"
@@ -58,6 +59,10 @@ def run() -> None:
     if not token_file:
         raise RuntimeError(f"{_TOKEN_FILE_KEY} must point to the mounted private file")
     token = load_gateway_token_file(Path(token_file))
+
+    # A long-lived interactive process: bounded session budgets, chosen before the
+    # shared engine is first built by the composition below.
+    use_engine_profile("interactive")
 
     os.environ[_TOKEN_KEY] = token.get_secret_value()
     get_settings.cache_clear()

@@ -1,4 +1,4 @@
-"""Prove v19 against a fresh 061 database and a real restored 060 source, pinned at 061."""
+"""Prove v20 against a fresh 062 head and real restored 061 and 062 sources."""
 
 from __future__ import annotations
 
@@ -25,10 +25,10 @@ from tests.integration.disposable_db import (
 
 pytestmark = pytest.mark.integration
 PROJECT_ROOT = Path(__file__).parents[3]
-CONTRACT_HEAD = "061"  # Each recovery contract must be checked against its own schema head.
-V19_SQL = PROJECT_ROOT / "ops/recovery/brain-v42-v19.sql"
-V19_JSON = PROJECT_ROOT / "ops/recovery/brain-v42-v19.json"
-V19_PGRESTORE = PROJECT_ROOT / "ops/recovery/brain-v42-v19-pgrestore.sql"
+CONTRACT_HEAD = "062"  # Each recovery contract must be checked against its own schema head.
+V20_SQL = PROJECT_ROOT / "ops/recovery/brain-v42-v20.sql"
+V20_JSON = PROJECT_ROOT / "ops/recovery/brain-v42-v20.json"
+V20_PGRESTORE = PROJECT_ROOT / "ops/recovery/brain-v42-v20-pgrestore.sql"
 DATA_CHECK_KINDS = frozenset({"row_count_sum_min"})
 RESTORE_BUILD_VECTOR_VERSIONS = frozenset(
     json.loads(
@@ -118,7 +118,7 @@ def _restore(target_url: str, archive: Path) -> None:
 @pytest.fixture(scope="module")
 def fresh_head_db_url() -> Iterator[str]:
     admin_url = _database_url_or_skip()
-    name = f"brain_v19_fresh_{uuid.uuid4().hex[:12]}"
+    name = f"brain_v20_fresh_{uuid.uuid4().hex[:12]}"
     create_database(admin_url, name)
     url = swap_database(admin_url, name)
     try:
@@ -128,18 +128,22 @@ def fresh_head_db_url() -> Iterator[str]:
         drop_database(admin_url, name)
 
 
-@pytest.fixture(scope="module")
-def restored_head_db_url() -> Iterator[str]:
+def _restored_head_database(source_revision: str) -> Iterator[str]:
+    """Dump a chain-built source at `source_revision`, restore it, bring it to head.
+
+    A 062 source is the real red-backup path after the cutover: its dump carries
+    CREATE SCHEMA monitoring and CREATE EXTENSION pg_stat_statements.
+    """
     _require_pg_tools()
     admin_url = _database_url_or_skip()
-    archive = PROJECT_ROOT / f"brain_v19_restore_{uuid.uuid4().hex}.dump"
-    source = f"brain_v19_src_{uuid.uuid4().hex[:12]}"
-    target = f"brain_v19_tgt_{uuid.uuid4().hex[:12]}"
+    archive = PROJECT_ROOT / f"brain_v20_restore_{uuid.uuid4().hex}.dump"
+    source = f"brain_v20_src_{uuid.uuid4().hex[:12]}"
+    target = f"brain_v20_tgt_{uuid.uuid4().hex[:12]}"
     create_database(admin_url, source)
     create_database(admin_url, target)
     source_url, target_url = swap_database(admin_url, source), swap_database(admin_url, target)
     try:
-        _upgrade(source_url, "060")
+        _upgrade(source_url, source_revision)
         _dump(source_url, archive)
         run_sql(asyncpg_dsn(target_url), ["CREATE EXTENSION IF NOT EXISTS vector"])
         _restore(target_url, archive)
@@ -151,8 +155,18 @@ def restored_head_db_url() -> Iterator[str]:
         drop_database(admin_url, target)
 
 
+@pytest.fixture(scope="module")
+def restored_from_061_db_url() -> Iterator[str]:
+    yield from _restored_head_database("061")
+
+
+@pytest.fixture(scope="module")
+def restored_from_062_db_url() -> Iterator[str]:
+    yield from _restored_head_database("062")
+
+
 def _assert_contract(failures: dict[str, dict[str, Any]], *, restored: bool) -> None:
-    contract = json.loads(V19_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V20_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         key: value
@@ -169,15 +183,17 @@ def _assert_contract(failures: dict[str, dict[str, Any]], *, restored: bool) -> 
     else:
         extensions = failures.get("extension_versions")
         assert extensions is not None
-        assert extensions["expected"] == "plpgsql 1.0, vector 0.8.2"
+        assert extensions["expected"] == "pg_stat_statements 1.10, plpgsql 1.0, vector 0.8.2"
         assert extensions["observed"] in {
-            f"plpgsql 1.0, vector {version}" for version in RESTORE_BUILD_VECTOR_VERSIONS
+            f"pg_stat_statements 1.10, plpgsql 1.0, vector {version}"
+            for version in RESTORE_BUILD_VECTOR_VERSIONS
         }
 
 
 @pytest.mark.asyncio
-async def test_recovery_contract_v19_matches_fresh_and_restored_head(
-    fresh_head_db_url: str, restored_head_db_url: str
+async def test_recovery_contract_v20_matches_fresh_and_restored_head(
+    fresh_head_db_url: str, restored_from_061_db_url: str, restored_from_062_db_url: str
 ) -> None:
-    _assert_contract(await replay_attestation(fresh_head_db_url, V19_SQL), restored=False)
-    _assert_contract(await replay_attestation(restored_head_db_url, V19_PGRESTORE), restored=True)
+    _assert_contract(await replay_attestation(fresh_head_db_url, V20_SQL), restored=False)
+    for restored_url in (restored_from_061_db_url, restored_from_062_db_url):
+        _assert_contract(await replay_attestation(restored_url, V20_PGRESTORE), restored=True)
