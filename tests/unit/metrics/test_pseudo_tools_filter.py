@@ -114,6 +114,11 @@ def _make_collector() -> MetricsCollector:
     c.collect_dream_promoted_health = AsyncMock(return_value=[])  # type: ignore[method-assign]
     c.collect_nightly_ops = AsyncMock(return_value={})  # type: ignore[method-assign]
     c.collect_session_slots = AsyncMock(return_value={})  # type: ignore[method-assign]
+    # Not a database test: left real, the ticket block ran on a MagicMock session,
+    # failed on a never-awaited `mappings()` and was dropped by its cache (29e9d695).
+    c.collect_ticket_counts = AsyncMock(  # type: ignore[method-assign]
+        return_value={"categories": [], "projects": []}
+    )
     return c
 
 

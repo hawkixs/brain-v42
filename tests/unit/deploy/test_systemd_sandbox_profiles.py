@@ -105,6 +105,7 @@ REDUCED_PROFILE = (
 )
 
 EXPECTED_PROFILES = {
+    "brain-metrics.service.tmpl": STRONG_INTEGRITY_PROFILE,
     "brain-v42-automation.service.tmpl": STRONG_INTEGRITY_PROFILE,
     "brain-v42-delivery-observer.service.tmpl": STRONG_INTEGRITY_PROFILE,
     "brain-v42-graph-recon.service.tmpl": STRONG_INTEGRITY_PROFILE,
@@ -244,6 +245,7 @@ def test_graph_recon_runs_read_only_ledger_inventory() -> None:
     (
         "brain-v42-dream.service.tmpl",
         "brain-v42-graph-recon.service.tmpl",
+        "brain-metrics.service.tmpl",
     ),
 )
 def test_user_services_do_not_reference_system_network_online_target(

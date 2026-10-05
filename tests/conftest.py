@@ -3,8 +3,23 @@
 from __future__ import annotations
 
 import os
+import signal
 
 import pytest
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Restore SIGINT when the suite was launched with it ignored (ticket 29e9d695).
+
+    A shell background job (``&``, ``nohup``, some CI or agent wrappers) starts
+    with SIGINT set to SIG_IGN, and every child inherits it: the tests that stop
+    a child with a real SIGINT then wait for a child that never stops. Python's
+    own handler is restored here, so this process is interruptible again and its
+    children start with the default disposition.
+    """
+    if signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+
 
 FAKE_EMBEDDING: list[float] = [0.1] * 1536
 

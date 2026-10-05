@@ -2487,6 +2487,7 @@ class TestTheTerminalRowNamesItsModel:
             patch("scripts.ticket_extract._extract_thread_with_budget", extract),
             patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
             patch("scripts.ticket_extract.record_dream_run", record),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             await _run(args, "secret", "primaire-vivant", "https://llm.test")
@@ -2536,6 +2537,7 @@ class TestTheTerminalRowNamesItsModel:
             patch("scripts.ticket_extract._extract_thread_with_budget", extract),
             patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
             patch("scripts.ticket_extract.record_dream_run", record),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             await _run(
@@ -2567,6 +2569,7 @@ class TestTheTerminalRowNamesItsModel:
                 new=AsyncMock(return_value=[]),
             ),
             patch("scripts.ticket_extract.record_dream_run", record),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             await _run(args, "secret", "primaire-vivant", "https://llm.test")
@@ -2964,6 +2967,7 @@ class TestTheRunLevelSwitchToTheAgyLink:
             patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", agy_probe),
             patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
             patch("scripts.ticket_extract.record_dream_run", record),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             exit_code = await _run(
@@ -3009,6 +3013,7 @@ class TestTheRunLevelSwitchToTheAgyLink:
             patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
             patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
             patch("scripts.ticket_extract.record_dream_run", record),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             exit_code = await _run(
@@ -3113,6 +3118,7 @@ class TestTheTicketLevelAgyRescue:
             patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", agy_probe),
             patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
             patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             await _run(
@@ -3158,6 +3164,7 @@ class TestTheTicketLevelAgyRescue:
             patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
             patch("scripts.ticket_extract.record_ticket_attempt", attempt),
             patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             exit_code = await _run(
@@ -3202,6 +3209,7 @@ class TestTheTicketLevelAgyRescue:
             patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", agy_probe),
             patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
             patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             await _run(args, "secret", "primaire-vivant", "https://llm.test")
@@ -3250,6 +3258,7 @@ class TestAgyObservabilityCounters:
             patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
             patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
             patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             with capture_logs() as logs:
@@ -3293,6 +3302,7 @@ class TestAgyObservabilityCounters:
             patch("scripts.ticket_extract._extract_thread_with_budget", extract),
             patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
             patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             with capture_logs() as logs:
@@ -3330,6 +3340,7 @@ class TestAgyObservabilityCounters:
             patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
             patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
             patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             await _run(
@@ -3374,6 +3385,7 @@ class TestAgyObservabilityCounters:
             patch("scripts.ticket_extract._extract_thread_via_agy_with_budget", extract_via_agy),
             patch("scripts.ticket_extract.record_ticket_attempt", AsyncMock()),
             patch("scripts.ticket_extract.record_dream_run", AsyncMock()),
+            patch("scripts.ticket_extract.persist_proposals", AsyncMock(return_value=[])),
         ):
             settings_cls.return_value.embedding_service_url = "http://embedding.test"
             await _run(

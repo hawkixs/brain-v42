@@ -1065,3 +1065,24 @@ class TestBrainDreamVerifyMaxClaims:
         monkeypatch.setenv("BRAIN_DREAM_VERIFY_MAX_CLAIMS", "5001")
         with pytest.raises(ValidationError):
             self._settings()
+
+
+def test_the_stateful_mcp_session_outlives_a_working_pause(monkeypatch):
+    """Ticket dc51c7b5: the idle deadline is eight hours, not fifteen minutes.
+
+    Measured 2026-10-05 (learning 87cf8729): Claude Code recovers an evicted
+    session on its own, but each recovery mints a new Mcp-Session-Id, hence a new
+    agent tracer and a new connection that exact absorption (03291fdc) cannot link
+    to the operator session. 480 idle evictions a day came from a 900 s deadline;
+    eight hours covers a working day's pauses while a client killed without a
+    DELETE still releases its state the same day.
+    """
+    from brain_v42.config import Settings
+
+    monkeypatch.delenv("MCP_HTTP_SESSION_IDLE_SECONDS", raising=False)
+    settings = Settings(
+        _env_file=None,  # type: ignore[call-arg]
+        POSTGRES_URL="postgresql+asyncpg://u:p@localhost:5433/db",
+    )
+
+    assert settings.mcp_http_session_idle_seconds == 8 * 3600

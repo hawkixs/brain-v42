@@ -28,24 +28,33 @@ async def test_projection_state_reader_propagates_database_errors() -> None:
 
 
 @pytest.mark.parametrize(
-    ("armed", "lease_active", "recovery_active", "expected"),
+    ("armed", "lease_active", "recovery_active", "pending", "exhausted", "age", "expected"),
     [
-        (True, True, False, True),
-        (False, True, False, False),
-        (True, False, False, False),
-        (True, True, True, False),
+        (True, True, False, 0, 0, 0.0, True),
+        (False, True, False, 0, 0, 0.0, False),
+        (True, False, False, 0, 0, 0.0, False),
+        (True, True, True, 0, 0, 0.0, False),
+        (True, True, False, 1, 1, 0.0, False),
+        (True, True, False, 1, 0, 301.0, False),
+        (True, True, False, 1, 0, 300.0, True),
     ],
 )
-def test_projection_health_requires_armed_active_nonrecovering_lease(
-    armed: bool, lease_active: bool, recovery_active: bool, expected: bool
+def test_projection_health_requires_a_live_lease_no_exhausted_event_and_a_bounded_lag(
+    armed: bool,
+    lease_active: bool,
+    recovery_active: bool,
+    pending: int,
+    exhausted: int,
+    age: float,
+    expected: bool,
 ) -> None:
     """Changing any health condition must make the shared predicate fail closed."""
     state = ProjectionState(
-        pending=0,
+        pending=pending,
         ready=0,
         claimed=0,
-        exhausted=0,
-        oldest_pending_age_seconds=0.0,
+        exhausted=exhausted,
+        oldest_pending_age_seconds=age,
         generation=None,
         armed=armed,
         lease_active=lease_active,

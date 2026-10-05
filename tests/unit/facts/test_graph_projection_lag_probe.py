@@ -45,7 +45,9 @@ async def test_probe_declares_and_measures_the_complete_integer_value_shape(
     value = await probe.measure(source)  # type: ignore[arg-type]
 
     assert probe.name == "graph_projection_lag"
-    assert probe.definition_version == 1
+    # v2 (1146a1db): "healthy" also requires no exhausted event and a bounded lag. A stored
+    # claim measured under v1 must be re-evaluated, not silently read with the new meaning.
+    assert probe.definition_version == 2
     assert probe.target is FactTarget.PRODUCTION
     assert probe.ttl.total_seconds() == 15
     assert probe.timeout.total_seconds() == 3

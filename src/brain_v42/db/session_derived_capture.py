@@ -37,6 +37,7 @@ from brain_v42.config import get_settings
 from brain_v42.db.tables import (
     adrs,
     brain_session_artifacts,
+    brain_session_connections,
     brain_sessions,
     decisions,
     indexed_plans,
@@ -261,7 +262,39 @@ async def derive_capture(
     return UUID(str(inserted)) if inserted is not None else None
 
 
-def _eligible_ids(project_key: str, started_at: datetime, limit: int) -> sa.CompoundSelect[Any]:
+def seen_connection(connection_id: str) -> str:
+    """The value a seen connection is stored under: the tracer's own.
+
+    Auto-open stores a tracer's ``connection_id`` truncated to the column width;
+    recording the same truncation keeps the exact match exact, and a hostile
+    over-long transport id cannot make the insert, hence the whole absorption,
+    fail.
+    """
+    width = getattr(brain_session_connections.c.connection_id.type, "length", None)
+    return connection_id[:width] if width else connection_id
+
+
+def _donor_eligible_ids(
+    tracer: Any, project_key: str, started_at: datetime, limit: int
+) -> sa.Select[Any]:
+    """This donor's ledger rows an explicit capture would accept, THEN bounded.
+
+    Filter first, then limit: bounding the project-wide eligible set before
+    matching it against one donor's ledger could miss that donor's rows on a
+    busy project, silently and differently on each call (the A1 defect of the
+    window stage, fixed there in ``_eligible_rows``).
+    """
+    return (
+        sa.select(brain_session_artifacts.c.knowledge_id)
+        .where(
+            brain_session_artifacts.c.session_id == tracer,
+            brain_session_artifacts.c.knowledge_id.in_(_eligible_ids(project_key, started_at)),
+        )
+        .limit(limit)
+    )
+
+
+def _eligible_ids(project_key: str, started_at: datetime) -> sa.CompoundSelect[Any]:
     """What an EXPLICIT capture would have accepted, and nothing more.
 
     ``_validate_captures`` bounds a requested capture to "same project AND
@@ -278,7 +311,7 @@ def _eligible_ids(project_key: str, started_at: datetime, limit: int) -> sa.Comp
         )
         for table, _knowledge_type in _CAPTURE_TABLES
     ]
-    return sa.union_all(*branches).limit(limit)
+    return sa.union_all(*branches)
 
 
 def _eligible_rows(project_key: str, started_at: datetime) -> sa.CompoundSelect[Any]:
@@ -396,15 +429,15 @@ async def absorb_tracer_ledger(
     This is ABSORPTION: the user's session takes what a tracer collected,
     without the tracer ever being promoted.
 
-    **Stage 1 — the current connection.** The EXACT match, evaluated first and
-    unchanged. When it answers, there is nothing to infer.
+    **Stage 1 — every seen connection.** Lifecycle calls record their transport
+    before matching. Idle eviction replaces the connection while the operator
+    session stays open; keeping its seen set preserves the EXACT match even
+    when a coordinating session covers every instant and blocks the window.
+    ``started_at`` excludes artifacts a predecessor produced on the same
+    connection, and the remaining ledger capacity bounds each move.
 
-    **Stage 2 — temporal exclusivity.** It exists only because stage 1 is
-    structurally insufficient: ``connection_id`` is the ``Mcp-Session-Id``, a
-    TRANSPORT identifier that the 900 s idle timeout kills long before the user
-    closes their session — measured ~26 times a day, against 3 restarts in three
-    days. A 16 h session facing transports whose median lifetime is under 2
-    minutes cannot be matched by the connection of its single closing call.
+    **Stage 2 — temporal exclusivity.** A connection that saw no lifecycle call
+    is absent from the exact set and still needs the temporal fallback.
 
     Stage 2 is a DEDUCTION, not a proof, and the code must say so: it attributes
     only if ``target`` was, at the creation instant, the ONLY non-`agent`
@@ -436,9 +469,34 @@ async def absorb_tracer_ledger(
 
     try:
         async with session.begin_nested():
-            tracer = (
-                await session.execute(_tracer_query(target.project_key, connection_id))
-            ).scalar_one_or_none()
+            await session.execute(
+                pg_insert(brain_session_connections)
+                .values(session_id=target.id, connection_id=seen_connection(connection_id))
+                .on_conflict_do_nothing()
+            )
+            tracers = (
+                (
+                    await session.execute(
+                        sa.select(brain_sessions.c.id)
+                        .where(
+                            brain_sessions.c.nature == "agent",
+                            brain_sessions.c.project_key == target.project_key,
+                            brain_sessions.c.status.in_(_DONOR_STATUSES),
+                            brain_sessions.c.connection_id.in_(
+                                sa.select(brain_session_connections.c.connection_id).where(
+                                    brain_session_connections.c.session_id == target.id
+                                )
+                            ),
+                            brain_sessions.c.id != target.id,
+                        )
+                        # Oldest connection first: when the ledger cap binds, the
+                        # outcome must not depend on the planner's row order.
+                        .order_by(brain_sessions.c.started_at, brain_sessions.c.id)
+                    )
+                )
+                .scalars()
+                .all()
+            )
 
             occupied = int(
                 (
@@ -460,16 +518,20 @@ async def absorb_tracer_ledger(
                 _log_absorption(target, connection_id, full)
                 return full
 
-            if tracer is not None and tracer != target.id:
+            for tracer in tracers:
+                if remaining <= 0:
+                    break
                 donors.append(UUID(str(tracer)))
-                moved_connection = list(
+                moved = list(
                     (
                         await session.execute(
                             brain_session_artifacts.update()
                             .where(
                                 brain_session_artifacts.c.session_id == tracer,
                                 brain_session_artifacts.c.knowledge_id.in_(
-                                    _eligible_ids(target.project_key, target.started_at, remaining)
+                                    _donor_eligible_ids(
+                                        tracer, target.project_key, target.started_at, remaining
+                                    )
                                 ),
                             )
                             .values(session_id=target.id, attribution_mode=BY_CONNECTION)
@@ -479,7 +541,8 @@ async def absorb_tracer_ledger(
                     .scalars()
                     .all()
                 )
-                remaining -= len(moved_connection)
+                moved_connection.extend(moved)
+                remaining -= len(moved)
 
             if remaining > 0:
                 eligible = _eligible_rows(target.project_key, target.started_at).subquery()

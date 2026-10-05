@@ -72,7 +72,7 @@ async def test_a_key_built_for_a_unit_test_is_deleted_by_the_real_purge(
     )
 
     async with _engine.begin() as conn:
-        await purge_integration_rows(conn)
+        await purge_integration_rows(conn, only_project_keys=[key])
 
     async with _engine.connect() as conn:
         remaining = await conn.scalar(

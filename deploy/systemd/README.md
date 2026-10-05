@@ -5,6 +5,11 @@ verifies the unit but never enables or starts it. The commands below are
 meant for an operator on the target host; their presence in the repo does not mean
 a cutover has taken place.
 
+The installer also renders and verifies `brain-metrics.service` from its versioned
+template. Its enable/start state remains operator-managed, and host-local drop-ins
+under `brain-metrics.service.d/`, including `90-immutable-release.conf`, survive
+installation and removal of the unit fragment.
+
 The target topology separates responsibilities:
 
 - `brain-metrics.service` on `127.0.0.1:9200` keeps `/metrics` and `/api/cockpit`;
@@ -25,6 +30,11 @@ previous one exits with code `0`.
 
 ## Render modes
 
+- A default install enables and starts only Dream and graph-recon timers whose unit
+  files were absent before the run. Existing timers retain their enabled and active
+  states, which the installer logs. `install.sh --enable-timers` explicitly enables
+  and starts both timers on a reinstall; it cannot be combined with `--dry-run`,
+  `--check-only`, `--render-dir` or `--uninstall`.
 - `install.sh --check-only` renders and verifies all managed units (the list lives in `MANAGED_UNIT_FILES`) in a private directory under
   `/tmp`, then removes it. It neither inspects nor creates the user systemd directory and
   does not call `systemctl`.
@@ -60,7 +70,7 @@ render it. No sudo is involved.
 
 ### Boot resilience of the long-running units
 
-`brain-mcp-http`, `brain-v42-automation` and `brain-v42-delivery-observer` are user units and
+`brain-mcp-http`, `brain-metrics`, `brain-v42-automation` and `brain-v42-delivery-observer` are user units and
 cannot order themselves after `docker.service`. After a reboot each one therefore waits for
 PostgreSQL in an `ExecStartPre` (`scripts/wait_for_postgres.py`, 90 s, killed at
 `TimeoutStartSec=120`; the URL is read from the unit's environment, never from the command

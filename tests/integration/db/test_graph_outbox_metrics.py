@@ -1,4 +1,9 @@
-"""Real PostgreSQL classification proof for graph outbox go/no-go metrics."""
+"""Real PostgreSQL classification proof for graph outbox go/no-go metrics.
+
+The counts are database-wide and the setup rewrites the whole outbox, so the
+module measures a PRIVATE head database (``private_head_engine``), never the
+shared ``brain_test`` where other runs write (ticket a4044c4d).
+"""
 
 from __future__ import annotations
 
@@ -14,10 +19,27 @@ from brain_v42.metrics.collector import MetricsCollector
 pytestmark = pytest.mark.integration
 
 
+def _metrics_engine() -> MagicMock:
+    """A pool double: only the outbox half of ``collect_db_stats`` is under test."""
+    metrics_engine = MagicMock()
+    metrics_engine.sync_engine.pool.size.return_value = 5
+    metrics_engine.sync_engine.pool.checkedout.return_value = 0
+    metrics_engine.sync_engine.pool.checkedin.return_value = 1
+    metrics_engine.sync_engine.pool.overflow.return_value = -4
+    metrics_engine.sync_engine.pool._max_overflow = 10
+    return metrics_engine
+
+
+@pytest.fixture
+def measured_engine(private_head_engine: AsyncEngine) -> AsyncEngine:
+    """The database this module measures: its own, dropped with the module."""
+    return private_head_engine
+
+
 async def test_graph_outbox_metrics_classify_ready_claimed_delayed_and_exhausted(
-    engine: AsyncEngine,
+    measured_engine: AsyncEngine,
 ) -> None:
-    connection = await engine.connect()
+    connection = await measured_engine.connect()
     outer = await connection.begin()
     factory = async_sessionmaker(
         connection,
@@ -90,15 +112,9 @@ async def test_graph_outbox_metrics_classify_ready_claimed_delayed_and_exhausted
             )
         )
 
-        metrics_engine = MagicMock()
-        metrics_engine.sync_engine.pool.size.return_value = 5
-        metrics_engine.sync_engine.pool.checkedout.return_value = 0
-        metrics_engine.sync_engine.pool.checkedin.return_value = 1
-        metrics_engine.sync_engine.pool.overflow.return_value = -4
-        metrics_engine.sync_engine.pool._max_overflow = 10
         graph_outbox = (
             await MetricsCollector(
-                engine=metrics_engine,
+                engine=_metrics_engine(),
                 session_factory=factory,
             ).collect_db_stats()
         )["graph_outbox"]
@@ -114,8 +130,65 @@ async def test_graph_outbox_metrics_classify_ready_claimed_delayed_and_exhausted
             "armed": True,
             "lease_active": True,
             "recovery_active": False,
-            "healthy": True,
+            # An exhausted event is never healthy, even under an armed live lease (1146a1db).
+            "healthy": False,
         }
     finally:
         await outer.rollback()
         await connection.close()
+
+
+async def test_a_pending_row_committed_by_another_writer_never_reaches_the_counts(
+    engine: AsyncEngine,
+    measured_engine: AsyncEngine,
+) -> None:
+    """Ticket a4044c4d, the metrics twin: the counts are database-wide by contract.
+
+    Measuring the shared ``brain_test`` folded every concurrent run's committed
+    pending rows into ``pending``. The session-wide ``engine`` plays that run: it
+    commits one pending row while the measuring transaction is open, and the
+    module's own database must not see it.
+    """
+    entity_id = uuid4()
+    connection = await measured_engine.connect()
+    outer = await connection.begin()
+    try:
+        await connection.execute(
+            sa.text("UPDATE graph_outbox SET delivered_at = clock_timestamp()")
+        )
+        async with engine.begin() as foreign:
+            await foreign.execute(
+                sa.text(
+                    "INSERT INTO brain_entities (id, entity_type, entity_key, scope_kind) "
+                    "VALUES (:id, 'decision', :key, 'global')"
+                ),
+                {"id": entity_id, "key": f"metrics-outbox-foreign-{entity_id}"},
+            )
+            await foreign.execute(
+                sa.text(
+                    "INSERT INTO graph_outbox (entity_id, aggregate_revision, operation, "
+                    "available_at, created_at) VALUES "
+                    "(:id, 1, 'upsert_entity', clock_timestamp(), clock_timestamp())"
+                ),
+                {"id": entity_id},
+            )
+        factory = async_sessionmaker(
+            connection,
+            class_=AsyncSession,
+            expire_on_commit=False,
+            join_transaction_mode="create_savepoint",
+        )
+        graph_outbox = (
+            await MetricsCollector(
+                engine=_metrics_engine(),
+                session_factory=factory,
+            ).collect_db_stats()
+        )["graph_outbox"]
+        assert graph_outbox["pending"] == 0
+    finally:
+        await outer.rollback()
+        await connection.close()
+        async with engine.begin() as foreign:
+            await foreign.execute(
+                sa.text("DELETE FROM brain_entities WHERE id = :id"), {"id": entity_id}
+            )

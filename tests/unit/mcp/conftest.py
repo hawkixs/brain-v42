@@ -29,3 +29,19 @@ def _restore_fastmcp_session_manager() -> Iterator[None]:
         yield
     finally:
         fastmcp_http.StreamableHTTPSessionManager = original
+
+
+@pytest.fixture(autouse=True)
+def _restore_mcp_transport_class() -> Iterator[None]:
+    """Give the SDK's session manager its transport class back after each test.
+
+    ``_install_transport_termination_hook`` substitutes it, for the same want of
+    an extension point and with the same leak between tests if left behind.
+    """
+    from mcp.server import streamable_http_manager
+
+    original = streamable_http_manager.StreamableHTTPServerTransport
+    try:
+        yield
+    finally:
+        streamable_http_manager.StreamableHTTPServerTransport = original
