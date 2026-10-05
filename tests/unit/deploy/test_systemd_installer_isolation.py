@@ -40,6 +40,8 @@ EXPECTED_UNITS = frozenset(
         "brain-v42-automation.service",
         "brain-v42-embedding-backfill.service",
         "brain-v42-embedding-backfill.timer",
+        "brain-v42-logs-rotate.service",
+        "brain-v42-logs-rotate.timer",
     }
 )
 VENDOR_USER_UNIT_DIRS = (

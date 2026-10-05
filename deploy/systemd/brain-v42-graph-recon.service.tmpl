@@ -4,6 +4,9 @@ Documentation=file://__REPO_ROOT__/scripts/rebuild_graph_projection.py
 
 [Service]
 Type=oneshot
+MemoryHigh=1G
+MemoryMax=2G
+# Bound the batch inventory process with headroom for large ledger scans.
 
 # Repo root is injected by deploy/systemd/install.sh from the template.
 WorkingDirectory=__REPO_ROOT__

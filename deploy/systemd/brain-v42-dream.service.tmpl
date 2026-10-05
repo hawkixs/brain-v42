@@ -5,6 +5,9 @@ Documentation=file://__REPO_ROOT__/internal/docs/superpowers/specs/2026-04-05-dr
 
 [Service]
 Type=oneshot
+MemoryHigh=8G
+MemoryMax=16G
+# Bound the agent CLI child tree; multi-GB headroom covers spiky provider workloads.
 
 # Repo root is injected by deploy/systemd/install.sh from the template.
 WorkingDirectory=__REPO_ROOT__
