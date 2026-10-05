@@ -262,7 +262,39 @@ async def derive_capture(
     return UUID(str(inserted)) if inserted is not None else None
 
 
-def _eligible_ids(project_key: str, started_at: datetime, limit: int) -> sa.CompoundSelect[Any]:
+def seen_connection(connection_id: str) -> str:
+    """The value a seen connection is stored under: the tracer's own.
+
+    Auto-open stores a tracer's ``connection_id`` truncated to the column width;
+    recording the same truncation keeps the exact match exact, and a hostile
+    over-long transport id cannot make the insert, hence the whole absorption,
+    fail.
+    """
+    width = getattr(brain_session_connections.c.connection_id.type, "length", None)
+    return connection_id[:width] if width else connection_id
+
+
+def _donor_eligible_ids(
+    tracer: Any, project_key: str, started_at: datetime, limit: int
+) -> sa.Select[Any]:
+    """This donor's ledger rows an explicit capture would accept, THEN bounded.
+
+    Filter first, then limit: bounding the project-wide eligible set before
+    matching it against one donor's ledger could miss that donor's rows on a
+    busy project, silently and differently on each call (the A1 defect of the
+    window stage, fixed there in ``_eligible_rows``).
+    """
+    return (
+        sa.select(brain_session_artifacts.c.knowledge_id)
+        .where(
+            brain_session_artifacts.c.session_id == tracer,
+            brain_session_artifacts.c.knowledge_id.in_(_eligible_ids(project_key, started_at)),
+        )
+        .limit(limit)
+    )
+
+
+def _eligible_ids(project_key: str, started_at: datetime) -> sa.CompoundSelect[Any]:
     """What an EXPLICIT capture would have accepted, and nothing more.
 
     ``_validate_captures`` bounds a requested capture to "same project AND
@@ -279,7 +311,7 @@ def _eligible_ids(project_key: str, started_at: datetime, limit: int) -> sa.Comp
         )
         for table, _knowledge_type in _CAPTURE_TABLES
     ]
-    return sa.union_all(*branches).limit(limit)
+    return sa.union_all(*branches)
 
 
 def _eligible_rows(project_key: str, started_at: datetime) -> sa.CompoundSelect[Any]:
@@ -439,7 +471,7 @@ async def absorb_tracer_ledger(
         async with session.begin_nested():
             await session.execute(
                 pg_insert(brain_session_connections)
-                .values(session_id=target.id, connection_id=connection_id)
+                .values(session_id=target.id, connection_id=seen_connection(connection_id))
                 .on_conflict_do_nothing()
             )
             tracers = (
@@ -497,7 +529,9 @@ async def absorb_tracer_ledger(
                             .where(
                                 brain_session_artifacts.c.session_id == tracer,
                                 brain_session_artifacts.c.knowledge_id.in_(
-                                    _eligible_ids(target.project_key, target.started_at, remaining)
+                                    _donor_eligible_ids(
+                                        tracer, target.project_key, target.started_at, remaining
+                                    )
                                 ),
                             )
                             .values(session_id=target.id, attribution_mode=BY_CONNECTION)

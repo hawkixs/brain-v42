@@ -28,6 +28,7 @@ from brain_v42.db.tables import (
     adrs,
     brain_session_artifacts,
     brain_session_checkpoints,
+    brain_session_connections,
     brain_sessions,
     decisions,
     focus_slots,
@@ -345,12 +346,46 @@ class PgBrainSessionRepo(BasePgRepository):
                 # identity error — the command is what will say "not found".
                 return AbsorptionOutcome(reason="unknown_session")
             self._assert_identity(self._to_model(row), expected_client_key)
+            # Only an OPEN operator session absorbs (03291fdc). The service
+            # absorbs BEFORE the command refuses a closed session, so without this
+            # a retried `end` of an ended predecessor would take its successor's
+            # work from a connection they share; and a tracer is a donor, never
+            # a target.
+            if row["status"] != BrainSessionStatus.OPEN.value:
+                return AbsorptionOutcome(reason="not_open")
+            if row["nature"] == "agent":
+                return AbsorptionOutcome(reason="agent_target")
             target = SimpleNamespace(
                 id=row["id"],
                 project_key=row["project_key"],
                 started_at=row["started_at"],
             )
             return await absorb_tracer_ledger(session, target, connection_id)
+
+    async def record_seen_connection(self, session_id: UUID | str, connection_id: str) -> bool:
+        """Record that an open operator session was seen on this connection.
+
+        For the lifecycle calls that do not absorb (``bind``): the exact stage of
+        derived capture reads this set (03291fdc). Returns whether a row was
+        written; an ended session or a tracer records nothing.
+        """
+        from brain_v42.db.session_derived_capture import seen_connection  # noqa: PLC0415
+
+        candidate = sa.select(
+            brain_sessions.c.id, sa.literal(seen_connection(connection_id))
+        ).where(
+            brain_sessions.c.id == session_id,
+            brain_sessions.c.status == BrainSessionStatus.OPEN.value,
+            sa.or_(brain_sessions.c.nature.is_(None), brain_sessions.c.nature != "agent"),
+        )
+        statement = (
+            pg_insert(brain_session_connections)
+            .from_select(["session_id", "connection_id"], candidate)
+            .on_conflict_do_nothing()
+            .returning(brain_session_connections.c.session_id)
+        )
+        async with self.transaction() as session:
+            return (await session.execute(statement)).first() is not None
 
     async def observe(self, session_id: UUID | str, *, now: datetime | None = None) -> bool:
         """Stamp the observation of an open `agent` tracer. Returns "still open".
