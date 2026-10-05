@@ -141,6 +141,7 @@ async def test_an_ended_predecessor_never_takes_its_successors_work(
                 next_focus="focus",
                 expected_focus_revision=first.session.started_focus_revision,
                 nothing_to_capture_reason=None,
+                allow_focus_shrink=True,  # this test is about capture, not about the base focus
             )
             second = await repo.start(absorption_project, "second")
             second_id = UUID(str(second.session.id))
