@@ -221,4 +221,5 @@ def test_promote_smoke_renders_the_canonical_project_and_allows_an_isolated_outp
     content = PROMOTE_SMOKE.read_text(encoding="utf-8")
 
     assert 'scripts/dream/phase_promote.md "$PROJECT_KEY"' in content
-    assert 'OUT_DIR="${OUT_DIR:-/tmp/promote_smoke_${DATE}}"' in content
+    assert 'OUT_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/brain-v42"' in content
+    assert 'OUT_DIR="$OUT_ROOT/promote_smoke_${DATE}"' in content

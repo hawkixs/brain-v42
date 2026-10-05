@@ -74,7 +74,14 @@ fi
 
 POOL_JSON=$(cat "$FIXTURE")
 DATE=$(date +%Y-%m-%d)
-OUT_DIR="${OUT_DIR:-/tmp/promote_smoke_${DATE}}"
+if [[ -z "${OUT_DIR:-}" ]]; then
+  OUT_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/brain-v42"
+  [[ ! -L "$OUT_ROOT" ]] || { echo "Refusing symlink output directory: $OUT_ROOT" >&2; exit 2; }
+  mkdir -p "$OUT_ROOT"
+  chmod 700 "$OUT_ROOT"
+  [[ -O "$OUT_ROOT" ]] || { echo "Output directory is not owned by current user: $OUT_ROOT" >&2; exit 2; }
+  OUT_DIR="$OUT_ROOT/promote_smoke_${DATE}"
+fi
 mkdir -p "$OUT_DIR"
 
 # Optional: SYNTH log to prepend (mimic dream.sh dep injection).

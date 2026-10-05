@@ -42,7 +42,7 @@ DREAM_SH = REPO_ROOT / "scripts" / "dream.sh"
 _HEADER_ANCHOR = 'MANIFEST_FILE="$LOG_DIR/'
 _HEADER_END_ANCHOR = "manifest_put meta started"
 _TRUNCATE_ANCHOR = ': > "$MANIFEST_FILE"'
-_LOCK_ANCHOR = 'LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/brain-v42-dream.lock"'
+_LOCK_ANCHOR = 'if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then'
 _GLOBAL_PHASES_ANCHOR = "DREAM_GLOBAL_PHASES=(extract sweep verify)"
 _LOOP_ANCHOR = 'for phase_spec in "${PHASES[@]}"; do'
 _LOOP_END_ANCHOR = 'manifest_put expected "$name" "$PROJECT_KEY"'
@@ -315,6 +315,36 @@ def _run_lock_then_header(
         return _run(harness), manifest_path
     with _lock_taken(runtime_dir / "brain-v42-dream.lock"):
         return _run(harness), manifest_path
+
+
+def test_lock_location_preserves_runtime_path_and_uses_private_state_fallback(
+    tmp_path: Path,
+) -> None:
+    content = _source()
+    assert 'LOCK_FILE="$LOCK_DIR/brain-v42-dream.lock"' in content
+    assert 'LOCK_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/brain-v42"' in content
+    assert 'LOCK_FILE="$LOCK_DIR/dream.lock"' in content
+
+    state_root = tmp_path / "state"
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir()
+    harness = "\n".join(
+        [
+            "set -euo pipefail",
+            f"export HOME={shlex.quote(str(tmp_path))}",
+            f"export XDG_STATE_HOME={shlex.quote(str(state_root))}",
+            "unset XDG_RUNTIME_DIR",
+            f"LOG_DIR={shlex.quote(str(log_dir))}",
+            'log() { printf "%s\\n" "$*"; }',
+            _lock_then_header_block(),
+            "echo HEADER-REACHED",
+        ]
+    )
+    fallback_lock = state_root / "brain-v42" / "dream.lock"
+    with _lock_taken(fallback_lock):
+        proc = _run(harness)
+    assert proc.returncode == 0, proc.stderr
+    assert "already running" in proc.stdout
 
 
 def test_a_locked_out_invocation_never_erases_the_running_nights_manifest(

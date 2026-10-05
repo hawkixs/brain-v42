@@ -3,18 +3,10 @@
 
 Usage:
     python scripts/migrate_neo4j_to_pg.py \\
-        --neo4j-password secret \\
-        --postgres-url postgresql+asyncpg://brain:brain@localhost:5433/brain
+        --apply
 
-    # Dry run (no DB writes):
-    python scripts/migrate_neo4j_to_pg.py --neo4j-password secret --dry-run
-
-    # Regenerate embeddings via ONNX EmbeddingService:
-    python scripts/migrate_neo4j_to_pg.py --neo4j-password secret --regen-embeddings
-
-    # Migrate only specific entity types:
-    python scripts/migrate_neo4j_to_pg.py --neo4j-password secret \\
-        --entity-types Decision,Learning
+Set NEO4J_PASSWORD and POSTGRES_URL in the environment. The default is dry-run.
+Secrets are never accepted in command-line arguments.
 
 IMPORTANT: This script COPIES data. Neo4j is never modified.
 Run AFTER applying Alembic migrations: alembic upgrade head
@@ -30,6 +22,7 @@ import sys
 import uuid
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import urlsplit
 
 import structlog
 
@@ -511,8 +504,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--neo4j-password",
-        required=True,
-        help="Neo4j password (required)",
+        default=None,
+        help="Deprecated and refused; set NEO4J_PASSWORD instead",
     )
     parser.add_argument(
         "--postgres-url",
@@ -523,9 +516,9 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--dry-run",
+        "--apply",
         action="store_true",
-        help="Print what would be migrated; do NOT write to PostgreSQL.",
+        help="Write migrated data to PostgreSQL (default is dry-run).",
     )
     parser.add_argument(
         "--regen-embeddings",
@@ -546,12 +539,29 @@ def parse_args() -> argparse.Namespace:
         default=50,
         help="Number of records per PG insert batch (default: 50).",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.neo4j_password is not None:
+        parser.error("--neo4j-password is refused; set NEO4J_PASSWORD in the environment")
+    if args.postgres_url and urlsplit(args.postgres_url).password is not None:
+        parser.error(
+            "--postgres-url must not contain a password; use POSTGRES_URL in the environment"
+        )
+    return args
 
 
 async def main() -> int:
     """Main async entry point. Returns exit code (0=success, 1=error)."""
     args = parse_args()
+    if args.neo4j_password is not None:
+        logger.error(
+            "secret_argv_refused", message="Set NEO4J_PASSWORD; do not pass secrets in argv."
+        )
+        return 1
+    args.neo4j_password = os.environ.get("NEO4J_PASSWORD")
+    if not args.neo4j_password:
+        logger.error("neo4j_password_missing", message="Set NEO4J_PASSWORD in the environment.")
+        return 1
+    args.dry_run = not args.apply
 
     # Validate neo4j driver availability
     if not NEO4J_AVAILABLE:
