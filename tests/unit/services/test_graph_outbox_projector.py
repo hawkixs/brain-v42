@@ -8,6 +8,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+import structlog
 
 from brain_v42.services.graph_outbox_projector import GraphOutboxProjector
 from brain_v42.services.neo4j_graph_projection_writer import (
@@ -53,6 +54,8 @@ class _FencedOutboxRepo:
         self.failed: list[tuple[_ProjectionClaim, str, int]] = []
         self.acquired = asyncio.Event()
         self.advance_result: _ProjectionLeadership | None = None
+        self.attempts: dict[UUID, int] = {}
+        self.exhausted: set[UUID] = set()
 
     async def acquire_leadership(
         self,
@@ -77,7 +80,9 @@ class _FencedOutboxRepo:
         max_attempts: int,
     ) -> list[_ProjectionClaim]:
         self.trace.append(("repo.claim_pending", leadership, limit, lease_seconds, max_attempts))
-        return self.claims[:limit]
+        return [claim for claim in self.claims if claim.event.event_id not in self.exhausted][
+            :limit
+        ]
 
     async def renew_claim(
         self,
@@ -102,6 +107,10 @@ class _FencedOutboxRepo:
     ) -> bool:
         self.trace.append(("repo.mark_failed", claim, error_code, max_attempts))
         self.failed.append((claim, error_code, max_attempts))
+        attempts = self.attempts.get(claim.event.event_id, 0) + 1
+        self.attempts[claim.event.event_id] = attempts
+        if attempts >= max_attempts:
+            self.exhausted.add(claim.event.event_id)
         return self.fail_result
 
     async def release_leadership(self, leadership: _ProjectionLeadership) -> bool:
@@ -537,22 +546,44 @@ async def test_fenced_batch_stops_without_cas_on_stale_neo_generation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fenced_batch_keeps_history_conflict_pending() -> None:
+async def test_history_conflict_is_retried_then_exhausted() -> None:
     subject = _subject(event_count=2)
-    subject.writer.apply_outcomes = [
-        ProjectionOutcome.CONFLICT,
-        ProjectionOutcome.APPLIED,
-    ]
+    subject.writer.apply_outcomes = [ProjectionOutcome.CONFLICT] * 3
+    subject.repo.renew_results.clear()
 
-    await subject.projector._project_batch()
+    for _ in range(3):
+        subject.repo.renew_results.append(subject.renewed[0])
+        await subject.projector._project_batch()
 
-    assert subject.trace == [
-        *_armed_batch_prefix(subject),
-        ("repo.renew_claim", subject.claims[0], 11),
-        ("writer.apply", subject.renewed[0]),
-    ]
+    assert len(subject.repo.failed) == 3
+    applied = [entry for entry in subject.writer.trace if entry[0] == "writer.apply"]
+    assert len(applied) == 3, "a conflict must end its batch: the second claim stays untouched"
+    assert all(item[1:] == ("invalid_event", 3) for item in subject.repo.failed)
+    assert subject.renewed[0].event.event_id in subject.repo.exhausted
     assert subject.repo.delivered == []
-    assert subject.repo.failed == []
+
+
+@pytest.mark.asyncio
+async def test_run_loop_logs_batch_exception_details(monkeypatch: pytest.MonkeyPatch) -> None:
+    subject = _subject()
+    failure = RuntimeError("Neo4j transport unavailable")
+
+    async def fail_batch() -> None:
+        raise failure
+
+    async def stop_sleep(_interval: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(subject.projector, "_project_batch", fail_batch)
+    monkeypatch.setattr(asyncio, "sleep", stop_sleep)
+
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(asyncio.CancelledError):
+            await subject.projector._run_loop()
+
+    event = next(log for log in logs if log["event"] == "graph_outbox_projector.batch_failed")
+    assert event["error"] == "RuntimeError"
+    assert event["exc_info"]
 
 
 @pytest.mark.asyncio

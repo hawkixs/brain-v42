@@ -218,9 +218,22 @@ async def read_projection_state(session: AsyncSession) -> ProjectionState:
     )
 
 
+#: Oldest pending age past which the projector is not healthy. The batch interval is 5 s and
+#: a failing event backs off 1, 2, 4, ... 256 s (511 s before exhaustion at 10 attempts): five
+#: minutes absorbs a burst and the first retries, and turns red well before an event that keeps
+#: failing exhausts.
+GRAPH_PROJECTION_MAX_HEALTHY_LAG_SECONDS = 300
+
+
 def projection_health(state: ProjectionState) -> bool:
     """Keep every consumer on the one conservative definition of projector health."""
-    return state.armed and state.lease_active and not state.recovery_active
+    return (
+        state.armed
+        and state.lease_active
+        and not state.recovery_active
+        and state.exhausted == 0
+        and state.oldest_pending_age_seconds <= GRAPH_PROJECTION_MAX_HEALTHY_LAG_SECONDS
+    )
 
 
 def canonicalize_relation_endpoints(

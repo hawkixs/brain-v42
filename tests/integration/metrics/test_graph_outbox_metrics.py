@@ -114,7 +114,8 @@ async def test_graph_outbox_metrics_classify_ready_claimed_delayed_and_exhausted
             "armed": True,
             "lease_active": True,
             "recovery_active": False,
-            "healthy": True,
+            # An exhausted event is never healthy, even under an armed live lease (1146a1db).
+            "healthy": False,
         }
     finally:
         await outer.rollback()
