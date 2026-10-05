@@ -4,6 +4,9 @@ Documentation=file://__REPO_ROOT__/internal/docs/runbooks/2026-08-01-dream-extra
 
 [Service]
 Type=oneshot
+MemoryHigh=2G
+MemoryMax=4G
+# Bound the batch recovery worker while allowing a large embedding workload.
 WorkingDirectory=__REPO_ROOT__
 EnvironmentFile=%h/.config/brain-v42/mcp-token.env
 UMask=0077

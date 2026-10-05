@@ -357,6 +357,8 @@ class TestAutomationTemplate:
             "ExecStart=__REPO_ROOT__/.venv/bin/python -m brain_v42.automation",
             "UMask=0077",
             "NoNewPrivileges=true",
+            "MemoryHigh=1G",
+            "MemoryMax=1536M",
             "PrivateUsers=true",
             "PrivateTmp=true",
             "PrivateDevices=true",
