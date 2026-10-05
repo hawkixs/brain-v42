@@ -52,3 +52,10 @@ def test_the_nightly_analyze_keeps_embeddings_and_its_wal_threshold() -> None:
 
     assert "--embeddings" in invocation.split()
     assert re.search(r"--wal-checkpoint-threshold \d+", invocation)
+
+
+def test_logs_always_use_persistent_state_even_with_runtime_directory() -> None:
+    content = SCRIPT.read_text(encoding="utf-8")
+    assert 'STATE_ROOT="${XDG_STATE_HOME:-$HOME/.local/state}/brain-v42"' in content
+    assert 'LOG_DIR="$STATE_ROOT"' in content
+    assert 'STATE_ROOT="$XDG_RUNTIME_DIR/brain-v42"' not in content

@@ -428,6 +428,7 @@ def _run_command(
             args,
             capture_output=True,
             check=False,
+            timeout=60,
             cwd=working_directory,
             env=environment,
             text=True,

@@ -339,8 +339,41 @@ async def test_end_forwards_fail_closed_completion_parameters() -> None:
         next_focus="Run integration tests",
         expected_focus_revision=8,
         nothing_to_capture_reason="No durable knowledge produced",
+        allow_focus_shrink=False,
     )
     assert result is service_result
+
+
+async def test_end_forwards_the_operator_shrink_override() -> None:
+    server, service, _ = _registered_server()
+    service.end = AsyncMock(return_value=_result("BrainSessionEndResult", session=MagicMock()))
+
+    await (await _tool(server, "brain_session_end")).fn(
+        session_id=uuid4(),
+        expected_client_key="task-a",
+        summary="Lifecycle implemented",
+        next_focus="Short",
+        expected_focus_revision=8,
+        allow_focus_shrink=True,
+    )
+
+    assert service.end.await_args.kwargs["allow_focus_shrink"] is True
+
+
+async def test_end_publishes_the_replacement_and_the_shrink_guard() -> None:
+    server, _, _ = _registered_server()
+    tool = await _tool(server, "brain_session_end")
+    properties = tool.parameters["properties"]
+
+    assert properties["allow_focus_shrink"]["type"] == "boolean"
+    assert properties["allow_focus_shrink"]["default"] is False
+    override = properties["allow_focus_shrink"]["description"]
+    assert "operator" in override and "70%" in override and "base_focus_shrink" in override
+    assert "allow_focus_shrink" not in tool.parameters.get("required", [])
+    # `next_focus` itself says it replaces the whole project focus (unbound session).
+    assert "REMPLACE" in properties["next_focus"]["description"]
+    assert "70 %" in properties["next_focus"]["description"]
+    assert "REPLACES" in tool.description and "base_focus_shrink" in tool.description
 
 
 async def test_list_forwards_filters_and_pagination() -> None:

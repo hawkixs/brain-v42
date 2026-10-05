@@ -1481,6 +1481,7 @@ class SudoShrikInstaller:
             check=False,
             env=self._environment(),
             text=True,
+            timeout=60,
         )
         _safe_failure(result.returncode != 0, "non-interactive Shrik privilege is unavailable")
 
@@ -1507,6 +1508,7 @@ class SudoShrikInstaller:
                 check=False,
                 env=self._environment(),
                 text=True,
+                timeout=60,
             )
             failed = result.returncode != 0
         except Exception:
@@ -1578,6 +1580,7 @@ class DockerGatewayProbe:
                 check=False,
                 text=True,
                 cwd=self.brain_root,
+                timeout=60,
                 env={
                     key: value
                     for key, value in os.environ.items()
