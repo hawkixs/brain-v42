@@ -49,6 +49,8 @@ import uvicorn
 from _pytest.outcomes import Failed
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from tests.integration.conftest import SHARED_DB_RUN_APPLICATION_NAME
+
 pytestmark = pytest.mark.integration
 
 _UUID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.I)
@@ -187,11 +189,16 @@ async def _stop_or_fail(serving: asyncio.Task[None], port: int) -> None:
     )
 
 
-_BACKENDS = sa.text("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()")
+#: The run markers (``shared_database_run``) are excluded: every live test run on
+#: this database holds one by design, and they open whenever a run asks for it.
+_BACKENDS = sa.text(
+    "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
+    "AND application_name IS DISTINCT FROM :marker"
+)
 
 
 async def _backend_count(engine: AsyncEngine) -> int:
-    rows = await _read_rows(engine, _BACKENDS, {})
+    rows = await _read_rows(engine, _BACKENDS, {"marker": SHARED_DB_RUN_APPLICATION_NAME})
     return int(rows[0][0] or 0)
 
 
