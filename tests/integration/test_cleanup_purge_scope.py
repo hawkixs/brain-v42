@@ -27,7 +27,11 @@ import uuid
 import pytest
 import sqlalchemy as sa
 
-from tests.integration.conftest import purge_integration_rows
+from tests.integration.conftest import (
+    INTEGRATION_DB_URL,
+    purge_integration_rows,
+    shared_database_run,
+)
 from tests.integration.dream.test_promote_prepare_provenance import make_promote_project_key
 
 pytestmark = pytest.mark.integration
@@ -71,7 +75,7 @@ async def test_the_promote_fixture_key_is_actually_purged(engine, db_session) ->
     await db_session.commit()
 
     async with engine.begin() as conn:
-        await purge_integration_rows(conn)
+        await purge_integration_rows(conn, only_project_keys=[key])
 
     remaining = (
         await db_session.execute(
@@ -97,7 +101,7 @@ async def test_the_purge_leaves_a_non_integration_key_alone(engine, db_session) 
     await db_session.commit()
     try:
         async with engine.begin() as conn:
-            await purge_integration_rows(conn)
+            await purge_integration_rows(conn, only_project_keys=[key])
 
         remaining = (
             await db_session.execute(
@@ -147,4 +151,77 @@ async def test_accumulated_survivors_do_not_evict_a_freshly_matured_row(
         )
     finally:
         async with engine.begin() as conn:
-            await purge_integration_rows(conn)
+            await purge_integration_rows(conn, only_project_keys=[old_key, new_key])
+
+
+# --- Ticket 8409719c: one run's purge must never erase another run's rows ------
+#
+# Reproduced 2026-10-05: test_session_capture_e2e.py passes 9/9 alone and fails
+# 7/9 while another process runs this purge in a loop — its projects and
+# sessions vanish mid-test ("Unknown project", "Session ... was not found").
+# The prefix says WHAT a test wrote, never WHICH run wrote it.
+
+
+def _probe_lock_key() -> int:
+    """A lock key of its own, so the probe never contends with the real run marker."""
+    return uuid.uuid4().int % (2**62)
+
+
+async def _count_learnings(engine, project_key: str) -> int:
+    async with engine.connect() as conn:
+        return (
+            await conn.execute(
+                sa.text("SELECT count(*) FROM learnings WHERE project_key = :pk"),
+                {"pk": project_key},
+            )
+        ).scalar_one()
+
+
+async def test_the_end_of_run_purge_spares_a_run_still_in_progress(engine, db_session) -> None:
+    lock_key = _probe_lock_key()
+    key = make_promote_project_key()
+    await _seed(db_session, key, access_count_human=1, age_days=1)
+    await db_session.commit()
+    other_run = await engine.connect()
+    try:
+        await other_run.execute(sa.text("SELECT pg_advisory_lock_shared(:key)"), {"key": lock_key})
+        async with shared_database_run(INTEGRATION_DB_URL, lock_key=lock_key) as run:
+            pass
+        assert run.purged is False
+        assert await _count_learnings(engine, key) == 1, (
+            "a run that finished erased the rows of a run still in progress"
+        )
+    finally:
+        await other_run.close()
+        async with engine.begin() as conn:
+            await purge_integration_rows(conn, only_project_keys=[key])
+
+
+async def test_the_last_run_out_purges(engine, db_session) -> None:
+    key = make_promote_project_key()
+    await _seed(db_session, key, access_count_human=1, age_days=1)
+    await db_session.commit()
+
+    async with shared_database_run(INTEGRATION_DB_URL, lock_key=_probe_lock_key()) as run:
+        pass
+
+    assert run.purged is True
+    assert await _count_learnings(engine, key) == 0
+
+
+async def test_a_narrowed_purge_leaves_the_other_integration_keys_alone(engine, db_session) -> None:
+    mine, theirs = make_promote_project_key(), make_promote_project_key()
+    await _seed(db_session, mine, access_count_human=1, age_days=1)
+    await _seed(db_session, theirs, access_count_human=1, age_days=1)
+    await db_session.commit()
+    try:
+        async with engine.begin() as conn:
+            await purge_integration_rows(conn, only_project_keys=[mine])
+
+        assert await _count_learnings(engine, mine) == 0
+        assert await _count_learnings(engine, theirs) == 1, (
+            "a purge narrowed to one test's keys erased another integration key"
+        )
+    finally:
+        async with engine.begin() as conn:
+            await purge_integration_rows(conn, only_project_keys=[mine, theirs])

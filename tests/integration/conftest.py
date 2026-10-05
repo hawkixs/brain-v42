@@ -26,8 +26,9 @@ import re
 import subprocess
 import sys
 import warnings
-from collections.abc import Callable, Iterator
-from contextlib import ExitStack
+from collections.abc import AsyncIterator, Callable, Iterator, Sequence
+from contextlib import ExitStack, asynccontextmanager
+from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -860,99 +861,153 @@ _INTEGRATION_PROJECT_PREDICATE = (
 )
 
 
-async def purge_integration_rows(conn: Any) -> None:
+def _integration_key(column: str, *, narrowed: bool) -> str:
+    """The purge predicate on one column, optionally narrowed to ``:keys``.
+
+    Narrowing only ever SHRINKS the prefix predicate: a key outside ``integ-`` /
+    ``integ_`` stays out of reach even when a caller names it.
+    """
+    prefix = f"({column} LIKE 'integ-%' OR {column} LIKE 'integ\\_%' ESCAPE '\\')"
+    if not narrowed:
+        return prefix
+    return f"({prefix} AND {column} = ANY(:keys))"
+
+
+async def purge_integration_rows(
+    conn: Any,
+    *,
+    only_project_keys: Sequence[str] | None = None,
+) -> None:
     """Delete every row whose project key carries the ``integ-`` / ``integ_`` prefix.
 
     Extracted from the session fixture so a test can EXERCISE the purge instead of
     trusting it. A teardown nobody can call is a teardown nobody can verify — and
     this one silently spared every fixture that wrote under a real project key.
 
+    ``only_project_keys`` narrows the purge to the keys a test wrote itself. A test
+    that exercises the purge mid-run MUST pass it: the bare prefix also matches
+    every concurrent run's rows on the shared ``brain_test`` (ticket 8409719c).
+
     Source-table deletes fire migration 033 registry triggers, so canonical
     ledger rows are purged only after every source row and project context has
     been removed.
     """
-    await conn.execute(
-        sa.text(
-            """
-            DELETE FROM ticket_extraction_proposals AS proposal
-            WHERE proposal.target_project LIKE 'integ-%'
-               OR proposal.target_project LIKE 'integ\\_%' ESCAPE '\\'
-               OR proposal.ticket_id IN (
-                   SELECT ticket.id
-                   FROM tickets AS ticket
-                   WHERE ticket.from_project LIKE 'integ-%'
-                      OR ticket.from_project LIKE 'integ\\_%' ESCAPE '\\'
-                      OR ticket.to_project LIKE 'integ-%'
-                      OR ticket.to_project LIKE 'integ\\_%' ESCAPE '\\'
-               )
-            """
-        )
+    narrowed = only_project_keys is not None
+    params: dict[str, Any] = {"keys": list(only_project_keys)} if narrowed else {}
+
+    def key(column: str) -> str:
+        return _integration_key(column, narrowed=narrowed)
+
+    integration_tickets = (
+        "SELECT ticket.id FROM tickets AS ticket "
+        f"WHERE {key('ticket.from_project')} OR {key('ticket.to_project')}"
     )
-    await conn.execute(
-        sa.text(
-            """
-            DELETE FROM ticket_messages AS message
-            WHERE message.author_project LIKE 'integ-%'
-               OR message.author_project LIKE 'integ\\_%' ESCAPE '\\'
-               OR message.ticket_id IN (
-                   SELECT ticket.id
-                   FROM tickets AS ticket
-                   WHERE ticket.from_project LIKE 'integ-%'
-                      OR ticket.from_project LIKE 'integ\\_%' ESCAPE '\\'
-                      OR ticket.to_project LIKE 'integ-%'
-                      OR ticket.to_project LIKE 'integ\\_%' ESCAPE '\\'
-               )
-            """
-        )
+    statements = [
+        "DELETE FROM ticket_extraction_proposals AS proposal "
+        f"WHERE {key('proposal.target_project')} "
+        f"OR proposal.ticket_id IN ({integration_tickets})",
+        "DELETE FROM ticket_messages AS message "
+        f"WHERE {key('message.author_project')} "
+        f"OR message.ticket_id IN ({integration_tickets})",
+        f"DELETE FROM tickets WHERE {key('from_project')} OR {key('to_project')}",
+        *(f"DELETE FROM {table} WHERE {key('project_key')}" for table in _TABLES_WITH_PROJECT_KEY),
+        f"DELETE FROM project_contexts WHERE {key('project_key')}",
+        "DELETE FROM entity_relations AS relation "
+        "USING brain_entities AS source, brain_entities AS target "
+        "WHERE source.id = relation.source_entity_id "
+        "AND target.id = relation.target_entity_id "
+        f"AND ({key('source.project_key')} OR {key('target.project_key')})",
+        f"DELETE FROM brain_entities WHERE {key('project_key')}",
+        f"DELETE FROM projects WHERE {key('project_key')}",
+    ]
+    for statement in statements:
+        await conn.execute(sa.text(statement), params)  # fixed internal SQL only
+
+
+#: Advisory lock that marks "a test run is using this database". Every run holds
+#: it SHARED for its whole life; the end-of-run purge needs it EXCLUSIVE, which
+#: it only gets once no other run is left. Advisory locks are per database, so
+#: the key only ever meets other test runs on the same ``brain_test``. Derived
+#: once: sha256(b"brain-v42/tests/shared-brain-test-run")[:8], signed.
+SHARED_DB_RUN_LOCK_KEY = -3019483983849561589
+
+#: ``application_name`` of the marker connection, so a backend-count witness can
+#: tell the run marker (one per live run, by design) from a leaked connection.
+SHARED_DB_RUN_APPLICATION_NAME = "brain-v42-test-run-marker"
+
+
+@dataclass
+class SharedDatabaseRun:
+    """What one test run did to the shared database when it ended."""
+
+    purged: bool = False
+
+
+@asynccontextmanager
+async def shared_database_run(
+    url: str,
+    *,
+    lock_key: int = SHARED_DB_RUN_LOCK_KEY,
+) -> AsyncIterator[SharedDatabaseRun]:
+    """Mark a test run on the shared database; the last run out purges.
+
+    Ticket 8409719c. Every run's rows carry the same ``integ-`` prefix, so the
+    prefix says WHAT a test wrote, never WHICH run wrote it, and an
+    unconditional end-of-run purge erased the projects and sessions of runs
+    still in progress (reproduced 2026-10-05: 9/9 alone, 7 failures under a
+    concurrent purge). The marker is held on a dedicated connection taken BEFORE
+    the run writes anything; a run that starts while another one purges waits
+    for that purge to end. A run that is not the last one out skips the purge:
+    the last one erases every run's rows at once.
+
+    Runs that do not take the marker (older checkouts) are not protected.
+    """
+    run = SharedDatabaseRun()
+    engine = create_async_engine(
+        url,
+        poolclass=NullPool,
+        echo=False,
+        connect_args={"server_settings": {"application_name": SHARED_DB_RUN_APPLICATION_NAME}},
     )
-    await conn.execute(
-        sa.text(
-            """
-            DELETE FROM tickets
-            WHERE from_project LIKE 'integ-%'
-               OR from_project LIKE 'integ\\_%' ESCAPE '\\'
-               OR to_project LIKE 'integ-%'
-               OR to_project LIKE 'integ\\_%' ESCAPE '\\'
-            """
-        )
-    )
-    for table in _TABLES_WITH_PROJECT_KEY:
-        await conn.execute(
-            sa.text(  # noqa: S608 - fixed internal table names only
-                f"DELETE FROM {table} WHERE {_INTEGRATION_PROJECT_PREDICATE}"
-            )
-        )
-    await conn.execute(
-        sa.text(f"DELETE FROM project_contexts WHERE {_INTEGRATION_PROJECT_PREDICATE}")
-    )
-    await conn.execute(
-        sa.text(
-            """
-            DELETE FROM entity_relations AS relation
-            USING brain_entities AS source, brain_entities AS target
-            WHERE source.id = relation.source_entity_id
-              AND target.id = relation.target_entity_id
-              AND (
-                  source.project_key LIKE 'integ-%'
-                  OR source.project_key LIKE 'integ\\_%' ESCAPE '\\'
-                  OR target.project_key LIKE 'integ-%'
-                  OR target.project_key LIKE 'integ\\_%' ESCAPE '\\'
-              )
-            """
-        )
-    )
-    await conn.execute(
-        sa.text(f"DELETE FROM brain_entities WHERE {_INTEGRATION_PROJECT_PREDICATE}")
-    )
-    await conn.execute(sa.text(f"DELETE FROM projects WHERE {_INTEGRATION_PROJECT_PREDICATE}"))
+    try:
+        marker = await engine.connect()
+        try:
+            await marker.execute(sa.text("SELECT pg_advisory_lock_shared(:key)"), {"key": lock_key})
+            # A session-level lock outlives its transaction: committing keeps the
+            # marker connection from sitting idle in transaction for the whole run.
+            await marker.commit()
+            yield run
+        finally:
+            # Closing the connection releases the shared lock with it.
+            await marker.close()
+        async with engine.connect() as purge:
+            last_out = (
+                await purge.execute(sa.text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_key})
+            ).scalar_one()
+            await purge.commit()
+            if last_out:
+                try:
+                    async with purge.begin():
+                        await purge_integration_rows(purge)
+                    run.purged = True
+                finally:
+                    await purge.execute(
+                        sa.text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key}
+                    )
+    finally:
+        await engine.dispose()
 
 
 @pytest_asyncio.fixture(scope="session")
-async def cleanup_test_data(engine: AsyncEngine) -> None:  # type: ignore[misc]
-    """Run :func:`purge_integration_rows` once every integration test has finished."""
-    yield  # type: ignore[misc]
-    async with engine.begin() as conn:
-        await purge_integration_rows(conn)
+async def cleanup_test_data() -> AsyncIterator[None]:
+    """Mark this run on ``brain_test`` and purge if it is the last one out.
+
+    Bound to the shared URL, never to the ``engine`` fixture: under
+    ``tests/integration/db`` that fixture is overridden by a disposable database,
+    and the purge must still reach ``brain_test``.
+    """
+    async with shared_database_run(_get_integration_db_url_or_skip()):
+        yield
 
 
 # ---------------------------------------------------------------------------
