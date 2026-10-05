@@ -68,6 +68,7 @@ from brain_v42.repositories.pg_snippet import PgSnippetRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
 from brain_v42.safe_logging import safe_console_renderer
 from brain_v42.services.adr_service import ADRService
+from brain_v42.services.agent_trace_net import AgentTraceNet, agent_trace_net_is_armed
 from brain_v42.services.auto_linker import AutoLinker
 from brain_v42.services.brain_service import BrainService
 from brain_v42.services.decision_service import DecisionService
@@ -303,6 +304,19 @@ async def app_lifecycle(
             )
             cleanup.push_async_callback(plan_index_refresher.stop)
             await plan_index_refresher.start()
+
+        if agent_trace_net_is_armed(settings):
+            from brain_v42.repositories.pg_brain_session import (  # noqa: PLC0415
+                PgBrainSessionRepo,
+            )
+
+            agent_trace_net = AgentTraceNet(
+                close_inactive=PgBrainSessionRepo(
+                    get_session_factory()
+                ).close_inactive_agent_traces,
+            )
+            cleanup.push_async_callback(agent_trace_net.stop)
+            await agent_trace_net.start()
 
         # Keep a strong reference so the GC cannot collect the task mid-flight.
         # This one-shot covers t=0; the refresher above, when armed, sleeps its
