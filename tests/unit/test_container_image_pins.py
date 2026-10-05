@@ -2872,16 +2872,58 @@ def test_gate_boundary_python_accepts_direct_static_gateway_compose_probe(
     checker: ModuleType | _MissingChecker, tmp_path: Path
 ) -> None:
     _write_valid_repo(tmp_path)
-    (tmp_path / "scripts/release_worker.py").write_text(
-        "import json\nimport subprocess\n"
+    (tmp_path / "scripts/rotate_codex_gateway_credentials.py").write_text(
+        "import json\nimport os\nimport subprocess\n"
         "_GATEWAY_PROBE_SCRIPT = 'print(1)'\n"
-        "new_token = 'new'\nold_token = 'old'\n"
-        "subprocess.run(\n"
-        "    ['docker', 'compose', '-f', 'docker-compose.yml', 'exec', '-T', "
-        "'brain-codex-gateway', 'python', '-c', _GATEWAY_PROBE_SCRIPT],\n"
-        "    input=json.dumps({'new': new_token, 'old': old_token}), capture_output=True, "
-        "check=False, text=True,\n"
-        ")\n"
+        "class DockerGatewayProbe:\n"
+        "    def __init__(self, brain_root):\n"
+        "        self.brain_root = brain_root\n"
+        "    def prove(self, old_token, new_token):\n"
+        "        subprocess.run(\n"
+        "            ['docker', 'compose', '--project-name', 'brain-v42', '-f', "
+        "'docker-compose.yml', 'exec', '-T', 'brain-codex-gateway', 'python', '-c', "
+        "_GATEWAY_PROBE_SCRIPT],\n"
+        "            input=json.dumps({'new': new_token, 'old': old_token}), "
+        "capture_output=True, check=False, text=True, cwd=self.brain_root,\n"
+        "            env={key: value for key, value in os.environ.items() "
+        "if not key.startswith('COMPOSE_')},\n"
+        "        )\n"
+        "        subprocess.run(\n"
+        "            ['docker', 'compose', '--project-name', 'brain-v42', '-f', "
+        "'docker-compose.yml', 'exec', '-T', 'brain-codex-gateway', 'python', '-c', "
+        "_GATEWAY_PROBE_SCRIPT],\n"
+        "            input=json.dumps({'new': new_token, 'old': old_token}), "
+        "capture_output=True, check=False, text=True, cwd=self.brain_root, timeout=60,\n"
+        "            env={key: value for key, value in os.environ.items() "
+        "if not key.startswith('COMPOSE_')},\n"
+        "        )\n"
+    )
+
+    assert _errors(checker, tmp_path) == []
+
+
+@pytest.mark.parametrize("timeout", ["some_name", "0", "-1", "1.5", "True"])
+def test_gate_boundary_python_rejects_dynamic_or_nonpositive_gateway_probe_timeout(
+    checker: ModuleType | _MissingChecker, tmp_path: Path, timeout: str
+) -> None:
+    _write_valid_repo(tmp_path)
+    (tmp_path / "scripts/rotate_codex_gateway_credentials.py").write_text(
+        "import json\nimport subprocess\nimport os\n"
+        "_GATEWAY_PROBE_SCRIPT = 'print(1)'\n"
+        "class DockerGatewayProbe:\n"
+        "    def __init__(self, brain_root):\n"
+        "        self.brain_root = brain_root\n"
+        "    def prove(self, old_token, new_token):\n"
+        "        subprocess.run(\n"
+        "            ['docker', 'compose', '--project-name', 'brain-v42', '-f', "
+        "'docker-compose.yml', 'exec', '-T', 'brain-codex-gateway', 'python', '-c', "
+        "_GATEWAY_PROBE_SCRIPT],\n"
+        "            input=json.dumps({'new': new_token, 'old': old_token}), "
+        "capture_output=True, check=False, text=True, cwd=self.brain_root, "
+        f"timeout={timeout},\n"
+        "            env={key: value for key, value in os.environ.items() "
+        "if not key.startswith('COMPOSE_')},\n"
+        "        )\n"
     )
 
     assert any("unsupported Docker CLI execution" in error for error in _errors(checker, tmp_path))
