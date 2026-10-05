@@ -909,9 +909,10 @@ async def test_the_absorption_says_by_which_key_it_matched(
     """BY WHICH KEY — without which a silent regression would stay green.
 
     The sibling test proves the artifact ARRIVES. This one proves by which path:
-    `derived_window`, the DEDUCTION, and not `derived_connection`, the proof. If the
-    exact layer started answering here again some day, that would be good news — but
-    it must be VISIBLE, and a total would not show it.
+    `derived_window`, the DEDUCTION, and not `derived_connection`, the proof. Since
+    03291fdc a connection the session was SEEN on is an exact proof, so the
+    artifact is made on a connection that never carried a lifecycle call: only
+    the window can attribute it, and it must say so.
     """
     project_key = f"integ-w20-{uuid4().hex[:10]}"
 
@@ -919,7 +920,8 @@ async def test_the_absorption_says_by_which_key_it_matched(
         async with _Conn(mcp_base_url, project_key) as first:
             await _bootstrap_project(first, project_key)
             session_id = await _session_id(first, project_key, "task-key")
-            derived = await _learning_id(first, project_key, f"w20 key {uuid4().hex[:8]}")
+        async with _Conn(mcp_base_url, project_key) as unseen:
+            derived = await _learning_id(unseen, project_key, f"w20 key {uuid4().hex[:8]}")
             assert await _attribution_mode(engine, derived) == "derived_deposit"
 
         revision = await _started_focus_revision(engine, session_id)
@@ -940,6 +942,39 @@ async def test_the_absorption_says_by_which_key_it_matched(
 
 
 @pytest.mark.asyncio(loop_scope="module")
+async def test_a_connection_the_session_was_seen_on_is_matched_exactly(
+    mcp_base_url: str, engine: AsyncEngine
+) -> None:
+    """Ticket 03291fdc, end to end: the session started on a connection, the
+    artifact was made on it, the session ends on ANOTHER one. The connection it
+    was seen on is a proof, not a deduction: `derived_connection`."""
+    project_key = f"integ-w20-{uuid4().hex[:10]}"
+
+    with _derived_capture(True):
+        async with _Conn(mcp_base_url, project_key) as first:
+            await _bootstrap_project(first, project_key)
+            session_id = await _session_id(first, project_key, "task-seen")
+            derived = await _learning_id(first, project_key, f"w20 seen {uuid4().hex[:8]}")
+            assert await _attribution_mode(engine, derived) == "derived_deposit"
+
+        revision = await _started_focus_revision(engine, session_id)
+        async with _Conn(mcp_base_url, project_key) as second:
+            await second.call(
+                "brain_session_end",
+                {
+                    "session_id": str(session_id),
+                    "expected_client_key": "task-seen",
+                    "summary": "Banc w20 : connexion vue.",
+                    "next_focus": "Lire attribution_mode en base.",
+                    "expected_focus_revision": revision,
+                },
+            )
+
+    assert await _ledger_sessions_for(engine, derived) == [str(session_id)]
+    assert await _attribution_mode(engine, derived) == "derived_connection"
+
+
+@pytest.mark.asyncio(loop_scope="module")
 async def test_two_concurrent_user_sessions_leave_the_artifact_where_it_is(
     mcp_base_url: str, engine: AsyncEngine
 ) -> None:
@@ -953,6 +988,10 @@ async def test_two_concurrent_user_sessions_leave_the_artifact_where_it_is(
     This is the accepted price of symmetric rivalry: the promise is not kept while
     two sessions overlap. A batch that attributed anyway would have chosen theft
     over abstention.
+
+    Since 03291fdc a session's own connection is an exact proof, so the contested
+    artifact is made on a bystander connection neither session was seen on: the
+    window is the only stage that could attribute it, and it must abstain.
     """
     project_key = f"integ-w20-{uuid4().hex[:10]}"
 
@@ -964,7 +1003,10 @@ async def test_two_concurrent_user_sessions_leave_the_artifact_where_it_is(
                 rival = await _session_id(rival_link, project_key, "task-rival")
                 assert rival != mine
 
-                derived = await _learning_id(first, project_key, f"w20 contested {uuid4().hex[:8]}")
+                async with _Conn(mcp_base_url, project_key) as bystander:
+                    derived = await _learning_id(
+                        bystander, project_key, f"w20 contested {uuid4().hex[:8]}"
+                    )
                 tracer = await _ledger_sessions_for(engine, derived)
 
         revision = await _started_focus_revision(engine, mine)
