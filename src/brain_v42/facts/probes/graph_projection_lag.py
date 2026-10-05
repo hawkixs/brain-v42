@@ -25,7 +25,8 @@ class GraphProjectionLagProbe:
     """Publish one stable projection value so readers share its health semantics."""
 
     name: str = "graph_projection_lag"
-    definition_version: int = 1
+    # v2 (1146a1db): "healthy" also requires no exhausted event and a bounded pending lag.
+    definition_version: int = 2
     target: FactTarget = FactTarget.PRODUCTION
     ttl: timedelta = timedelta(seconds=15)
     timeout: timedelta = timedelta(seconds=3)
