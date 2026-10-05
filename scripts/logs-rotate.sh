@@ -71,6 +71,10 @@ for target in "${TARGETS[@]}"; do
     fi
     ((deleted += 1))
   done < <(find "$target" -type f -mtime "+$RETENTION_DAYS" -print0)
+  if ! wait "$!"; then
+    printf 'ERROR: listing failed: %s\n' "$target" >&2
+    had_errors=true
+  fi
   after="$(find "$target" -type f -printf '.' | wc -c)"
   printf 'files before: %s\nfiles %s: %s\nfiles after: %s\n' \
     "$before" "$([[ $DRY_RUN == true ]] && printf 'eligible' || printf 'deleted')" \
