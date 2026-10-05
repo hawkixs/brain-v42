@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# Install brain-v42 systemd user units (Dream, graph recon, MCP HTTP, automation).
+# Install brain-v42 systemd user units (Dream, graph recon, MCP HTTP, metrics, automation).
 #
 # Usage:
-#   ./deploy/systemd/install.sh             # install + enable + start timer
+#   ./deploy/systemd/install.sh             # install; enable + start only new timers
+#   ./deploy/systemd/install.sh --enable-timers # install + enable + start both timers
 #   ./deploy/systemd/install.sh --dry-run   # only generate files, no systemctl
 #   ./deploy/systemd/install.sh --check-only # isolated render + mandatory verify
 #   ./deploy/systemd/install.sh --render-dir /absolute/new/path
@@ -20,7 +21,7 @@
 # every reinstall regenerates the unit from the template and wipes them
 # (incident 2026-06-30: PROMOTE+REORG silently disabled for 2 nights).
 #
-# On a normal install, MCP HTTP units (brain-mcp-http.service,
+# On a normal install, brain-metrics.service and MCP HTTP units (brain-mcp-http.service,
 # brain-mcp-http-watchdog.service, brain-mcp-http-watchdog.timer) are generated
 # and validated but never auto-enabled. Their production lifecycle is
 # operator-managed. The explicit --uninstall path stops, disables and removes them.
@@ -56,6 +57,7 @@ MANAGED_UNIT_FILES=(
   brain-mcp-http.service
   brain-mcp-http-watchdog.service
   brain-mcp-http-watchdog.timer
+  brain-metrics.service
   brain-v42-automation.service
   brain-v42-embedding-backfill.service
   brain-v42-embedding-backfill.timer
@@ -74,11 +76,12 @@ readonly REQUESTED_MCP_HTTP_HOST REQUESTED_MCP_HTTP_PORT MCP_HTTP_HOST MCP_HTTP_
 
 MODE=install
 RENDER_TARGET=""
+ENABLE_TIMERS=false
 
 select_mode() {
   local requested_mode="$1"
 
-  if [[ "$MODE" != "install" ]]; then
+  if [[ "$MODE" != "install" ]] || $ENABLE_TIMERS; then
     echo "ERROR: installer modes cannot be combined or repeated; no units were changed." >&2
     exit 2
   fi
@@ -87,6 +90,14 @@ select_mode() {
 
 while (($# > 0)); do
   case "$1" in
+    --enable-timers)
+      if [[ "$MODE" != "install" ]] || $ENABLE_TIMERS; then
+        echo "ERROR: --enable-timers cannot be combined with other modes or repeated; no units were changed." >&2
+        exit 2
+      fi
+      ENABLE_TIMERS=true
+      shift
+      ;;
     --dry-run)
       select_mode dry_run
       shift
@@ -109,7 +120,7 @@ while (($# > 0)); do
       shift 2
       ;;
     -h|--help)
-      if (($# != 1)) || [[ "$MODE" != "install" ]]; then
+      if (($# != 1)) || [[ "$MODE" != "install" ]] || $ENABLE_TIMERS; then
         echo "ERROR: --help cannot be combined with installer modes." >&2
         exit 2
       fi
@@ -560,6 +571,7 @@ if $UNINSTALL; then
   disable_and_stop_unit brain-mcp-http-watchdog.timer
   disable_and_stop_unit brain-mcp-http-watchdog.service
   disable_and_stop_unit brain-mcp-http.service
+  disable_and_stop_unit brain-metrics.service
   # Do not remove unit files until every process is quiesced and every enablement
   # state is safe; a failed command leaves a retryable installation on disk.
   systemctl --user show-environment >/dev/null
@@ -575,6 +587,7 @@ if $UNINSTALL; then
   rm -f "$USER_UNIT_DIR/brain-mcp-http.service"
   rm -f "$USER_UNIT_DIR/brain-mcp-http-watchdog.service"
   rm -f "$USER_UNIT_DIR/brain-mcp-http-watchdog.timer"
+  rm -f "$USER_UNIT_DIR/brain-metrics.service"
   systemctl --user daemon-reload
   log "uninstalled"
   exit 0
@@ -786,6 +799,9 @@ render_isolated_units() {
   cp "$SCRIPT_DIR/brain-mcp-http-watchdog.timer.tmpl" \
     "$ISOLATED_RENDER_DIR/brain-mcp-http-watchdog.timer"
   sed "s|__REPO_ROOT__|$REPO_ROOT|g" \
+    "$SCRIPT_DIR/brain-metrics.service.tmpl" \
+    > "$ISOLATED_RENDER_DIR/brain-metrics.service"
+  sed "s|__REPO_ROOT__|$REPO_ROOT|g" \
     "$AUTOMATION_TEMPLATE" \
     > "$ISOLATED_RENDER_DIR/brain-v42-automation.service"
   sed "s|__REPO_ROOT__|$REPO_ROOT|g" \
@@ -979,6 +995,23 @@ if ! path_chain_blocks_other_users "$USER_UNIT_DIR" "$legacy_effective_uid"; the
   exit 1
 fi
 chmod 700 "$USER_UNIT_DIR"
+# Inspect before publishing: a reinstall must not re-arm an operator-stopped timer.
+TIMERS_TO_ENABLE=()
+TIMERS_TO_PRESERVE=()
+declare -A PRESERVED_TIMER_STATES=()
+if [[ "$MODE" == "install" ]]; then
+  for unit in "${UNITS[@]}"; do
+    timer="$unit.timer"
+    if ! $ENABLE_TIMERS && [[ -e "$USER_UNIT_DIR/$timer" || -L "$USER_UNIT_DIR/$timer" ]]; then
+      timer_enabled="$(unit_state is-enabled "$timer")"
+      timer_active="$(unit_state is-active "$timer")"
+      TIMERS_TO_PRESERVE+=("$timer")
+      PRESERVED_TIMER_STATES["$timer"]="enabled=$timer_enabled, active=$timer_active"
+    else
+      TIMERS_TO_ENABLE+=("$timer")
+    fi
+  done
+fi
 STAGING_DIR="$(mktemp -d "$USER_UNIT_DIR/.brain-v42-install.XXXXXX")"
 RENDER_DIR="$STAGING_DIR/rendered"
 BACKUP_DIR="$STAGING_DIR/backup"
@@ -1123,6 +1156,13 @@ cp "$SCRIPT_DIR/brain-mcp-http-watchdog.timer.tmpl" \
    "$RENDER_DIR/brain-mcp-http-watchdog.timer"
 log "rendered brain-mcp-http-watchdog.timer"
 
+# --- Generate metrics unit (lifecycle remains operator-managed) ---
+warn_wiped_env "$USER_UNIT_DIR/brain-metrics.service"
+sed "s|__REPO_ROOT__|$REPO_ROOT|g" \
+  "$SCRIPT_DIR/brain-metrics.service.tmpl" \
+  > "$RENDER_DIR/brain-metrics.service"
+log "rendered brain-metrics.service"
+
 # --- Generate automation unit (dormant until the operator follows the runbook) ---
 warn_wiped_env "$USER_UNIT_DIR/brain-v42-automation.service"
 sed "s|__REPO_ROOT__|$REPO_ROOT|g" \
@@ -1147,6 +1187,7 @@ if command -v systemd-analyze >/dev/null; then
   systemd-analyze --user verify "$RENDER_DIR/brain-mcp-http.service"
   systemd-analyze --user verify "$RENDER_DIR/brain-mcp-http-watchdog.service"
   systemd-analyze --user verify "$RENDER_DIR/brain-mcp-http-watchdog.timer"
+  systemd-analyze --user verify "$RENDER_DIR/brain-metrics.service"
   systemd-analyze --user verify "$RENDER_DIR/brain-v42-automation.service"
   systemd-analyze --user verify "$RENDER_DIR/brain-v42-embedding-backfill.service"
   systemd-analyze --user verify "$RENDER_DIR/brain-v42-embedding-backfill.timer"
@@ -1190,13 +1231,17 @@ done
 
 # --- Reload + enable ---
 systemctl --user daemon-reload
-for unit in "${UNITS[@]}"; do
-  systemctl --user enable --now "$unit.timer"
+for timer in "${TIMERS_TO_ENABLE[@]}"; do
+  systemctl --user enable --now "$timer"
+done
+for timer in "${TIMERS_TO_PRESERVE[@]}"; do
+  log "$timer: preserved ${PRESERVED_TIMER_STATES[$timer]}"
 done
 
 # MCP HTTP units: generate + validate only. Their lifecycle is operator-managed;
 # this installer deliberately preserves the current enable/start state.
 log "brain-mcp-http.* generated and validated; lifecycle remains operator-managed"
+log "brain-metrics.service generated and validated; lifecycle remains operator-managed"
 log "brain-v42-automation.service remains dormant; follow deploy/systemd/README.md for cutover"
 
 # Linger check — warn if disabled (timer won't run without an active session).
@@ -1221,7 +1266,8 @@ else
 fi
 
 # --- Status summary ---
-log "timers installed"
+log "timers enabled and started: ${TIMERS_TO_ENABLE[*]:-none}"
+log "timers left as found: ${TIMERS_TO_PRESERVE[*]:-none}"
 for unit in "${UNITS[@]}"; do
   systemctl --user list-timers "$unit.timer" --no-pager || true
 done
