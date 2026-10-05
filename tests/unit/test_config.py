@@ -239,7 +239,10 @@ def test_graph_ledger_rejects_cutover_without_graph_projection() -> None:
         )
 
 
-def test_graph_projector_rejects_cutover_without_isolated_neo4j_url() -> None:
+def test_graph_projector_rejects_cutover_without_isolated_neo4j_url(monkeypatch) -> None:
+    """The isolation guard pins a URL on hosts with the projector env file."""
+    monkeypatch.delenv("GRAPH_PROJECTOR_NEO4J_URL", raising=False)
+    monkeypatch.delenv("BRAIN_GRAPH_PROJECTOR_NEO4J_URL", raising=False)
     from brain_v42.config import Settings
 
     with pytest.raises(ValidationError, match="requires isolated Neo4j credentials"):
