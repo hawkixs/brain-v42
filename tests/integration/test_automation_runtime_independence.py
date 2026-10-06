@@ -72,20 +72,10 @@ class CountingLease(AutomationOwnershipLease):
 class CountingDedupJob:
     def __init__(self) -> None:
         self.passes = 0
-        self.merges = 0
 
     async def find_candidates(self, _project_key: str) -> list[tuple[object, object, float]]:
         self.passes += 1
         return []
-
-    async def merge_features(
-        self,
-        _session: AsyncSession,
-        _target: object,
-        _source: object,
-    ) -> bool:
-        self.merges += 1
-        return True
 
 
 class RecordingIngestor:
@@ -618,7 +608,6 @@ async def test_automation_backend_loss_stops_server_and_returns_nonzero() -> Non
         stopped = await _wait_until(task.done)
         assert stopped, "automation runtime must stop after lease loss"
         assert await task != 0
-        assert automation.job.merges == 0
 
         async with ClientSession() as client:
             with pytest.raises(ClientConnectorError):
@@ -676,7 +665,6 @@ async def test_metrics_backend_loss_keeps_metrics_up_and_webhook_fail_closed() -
             assert await webhook_response.json() == {"status": "ownership_lost"}
 
         assert metrics.ingestor is not None and metrics.ingestor.calls == 0
-        assert metrics.job is not None and metrics.job.merges == 0
         stop.set()
         assert await _wait_until(task.done), "metrics stop_event must finish after lease loss"
         assert await task == 0
