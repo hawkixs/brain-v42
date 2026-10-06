@@ -1013,7 +1013,7 @@ def register_tools(
         project_key: str | None = None,
         project_group: str | None = None,
         limit: int = 20,
-        min_score: float = 0.2,
+        min_score: float | None = None,
         include_archived: bool = False,
         group_by_type: bool = False,
         tags: TagList | None = None,
@@ -1035,6 +1035,8 @@ def register_tools(
         full=True restores complete decision/learning bodies; by default their
         compact summaries bound each search item. Use brain_get for full entity detail.
         limit: max results returned (default 20, clamped server-side to [1, 100]).
+        min_score: default depends on the active reranker; diagnostics report
+        the threshold applied and the reranker identity.
         A 0-result answer explains itself: it names whether nothing was in
         scope, candidates fell under min_score, or the tags filter removed
         them — see the rendered output, not a separate field.
@@ -1095,7 +1097,7 @@ def register_tools(
                 # unable to count how often callers hit this silent drop.
                 tags_ignored=bool(tags),
                 tags_requested_count=len(tags) if tags else 0,
-                min_score=min_score,
+                min_score=min_score if min_score is not None else diag.min_score_requested,
                 include_archived=include_archived,
                 include_related=False,
                 include_related_ignored=include_related,
@@ -1105,6 +1107,7 @@ def register_tools(
                 best_raw_score=diag.best_raw_score,
                 tags_filtered_out=diag.tags_filtered_out,
                 rerank_mode=diag.rerank_mode,
+                rerank_identity=diag.rerank_identity,
                 degraded=diag.degraded,
                 min_score_effective=diag.min_score_effective,
                 project_key_effective=diag.project_key_effective,
@@ -1178,7 +1181,7 @@ def register_tools(
             types_requested=types,
             tags_present=bool(tags),
             tags_count=len(tags) if tags else 0,
-            min_score=min_score,
+            min_score=min_score if min_score is not None else diag.min_score_requested,
             include_archived=include_archived,
             include_related=include_related,
             full=full,
@@ -1187,6 +1190,7 @@ def register_tools(
             best_raw_score=diag.best_raw_score,
             tags_filtered_out=diag.tags_filtered_out,
             rerank_mode=diag.rerank_mode,
+            rerank_identity=diag.rerank_identity,
             degraded=diag.degraded,
             min_score_effective=diag.min_score_effective,
             project_key_effective=diag.project_key_effective,
