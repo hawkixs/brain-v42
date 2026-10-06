@@ -163,3 +163,23 @@ def test_main_returns_two_when_the_contract_is_violated(tmp_path: Path) -> None:
 
 def test_real_package_is_acyclic() -> None:
     checker.validate_module_layering(PACKAGE_ROOT)
+
+
+def test_real_credentials_package_does_not_import_mcp() -> None:
+    assert "mcp" not in checker.build_module_graph(PACKAGE_ROOT)["credentials"]
+
+
+def test_real_credentials_package_does_not_import_metrics() -> None:
+    assert "metrics" not in checker.build_module_graph(PACKAGE_ROOT)["credentials"]
+
+
+def test_real_credentials_package_only_imports_its_allowed_layers() -> None:
+    assert checker.build_module_graph(PACKAGE_ROOT)["credentials"] <= {
+        "db",
+        "repositories",
+        "models",
+    }
+
+
+def test_real_metrics_package_does_not_import_mcp() -> None:
+    assert "mcp" not in checker.build_module_graph(PACKAGE_ROOT)["metrics"]
