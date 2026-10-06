@@ -1045,6 +1045,100 @@ brain_session_connections = Table(
     ),
 )
 
+# ─── client credential registry (migration 063) ─────────────────────────────
+#
+# Only the SHA-256 digest of a bearer token is stored. `admin` is not a storable
+# family: administrative power comes from `brain_admin_elevations` alone.
+
+brain_client_credentials = Table(
+    "brain_client_credentials",
+    METADATA,
+    Column(
+        "id",
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=sa.text("gen_random_uuid()"),
+    ),
+    Column("client_id", Text, nullable=False),
+    Column("token_sha256", sa.LargeBinary, nullable=False),
+    Column("families", ARRAY(Text), nullable=False),
+    Column("issuers", ARRAY(Text), nullable=False, server_default=sa.text("'{}'")),
+    Column("transition", Boolean, nullable=False, server_default=sa.text("false")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("created_by", Text, nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=True),
+    Column("revoked_at", DateTime(timezone=True), nullable=True),
+    Column("revoked_reason", Text, nullable=True),
+    Column("last_used_at", DateTime(timezone=True), nullable=True),
+    UniqueConstraint("token_sha256", name="brain_client_credentials_token_sha256_key"),
+    sa.CheckConstraint(
+        "client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="brain_client_credentials_client_id_format",
+    ),
+    sa.CheckConstraint(
+        "octet_length(token_sha256) = 32", name="brain_client_credentials_token_sha256_length"
+    ),
+    sa.CheckConstraint(
+        "cardinality(families) >= 1 "
+        "AND families <@ ARRAY['read','write','delivery','telemetry']::text[]",
+        name="brain_client_credentials_families_valid",
+    ),
+    sa.CheckConstraint(
+        "length(btrim(created_by)) > 0", name="brain_client_credentials_created_by_nonblank"
+    ),
+    sa.CheckConstraint(
+        "NOT transition OR expires_at IS NOT NULL",
+        name="brain_client_credentials_transition_expires",
+    ),
+    sa.CheckConstraint(
+        "(revoked_at IS NULL) = (revoked_reason IS NULL)",
+        name="brain_client_credentials_revocation_pair",
+    ),
+    Index("idx_brain_client_credentials_client_id", "client_id"),
+)
+
+brain_admin_elevations = Table(
+    "brain_admin_elevations",
+    METADATA,
+    Column(
+        "id",
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=sa.text("gen_random_uuid()"),
+    ),
+    Column(
+        "session_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("brain_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("connection_ids", ARRAY(Text), nullable=False),
+    Column("granted_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("granted_by", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("revoked_at", DateTime(timezone=True), nullable=True),
+    sa.CheckConstraint(
+        "cardinality(connection_ids) >= 1",
+        name="brain_admin_elevations_connection_ids_nonempty",
+    ),
+    sa.CheckConstraint(
+        "expires_at > granted_at AND expires_at <= granted_at + interval '4 hours'",
+        name="brain_admin_elevations_window",
+    ),
+    sa.CheckConstraint("length(btrim(reason)) > 0", name="brain_admin_elevations_reason_nonblank"),
+    Index("idx_brain_admin_elevations_session_id", "session_id"),
+)
+
+brain_schema_compat = Table(
+    "brain_schema_compat",
+    METADATA,
+    Column("schema_head", Text, primary_key=True),
+    Column("oldest_compatible_code_head", Text, nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("recorded_by_version", Text, nullable=False),
+)
+
 # ─── brain_session_artifacts (explicit per-session provenance) ───────────────
 
 brain_session_artifacts = Table(

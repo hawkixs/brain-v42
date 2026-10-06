@@ -263,13 +263,19 @@ if TYPE_CHECKING:
 # extension in the new schema `monitoring`. No plan-index table, trigger or
 # `project_contexts` change.
 #
+# Bumped to 063 after reviewing the complete migration, inert by TABLE: it adds
+# three new tables (`brain_client_credentials`, `brain_admin_elevations`,
+# `brain_schema_compat`) and one trigger, on `brain_client_credentials` only.
+# `brain_admin_elevations` references `brain_sessions` with a cascading key and
+# changes nothing on it. No plan-index table, no `project_contexts` change.
+#
 # The review is written down even when it is short: that is the rule, and a
 # missing review reads exactly like a review that was done. Since ticket
 # 6cc34303 that rule is enforced rather than trusted:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "062"
+_REQUIRED_ALEMBIC_HEAD = "063"
 
 
 class RepairStore:

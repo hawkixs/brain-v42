@@ -38,13 +38,17 @@ def _expected_checks() -> list[dict[str, Any]]:
             # with 051, `access_log_daily` with 052, the eight `delivery_*` tables
             # with 053, `delivery_attestations` with 054 and the three
             # `knowledge_*` claim ledgers with 055, the three `focus_slot*`
-            # tables with 060 and `brain_session_connections` with 061 — all
-            # long after the 035
+            # tables with 060, `brain_session_connections` with 061 and the
+            # three `brain_client_credentials` / `brain_admin_elevations` /
+            # `brain_schema_compat` tables with 063 — all long after the 035
             # this asset describes. See the revision-by-revision review in
             # test_recovery_contract.py.
             if name
             not in {
                 "access_log_daily",
+                "brain_admin_elevations",
+                "brain_client_credentials",
+                "brain_schema_compat",
                 "brain_session_artifacts",
                 "brain_session_checkpoints",
                 "brain_session_connections",

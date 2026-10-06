@@ -313,7 +313,7 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # added by 004), but this v1 contract tracks no per-column fingerprint for
     # it — only its membership in `table_set` — so a new column on it moves
     # nothing this contract checks.
-    assert script.get_heads() == ["062"]
+    assert script.get_heads() == ["063"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim
@@ -362,6 +362,12 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
         "focus_slot_history",
         # 061's connection set did not exist at the frozen 031 revision.
         "brain_session_connections",
+        # 063's three tables, for the same reason as 060's: `table_set` is DERIVED
+        # from live METADATA, so tables added after 031 must not appear in a
+        # contract that describes 031.
+        "brain_client_credentials",
+        "brain_admin_elevations",
+        "brain_schema_compat",
         "brain_session_artifacts",
         "brain_sessions",
         "projects",
