@@ -145,14 +145,28 @@ class TestOpenRouterPolicyIsEnforced:
 class TestKeySources:
     def test_both_sources_are_refused(self, tmp_path: Path) -> None:
         with pytest.raises(ValidationError, match="rerank_api_key_file"):
-            _settings(rerank_api_key=SENTINEL, rerank_api_key_file=tmp_path / "key")
+            _settings(
+                rerank_backend="cohere",
+                rerank_api_key=SENTINEL,
+                rerank_api_key_file=tmp_path / "key",
+            )
 
     def test_the_error_and_repr_never_carry_the_key(self, tmp_path: Path) -> None:
         with pytest.raises(ValidationError) as excinfo:
-            _settings(rerank_api_key=SENTINEL, rerank_api_key_file=tmp_path / "key")
+            _settings(
+                rerank_backend="cohere",
+                rerank_api_key=SENTINEL,
+                rerank_api_key_file=tmp_path / "key",
+            )
         assert SENTINEL not in str(excinfo.value)
         assert SENTINEL not in repr(_settings(rerank_api_key=SENTINEL))
 
+    def test_a_key_file_with_the_shim_backend_is_refused(self, tmp_path: Path) -> None:
+        """The shim authenticates with brain_embedding_token_file; a key file
+        there would be silently ignored, and the operator would think it armed."""
+        with pytest.raises(ValidationError, match="rerank_api_key_file"):
+            _settings(rerank_api_key_file=tmp_path / "key")
+
     def test_a_key_file_alone_is_accepted(self, tmp_path: Path) -> None:
-        settings = _settings(rerank_api_key_file=tmp_path / "key")
+        settings = _settings(rerank_backend="cohere", rerank_api_key_file=tmp_path / "key")
         assert settings.rerank_api_key_file == tmp_path / "key"

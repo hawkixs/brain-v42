@@ -139,14 +139,9 @@ def _resolve_rerank_bearer(settings: Settings) -> str:
     where the shim path only raises a collision. The shim backend resolves exactly
     as before.
     """
-    key_file = settings.rerank_api_key_file
     if settings.rerank_backend != "cohere":
-        if key_file is not None:
-            raise RerankKeyError(
-                f"rerank_api_key_file {key_file} is set but rerank_backend is not 'cohere'; "
-                "the shim authenticates with brain_embedding_token_file"
-            )
         return _resolve_shim_bearer(settings, settings.rerank_api_key.get_secret_value())
+    key_file = settings.rerank_api_key_file
     if key_file is None:
         return settings.rerank_api_key.get_secret_value()
     path = Path(key_file).expanduser()

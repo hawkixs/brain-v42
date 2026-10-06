@@ -349,7 +349,13 @@ class Settings(BaseSettings):
                 "two sources for one rerank key: rerank_api_key and rerank_api_key_file "
                 "are both set; clear one of them"
             )
-        if self.rerank_backend != "cohere" or not _is_openrouter_host(self.reranker_url):
+        if self.rerank_backend != "cohere":
+            if self.rerank_api_key_file is not None:
+                # The shim authenticates with brain_embedding_token_file: a key file
+                # here would be ignored, and the operator would believe it armed.
+                raise ValueError("rerank_api_key_file requires rerank_backend='cohere'")
+            return self
+        if not _is_openrouter_host(self.reranker_url):
             return self
         provider = self.rerank_provider
         if provider is None:

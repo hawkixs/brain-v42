@@ -89,6 +89,7 @@ from brain_v42.services.graph_projection_schema import ensure_graph_projection_s
 from brain_v42.services.graph_service import GraphService
 from brain_v42.services.learning_service import LearningService
 from brain_v42.services.project_context_service import ProjectContextService
+from brain_v42.services.reranker_client import run_rerank_probe_loop
 from brain_v42.services.roadmap_service import RoadmapService
 from brain_v42.services.runbook_service import RunbookService
 from brain_v42.services.snippet_service import SnippetService
@@ -323,6 +324,17 @@ async def app_lifecycle(
             )
             cleanup.push_async_callback(agent_trace_net.stop)
             await agent_trace_net.start()
+
+        # A hosted reranker can lose its key or its route while the server runs;
+        # without a periodic probe that only shows as searches quietly falling
+        # back to RRF. Never awaited here: a probe that hangs must not delay
+        # startup, and a probe error must not reach it (the loop swallows them).
+        reranker_client = services.get("reranker_client")
+        if reranker_client is not None:
+            rerank_probe_task = asyncio.create_task(
+                run_rerank_probe_loop(reranker_client, settings.rerank_probe_interval_seconds)
+            )
+            cleanup.push_async_callback(_cancel_task, rerank_probe_task)
 
         # Keep a strong reference so the GC cannot collect the task mid-flight.
         # This one-shot covers t=0; the refresher above, when armed, sleeps its

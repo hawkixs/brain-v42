@@ -188,12 +188,6 @@ class TestRerankBearer:
         with pytest.raises(RerankKeyError, match=str(missing)):
             build_reranker_client(_hosted(rerank_api_key_file=missing))
 
-    def test_a_key_file_with_the_shim_backend_is_refused(self, tmp_path) -> None:
-        from brain_v42.services.embedding_factory import RerankKeyError
-
-        with pytest.raises(RerankKeyError, match="rerank_backend"):
-            build_reranker_client(_settings(rerank_api_key_file=_key_file(tmp_path)))
-
     def test_the_key_stays_out_of_repr_and_logs(self, tmp_path) -> None:
         from structlog.testing import capture_logs
 
