@@ -4724,7 +4724,7 @@ expected_trigger_functions(function_name, source_sha256, source_octets) AS (
      ('require_focus_slot_history', '1c22314024b740993c4aac1fd06abfdb104bfa7fd6a450bb2a5bdf0111700520', 431),
      ('brain_client_credentials_notify', 'b079d467097c9f60ceb85eb9e2d4e8f9170ac6281b751bf9428b64146d2cbafc', 151),
      ('brain_credential_audit_notify', 'eb4befc2fb9cf3c8f6d396d96091b5d218568226cc39d1774e5d40c2647fe645', 131),
-     ('brain_session_connections_owner_check', '9b72c755af0100634366d8a5e5a7aa7322d10d7fcdfcb31499741fe53eda17af', 598),
+     ('brain_session_connections_owner_check', '014454dc8321202248569aca4273b671d84cecc07ffcd507463019db77cc020e', 597),
      ('brain_sessions_opener_immutable', '226951e97318c1bf91f428194ce3a6e4960fa22da65ef3464c4237475005b974', 353)
 ),
 observed_trigger_functions AS (

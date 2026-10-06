@@ -21,8 +21,8 @@ V20_ASSETS = {
 }
 V21_ASSETS = {
     "brain-v42-v21.json": "4c7c4523a0e4c47d44962ca865cd8e84c2c14c6251a90cc84049a39ed2ceae8b",
-    "brain-v42-v21.sql": "dca58a7cbb6e19e6691fe2c3d6b0ff36eeeeda8d6d0287e1a358992ca6c47dbe",
-    "brain-v42-v21-pgrestore.sql": "1a9c53d7d52ac3e046a8f547d97eaac242c427c67f5b762f508ad2e02cf3077a",
+    "brain-v42-v21.sql": "47d0aa50afadd3a946362b860aee4cd575fc342f60ad05399a8b2241766720f0",
+    "brain-v42-v21-pgrestore.sql": "baac61ab1a2148d8d373b3afd78553046430fc098da9e92868d00f577a656a16",
 }
 VARIANTS = ("brain-v42-v21.sql", "brain-v42-v21-pgrestore.sql")
 
