@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 from brain_v42.repositories.pg_client_credentials import (
     ClientCredentialError,
     CredentialRow,
+    ElevationRow,
     PgClientCredentialRepo,
 )
 
@@ -35,6 +36,17 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
                 yield owned
             finally:
                 await transaction.rollback()
+
+
+async def _link(session: AsyncSession, session_id: UUID, *connection_ids: str) -> None:
+    for connection_id in connection_ids:
+        await session.execute(
+            sa.text(
+                "INSERT INTO brain_session_connections (session_id, connection_id) "
+                "VALUES (:session_id, :connection_id)"
+            ),
+            {"session_id": session_id, "connection_id": connection_id},
+        )
 
 
 async def _make_session(
@@ -178,6 +190,7 @@ async def test_grant_elevation_refuses_agent_closed_and_unknown_sessions(
 async def test_elevation_lifecycle_through_active_and_end(session: AsyncSession) -> None:
     repo = PgClientCredentialRepo()
     operator = await _make_session(session)
+    await _link(session, operator, "conn-1", "conn-2", "conn-3")
     granted = await repo.grant_elevation(
         operator,
         ["conn-1", "conn-2"],
@@ -207,6 +220,70 @@ async def test_elevation_lifecycle_through_active_and_end(session: AsyncSession)
     with pytest.raises(ClientCredentialError) as unknown:
         await repo.end_elevation(uuid4(), NOW, session=session)
     assert unknown.value.code == "unknown_elevation"
+
+
+async def _grant(
+    repo: PgClientCredentialRepo,
+    session: AsyncSession,
+    session_id: UUID,
+    connection_ids: list[str],
+) -> ElevationRow:
+    return await repo.grant_elevation(
+        session_id,
+        connection_ids,
+        NOW + timedelta(hours=1),
+        "operator",
+        "maintenance",
+        NOW,
+        session=session,
+    )
+
+
+async def test_grant_elevation_refuses_connections_not_linked_to_that_session(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    other = await _make_session(session)
+    await _link(session, operator, "conn-linked")
+    await _link(session, other, "conn-of-another-session")
+    secret = "0123456789abcdef-the-rest-must-never-be-echoed"
+
+    for unlinked in (["conn-linked", secret], ["conn-of-another-session"]):
+        with pytest.raises(ClientCredentialError) as refused:
+            await _grant(repo, session, operator, unlinked)
+        assert refused.value.code == "connection_not_linked"
+        assert secret[8:] not in str(refused.value)
+        assert "conn-of-another-session" not in str(refused.value)
+    assert await session.scalar(sa.text("SELECT count(*) FROM brain_admin_elevations")) == 0
+
+
+async def test_grant_elevation_deduplicates_the_connection_ids(session: AsyncSession) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-1", "conn-2")
+    granted = await _grant(repo, session, operator, ["conn-1", "conn-2", "conn-1"])
+    assert granted.connection_ids == ["conn-1", "conn-2"]
+
+
+async def test_an_elevation_stops_being_active_when_its_session_is_no_longer_open(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-1")
+    granted = await _grant(repo, session, operator, ["conn-1"])
+    at = NOW + timedelta(minutes=1)
+    assert granted in await repo.active_elevations(at, session=session)
+
+    await session.execute(
+        sa.text(
+            "UPDATE brain_sessions SET status = 'abandoned', ended_at = now(), "
+            "abandonment_reason = 'test' WHERE id = :id"
+        ),
+        {"id": operator},
+    )
+    assert await repo.active_elevations(at, session=session) == []
 
 
 async def test_a_credential_row_never_shows_its_digest_in_repr(session: AsyncSession) -> None:

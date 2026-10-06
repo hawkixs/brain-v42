@@ -8,8 +8,10 @@ Three new tables, no change to an existing one.
   CHECK is the second wall behind the repository's refusal), so administrative power
   can only come from a time-boxed elevation. A ``transition`` credential is a rotation
   overlap and MUST carry an expiry. Rows are revoked, never deleted by the application.
-  An AFTER row trigger sends ``pg_notify('brain_client_credentials', <row id>)`` so that
+  AFTER row triggers send ``pg_notify('brain_client_credentials', <row id>)`` so that
   a running server can reload its registry; the payload is the id only, never a digest.
+  An UPDATE that changes nothing but ``last_used_at`` does not notify: that stamp is
+  routine bookkeeping and would otherwise reload every verifier cache.
 * ``brain_admin_elevations``: a grant of administrative power to the connections of ONE
   operator session, at most four hours long. It follows the session's deletion, like
   ``brain_session_connections`` (061).
@@ -83,8 +85,17 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER brain_client_credentials_notify
-        AFTER INSERT OR UPDATE OR DELETE ON brain_client_credentials
+        AFTER INSERT OR DELETE ON brain_client_credentials
         FOR EACH ROW EXECUTE FUNCTION brain_client_credentials_notify()
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER brain_client_credentials_notify_update
+        AFTER UPDATE ON brain_client_credentials
+        FOR EACH ROW
+        WHEN ((to_jsonb(OLD) - 'last_used_at') IS DISTINCT FROM (to_jsonb(NEW) - 'last_used_at'))
+        EXECUTE FUNCTION brain_client_credentials_notify()
         """
     )
     op.execute(
@@ -129,6 +140,7 @@ def downgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '30s'")
     op.execute("DROP TABLE brain_schema_compat")
     op.execute("DROP TABLE brain_admin_elevations")
+    op.execute("DROP TRIGGER brain_client_credentials_notify_update ON brain_client_credentials")
     op.execute("DROP TRIGGER brain_client_credentials_notify ON brain_client_credentials")
     op.execute("DROP FUNCTION brain_client_credentials_notify()")
     op.execute("DROP TABLE brain_client_credentials")

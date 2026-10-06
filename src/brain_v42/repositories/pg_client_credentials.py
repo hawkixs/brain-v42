@@ -21,11 +21,17 @@ import sqlalchemy as sa
 from sqlalchemy import RowMapping
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_v42.db.tables import brain_admin_elevations, brain_client_credentials, brain_sessions
+from brain_v42.db.tables import (
+    brain_admin_elevations,
+    brain_client_credentials,
+    brain_session_connections,
+    brain_sessions,
+)
 from brain_v42.repositories.pg_base import BasePgRepository
 
-#: A credential seen again within this delay is not rewritten: the registry's NOTIFY
-#: trigger fires on every UPDATE, and a busy client would otherwise reload it constantly.
+#: A credential seen again within this delay is not rewritten: it bounds the write rate of
+#: a busy client. The NOTIFY trigger ignores a ``last_used_at``-only UPDATE, so the stamp
+#: costs no registry reload.
 LAST_USED_RESOLUTION = timedelta(minutes=1)
 
 #: The longest elevation. The table's CHECK states the same bound.
@@ -240,6 +246,7 @@ class PgClientCredentialRepo(BasePgRepository):
         *,
         session: AsyncSession | None = None,
     ) -> ElevationRow:
+        connection_ids = list(dict.fromkeys(connection_ids))
         if not connection_ids:
             raise ClientCredentialError("no_connections", "an elevation needs a connection")
         if not reason.strip():
@@ -268,13 +275,32 @@ class PgClientCredentialRepo(BasePgRepository):
                     "session_not_operator",
                     f"session {session_id} is a {owner.nature} trace, not an operator session",
                 )
+            # The grant is frozen on connections already linked to THIS session: one linked
+            # afterwards, or to another session, never inherits admin.
+            linked = set(
+                (
+                    await sess.scalars(
+                        sa.select(brain_session_connections.c.connection_id).where(
+                            brain_session_connections.c.session_id == session_id,
+                            brain_session_connections.c.connection_id.in_(connection_ids),
+                        )
+                    )
+                ).all()
+            )
+            unlinked = [conn for conn in connection_ids if conn not in linked]
+            if unlinked:
+                shown = ", ".join(f"{conn[:8]}..." for conn in unlinked)
+                raise ClientCredentialError(
+                    "connection_not_linked",
+                    f"connection(s) {shown} not linked to session {session_id}",
+                )
             row = (
                 (
                     await sess.execute(
                         sa.insert(brain_admin_elevations)
                         .values(
                             session_id=session_id,
-                            connection_ids=list(connection_ids),
+                            connection_ids=connection_ids,
                             granted_at=now,
                             expires_at=expires_at,
                             granted_by=granted_by,
@@ -291,13 +317,19 @@ class PgClientCredentialRepo(BasePgRepository):
     async def active_elevations(
         self, now: datetime, *, session: AsyncSession | None = None
     ) -> list[ElevationRow]:
+        """Elevations in force: not revoked, not expired, and their session still open."""
         elevations = brain_admin_elevations
         async with self._maybe_session(session, write=False) as sess:
             rows = (
                 (
                     await sess.execute(
                         sa.select(elevations)
-                        .where(elevations.c.revoked_at.is_(None), elevations.c.expires_at > now)
+                        .join(brain_sessions, brain_sessions.c.id == elevations.c.session_id)
+                        .where(
+                            elevations.c.revoked_at.is_(None),
+                            elevations.c.expires_at > now,
+                            brain_sessions.c.status == "open",
+                        )
                         .order_by(elevations.c.granted_at, elevations.c.id)
                     )
                 )

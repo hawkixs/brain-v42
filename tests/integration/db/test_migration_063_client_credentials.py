@@ -16,8 +16,9 @@ import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, AsyncSession
 
+from brain_v42.repositories.pg_client_credentials import PgClientCredentialRepo
 from tests.integration.disposable_db import asyncpg_dsn
 
 pytestmark = pytest.mark.integration
@@ -117,11 +118,13 @@ async def test_upgrade_creates_the_three_tables_and_the_trigger(engine: AsyncEng
         )
         rows = trigger.all()
         assert await connection.scalar(sa.text("SELECT count(*) FROM brain_schema_compat")) == 0
-    assert len(rows) == 1
-    definition = rows[0][1]
-    assert "AFTER INSERT OR DELETE OR UPDATE" in definition
-    assert "FOR EACH ROW" in definition
-    assert "brain_client_credentials_notify()" in definition
+    assert len(rows) == 2
+    for _name, definition in rows:
+        assert "FOR EACH ROW" in definition
+        assert "brain_client_credentials_notify()" in definition
+    definitions = " | ".join(definition for _name, definition in rows)
+    assert "AFTER INSERT OR DELETE" in definitions
+    assert "AFTER UPDATE" in definitions
 
 
 @pytest.mark.parametrize(
@@ -255,6 +258,47 @@ async def test_the_notify_payload_is_the_row_id_and_never_the_digest(
                 sa.text("DELETE FROM brain_client_credentials WHERE id = :id"), {"id": row_id}
             )
         assert await asyncio.wait_for(received.get(), timeout=5) == str(row_id)
+    finally:
+        await listener.close()
+
+
+async def test_a_last_used_stamp_does_not_notify_but_a_revocation_does(
+    engine: AsyncEngine,
+) -> None:
+    dsn = asyncpg_dsn(os.environ["BRAIN_V42_TEST_DB_URL"])
+    listener = await asyncpg.connect(dsn)
+    received: asyncio.Queue[str] = asyncio.Queue()
+    await listener.add_listener(
+        "brain_client_credentials", lambda _c, _pid, _channel, payload: received.put_nowait(payload)
+    )
+    repo = PgClientCredentialRepo()
+    try:
+        async with engine.begin() as connection:
+            row_id = await connection.scalar(
+                sa.text(
+                    "INSERT INTO brain_client_credentials "
+                    "(client_id, token_sha256, families, created_by) "
+                    "VALUES ('notify-quiet', decode(:digest, 'hex'), ARRAY['read'], 'test') "
+                    "RETURNING id"
+                ),
+                {"digest": DIGEST},
+            )
+        assert isinstance(row_id, UUID)
+        assert await asyncio.wait_for(received.get(), timeout=5) == str(row_id)
+
+        now = datetime.now(UTC)
+        async with AsyncSession(engine) as owned, owned.begin():
+            assert await repo.touch_last_used([row_id], now, session=owned) == 1
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(received.get(), timeout=1)
+
+        async with AsyncSession(engine) as owned, owned.begin():
+            await repo.revoke(row_id, "rotated", now, session=owned)
+        assert await asyncio.wait_for(received.get(), timeout=5) == str(row_id)
+        async with engine.begin() as connection:
+            await connection.execute(
+                sa.text("DELETE FROM brain_client_credentials WHERE id = :id"), {"id": row_id}
+            )
     finally:
         await listener.close()
 
