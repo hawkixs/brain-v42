@@ -66,6 +66,13 @@ COPY src/ ./src/
 # this layout works from any working directory, not just WORKDIR /app.
 COPY alembic/ ./alembic/
 COPY alembic.ini ./
+COPY ops/recovery/ ./ops/recovery/
+
+ARG VERSION=
+ARG GIT_SHA=
+ENV BRAIN_RELEASE_VERSION=$VERSION BRAIN_RELEASE_SHA=$GIT_SHA
+RUN python -m brain_v42.release_recovery publish-image /app /app/recovery --release-sha "$GIT_SHA"
+LABEL org.opencontainers.image.revision=$GIT_SHA
 
 # Normalize checkout-dependent modes while keeping code and dependencies root-owned.
 RUN chmod -R u=rwX,go=rX /app

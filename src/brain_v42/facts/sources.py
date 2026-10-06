@@ -83,6 +83,9 @@ def release_sha_from_path(path: Path) -> str:
 
 def running_release_sha() -> str | None:
     """Use the live_release_sha probe's source; a checkout proves no deployment."""
+    image_sha = image_release_sha()
+    if image_sha is not None:
+        return image_sha
     import brain_v42
 
     if brain_v42.__file__ is None:
@@ -93,12 +96,33 @@ def running_release_sha() -> str | None:
         return None
 
 
+def image_release_sha() -> str | None:
+    """Return the validated release SHA embedded in a production image."""
+    value = os.environ.get("BRAIN_RELEASE_SHA", "")
+    if not value:
+        return None
+    if _RELEASE_SHA.fullmatch(value) is None:
+        raise IdentityUnreadableError("BRAIN_RELEASE_SHA is not a lowercase 40-character SHA")
+    return value
+
+
+def _release_version(version: str) -> str:
+    """Refuse an image whose declared version disagrees with its installed package."""
+    declared = os.environ.get("BRAIN_RELEASE_VERSION", "")
+    if declared and declared != version:
+        raise IdentityUnreadableError(
+            f"BRAIN_RELEASE_VERSION {declared[:64]!r} differs from installed package "
+            f"version {version!r}"
+        )
+    return version
+
+
 def running_release_identity() -> ReleaseIdentity | None:
     """Pair the imported release path with its installed distribution version."""
     from brain_v42.release import package_version
 
     sha = running_release_sha()
-    return None if sha is None else ReleaseIdentity(sha, package_version())
+    return None if sha is None else ReleaseIdentity(sha, _release_version(package_version()))
 
 
 def read_text_under(root: Path, relative: str) -> tuple[str, int]:
@@ -227,7 +251,8 @@ class ReleaseSourceSession:
         itself; a bare ``ValueError`` would split it into two codes.
         """
         try:
-            return ReleaseIdentity(release_sha_from_path(self._package_file), self._version())
+            sha = image_release_sha() or release_sha_from_path(self._package_file)
+            return ReleaseIdentity(sha, _release_version(self._version()))
         except IdentityUnreadableError:
             raise
         except ValueError as exc:

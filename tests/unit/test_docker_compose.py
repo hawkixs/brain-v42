@@ -52,6 +52,17 @@ class TestDockerComposeServices:
         """docker-compose.yml must have a 'services' key."""
         assert "services" in compose_config, "docker-compose.yml must have a 'services' section"
 
+    def test_no_required_interpolation_in_compose_file(self) -> None:
+        """Required interpolation anywhere breaks Compose even for inactive profiles.
+
+        Compose interpolates the whole file before selecting profiles, so a required
+        variable on an inactive service can prevent the default stack from loading.
+        """
+        compose_text = (REPO_ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        assert re.search(r"\$\{[^}]*:\?", compose_text) is None, (
+            "docker-compose.yml must not contain required-variable interpolation"
+        )
+
     def test_postgres_service_exists(self, compose_config: dict) -> None:  # type: ignore[type-arg]
         """A 'postgres' service must be defined."""
         services = compose_config.get("services", {})

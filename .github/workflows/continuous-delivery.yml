@@ -63,7 +63,7 @@ jobs:
         run: |
           echo "$REGISTRY_PASSWORD" | docker login -u "$REGISTRY_USER" --password-stdin $CI_REGISTRY
           export SHORT_SHA=$(echo $CI_COMMIT_SHA | cut -c1-8)
-          docker build --cache-from $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest --build-arg UV_VERSION=$UV_VERSION --build-arg BUILDKIT_INLINE_CACHE=1 --label org.opencontainers.image.source=https://github.com/hawkixs/brain-v42 -t $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest -t $CI_REGISTRY_IMAGE:${ENV_PREFIX}-${SHORT_SHA} -t brain-v42-ci-smoke:${CI_COMMIT_SHA} -f Dockerfile .
+          docker build --cache-from $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest --build-arg UV_VERSION=$UV_VERSION --build-arg GIT_SHA=$CI_COMMIT_SHA --build-arg BUILDKIT_INLINE_CACHE=1 --label org.opencontainers.image.source=https://github.com/hawkixs/brain-v42 -t $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest -t $CI_REGISTRY_IMAGE:${ENV_PREFIX}-${SHORT_SHA} -t brain-v42-ci-smoke:${CI_COMMIT_SHA} -f Dockerfile .
           docker run --pull=never --rm brain-v42-ci-smoke:${CI_COMMIT_SHA} python -c 'import os, pathlib, sys; import brain_v42.mcp.server; venv = pathlib.Path("/app/.venv"); entrypoint = pathlib.Path(brain_v42.mcp.server.__file__); assert sys.executable == "/app/.venv/bin/python"; assert os.geteuid() == 1000; assert venv.stat().st_uid == 0; assert entrypoint.stat().st_uid == 0; assert not os.access(venv, os.W_OK); assert not os.access(entrypoint, os.W_OK)'
           docker push $CI_REGISTRY_IMAGE:${ENV_PREFIX}-latest
           docker push $CI_REGISTRY_IMAGE:${ENV_PREFIX}-${SHORT_SHA}
