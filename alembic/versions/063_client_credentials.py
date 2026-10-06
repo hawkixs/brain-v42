@@ -275,7 +275,7 @@ def upgrade() -> None:
                     'brain_session_connections: foreign client attach to an operator session refused'
                     USING ERRCODE = 'check_violation';
             END IF;
-            RETURN NULL;
+            RETURN NEW;
         END
         $$
         """
@@ -283,7 +283,7 @@ def upgrade() -> None:
     op.execute(
         """
         CREATE TRIGGER brain_session_connections_owner_check
-        AFTER INSERT OR UPDATE OF client_id ON brain_session_connections
+        BEFORE INSERT OR UPDATE OF client_id ON brain_session_connections
         FOR EACH ROW WHEN (NEW.client_id IS NOT NULL)
         EXECUTE FUNCTION brain_session_connections_owner_check()
         """

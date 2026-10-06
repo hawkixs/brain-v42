@@ -309,6 +309,8 @@ async def test_the_connection_client_id_is_nullable_and_format_checked(
         )
     with pytest.raises(IntegrityError, match="brain_session_connections_client_id_format"):
         async with connection.begin_nested():
+            # A BEFORE trigger now runs ahead of the CHECK: bypass it to isolate the format.
+            await connection.execute(sa.text("SET LOCAL session_replication_role = replica"))
             await connection.execute(
                 insert,
                 {"session_id": session_id, "connection_id": "bad", "client_id": "Bad_Id"},
@@ -525,6 +527,56 @@ async def test_the_trigger_leaves_an_agent_trace_alone(
     await connection.execute(
         _INSERT_CONNECTION, {"session_id": trace, "connection_id": "c", "client_id": "red-rail"}
     )
+
+
+_RETRY_ON_CONFLICT = sa.text(
+    "INSERT INTO brain_session_connections (session_id, connection_id, client_id) "
+    "VALUES (:session_id, :connection_id, :client_id) ON CONFLICT DO NOTHING"
+)
+
+
+async def test_a_foreign_retry_on_an_existing_pair_is_refused_not_skipped(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    """Both writers use ON CONFLICT DO NOTHING: an AFTER trigger never sees the retry."""
+    connection, session_id = operator
+    await _set_opener(connection, session_id, "workstation-claude")
+    pair = {"session_id": session_id, "connection_id": "own", "client_id": "workstation-claude"}
+    await connection.execute(_INSERT_CONNECTION, pair)
+    with pytest.raises(IntegrityError, match="foreign client"):
+        async with connection.begin_nested():
+            await connection.execute(_RETRY_ON_CONFLICT, {**pair, "client_id": "red-rail"})
+    await connection.execute(_RETRY_ON_CONFLICT, pair)
+    assert (
+        await connection.scalar(
+            sa.text("SELECT client_id FROM brain_session_connections WHERE session_id = :id"),
+            {"id": session_id},
+        )
+        == "workstation-claude"
+    )
+
+
+async def test_a_foreign_retry_on_an_unowned_operator_session_is_refused(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, session_id = operator
+    pair = {"session_id": session_id, "connection_id": "historical", "client_id": None}
+    await connection.execute(_INSERT_CONNECTION, pair)
+    with pytest.raises(IntegrityError, match="foreign client"):
+        async with connection.begin_nested():
+            await connection.execute(
+                _RETRY_ON_CONFLICT, {**pair, "client_id": "workstation-claude"}
+            )
+
+
+async def test_a_retry_on_an_agent_trace_is_left_alone(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, _ = operator
+    trace = await _new_session(connection, "agent")
+    pair = {"session_id": trace, "connection_id": "c", "client_id": "red-rail"}
+    await connection.execute(_INSERT_CONNECTION, pair)
+    await connection.execute(_RETRY_ON_CONFLICT, {**pair, "client_id": "workstation-claude"})
 
 
 async def test_the_trigger_locks_an_operator_nature_session_like_an_unnamed_one(
