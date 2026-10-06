@@ -79,7 +79,11 @@ PRIVATE_HEAD_DOWNGRADING_FILES: tuple[str, ...] = (
     # Downgrades its own module-private database to prove alembic/env.py ignores a
     # 1 ms database statement_timeout; the shared head is never touched.
     "tests/integration/db/test_alembic_env_overrides_database_timeouts.py",
+    # These fixtures create a fresh private database for each test. Their role
+    # mutations are cluster-wide, but their downgrades never move the shared head.
+    "tests/integration/db/test_migrate_cli_db.py",
     "tests/integration/db/test_migration_060_focus_slots.py",
+    "tests/integration/db/test_migration_064_runtime_role.py",
 )
 
 # Tables probed for leftover rows, in the order the message lists them.

@@ -12,7 +12,7 @@ import json
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -171,8 +171,11 @@ def test_equal_head_role_grants_future_defaults_and_password_rotation(runtime, c
     assert "integration-only-rotated-password" not in output.out + output.err
 
 
-def test_ancestor_upgrade_records_head_pinned_compatibility(runtime) -> None:
+def test_ancestor_upgrade_records_head_pinned_compatibility(
+    runtime, migration_downgrade_fence: Callable[..., None]
+) -> None:
     url, arguments, _ = runtime
+    migration_downgrade_fence(downgraded_to="062")
     result = subprocess.run(
         [sys.executable, "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "downgrade", "062"],
         env={**os.environ, "POSTGRES_URL": url},

@@ -10,7 +10,7 @@ import asyncio
 import os
 import subprocess
 import sys
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -136,12 +136,14 @@ def test_runtime_cannot_create_tables_or_read_auth_catalog(role_database: str, s
 
 def test_downgrade_revokes_acl_and_defaults_without_dropping_shared_role(
     role_database: str,
+    migration_downgrade_fence: Callable[..., None],
 ) -> None:
     url = role_database
     run_sql(
         asyncpg_dsn(url),
         ["CREATE TABLE public.runtime_future (id bigserial PRIMARY KEY, value text)"],
     )
+    migration_downgrade_fence(downgraded_to="063", restores_to="064")
     _alembic(url, "downgrade", "063")
     # The session fixture's other database still depends on the same cluster role.
     assert _query(url, "SELECT 1 AS present FROM pg_roles WHERE rolname = 'brain_app'") == [
@@ -166,11 +168,13 @@ def test_downgrade_revokes_acl_and_defaults_without_dropping_shared_role(
 
 def test_upgrade_reuses_existing_cluster_role_without_changing_attributes(
     role_database: str,
+    migration_downgrade_fence: Callable[..., None],
 ) -> None:
     url = role_database
     attributes = "SELECT rolcanlogin, rolsuper, rolconnlimit, rolconfig FROM pg_roles "
     attributes += "WHERE rolname = 'brain_app'"
     before = _query(url, attributes)
+    migration_downgrade_fence(downgraded_to="063", restores_to="064")
     _alembic(url, "downgrade", "063")
     assert _query(url, attributes) == before
     _alembic(url, "upgrade", "064")

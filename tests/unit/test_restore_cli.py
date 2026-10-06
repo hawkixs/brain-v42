@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 import subprocess
@@ -10,7 +11,9 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import structlog
 
+from brain_v42.config import get_settings
 from brain_v42.scripts import restore_cli
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -122,6 +125,74 @@ def dump(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.mark.parametrize("database", ["other_database", "brain"])
+def test_restore_uses_current_environment_after_settings_cache_pollution(
+    runner: FakeRunner, dump: Path, monkeypatch: pytest.MonkeyPatch, database: str
+) -> None:
+    get_settings.cache_clear()
+    try:
+        with monkeypatch.context() as pollution:
+            pollution.setenv(
+                "POSTGRES_URL",
+                f"postgresql+asyncpg://other:old-password@other-host:5439/{database}",
+            )
+            cached = get_settings()
+        assert get_settings() is cached
+
+        assert restore_cli.main(["--dump", str(dump)]) == 0
+        assert runner.restores
+        for args, env in runner.calls:
+            if args[0] == "psql" or "--dbname" in args:
+                assert args[args.index("--host") + 1] == "postgres"
+                assert args[args.index("--port") + 1] == "5432"
+                assert args[args.index("--username") + 1] == "brain"
+            assert env["PGPASSWORD"] == "test@password"
+        assert get_settings() is cached
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("runtime_failure", "reason_code"),
+    [(False, "unrecognized_initialization"), (True, "restore_runtime_error")],
+)
+def test_refusal_reaches_stderr_after_logger_cache_pollution(
+    runner: FakeRunner,
+    dump: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    runtime_failure: bool,
+    reason_code: str,
+) -> None:
+    previous_config = structlog.get_config().copy()
+    log_output = io.StringIO()
+    try:
+        structlog.configure(
+            processors=[structlog.processors.JSONRenderer()],
+            logger_factory=structlog.PrintLoggerFactory(file=log_output),
+            cache_logger_on_first_use=True,
+        )
+        monkeypatch.setattr(restore_cli, "logger", structlog.get_logger("restore-polluted"))
+        restore_cli.logger.info("warm_cached_logger")
+        structlog.configure(**previous_config)
+        if runtime_failure:
+
+            def fail(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+                raise OSError("private error with test@password")
+
+            monkeypatch.setattr(restore_cli.subprocess, "run", fail)
+        else:
+            runner.relations = [["alembic_version", "r"]]
+        assert restore_cli.main(["--dump", str(dump)]) != 0
+        captured = capsys.readouterr()
+        assert reason_code in captured.err
+        assert "test@password" not in captured.out + captured.err + log_output.getvalue()
+        assert reason_code in log_output.getvalue()
+        assert not runner.mutations
+    finally:
+        structlog.configure(**previous_config)
+
+
 def test_empty_restore_is_transactional_and_marked_only_after_success(
     runner: FakeRunner, dump: Path
 ) -> None:
@@ -192,7 +263,7 @@ def test_partial_or_foreign_state_fails_closed(
     runner.relations, runner.rows, runner.marker = relations, rows, marker
     assert restore_cli.main(["--dump", str(dump)]) != 0
     captured = capsys.readouterr()
-    assert "unrecognized_initialization" in captured.out + captured.err
+    assert "unrecognized_initialization" in captured.err
     assert not runner.mutations
 
 

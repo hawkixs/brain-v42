@@ -8,13 +8,14 @@ import json
 import os
 import re
 import subprocess
+import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
 from sqlalchemy.engine import make_url
 
-from brain_v42.config import get_settings
+from brain_v42.config import Settings
 
 logger = structlog.get_logger(__name__)
 _ROLES = frozenset({"brain", "brain_app", "codex_ro", "pg_database_owner"})
@@ -57,7 +58,9 @@ class RestoreError(Exception):
 
 
 def _connection() -> tuple[list[str], dict[str, str]]:
-    url = make_url(get_settings().postgres_url)
+    # A one-shot CLI must read its own environment, not another caller's cache.
+    settings = Settings()  # type: ignore[call-arg]  # loaded from the environment
+    url = make_url(settings.postgres_url)
     if (
         url.get_backend_name() != "postgresql"
         or url.database != "brain"
@@ -233,8 +236,11 @@ def main(argv: list[str] | None = None) -> int:
         logger.info("restore_completed")
         return 0
     except RestoreError as exc:
+        # A cached logger may be bound to another sink; stderr belongs to the CLI.
+        sys.stderr.write(f"restore_refused reason_code={exc}\n")
         logger.error("restore_refused", reason_code=str(exc))
     except Exception:  # noqa: BLE001 -- configuration/subprocess errors may contain secrets
+        sys.stderr.write("restore_failed reason_code=restore_runtime_error\n")
         logger.error("restore_failed", reason_code="restore_runtime_error")
     return 1
 
