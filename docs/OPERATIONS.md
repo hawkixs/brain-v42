@@ -582,8 +582,30 @@ on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text)
 
 ## Migration history
 
-The repository migration target is 063. No page in this repository proves a live
-schema head — measure it, never read it here.
+The repository migration target is 064. No page in this repository proves a live
+schema head; read `alembic_version` in the target database.
+
+`brain-v42-migrate` uses the owner credentials from `POSTGRES_URL` and the
+wheel's Alembic chain. It refuses an uninitialized database and any head newer
+than or unknown to the image. An ancestor is upgraded to the image head and
+recorded in `brain_schema_compat`, with the oldest compatible code head pinned
+to that same head. Equal heads skip the upgrade. Every successful run proves
+the image's own recovery binding; a rollback across a schema change is refused.
+
+Migration 064 owns the runtime ACLs. After upgrading, the CLI requires the
+existing `brain_app` role and configures LOGIN, restricted role attributes,
+and the interactive pool's connection cap plus 20% headroom. Its three role
+timeouts use `db/engine.py`'s interactive profile. Set `BRAIN_APP_PASSWORD_FILE`
+to a readable, non-empty secret file; the password is never accepted on argv.
+The CLI computes a fresh SCRAM-SHA-256 verifier locally (4096 iterations,
+16-byte random salt) and sends only that verifier to PostgreSQL on each run,
+so secret rotation never requires a schema migration.
+
+R1 decides whether `brain_app` needs `pg_catalog.pg_control_system()`.
+`BRAIN_APP_GRANT_PG_CONTROL_SYSTEM=true` enables that optional EXECUTE grant;
+it is disabled by default and is the CLI's sole object-ACL exception, outside
+the public schema contract. Exit codes are 0 for success, 1 for refusal/failure,
+and 2 for invalid CLI usage.
 
 Recovery contract v20 is the recovery asset for the schema through 062. It includes
 the session connection ledger from 061 and the 062 monitoring extension inventory

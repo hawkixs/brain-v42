@@ -56,6 +56,24 @@ CMD ["pytest", "tests/unit", "-v", "--tb=short"]
 # ===== PRODUCTION =====
 FROM deps AS production
 
+# PGDG's archive retains exact versions; the client major matches Compose's PG16.
+ARG POSTGRES_CLIENT_VERSION=16.14-1.pgdg13+1
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates gnupg \
+    && curl --fail --silent --show-error --location \
+        https://www.postgresql.org/media/keys/ACCC4CF8.asc -o /tmp/pgdg.asc \
+    && test "$(gpg --show-keys --with-colons /tmp/pgdg.asc | awk -F: '$1 == "fpr" {print $10; exit}')" \
+        = B97B0AFCAA1A47F044F244A07FCC7D46ACCC4CF8 \
+    && gpg --dearmor --output /usr/share/keyrings/postgresql-pgdg.gpg /tmp/pgdg.asc \
+    && chmod 644 /usr/share/keyrings/postgresql-pgdg.gpg \
+    && echo 'deb [signed-by=/usr/share/keyrings/postgresql-pgdg.gpg] https://apt-archive.postgresql.org/pub/repos/apt trixie-pgdg-archive main' \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && printf "Package: *\nPin: origin apt-archive.postgresql.org\nPin-Priority: 100\n\nPackage: postgresql-client-16\nPin: version ${POSTGRES_CLIENT_VERSION}\nPin-Priority: 1001\n" \
+        > /etc/apt/preferences.d/pgdg \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        "postgresql-client-16=${POSTGRES_CLIENT_VERSION}" \
+    && apt-get purge -y --auto-remove gnupg \
+    && rm -rf /var/lib/apt/lists/* /tmp/pgdg.asc
+
 # Overwrite the stub with the real source tree.
 COPY src/ ./src/
 
