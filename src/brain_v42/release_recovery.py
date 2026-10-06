@@ -299,11 +299,15 @@ def _refuse_unlisted_entries(out_dir: Path, current: dict[str, object]) -> None:
         asset = current.get(asset_key)
         if isinstance(asset, dict) and isinstance(asset.get("path"), str):
             expected.add(Path(asset["path"]).name)
-    unlisted = sorted(entry.name for entry in out_dir.iterdir() if entry.name not in expected)
+    entries = list(out_dir.iterdir())
+    unlisted = sorted(entry.name for entry in entries if entry.name not in expected)
     if unlisted:
         raise RecoveryBindingError(
             f"{out_dir} holds entries the binding does not list: {', '.join(unlisted)}"
         )
+    for entry in entries:
+        if entry.is_symlink() or not entry.is_file():
+            raise RecoveryBindingError(f"{entry} is not a regular file; refusing to replace it")
 
 
 def publish_image_recovery_binding(

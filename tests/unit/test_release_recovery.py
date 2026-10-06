@@ -195,6 +195,19 @@ def test_publish_image_recovery_binding_refuses_a_directory_holding_anything_els
     assert not (out_dir / rr.BINDING_FILENAME).exists()
 
 
+@pytest.mark.parametrize("name", ["binding", "asset"])
+def test_publish_image_recovery_binding_refuses_a_directory_under_an_expected_name(
+    tmp_path: Path, name: str
+) -> None:
+    release_dir = _build_release(tmp_path)
+    out_dir = tmp_path / "image-recovery"
+    out_dir.mkdir()
+    planted = rr.BINDING_FILENAME if name == "binding" else "brain-v42-v1.sql"
+    (out_dir / planted).mkdir()
+    with pytest.raises(rr.RecoveryBindingError, match="is not a regular file"):
+        rr.publish_image_recovery_binding(release_dir / "brain-v42", out_dir, RELEASE_SHA)
+
+
 @pytest.mark.parametrize("tamper", ["asset", "schema"])
 def test_publish_image_recovery_binding_refuses_invalid_source(tmp_path: Path, tamper: str) -> None:
     release_dir = _build_release(tmp_path)
