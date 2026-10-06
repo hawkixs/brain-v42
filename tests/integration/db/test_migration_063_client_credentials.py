@@ -508,10 +508,10 @@ async def _new_session(connection: AsyncConnection, nature: str | None) -> UUID:
     session_id = await connection.scalar(
         sa.text(
             "INSERT INTO brain_sessions (project_key, client_key, started_focus_revision, "
-            "nature, connection_id) VALUES (:key, 'integ-063-other', 0, :nature, :connection) "
+            "nature, connection_id) VALUES (:project, 'integ-063-other', 0, :nature, :connection) "
             "RETURNING id"
         ),
-        {"key": key, "nature": nature, "connection": "c" if nature == "agent" else None},
+        {"project": key, "nature": nature, "connection": "c" if nature == "agent" else None},
     )
     assert isinstance(session_id, UUID)
     return session_id
