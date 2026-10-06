@@ -48,16 +48,14 @@ async def _link(
     *connection_ids: str,
     client_id: str | None = "auto-discord",
 ) -> None:
-    """Link connections, standing the session's opener on ``client_id`` first.
+    """Link connections as LEGACY rows: written with the ownership trigger bypassed.
 
-    A later call with another client re-points the opener, which is how a test builds a
-    session whose rows pre-date the attribution lock: the lock itself refuses the mix.
+    Elevation tests need sessions that mix several clients, which the attribution lock now
+    forbids by construction. Rows written before the lock existed are exactly that, so
+    this helper writes them with ``session_replication_role = replica`` (superuser, and
+    scoped to the test transaction); the lock has its own tests.
     """
-    if client_id is not None:
-        await session.execute(
-            sa.text("UPDATE brain_sessions SET opener_client_id = :client WHERE id = :id"),
-            {"client": client_id, "id": session_id},
-        )
+    await session.execute(sa.text("SET LOCAL session_replication_role = replica"))
     for connection_id in connection_ids:
         await session.execute(
             sa.text(
@@ -66,6 +64,7 @@ async def _link(
             ),
             {"session_id": session_id, "connection_id": connection_id, "client_id": client_id},
         )
+    await session.execute(sa.text("SET LOCAL session_replication_role = origin"))
 
 
 async def _make_session(
@@ -651,3 +650,30 @@ async def test_claiming_an_unknown_session_is_refused(session: AsyncSession) -> 
             session=session,
         )
     assert refused.value.code == "unknown_session"
+
+
+async def test_an_operator_nature_session_is_locked_like_an_unnamed_one(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session, nature="operator")
+    with pytest.raises(ForeignClientAttachError):
+        await repo.claim_or_check_session_owner(
+            operator,
+            "red-rail",
+            elevatable_client_ids=DEFAULT_ELEVATABLE_CLIENT_IDS,
+            session=session,
+        )
+    assert await _opener(session, operator) is None
+    await repo.claim_or_check_session_owner(
+        operator,
+        "workstation-claude",
+        elevatable_client_ids=DEFAULT_ELEVATABLE_CLIENT_IDS,
+        session=session,
+    )
+    assert await _opener(session, operator) == "workstation-claude"
+    with pytest.raises(ForeignClientAttachError) as refused:
+        await repo.claim_or_check_session_owner(
+            operator, "red-rail", elevatable_client_ids=ANY_CLIENT, session=session
+        )
+    assert refused.value.owner_client_id == "workstation-claude"

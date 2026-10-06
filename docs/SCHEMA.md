@@ -874,15 +874,18 @@ the credential's only one. Credential rows are revoked, never deleted by the app
 Two AFTER row triggers, `brain_client_credentials_notify` (insert, delete) and
 `brain_client_credentials_notify_update` (update, only when a column other than
 `last_used_at` changed), run `pg_notify('brain_client_credentials', <row id>)` so a
-running server can reload its registry; the payload is the id, never a digest. `brain_sessions.opener_client_id` is the attribution lock of an OPERATOR session
-(`nature IS NULL`): the first allowlisted client that attaches claims it, and any other
-client is refused. The AFTER row trigger `brain_session_connections_owner_check`
+running server can reload its registry; the payload is the id, never a digest. `brain_sessions.opener_client_id` is the attribution lock of an OPERATOR session (every
+nature but `agent`, so both `NULL` and `operator`): the first allowlisted client that
+attaches claims it, and any other client is refused. The opener only moves from `NULL` to a
+value: the BEFORE UPDATE trigger `brain_sessions_opener_immutable` refuses to change or
+clear a set one. The AFTER row trigger `brain_session_connections_owner_check`
 (INSERT, or UPDATE of `client_id`, when `client_id` is not NULL) raises a
 `check_violation`, naming no connection id, when the target session is an operator session
-whose opener is NULL or differs from the row's client; agent traces and historical `NULL`
+whose opener is NULL or differs from the row's client (no row lock is needed: a stale read
+sees `NULL`, which it refuses, or the final value); agent traces and historical `NULL`
 rows are not checked. Constraint
 names are listed in `alembic/versions/063_client_credentials.py`. The migration inserts
-no `brain_schema_compat` row. Downgrade drops the trigger and its function, the
+no `brain_schema_compat` row. Downgrade drops the two triggers and their functions, the
 `brain_sessions.opener_client_id` column, the `brain_session_connections.client_id` column, the three tables, the notify triggers and their function.
 
 ### Table `indexed_plans` (migration 009 + extended by migration 014)
@@ -1209,7 +1212,7 @@ $$ LANGUAGE plpgsql;
 | 060 | `focus_slots`, `focus_slot_anchors` (UNIQUE NULLS NOT DISTINCT, three partial lookup indexes, written once), `focus_slot_history` (PK `(slot_id, revision)`, append-only, required at COMMIT); `brain_sessions.slot_id` and `relayed_from_session_id` (RESTRICT FKs, `brain_sessions_slot_operator_only`, `brain_sessions_relay_requires_slot`, `uq_brain_sessions_open_slot`, `uq_brain_sessions_relayed_from`); 16314b31: the `closed_inactive` branch requires `nature IS NOT NULL`. Precount aborts the upgrade on any NULL-nature `closed_inactive` row. **Fail-closed** downgrade; opt-in `-x allow_focus_slots_downgrade=yes`. |
 | 061 | `brain_session_connections` — primary key `(session_id, connection_id)`, `ON DELETE CASCADE` foreign key to `brain_sessions`, non-blank connection CHECK written with `COALESCE(..., false)`, and `first_seen_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()`. Lifecycle calls retain every seen connection for exact derived absorption, bounded by the operator session's start. Downgrade drops the table. |
 | 062 | Two partial indexes on `delivery_confirmations`: `idx_delivery_confirmations_binding_errors` on `(binding_id, collection_finished_at) WHERE outcome = 'error' AND subject_kind = 'artifact_binding'` and `idx_delivery_confirmations_context_errors` on `(ticket_id, contract_revision, attempt, context_set_digest, collection_finished_at) WHERE outcome = 'error' AND subject_kind = 'repository_context'`; and `CREATE EXTENSION pg_stat_statements WITH SCHEMA monitoring` (superuser; nothing is left in `public`). Plain `CREATE INDEX` under a 30 s `lock_timeout`. Downgrade drops the extension, then the schema (RESTRICT), then both indexes. |
-| 063 | `brain_client_credentials` (digest-only credential registry: UNIQUE `token_sha256` of 32 bytes, `client_id` format CHECK, `families` CHECKed to `read`/`write`/`delivery`/`telemetry`/`elevate`, never `admin`, with `elevate` exclusive, `transition` requires `expires_at`, revocation pair CHECK, `client_id` index, AFTER row trigger `brain_client_credentials_notify` sending the row id on channel `brain_client_credentials`), `brain_admin_elevations` (`ON DELETE CASCADE` foreign key to `brain_sessions`, non-empty `connection_ids` with the equal-cardinality `connection_client_ids` frozen pairs, window CHECK of at most 4 hours, non-blank reason of at most 200 characters, `via` in `hook`/`cli`, a hook grant naming `requested_by_client_id` and a cli grant naming none, `excluded_client_ids` and `excluded_connection_count`, `expiry_audited_at`, `session_id` index) and `brain_schema_compat` (`schema_head` primary key; no row inserted), plus nullable `brain_session_connections.client_id` and `brain_sessions.opener_client_id` with their format CHECKs, and the `brain_session_connections_owner_check` trigger. Plain `CREATE TABLE` and no-default `ADD COLUMN` under a 30 s `lock_timeout`. Downgrade drops the trigger, the two columns, the three tables and the trigger functions. |
+| 063 | `brain_client_credentials` (digest-only credential registry: UNIQUE `token_sha256` of 32 bytes, `client_id` format CHECK, `families` CHECKed to `read`/`write`/`delivery`/`telemetry`/`elevate`, never `admin`, with `elevate` exclusive, `transition` requires `expires_at`, revocation pair CHECK, `client_id` index, AFTER row trigger `brain_client_credentials_notify` sending the row id on channel `brain_client_credentials`), `brain_admin_elevations` (`ON DELETE CASCADE` foreign key to `brain_sessions`, non-empty `connection_ids` with the equal-cardinality `connection_client_ids` frozen pairs, window CHECK of at most 4 hours, non-blank reason of at most 200 characters, `via` in `hook`/`cli`, a hook grant naming `requested_by_client_id` and a cli grant naming none, `excluded_client_ids` and `excluded_connection_count`, `expiry_audited_at`, `session_id` index) and `brain_schema_compat` (`schema_head` primary key; no row inserted), plus nullable `brain_session_connections.client_id` and `brain_sessions.opener_client_id` with their format CHECKs, and the `brain_session_connections_owner_check` and `brain_sessions_opener_immutable` triggers. Plain `CREATE TABLE` and no-default `ADD COLUMN` under a 30 s `lock_timeout`. Downgrade drops the two triggers, the two columns, the three tables and the trigger functions. |
 
 ## Typical queries
 

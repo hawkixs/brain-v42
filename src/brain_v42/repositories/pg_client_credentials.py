@@ -414,7 +414,8 @@ class PgClientCredentialRepo(BasePgRepository):
         refuses an attributed row whose client is not the opener. An unowned session is
         claimed only by an allowlisted client, so a write credential that knows the
         session id and client key cannot take a pre-cutover operator session ahead of the
-        operator's own client. Agent traces are not checked, and ``client_id`` comes back.
+        operator's own client. Fail-closed on ``nature``: only an agent trace is skipped,
+        every other nature is an operator session, like the trigger. Agent traces are not checked, and ``client_id`` comes back.
         """
         async with self._maybe_session(session, write=True) as sess:
             owner = (
@@ -426,7 +427,7 @@ class PgClientCredentialRepo(BasePgRepository):
             ).one_or_none()
             if owner is None:
                 raise ClientCredentialError("unknown_session", f"no session {session_id}")
-            if owner.nature is not None:
+            if owner.nature == "agent":
                 return client_id
             if owner.opener_client_id is None:
                 if client_id not in elevatable_client_ids:

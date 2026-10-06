@@ -30,12 +30,16 @@ Three new tables and one nullable column on ``brain_session_connections``.
   connection, NULL on every historical row. Written once by the recording call sites
   (a later step); this revision only adds the column and its format CHECK.
 * ``brain_sessions.opener_client_id``: the attribution lock. The client that owns an
-  OPERATOR session (``nature IS NULL``), claimed by the first allowlisted client that
+  OPERATOR session (every nature but ``agent``, fail-closed: NULL and ``operator`` are both
+  locked), claimed by the first allowlisted client that
   attaches (the repository's ``claim_or_check_session_owner``, before it writes the
   connection row). An AFTER row trigger on ``brain_session_connections`` is the
   backstop: it refuses an attributed row on an operator session whose opener is NULL or
   another client, so a writer that forgets the check still cannot attach a foreign
   client. Rows with a NULL ``client_id`` (historical) and agent traces are not checked.
+  The opener only ever moves from NULL to a value: a BEFORE UPDATE trigger on
+  ``brain_sessions`` refuses to change or clear a set one. That is also why the connection
+  trigger needs no row lock: a stale read sees NULL, which it refuses, or the final value.
   The trigger is AFTER, not BEFORE, so the column's format CHECK still answers first.
   The refusal message names no connection id.
 * ``brain_schema_compat``: the ledger of the oldest code head compatible with a schema
@@ -206,7 +210,7 @@ def upgrade() -> None:
         BEGIN
             SELECT nature, opener_client_id INTO owner_nature, owner_opener
             FROM brain_sessions WHERE id = NEW.session_id;
-            IF FOUND AND owner_nature IS NULL AND owner_opener IS DISTINCT FROM NEW.client_id THEN
+            IF FOUND AND owner_nature IS DISTINCT FROM 'agent' AND owner_opener IS DISTINCT FROM NEW.client_id THEN
                 RAISE EXCEPTION
                     'brain_session_connections: foreign client attach to an operator session refused'
                     USING ERRCODE = 'check_violation';
@@ -224,6 +228,28 @@ def upgrade() -> None:
         EXECUTE FUNCTION brain_session_connections_owner_check()
         """
     )
+    op.execute(
+        """
+        CREATE FUNCTION brain_sessions_opener_immutable() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+            IF OLD.opener_client_id IS NOT NULL
+               AND NEW.opener_client_id IS DISTINCT FROM OLD.opener_client_id THEN
+                RAISE EXCEPTION 'brain_sessions: the opener of a session never changes'
+                    USING ERRCODE = 'check_violation';
+            END IF;
+            RETURN NEW;
+        END
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER brain_sessions_opener_immutable
+        BEFORE UPDATE OF opener_client_id ON brain_sessions
+        FOR EACH ROW EXECUTE FUNCTION brain_sessions_opener_immutable()
+        """
+    )
     op.execute("SET LOCAL lock_timeout TO DEFAULT")
 
 
@@ -233,6 +259,8 @@ def downgrade() -> None:
         "DROP TRIGGER brain_session_connections_owner_check ON brain_session_connections"
     )
     op.execute("DROP FUNCTION brain_session_connections_owner_check()")
+    op.execute("DROP TRIGGER brain_sessions_opener_immutable ON brain_sessions")
+    op.execute("DROP FUNCTION brain_sessions_opener_immutable()")
     op.execute(
         "ALTER TABLE brain_sessions "
         "DROP CONSTRAINT brain_sessions_opener_client_id_format, DROP COLUMN opener_client_id"

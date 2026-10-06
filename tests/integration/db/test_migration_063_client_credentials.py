@@ -431,10 +431,10 @@ async def test_the_opener_is_nullable_and_format_checked(
         )
         is None
     )
-    await _set_opener(connection, session_id, "workstation-claude")
     with pytest.raises(IntegrityError, match="brain_sessions_opener_client_id_format"):
         async with connection.begin_nested():
             await _set_opener(connection, session_id, "Bad_Id")
+    await _set_opener(connection, session_id, "workstation-claude")
 
 
 async def test_the_trigger_refuses_an_attributed_connection_that_is_not_the_openers(
@@ -491,32 +491,72 @@ async def test_the_trigger_refuses_an_attributed_connection_on_an_unowned_operat
             )
 
 
-async def test_the_trigger_leaves_an_agent_trace_alone(engine: AsyncEngine) -> None:
-    async with engine.connect() as connection:
-        transaction = await connection.begin()
-        try:
-            key = f"integ-063-{uuid4().hex[:16]}"
+async def _new_session(connection: AsyncConnection, nature: str | None) -> UUID:
+    key = f"integ-063-{uuid4().hex[:16]}"
+    await connection.execute(
+        sa.text(
+            "INSERT INTO project_contexts (project_key, name, description) "
+            "VALUES (:key, :key, 'migration 063')"
+        ),
+        {"key": key},
+    )
+    session_id = await connection.scalar(
+        sa.text(
+            "INSERT INTO brain_sessions (project_key, client_key, started_focus_revision, "
+            "nature, connection_id) VALUES (:key, 'integ-063-other', 0, :nature, :connection) "
+            "RETURNING id"
+        ),
+        {"key": key, "nature": nature, "connection": "c" if nature == "agent" else None},
+    )
+    assert isinstance(session_id, UUID)
+    return session_id
+
+
+async def test_the_trigger_leaves_an_agent_trace_alone(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, _ = operator
+    trace = await _new_session(connection, "agent")
+    await connection.execute(
+        _INSERT_CONNECTION, {"session_id": trace, "connection_id": "c", "client_id": "red-rail"}
+    )
+
+
+async def test_the_trigger_locks_an_operator_nature_session_like_an_unnamed_one(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, _ = operator
+    named = await _new_session(connection, "operator")
+    attach = {"session_id": named, "connection_id": "c", "client_id": "workstation-claude"}
+    with pytest.raises(IntegrityError, match="foreign client"):
+        async with connection.begin_nested():
+            await connection.execute(_INSERT_CONNECTION, attach)
+    await _set_opener(connection, named, "workstation-claude")
+    await connection.execute(_INSERT_CONNECTION, attach)
+    with pytest.raises(IntegrityError, match="foreign client"):
+        async with connection.begin_nested():
             await connection.execute(
-                sa.text(
-                    "INSERT INTO project_contexts (project_key, name, description) "
-                    "VALUES (:key, :key, 'migration 063')"
-                ),
-                {"key": key},
+                _INSERT_CONNECTION, {**attach, "connection_id": "d", "client_id": "red-rail"}
             )
-            trace = await connection.scalar(
-                sa.text(
-                    "INSERT INTO brain_sessions (project_key, client_key, started_focus_revision, "
-                    "nature, connection_id) VALUES (:key, 'integ-063-trace', 0, 'agent', 'c') "
-                    "RETURNING id"
-                ),
-                {"key": key},
-            )
-            await connection.execute(
-                _INSERT_CONNECTION,
-                {"session_id": trace, "connection_id": "c", "client_id": "red-rail"},
-            )
-        finally:
-            await transaction.rollback()
+
+
+async def test_a_set_opener_can_never_change_or_clear(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, session_id = operator
+    await _set_opener(connection, session_id, "workstation-claude")
+    await _set_opener(connection, session_id, "workstation-claude")
+    for other in ("red-rail", None):
+        with pytest.raises(IntegrityError, match="opener"):
+            async with connection.begin_nested():
+                await _set_opener(connection, session_id, other)
+    assert (
+        await connection.scalar(
+            sa.text("SELECT opener_client_id FROM brain_sessions WHERE id = :id"),
+            {"id": session_id},
+        )
+        == "workstation-claude"
+    )
 
 
 async def _has_opener_and_trigger(connection: AsyncConnection) -> bool:
@@ -537,7 +577,19 @@ async def _has_opener_and_trigger(connection: AsyncConnection) -> bool:
             "SELECT count(*) FROM pg_proc WHERE proname = 'brain_session_connections_owner_check'"
         )
     )
-    assert (column, trigger, function) in {(0, 0, 0), (1, 1, 1)}
+    immutability = await connection.scalar(
+        sa.text(
+            "SELECT count(*) FROM pg_trigger WHERE tgrelid = 'public.brain_sessions'::regclass "
+            "AND tgname = 'brain_sessions_opener_immutable'"
+        )
+    )
+    functions = await connection.scalar(
+        sa.text("SELECT count(*) FROM pg_proc WHERE proname = 'brain_sessions_opener_immutable'")
+    )
+    assert (column, trigger, function, immutability, functions) in {
+        (0, 0, 0, 0, 0),
+        (1, 1, 1, 1, 1),
+    }
     return bool(column)
 
 
