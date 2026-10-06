@@ -26,6 +26,8 @@ from urllib.parse import urlsplit
 
 from pydantic import (
     AliasChoices,
+    BaseModel,
+    ConfigDict,
     Field,
     SecretStr,
     StringConstraints,
@@ -137,6 +139,26 @@ def _brain_alias(legacy_env: str) -> AliasChoices:
     only know the bare name.
     """
     return AliasChoices(f"BRAIN_{legacy_env}", legacy_env)
+
+
+class RerankProviderRouting(BaseModel):
+    """OpenRouter's ``provider`` routing object, as the rerank wire sends it.
+
+    ``extra="forbid"``: a mistyped key would otherwise be dropped by pydantic and
+    sent as nothing, leaving the request unrouted with every field "set".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    only: list[str] = Field(min_length=1)
+    allow_fallbacks: bool = False
+    data_collection: Literal["deny", "allow"] = "deny"
+    zdr: bool | None = None
+
+
+def _is_openrouter_host(url: str) -> bool:
+    host = urlsplit(url).hostname or ""
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
 
 
 class Settings(BaseSettings):
@@ -293,6 +315,61 @@ class Settings(BaseSettings):
     rerank_api_key: SecretStr = Field(
         default=SecretStr(""), repr=False, validation_alias=_brain_alias("RERANK_API_KEY")
     )
+
+    rerank_api_key_file: Path | None = Field(
+        default=None, validation_alias=_brain_alias("RERANK_API_KEY_FILE")
+    )
+    """Path to the hosted reranker's API key, read once at startup (0600 or
+    stricter). A PATH and never a value, for the reason given on
+    ``brain_embedding_token_file``: ``systemctl show`` and ``docker inspect`` print
+    an environment verbatim. Mutually exclusive with ``rerank_api_key``."""
+
+    rerank_health_path: str = Field(
+        default="/health", validation_alias=_brain_alias("RERANK_HEALTH_PATH")
+    )
+    """GET path the availability probe calls. Hosted APIs expose no liveness route:
+    for OpenRouter use ``/v1/key``, which is free and answers 200 only with a valid
+    key (401 otherwise), so it proves the route AND the key."""
+
+    rerank_provider: RerankProviderRouting | None = Field(
+        default=None, validation_alias=_brain_alias("RERANK_PROVIDER")
+    )
+    """Provider routing sent with every rerank request (JSON in the environment).
+    Mandatory, and policed, when the cohere backend targets OpenRouter."""
+
+    rerank_probe_interval_seconds: float = Field(
+        default=300.0, gt=0, validation_alias=_brain_alias("RERANK_PROBE_INTERVAL_SECONDS")
+    )
+    """Period of the background availability probe run by the MCP server."""
+
+    @model_validator(mode="after")
+    def _rerank_key_and_routing_policy(self) -> Self:
+        if self.rerank_api_key.get_secret_value() and self.rerank_api_key_file is not None:
+            raise ValueError(
+                "two sources for one rerank key: rerank_api_key and rerank_api_key_file "
+                "are both set; clear one of them"
+            )
+        if self.rerank_backend != "cohere" or not _is_openrouter_host(self.reranker_url):
+            return self
+        provider = self.rerank_provider
+        if provider is None:
+            raise ValueError("rerank_provider is required when reranker_url targets openrouter.ai")
+        author, separator, _ = self.rerank_model.partition("/")
+        if not separator or not author:
+            raise ValueError(
+                "rerank_model must be '<author>/<name>' when reranker_url targets openrouter.ai"
+            )
+        if provider.only != [author]:
+            raise ValueError(
+                f"rerank_provider.only must be exactly [{author!r}], the author of rerank_model"
+            )
+        if provider.allow_fallbacks:
+            raise ValueError("rerank_provider.allow_fallbacks must be false")
+        if provider.data_collection != "deny" and provider.zdr is not True:
+            raise ValueError(
+                "rerank_provider.data_collection must be 'deny' unless rerank_provider.zdr is true"
+            )
+        return self
 
     # --- Code Mode (experimental) ---
     brain_code_mode: bool = False
