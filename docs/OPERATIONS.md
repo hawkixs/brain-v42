@@ -322,6 +322,47 @@ is true, MCP systemd startup runs a preflight that checks the private file's sha
 rejects legacy keys in it; it proves neither the revocation of the previous
 credential, nor writer quiescence, nor the absence of Neo4j sessions.
 
+### Hosted reranker settings
+
+The reranker defaults to the local shim (`BRAIN_RERANK_BACKEND=shim`). Pointing it at
+a hosted Cohere-style API (`BRAIN_RERANK_BACKEND=cohere`, for example OpenRouter with
+`BRAIN_RERANKER_URL=https://openrouter.ai/api`) uses five further settings. None of
+them changes the shim deployment.
+
+| Setting | Default | Role |
+|---|---|---|
+| `BRAIN_RERANK_API_KEY_FILE` | unset | **Path** of the API key, read once at startup. Never a value: `systemctl show` and `docker inspect` print an environment verbatim. Mutually exclusive with `BRAIN_RERANK_API_KEY`, and refused with the shim backend. |
+| `BRAIN_RERANK_HEALTH_PATH` | `/health` | GET path of the availability probe. Hosted APIs have no liveness route: for OpenRouter set `/v1/key`, which is free and answers 200 only with a valid key (401 otherwise), so it proves the route and the key. |
+| `BRAIN_RERANK_PROVIDER` | unset | Provider routing sent with every request, as JSON: `{"only": ["voyageai"]}`. Keys: `only`, `allow_fallbacks` (default `false`), `data_collection` (`deny` by default, or `allow`), `zdr`. Unknown keys are refused. |
+| `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
+
+The key file must be mode `0600` or stricter and have one of two shapes: the bare key value (one token: no whitespace, no `=`, at most
+512 characters), or a dotenv-style file with exactly one `BRAIN_RERANK_API_KEY=<value>`
+line (optional `export `, quotes, blank lines and `#` comments; every other line is
+ignored and never sent anywhere). Anything else is refused, so an env fragment is
+never forwarded;
+anything readable beyond its owner, malformed, empty, or unreadable stops the runtime at construction with a `RerankKeyError` that
+names the path, never the content. Create it the way the shim bearer is created, with
+a redirection under a tight `umask`. The cohere backend never reads
+`BRAIN_EMBEDDING_TOKEN_FILE`: that file is the shim's bearer and must not reach a
+hosted vendor.
+
+When the cohere backend targets `openrouter.ai` (or a subdomain), the routing is
+**policed at load time, not just required**: `BRAIN_RERANK_PROVIDER` must be set,
+`only` must hold exactly one slug equal to the author prefix of `BRAIN_RERANK_MODEL`
+(`voyageai` for `voyageai/rerank-3-lite`), `allow_fallbacks` must be `false`, and
+`data_collection` must be `deny` unless `zdr` is `true`. A routing object supplied for any other cohere host must satisfy the same rules.
+On OpenRouter the key comes from `BRAIN_RERANK_API_KEY_FILE` only: an inline
+`BRAIN_RERANK_API_KEY` is refused there. The health path must be a plain path
+starting with `/`, never a URL. A self-hosted Cohere-style server (TEI, Jina, vLLM)
+needs no routing and may use an inline key.
+
+The probe logs `reranker_client.unavailable` (WARNING, with the reason `http_<status>`
+or `transport_<ExceptionName>`) when it starts failing and
+`reranker_client.available_again` (INFO) on recovery, and nothing in between. A
+rejected or revoked key shows up there as `http_401` rather than as search results
+silently falling back to RRF ordering.
+
 ### Embedding shim static bearer
 
 The shim reads its bearer from a file, never from a variable: `docker inspect`
@@ -490,7 +531,7 @@ observer's budgets are constants.
   advisory-lock session).
 - A non-zero idle-in-transaction budget is raised at engine build to the longest external
   client timeout (`BRAIN_EMBEDDING_TIMEOUT`, `RERANKER_TIMEOUT`, `NEO4J_TIMEOUT`) plus 30 s,
-  because some jobs (the dedup job) hold a transaction across an embedding and a rerank
+  because some jobs (the dedup job) hold a transaction across a rerank
   call. So `BRAIN_EMBEDDING_TIMEOUT=600` yields at least a 630000 ms idle budget on every
   profile; `0` stays `0`.
 - `scripts/dream/*.py` build their own engines and stay unbounded on purpose: they are batch

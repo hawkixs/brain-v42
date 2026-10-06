@@ -24,8 +24,11 @@ from pathlib import Path
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
+import httpx
 from pydantic import (
     AliasChoices,
+    BaseModel,
+    ConfigDict,
     Field,
     SecretStr,
     StringConstraints,
@@ -137,6 +140,53 @@ def _brain_alias(legacy_env: str) -> AliasChoices:
     only know the bare name.
     """
     return AliasChoices(f"BRAIN_{legacy_env}", legacy_env)
+
+
+class RerankProviderRouting(BaseModel):
+    """OpenRouter's ``provider`` routing object, as the rerank wire sends it.
+
+    ``extra="forbid"``: a mistyped key would otherwise be dropped by pydantic and
+    sent as nothing, leaving the request unrouted with every field "set".
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    only: list[str] = Field(min_length=1)
+    allow_fallbacks: bool = False
+    data_collection: Literal["deny", "allow"] = "deny"
+    zdr: bool | None = None
+
+
+def is_relative_request_path(path: str) -> bool:
+    """True for a plain absolute-path reference like ``/v1/key``.
+
+    httpx resolves an absolute URL against ``base_url`` by IGNORING the base, so a
+    health path such as ``https://other.example/x`` would carry the client's
+    Authorization header to that host. ``//host/x`` is refused for the same reason,
+    and a backslash because some parsers read it as a slash. Shared by the settings
+    validator and the client: one predicate, not two that can drift.
+    """
+    if not path.startswith("/") or path.startswith("//") or "\\" in path:
+        return False
+    if any(ch.isspace() or ord(ch) < 0x20 for ch in path):
+        return False
+    parts = urlsplit(path)
+    return not parts.scheme and not parts.netloc
+
+
+def _is_openrouter_host(url: str) -> bool:
+    """Read the host the way the transport will, not the way ``urlsplit`` does.
+
+    ``https://openrouter.ai./`` (trailing dot) and ``https://openrouter\u3002ai/``
+    (ideographic full stop) both reach openrouter.ai, and ``urlsplit`` calls
+    neither of them that. httpx normalises both; so does this predicate.
+    """
+    try:
+        host = httpx.URL(url).host
+    except httpx.InvalidURL as exc:
+        raise ValueError("reranker_url is not a valid URL") from exc
+    host = host.lower().rstrip(".")
+    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
 
 
 class Settings(BaseSettings):
@@ -320,6 +370,83 @@ class Settings(BaseSettings):
     rerank_api_key: SecretStr = Field(
         default=SecretStr(""), repr=False, validation_alias=_brain_alias("RERANK_API_KEY")
     )
+
+    rerank_api_key_file: Path | None = Field(
+        default=None, validation_alias=_brain_alias("RERANK_API_KEY_FILE")
+    )
+    """Path to the hosted reranker's API key, read once at startup (0600 or
+    stricter). A PATH and never a value, for the reason given on
+    ``brain_embedding_token_file``: ``systemctl show`` and ``docker inspect`` print
+    an environment verbatim. Mutually exclusive with ``rerank_api_key``."""
+
+    rerank_health_path: str = Field(
+        default="/health", validation_alias=_brain_alias("RERANK_HEALTH_PATH")
+    )
+    """GET path the availability probe calls. Hosted APIs expose no liveness route:
+    for OpenRouter use ``/v1/key``, which is free and answers 200 only with a valid
+    key (401 otherwise), so it proves the route AND the key."""
+
+    rerank_provider: RerankProviderRouting | None = Field(
+        default=None, validation_alias=_brain_alias("RERANK_PROVIDER")
+    )
+    """Provider routing sent with every rerank request (JSON in the environment).
+    Mandatory, and policed, when the cohere backend targets OpenRouter."""
+
+    rerank_probe_interval_seconds: float = Field(
+        default=300.0, gt=0, validation_alias=_brain_alias("RERANK_PROBE_INTERVAL_SECONDS")
+    )
+    """Period of the background availability probe run by the MCP server."""
+
+    @field_validator("rerank_health_path")
+    @classmethod
+    def _rerank_health_path_stays_on_the_base_url(cls, value: str) -> str:
+        if not is_relative_request_path(value):
+            raise ValueError("rerank_health_path must be a path starting with '/', not a URL")
+        return value
+
+    @model_validator(mode="after")
+    def _rerank_key_and_routing_policy(self) -> Self:
+        if self.rerank_api_key.get_secret_value() and self.rerank_api_key_file is not None:
+            raise ValueError(
+                "two sources for one rerank key: rerank_api_key and rerank_api_key_file "
+                "are both set; clear one of them"
+            )
+        if self.rerank_backend != "cohere":
+            if self.rerank_api_key_file is not None:
+                # The shim authenticates with brain_embedding_token_file: a key file
+                # here would be ignored, and the operator would believe it armed.
+                raise ValueError("rerank_api_key_file requires rerank_backend='cohere'")
+            return self
+        openrouter = _is_openrouter_host(self.reranker_url)
+        if openrouter and self.rerank_api_key.get_secret_value():
+            # An inline value can arrive through the shared .env, which many more
+            # processes can read than a 0600 file. The hosted vendor's key goes
+            # through the file only.
+            raise ValueError(
+                "rerank_api_key is refused when reranker_url targets openrouter.ai; "
+                "set BRAIN_RERANK_API_KEY_FILE to the key file's path"
+            )
+        provider = self.rerank_provider
+        if provider is None:
+            if openrouter:
+                raise ValueError(
+                    "rerank_provider is required when reranker_url targets openrouter.ai"
+                )
+            return self
+        author, separator, _ = self.rerank_model.partition("/")
+        if not separator or not author:
+            raise ValueError("rerank_model must be '<author>/<name>' when rerank_provider is set")
+        if provider.only != [author]:
+            raise ValueError(
+                f"rerank_provider.only must be exactly [{author!r}], the author of rerank_model"
+            )
+        if provider.allow_fallbacks:
+            raise ValueError("rerank_provider.allow_fallbacks must be false")
+        if provider.data_collection != "deny" and provider.zdr is not True:
+            raise ValueError(
+                "rerank_provider.data_collection must be 'deny' unless rerank_provider.zdr is true"
+            )
+        return self
 
     # --- Code Mode (experimental) ---
     brain_code_mode: bool = False

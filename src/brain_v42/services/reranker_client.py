@@ -17,10 +17,12 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import time
 
 import httpx
 import structlog
 
+from brain_v42.config import is_relative_request_path
 from brain_v42.services.rerank_wire import RerankWire, ShimRerankWire
 
 logger = structlog.get_logger(__name__)
@@ -71,6 +73,24 @@ class RerankerClient:
         self._busy_retries = busy_retries
         self._busy_retry_cap_seconds = busy_retry_cap_seconds
         self._client: httpx.AsyncClient | None = None
+        self._last_probe_ok: bool | None = None
+        self._last_probe_reason: str | None = None
+        self._last_probe_monotonic: float | None = None
+
+    @property
+    def last_probe_ok(self) -> bool | None:
+        """Outcome of the last ``is_available()`` call; ``None`` before the first."""
+        return self._last_probe_ok
+
+    @property
+    def last_probe_reason(self) -> str | None:
+        """``"ok"``, ``"http_<status>"`` or ``"transport_<ExceptionName>"``."""
+        return self._last_probe_reason
+
+    @property
+    def last_probe_monotonic(self) -> float | None:
+        """``time.monotonic()`` at the last probe, for staleness checks."""
+        return self._last_probe_monotonic
 
     def _get_client(self) -> httpx.AsyncClient:
         """Get or lazily create the httpx.AsyncClient.
@@ -143,17 +163,47 @@ class RerankerClient:
     async def is_available(self) -> bool:
         """Check if the reranker service is healthy.
 
-        Calls GET /health on the reranker service.
+        Calls GET on the wire's health path. The outcome and its reason are kept
+        on the client, and a change of state is logged once: a hosted reranker
+        whose key was revoked answers 401 forever, and without that line the only
+        symptom is searches quietly falling back to RRF ordering.
 
         Returns:
-            True if the service responds with 200, False otherwise.
+            True if the service responds with 200, False otherwise. Never raises
+            on a transport error.
         """
+        if not is_relative_request_path(self._wire.health_path):
+            # Defence in depth behind the settings validator: httpx would send the
+            # bearer to the host an absolute URL names, ignoring base_url.
+            return self._record_probe(False, "invalid_health_path")
         try:
             client = self._get_client()
             response = await client.get(self._wire.health_path)
-            return response.status_code == 200
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError):
-            return False
+        except httpx.HTTPError as exc:
+            return self._record_probe(False, f"transport_{type(exc).__name__}")
+        except Exception as exc:
+            # A probe must never raise, and an unexpected failure is still a state:
+            # recorded and logged on entry like any other, not a traceback per tick.
+            return self._record_probe(False, f"error_{type(exc).__name__}")
+        if response.status_code == 200:
+            return self._record_probe(True, "ok")
+        return self._record_probe(False, f"http_{response.status_code}")
+
+    def _record_probe(self, ok: bool, reason: str) -> bool:
+        previous = self._last_probe_ok
+        self._last_probe_ok = ok
+        self._last_probe_reason = reason
+        self._last_probe_monotonic = time.monotonic()
+        if not ok and previous is not False:
+            # Never the headers: they carry the bearer.
+            logger.warning(
+                "reranker_client.unavailable",
+                reason=reason,
+                health_path=self._wire.health_path,
+            )
+        elif ok and previous is False:
+            logger.info("reranker_client.available_again", health_path=self._wire.health_path)
+        return ok
 
     async def close(self) -> None:
         """Close the underlying httpx.AsyncClient.
@@ -164,3 +214,20 @@ class RerankerClient:
             await self._client.aclose()
             self._client = None
             logger.info("reranker_client.client_closed")
+
+
+async def run_rerank_probe_loop(client: RerankerClient, interval_seconds: float) -> None:
+    """Probe ``client`` once now, then every ``interval_seconds``, until cancelled.
+
+    Without it the health state only moves when something calls ``is_available()``,
+    and a hosted reranker whose key was revoked would stay invisible until an
+    operator wondered why search quality dropped. ``is_available()`` itself logs
+    the transitions; this loop only has to keep it called, and must never die of
+    a probe error, or the monitoring would stop silently.
+    """
+    while True:
+        try:
+            await client.is_available()
+        except Exception:
+            logger.warning("reranker_client.probe_failed", exc_info=True)
+        await asyncio.sleep(interval_seconds)

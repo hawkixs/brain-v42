@@ -5,9 +5,9 @@ prove the branching logic but not that the absent INSERT is really absent.
 These tests run the resolver against real PostgreSQL+pgvector and count rows
 in ``features`` afterwards.
 
-Neither GPU embedding nor the reranker is needed: on an empty project
-``_find_candidates`` returns no rows, so resolution goes straight to the
-create-or-skip decision without calling either service.
+No GPU embedding is needed: on an empty project ``_find_candidates`` returns
+no rows, so resolution goes straight to the create-or-skip decision without
+calling the service.
 
 Each test uses a unique project_key for isolation.
 """
@@ -36,15 +36,13 @@ def _unique_key() -> str:
 def _build_guard(session_factory: async_sessionmaker[AsyncSession]) -> ClusterGuard:
     """ClusterGuard wired to the test engine with a real StatusEngine.
 
-    embedding_svc and reranker are stubs: the paths exercised here never
-    reach them. If a future change makes them reachable, the AsyncMock will
-    return a MagicMock and the test will fail loudly rather than silently
-    exercise a different path.
+    embedding_svc is a stub: the paths exercised here never reach it. If a
+    future change makes it reachable, the AsyncMock will return a MagicMock and
+    the test will fail loudly rather than silently exercise a different path.
     """
     return ClusterGuard(
         session_factory=session_factory,
         embedding_svc=AsyncMock(),
-        reranker=AsyncMock(),
         status_engine=StatusEngine(),
     )
 

@@ -7,9 +7,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import sqlalchemy as sa
 
 from brain_v42.automation.ownership import OwnershipLostError
-from brain_v42.services.cluster_guard import ClusterGuard
+from brain_v42.services.cluster_guard import CREATING_SIGNALS, FALLBACK_LINK, ClusterGuard
 
 # ── fixtures ────────────────────────────────────────────────────────────
 
@@ -45,10 +46,6 @@ def mock_deps():
     embedding_svc = AsyncMock()
     embedding_svc.embed = AsyncMock(return_value=[0.1] * 1536)
 
-    reranker = AsyncMock()
-    reranker.is_available = AsyncMock(return_value=True)
-    reranker.rerank = AsyncMock(return_value=[0.80])
-
     status_engine = MagicMock()
     status_engine.compute_status = MagicMock(return_value="research")
 
@@ -56,7 +53,6 @@ def mock_deps():
         "session_factory": factory,
         "session": session,
         "embedding_svc": embedding_svc,
-        "reranker": reranker,
         "status_engine": status_engine,
     }
 
@@ -65,7 +61,6 @@ def _build_guard(deps: dict[str, Any]) -> ClusterGuard:
     return ClusterGuard(
         session_factory=deps["session_factory"],
         embedding_svc=deps["embedding_svc"],
-        reranker=deps["reranker"],
         status_engine=deps["status_engine"],
     )
 
@@ -75,8 +70,8 @@ def _build_guard(deps: dict[str, Any]) -> ClusterGuard:
 
 @pytest.mark.asyncio
 async def test_resolve_links_when_high_cosine(mock_deps):
-    """Cosine >= 0.70 -> linked, skip reranker. Status promotion is preserved
-    for knowledge signals: planned -> research."""
+    """Cosine >= 0.70 -> linked. Status promotion is preserved for knowledge
+    signals: planned -> research."""
     feature_row = _make_feature_row(similarity=0.85, status="planned")
     result_set = MagicMock()
     result_set.fetchall.return_value = [feature_row]
@@ -95,8 +90,6 @@ async def test_resolve_links_when_high_cosine(mock_deps):
 
     assert action == "linked"
     assert feature.id == feature_row.id
-    # Reranker should NOT have been called
-    mock_deps["reranker"].rerank.assert_not_called()
     # Status promotion (planned -> research) is preserved on "linked".
     mock_deps["status_engine"].compute_status.assert_called_once_with("planned", "learning", False)
 
@@ -171,40 +164,14 @@ async def test_resolve_skips_for_unknown_signal_type(mock_deps):
 
 
 @pytest.mark.asyncio
-async def test_resolve_uses_reranker_in_grey_zone(mock_deps):
-    """Cosine 0.50-0.70 -> calls reranker to decide. Reranker >= 0.75 -> linked."""
-    feature_row = _make_feature_row(similarity=0.60, name="Memory Decay")
-    result_set = MagicMock()
-    result_set.fetchall.return_value = [feature_row]
-
-    mock_deps["session"].execute = AsyncMock(return_value=result_set)
-    # Reranker returns high score -> should link
-    mock_deps["reranker"].rerank = AsyncMock(return_value=[0.82])
-
-    guard = _build_guard(mock_deps)
-    feature, action = await guard.resolve(
-        text="decay system",
-        embedding=[0.1] * 1536,
-        project_key="brain_v42",
-        signal_type="decision",
-    )
-
-    assert action == "linked"
-    assert feature.id == feature_row.id
-    mock_deps["reranker"].rerank.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_resolve_falls_back_when_reranker_down(mock_deps):
-    """Reranker unavailable -> cosine-only fallback.
-    Cosine 0.65+ -> linked with fallback threshold.
-    """
+async def test_resolve_links_in_grey_zone_at_fallback_threshold(mock_deps):
+    """Grey-zone cosine 0.66 >= FALLBACK_LINK 0.65 -> linked, with no reranker
+    collaborator at all (ruling d4648d84: links come from cosine only)."""
     feature_row = _make_feature_row(similarity=0.66)
     result_set = MagicMock()
     result_set.fetchall.return_value = [feature_row]
 
     mock_deps["session"].execute = AsyncMock(return_value=result_set)
-    mock_deps["reranker"].is_available = AsyncMock(return_value=False)
 
     guard = _build_guard(mock_deps)
     feature, action = await guard.resolve(
@@ -216,14 +183,11 @@ async def test_resolve_falls_back_when_reranker_down(mock_deps):
 
     assert action == "linked"
     assert feature.id == feature_row.id
-    # Reranker.rerank should NOT be called since it's down
-    mock_deps["reranker"].rerank.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_resolve_falls_back_creates_when_below_fallback(mock_deps):
-    """Reranker unavailable + cosine < 0.65, work signal (push) -> created
-    (skip merge zone). Non-regression: uses a CREATING_SIGNALS type."""
+async def test_resolve_creates_below_fallback_threshold_for_creating_signal(mock_deps):
+    """Grey-zone cosine 0.55 < FALLBACK_LINK, work signal (plan) -> created."""
     feature_row = _make_feature_row(similarity=0.55)
     result_set = MagicMock()
     result_set.fetchall.return_value = [feature_row]
@@ -233,68 +197,33 @@ async def test_resolve_falls_back_creates_when_below_fallback(mock_deps):
     insert_result.fetchone.return_value = new_feature_row
 
     mock_deps["session"].execute = AsyncMock(side_effect=[result_set, insert_result])
-    mock_deps["reranker"].is_available = AsyncMock(return_value=False)
 
     guard = _build_guard(mock_deps)
     feature, action = await guard.resolve(
         text="some signal",
         embedding=[0.1] * 1536,
         project_key="brain_v42",
-        signal_type="push",
+        signal_type="plan",
     )
 
     assert action == "created"
-    mock_deps["reranker"].rerank.assert_not_called()
+    assert feature.id == new_feature_row.id
 
 
 @pytest.mark.asyncio
-async def test_resolve_merges_in_reranker_merge_zone(mock_deps):
-    """Reranker score 0.50-0.75, work signal (mr_opened) -> merged, description
-    enriched. Non-regression: merge is preserved for CREATING_SIGNALS."""
-    feature_row = _make_feature_row(
-        similarity=0.60,
-        name="Memory System",
-        description="Original description",
-    )
-    result_set = MagicMock()
-    result_set.fetchall.return_value = [feature_row]
+async def test_resolve_skips_below_fallback_threshold_for_knowledge_signal(mock_deps):
+    """Grey-zone cosine 0.55, knowledge signal (learning) -> skipped.
 
-    # Reranker returns score in merge zone (0.50-0.75)
-    mock_deps["reranker"].rerank = AsyncMock(return_value=[0.62])
-
-    # execute calls: 1) cosine search, 2) update description+embedding, 3) update status
-    mock_deps["session"].execute = AsyncMock(return_value=result_set)
-
-    guard = _build_guard(mock_deps)
-    feature, action = await guard.resolve(
-        text="decay memory management",
-        embedding=[0.1] * 1536,
-        project_key="brain_v42",
-        signal_type="mr_opened",
-    )
-
-    assert action == "merged"
-    assert feature.id == feature_row.id
-    # Embedding service should have been called to re-embed enriched description
-    mock_deps["embedding_svc"].embed.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_resolve_skips_in_grey_zone_for_knowledge_signal(mock_deps):
-    """Reranker score 0.60 (merge zone), knowledge signal (learning) -> skipped.
-
-    Proves the removal of `merged` for knowledge: the candidate feature's
-    description must stay untouched and no re-embedding happens.
+    The candidate feature's description must stay untouched and no
+    re-embedding happens.
     """
     feature_row = _make_feature_row(
-        similarity=0.60,
+        similarity=0.55,
         name="Memory System",
         description="Original description",
     )
     result_set = MagicMock()
     result_set.fetchall.return_value = [feature_row]
-
-    mock_deps["reranker"].rerank = AsyncMock(return_value=[0.60])
     mock_deps["session"].execute = AsyncMock(return_value=result_set)
 
     guard = _build_guard(mock_deps)
@@ -312,39 +241,50 @@ async def test_resolve_skips_in_grey_zone_for_knowledge_signal(mock_deps):
     assert mock_deps["session"].execute.await_count == 1
 
 
+_EVERY_SIGNAL_TYPE = [*sorted(CREATING_SIGNALS), "learning"]
+_EVERY_COSINE = [0.50, 0.55, 0.60, 0.64, 0.66, 0.69, 0.70, 0.9]
+
+
 @pytest.mark.asyncio
-async def test_resolve_creates_when_reranker_score_low(mock_deps):
-    """Reranker score < 0.50, work signal (mr_opened) -> created (not similar
-    enough). Non-regression: uses a CREATING_SIGNALS type."""
-    feature_row = _make_feature_row(similarity=0.55)
-    result_set = MagicMock()
-    result_set.fetchall.return_value = [feature_row]
-
-    new_feature_row = _make_feature_row(name="unrelated signal")
-    insert_result = MagicMock()
-    insert_result.fetchone.return_value = new_feature_row
-
-    # Reranker returns low score
-    mock_deps["reranker"].rerank = AsyncMock(return_value=[0.30])
-
-    mock_deps["session"].execute = AsyncMock(side_effect=[result_set, insert_result])
+@pytest.mark.parametrize("cosine", _EVERY_COSINE)
+@pytest.mark.parametrize("signal_type", _EVERY_SIGNAL_TYPE)
+async def test_resolve_never_merges_and_never_enriches_a_description(
+    mock_deps, signal_type, cosine
+):
+    """Ruling d4648d84: nothing merges. Whatever the signal type and cosine, the
+    action is link/create/skip as the cosine thresholds dictate, and no UPDATE
+    ever rewrites a description or an embedding."""
+    feature_row = _make_feature_row(similarity=cosine, description="Original description")
+    result = MagicMock()
+    result.fetchall.return_value = [feature_row]
+    result.fetchone.return_value = _make_feature_row(name="some signal")
+    mock_deps["session"].execute = AsyncMock(return_value=result)
 
     guard = _build_guard(mock_deps)
-    feature, action = await guard.resolve(
-        text="unrelated signal",
+    _, action = await guard.resolve(
+        text="some signal",
         embedding=[0.1] * 1536,
         project_key="brain_v42",
-        signal_type="mr_opened",
+        signal_type=signal_type,
     )
 
-    assert action == "created"
-    mock_deps["reranker"].rerank.assert_awaited_once()
+    if cosine >= FALLBACK_LINK:
+        expected = "linked"
+    else:
+        expected = "created" if signal_type in CREATING_SIGNALS else "skipped"
+    assert action == expected
+    assert feature_row.description == "Original description"
+    mock_deps["embedding_svc"].embed.assert_not_awaited()
+    for call in mock_deps["session"].execute.call_args_list:
+        statement = call.args[0]
+        if isinstance(statement, sa.sql.dml.Update):
+            assert not {"description", "embedding"} & set(statement.compile().params)
 
 
 @pytest.mark.asyncio
 async def test_resolve_creates_when_cosine_below_grey(mock_deps):
-    """Cosine < 0.50, work signal (plan) -> created immediately, skip
-    reranker. Non-regression: uses a CREATING_SIGNALS type."""
+    """Cosine < 0.50, work signal (plan) -> created immediately.
+    Non-regression: uses a CREATING_SIGNALS type."""
     feature_row = _make_feature_row(similarity=0.35)
     result_set = MagicMock()
     result_set.fetchall.return_value = [feature_row]
@@ -364,40 +304,6 @@ async def test_resolve_creates_when_cosine_below_grey(mock_deps):
     )
 
     assert action == "created"
-    mock_deps["reranker"].rerank.assert_not_called()
-
-
-# ── reranker failure graceful degradation ──────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_resolve_falls_back_to_cosine_when_rerank_raises(mock_deps):
-    """When reranker.rerank() raises, fall back to cosine similarity scores."""
-    feature_row = _make_feature_row(similarity=0.60, name="Memory Decay")
-    result_set = MagicMock()
-    result_set.fetchall.return_value = [feature_row]
-
-    mock_deps["session"].execute = AsyncMock(return_value=result_set)
-    # Reranker is available but rerank() itself raises
-    mock_deps["reranker"].is_available = AsyncMock(return_value=True)
-    mock_deps["reranker"].rerank = AsyncMock(side_effect=Exception("reranker crashed"))
-
-    guard = _build_guard(mock_deps)
-    # Should NOT raise — degrades gracefully using cosine scores
-    feature, action = await guard.resolve(
-        text="decay system",
-        embedding=[0.1] * 1536,
-        project_key="brain_v42",
-        signal_type="decision",
-    )
-
-    # rerank() raised, so scores fall back to the cosine similarities: [0.60].
-    # 0.60 lands in the merge zone (>= RERANKER_MERGE 0.50, < RERANKER_LINK
-    # 0.75), and "decision" is outside CREATING_SIGNALS — link-only mode turns
-    # that merge into a skip. Deterministic: assert the exact outcome rather
-    # than a set of every possible action, which would prove nothing.
-    assert action == "skipped"
-    assert feature is None
 
 
 # ── feature.name sanitization on create ─────────────────────────────────
@@ -585,38 +491,6 @@ async def test_resolve_stops_after_ownership_loss_during_candidate_query(mock_de
 
 
 @pytest.mark.asyncio
-async def test_resolve_stops_after_ownership_loss_during_reranking(mock_deps):
-    """Reranker I/O may not be followed by status mutation after lease loss."""
-    gate = _MutableMutationGate()
-    candidate = _make_feature_row(similarity=0.60, status="planned")
-    candidates = MagicMock()
-    candidates.fetchall.return_value = [candidate]
-    mock_deps["session"].execute = AsyncMock(return_value=candidates)
-
-    async def rerank_after_losing_ownership(
-        _text: str,
-        _candidate_texts: list[str],
-    ) -> list[float]:
-        gate.owned = False
-        return [0.82]
-
-    mock_deps["reranker"].rerank = AsyncMock(side_effect=rerank_after_losing_ownership)
-    guard = _build_guard(mock_deps)
-    guard._mutation_guard = gate.ensure_owned  # type: ignore[attr-defined]
-
-    with pytest.raises(OwnershipLostError, match="inside cluster resolution"):
-        await guard.resolve(
-            text="grey-zone webhook signal",
-            embedding=[0.1] * 1536,
-            project_key="brain_v42",
-            signal_type="mr_opened",
-        )
-
-    assert mock_deps["session"].execute.await_count == 1
-    mock_deps["session"].commit.assert_not_awaited()
-
-
-@pytest.mark.asyncio
 async def test_resolve_does_not_commit_when_ownership_is_lost_during_insert(mock_deps):
     """A post-INSERT lease check must prevent a newly created feature commit."""
     gate = _MutableMutationGate()
@@ -648,39 +522,6 @@ async def test_resolve_does_not_commit_when_ownership_is_lost_during_insert(mock
         )
 
     assert execute_count == 2
-    mock_deps["session"].commit.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_merge_stops_after_ownership_loss_during_reembedding(mock_deps):
-    """Re-embedding may not be followed by UPDATE or commit after lease loss."""
-    gate = _MutableMutationGate()
-    candidate = _make_feature_row(
-        similarity=0.60,
-        description="existing feature description",
-    )
-    candidates = MagicMock()
-    candidates.fetchall.return_value = [candidate]
-    mock_deps["session"].execute = AsyncMock(return_value=candidates)
-    mock_deps["reranker"].rerank = AsyncMock(return_value=[0.62])
-
-    async def reembed_after_losing_ownership(_text: str) -> list[float]:
-        gate.owned = False
-        return [0.2] * 1536
-
-    mock_deps["embedding_svc"].embed = AsyncMock(side_effect=reembed_after_losing_ownership)
-    guard = _build_guard(mock_deps)
-    guard._mutation_guard = gate.ensure_owned  # type: ignore[attr-defined]
-
-    with pytest.raises(OwnershipLostError, match="inside cluster resolution"):
-        await guard.resolve(
-            text="description extension from webhook",
-            embedding=[0.1] * 1536,
-            project_key="brain_v42",
-            signal_type="mr_opened",
-        )
-
-    assert mock_deps["session"].execute.await_count == 1
     mock_deps["session"].commit.assert_not_awaited()
 
 

@@ -96,6 +96,7 @@ from brain_v42.services.graph_projection_schema import ensure_graph_projection_s
 from brain_v42.services.graph_service import GraphService
 from brain_v42.services.learning_service import LearningService
 from brain_v42.services.project_context_service import ProjectContextService
+from brain_v42.services.reranker_client import run_rerank_probe_loop
 from brain_v42.services.roadmap_service import RoadmapService
 from brain_v42.services.runbook_service import RunbookService
 from brain_v42.services.snippet_service import SnippetService
@@ -366,6 +367,20 @@ async def app_lifecycle(
             cleanup.push_async_callback(agent_trace_net.stop)
             await agent_trace_net.start()
 
+        # A hosted reranker can lose its key or its route while the server runs;
+        # without a periodic probe that only shows as searches quietly falling
+        # back to RRF. Never awaited here: a probe that hangs must not delay
+        # startup, and a probe error must not reach it (the loop swallows them).
+        reranker_client = services.get("reranker_client")
+        if reranker_client is not None:
+            # Nothing else closes it. Pushed BEFORE the probe task so that, LIFO,
+            # the probe is cancelled first and never meets a closed client.
+            cleanup.push_async_callback(reranker_client.close)
+            rerank_probe_task = asyncio.create_task(
+                run_rerank_probe_loop(reranker_client, settings.rerank_probe_interval_seconds)
+            )
+            cleanup.push_async_callback(_cancel_task, rerank_probe_task)
+
         # Keep a strong reference so the GC cannot collect the task mid-flight.
         # This one-shot covers t=0; the refresher above, when armed, sleeps its
         # interval before its first sweep so the two never walk the same files
@@ -630,7 +645,7 @@ def build_services() -> dict[str, Any]:
         graph=graph_service,
     )
 
-    # Reranker client (HTTP, for ClusterGuard grey-zone scoring)
+    # Reranker client (HTTP, for hybrid search)
 
     reranker_client = build_reranker_client(settings)
 
@@ -645,7 +660,6 @@ def build_services() -> dict[str, Any]:
     cluster_guard = ClusterGuard(
         session_factory=session_factory,
         embedding_svc=embedding_svc,
-        reranker=reranker_client,
         status_engine=status_engine,
     )
 

@@ -2,20 +2,23 @@
 
 Every signal (learning, decision, snippet, MR, push, etc.) passes through
 ClusterGuard before creating or linking to a feature. The resolver uses a
-two-stage scoring pipeline:
-
-1. pgvector cosine similarity to find the top 5 candidates
-2. Cross-encoder reranker (if available) to refine the grey zone
+resolver that scores on pgvector cosine similarity alone: the top 5 candidates
+of the project are ranked by cosine and only the best one is considered.
 
 Thresholds:
-    COSINE_LINK      >= 0.70  → link directly (skip reranker)
-    COSINE_GREY_LOW  >= 0.50  → enter grey zone (use reranker)
-    RERANKER_LINK    >= 0.75  → link
-    RERANKER_MERGE   >= 0.50  → merge (enrich description, re-embed)
-    FALLBACK_LINK    >= 0.65  → link when reranker is down (cosine-only)
+    COSINE_LINK      >= 0.70  → link
+    COSINE_GREY_LOW  >= 0.50  → grey zone: link at FALLBACK_LINK, else create
+    FALLBACK_LINK    >= 0.65  → link inside the grey zone
+    below COSINE_GREY_LOW     → create
+
+Why no reranker and no merge: operator ruling d4648d84 (2026-10-06, ticket
+ae723cb9) — "ClusterGuard stops using the reranker. Links come from cosine
+only and nothing ever merges on a reranker score". A feature's description is
+never enriched and never re-embedded here: the signal either links to a
+feature, creates one, or is skipped.
 
 Link-only mode: only ``signal_type`` values in ``CREATING_SIGNALS`` may create
-or merge a feature. Every other signal type — the five knowledge artifacts
+a feature. Every other signal type — the five knowledge artifacts
 (learning, decision, snippet, runbook, adr) and any unrecognized future
 signal — can only link to an existing candidate; when no candidate is
 confident enough, ``resolve()`` returns ``(None, "skipped")`` instead of
@@ -37,7 +40,6 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
     from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
-    from brain_v42.services.reranker_client import RerankerClient
     from brain_v42.services.status_engine import StatusEngine
 
 logger = structlog.get_logger(__name__)
@@ -46,8 +48,6 @@ logger = structlog.get_logger(__name__)
 
 COSINE_LINK = 0.70
 COSINE_GREY_LOW = 0.50
-RERANKER_LINK = 0.75
-RERANKER_MERGE = 0.50
 FALLBACK_LINK = 0.65
 
 _TOP_K = 5
@@ -55,10 +55,10 @@ _NAME_MAX = 200
 
 # ── link-only allowlist ─────────────────────────────────────────────────
 #
-# Signal types allowed to create or merge a feature. Everything else (the
-# five knowledge artifact types, and any signal_type not listed here) is
-# link-only: it may link to a confident candidate but never creates or
-# merges. Allowlist, not denylist — fail-closed on unknown signal types.
+# Signal types allowed to create a feature. Everything else (the five
+# knowledge artifact types, and any signal_type not listed here) is
+# link-only: it may link to a confident candidate but never creates.
+# Allowlist, not denylist — fail-closed on unknown signal types.
 CREATING_SIGNALS = frozenset(
     {
         "plan",
@@ -89,21 +89,19 @@ class ClusterGuard:
     """Anti-duplication resolver for feature signals.
 
     Decides whether an incoming signal should be linked to an existing
-    feature, merged into one, or used to create a brand-new feature.
+    feature or used to create a brand-new feature. It never merges.
     """
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         embedding_svc: GPUEmbeddingService,
-        reranker: RerankerClient,
         status_engine: StatusEngine,
         *,
         mutation_guard: Callable[[], None] | None = None,
     ) -> None:
         self._sf = session_factory
         self._embedding_svc = embedding_svc
-        self._reranker = reranker
         self._status_engine = status_engine
         self._mutation_guard = mutation_guard
 
@@ -113,14 +111,12 @@ class ClusterGuard:
         embedding: list[float],
         project_key: str,
         signal_type: str,
-    ) -> tuple[object | None, Literal["linked", "merged", "created", "skipped"]]:
+    ) -> tuple[object | None, Literal["linked", "created", "skipped"]]:
         """Resolve a signal to a feature.
 
         Returns:
             (feature_row, action) where action is one of:
             - "linked":  matched an existing feature (high confidence)
-            - "merged":  enriched an existing feature's description
-              (CREATING_SIGNALS only)
             - "created": inserted a new feature row (CREATING_SIGNALS only)
             - "skipped": link-only signal with no confident candidate;
               feature_row is None
@@ -144,9 +140,9 @@ class ClusterGuard:
                 await self._commit(session)
                 return best, "linked"
 
-            # ── grey zone → consult reranker ───────────────────────────
+            # ── grey zone → cosine-only decision, never a merge ─────────
             if best_score >= COSINE_GREY_LOW:
-                return await self._handle_grey_zone(
+                return await self._fallback_cosine_only(
                     session, text, embedding, project_key, signal_type, candidates
                 )
 
@@ -195,60 +191,6 @@ class ClusterGuard:
         result = await session.execute(stmt)
         return list(result.fetchall())
 
-    async def _handle_grey_zone(
-        self,
-        session: AsyncSession,
-        text: str,
-        embedding: list[float],
-        project_key: str,
-        signal_type: str,
-        candidates: list,
-    ) -> tuple[object | None, Literal["linked", "merged", "created", "skipped"]]:
-        """Handle candidates in the cosine grey zone (0.50–0.70)."""
-        reranker_available = await self._reranker.is_available()
-        self._ensure_mutation_allowed()
-
-        if not reranker_available:
-            return await self._fallback_cosine_only(
-                session, text, embedding, project_key, signal_type, candidates
-            )
-
-        # Rerank candidates
-        candidate_texts = [row.name for row in candidates]
-        try:
-            scores = await self._reranker.rerank(text, candidate_texts)
-        except Exception:
-            logger.warning("cluster_guard.rerank_failed", exc_info=True)
-            scores = [c.similarity for c in candidates]
-        self._ensure_mutation_allowed()
-
-        # Find best reranker score
-        best_idx = 0
-        best_reranker_score = scores[0]
-        for i, s in enumerate(scores):
-            if s > best_reranker_score:
-                best_reranker_score = s
-                best_idx = i
-
-        best = candidates[best_idx]
-
-        if best_reranker_score >= RERANKER_LINK:
-            await self._maybe_update_status(session, best, signal_type)
-            await self._commit(session)
-            return best, "linked"
-
-        if best_reranker_score >= RERANKER_MERGE:
-            if signal_type not in CREATING_SIGNALS:
-                return self._skip(signal_type, project_key, best_reranker_score)
-            await self._merge_into(session, best, text, embedding, signal_type)
-            await self._commit(session)
-            return best, "merged"
-
-        # Reranker says not similar enough → create new (if allowed)
-        return await self._create_or_skip(
-            session, text, embedding, project_key, signal_type, best_score=best_reranker_score
-        )
-
     async def _fallback_cosine_only(
         self,
         session: AsyncSession,
@@ -258,7 +200,7 @@ class ClusterGuard:
         signal_type: str,
         candidates: list,
     ) -> tuple[object | None, Literal["linked", "created", "skipped"]]:
-        """Cosine-only fallback when reranker is down.
+        """Decide a grey-zone candidate (0.50 <= cosine < 0.70) on cosine alone.
 
         >= FALLBACK_LINK (0.65) → link, else create (if allowed). No merge zone.
         """
@@ -311,36 +253,6 @@ class ClusterGuard:
         feature = await self._create_feature(session, text, embedding, project_key, signal_type)
         await self._commit(session)
         return feature, "created"
-
-    async def _merge_into(
-        self,
-        session: AsyncSession,
-        feature: object,
-        text: str,
-        embedding: list[float],
-        signal_type: str,
-    ) -> None:
-        """Enrich a feature's description and re-embed."""
-        self._ensure_mutation_allowed()
-        old_desc = feature.description  # type: ignore[attr-defined]
-        new_desc = f"{old_desc}\n\n---\n{text}"
-
-        new_embedding = await self._embedding_svc.embed(new_desc)
-        self._ensure_mutation_allowed()
-
-        await session.execute(
-            sa.update(features)
-            .where(features.c.id == feature.id)  # type: ignore[attr-defined]
-            .values(
-                description=new_desc,
-                embedding=new_embedding,
-                updated_at=sa.text("NOW()"),
-            )
-        )
-        self._ensure_mutation_allowed()
-
-        await self._maybe_update_status(session, feature, signal_type)
-        self._ensure_mutation_allowed()
 
     async def _create_feature(
         self,

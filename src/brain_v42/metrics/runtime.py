@@ -330,12 +330,7 @@ def _build_legacy_resources(
 ) -> LegacyAutomationResources:
     """Build mandatory dedup first, then the optional webhook boundary."""
     reranker = build_reranker_client(settings)
-    dedup_job = FeatureDedupJob(
-        session_factory,
-        reranker,
-        embedding_svc,
-        mutation_guard=lease.ensure_owned,
-    )
+    dedup_job = FeatureDedupJob(session_factory, reranker)
     guarded_ingestor: GitLabEventProcessor | None = None
     guarded_resolver: ProjectKeyResolver | None = None
     try:
@@ -345,7 +340,6 @@ def _build_legacy_resources(
         cluster_guard = ClusterGuard(
             session_factory,
             embedding_svc,
-            reranker,
             StatusEngine(),
             mutation_guard=lease.ensure_owned,
         )

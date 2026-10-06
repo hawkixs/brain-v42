@@ -137,6 +137,19 @@ CPU single batch ~3.4 s; CPU sorted micro-batches of 32 ~1.9 s; CUDA sorted micr
 ~0.3 s (85 candidates) / ~0.4 s (128) — a single CUDA batch of 128x512 OOMs the shared 6 GB GPU.
 CPU vs CUDA scores: max |diff| 0.00012, identical top-10.
 
+### Reranker backends
+
+`RerankerClient` speaks through a wire (`services/rerank_wire.py`). `ShimRerankWire`
+is the private `POST /rerank` contract of the bundled shim, the default.
+`CohereRerankWire` speaks `POST /v1/rerank` (TEI, Jina, vLLM, and hosted APIs such as
+OpenRouter), remaps results to input order and converts the provider's relevance score
+back to a logit so `HybridReranker`'s sigmoid stays idempotent. It can carry an
+optional `provider` routing object, and each wire exposes an `identity` (`shim`,
+`cohere:<model>`). `build_reranker_client` is the single construction path; it resolves
+the cohere key from its own file and never from the shim bearer. The MCP server probes
+the configured health path in the background and records the last outcome on the client;
+see `docs/OPERATIONS.md`, "Hosted reranker settings".
+
 ### Qodo retired from the default stack (2026-09-26)
 
 brain-v42 embeds through the Mistral codestral endpoint since 2026-09-22; the local
@@ -144,8 +157,8 @@ Qodo-Embed-1-1.5B GGUF served by `embedding-llama` (llama.cpp) is no longer a br
 dependency. `auto-discord`, the last `/embed` client, is migrating off it in its own
 change. Consequently `embedding-llama` sits behind the `qodo` Compose profile: a plain
 `docker compose up` never starts it, and `embedding-shim` carries no `depends_on` on it
-— the shim starts on its own and serves `/rerank` (used by brain's hybrid search and
-ClusterGuard) regardless of whether qodo is running.
+— the shim starts on its own and serves `/rerank` (used by brain's hybrid search)
+regardless of whether qodo is running.
 
 `POST /embed`, `/embed/query` and `/embed/single` on the shim depend on
 `embedding-llama` and answer with an upstream error while it is stopped — this is
@@ -181,7 +194,7 @@ cross-encoder (see above) and never depended on `embedding-llama`.
 | Postgres 16 + pgvector | 5433 | CRUD + FTS + 1536-d vectors + audit + graph ledger/outbox + time series | `src/brain_v42/db/tables.py`, `alembic/versions/` |
 | Neo4j 5 Community | 7687 (bolt) / 7474 (browser) | Relationship traversal, clusters, neighbourhood, domain classification | `src/brain_v42/db/neo4j.py`, `src/brain_v42/services/graph_service.py` |
 | GPU embedding service | 8003 | Cross-encoder reranker (always on); `/embed*` only when the `qodo` profile runs `embedding-llama` (Qodo-Embed-1-1.5B, 1536 dims) — the shipped configuration (`BRAIN_EMBEDDING_BACKEND=shim`, `BRAIN_EMBEDDING_MODEL=qodo`) embeds through it, so it needs `--profile qodo`; the production deployment instead sets the OpenAI-compatible backend to Mistral codestral | `src/brain_v42/services/gpu_embedding_service.py` |
-| Reranker | 8003 | Cross-encoder rerank for hybrid search + ClusterGuard grey zone (same unified endpoint as embed) | `src/brain_v42/services/reranker_client.py` |
+| Reranker | 8003 | Cross-encoder rerank for hybrid search (same unified endpoint as embed) | `src/brain_v42/services/reranker_client.py` |
 
 ### 43 PG tables (`src/brain_v42/db/tables.py`)
 
@@ -476,7 +489,7 @@ All are optional via settings (`metrics_enabled`, `decay_enabled`, `graph_enable
 
 `min_score` filtering is disabled in degraded mode to avoid silently dropping all results when scores are RRF-based rather than semantic.
 
-**`BatchingRerankerClient`** (`src/brain_v42/services/search/batching_reranker.py`) — wraps `RerankerClient` with a 20 ms coalescing window. All parallel fan-out shards that arrive within the window are batched into a single HTTP request to the reranker, reducing round trips 3–6x. `ClusterGuard` and `FeatureDedupJob` use the raw `RerankerClient` directly (single-query paths with no fan-out).
+**`BatchingRerankerClient`** (`src/brain_v42/services/search/batching_reranker.py`) — wraps `RerankerClient` with a 20 ms coalescing window. All parallel fan-out shards that arrive within the window are batched into a single HTTP request to the reranker, reducing round trips 3–6x. `FeatureDedupJob` uses the raw `RerankerClient` directly (single-query path with no fan-out). `ClusterGuard` does not use the reranker at all: its links come from cosine similarity only and it never merges (operator ruling, brain decision `d4648d84`).
 
 ## Metrics sidecar (port 9200)
 
@@ -532,11 +545,11 @@ automation acquires it before metrics restarts. The committed automation unit re
 dormant; [the systemd runbook](../deploy/systemd/README.md) is the only operator procedure.
 
 The automation and legacy metrics builders inject the lease's synchronous ownership check
-as an optional mutation guard into `GitLabIngestor`, `ClusterGuard`, and `FeatureDedupJob`.
-The scheduler checks ownership after candidate discovery and merge, around commit, and
-before advancing or logging. `FeatureDedupJob` re-embeds before DML and checks ownership
-outside the best-effort embedding handler and around every SQL await. Non-automation
-consumers retain the default `None` guard.
+as an optional mutation guard into `GitLabIngestor` and `ClusterGuard`. The dedup scheduler
+checks ownership before each pass and after each candidate discovery. `FeatureDedupJob`
+takes no guard: it is read-only, and the scheduler only logs `dedup_loop.probable_duplicate`
+for the pairs it finds. Nothing merges on a reranker score (decisions 9e21964f and
+d4648d84). Non-automation consumers retain the default `None` guard.
 
 The PostgreSQL advisory lease remains non-fencing. The guards close the observed handover
 window, including losses during embedding or reranking, but cannot revoke a transaction
@@ -545,13 +558,6 @@ and `feature_artifacts` insertion use independent transactions. A loss detected 
 commit can therefore replay a merge or leave the artifact row absent;
 `gitlab_events.feature_id` still records the feature association. Eliminating this Medium
 recovery risk requires cross-step atomicity or durable reconciliation, outside this lot.
-
-A dedup `commit()` already entered in PostgreSQL remains non-fencing: its post-commit guard
-can stop the pass and later logs, but cannot restore prior state. The two feature rows also
-remain locked from `SELECT ... FOR UPDATE` until re-embedding returns or the transaction is
-rolled back. Runtime cancellation bounds the normal lease-loss path, while a blocked
-embedding can prolong those locks. `feature_dedup.merge_staged` is pre-commit; only
-`dedup_loop.merged` reports guarded post-commit progress.
 
 After the split, automation events no longer feed the in-process metrics snapshot, so
 `cockpit.recent` intentionally loses those event entries; health, Prometheus metrics and
@@ -846,7 +852,7 @@ change or activation, token creation, live-credential access, or enforcement act
 
 1. Deduplicates on `gitlab_event_id` (unique index, `ON CONFLICT DO NOTHING`).
 2. Extracts text from merge requests, issues, commits, comments.
-3. Embeds and asks `ClusterGuard` to resolve the signal against existing `features` — link, merge, or create.
+3. Embeds and asks `ClusterGuard` to resolve the signal against existing `features` — link, or create.
 4. Writes the raw event to `gitlab_events` for audit, and a typed row to `feature_artifacts`.
 
 Feature creation has two deliberate paths:
@@ -859,7 +865,7 @@ Feature creation has two deliberate paths:
   `design`, `building`, `deployed`, and `done`, while `archived` is rejected. This path bypasses
   `ClusterGuard` and provides neither semantic nor global uniqueness.
 - **Signal-driven resolution.** Eligible artifact, plan, and GitLab paths continue through
-  `ClusterGuard`, which may link, merge, or create within the project using semantic similarity.
+  `ClusterGuard`, which may link or create within the project using cosine similarity alone (never a merge).
 
 `StatusEngine` advances feature status monotonically
 (planned → research → design → building → deployed → done) based on artifact types.

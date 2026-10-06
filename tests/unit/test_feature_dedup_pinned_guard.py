@@ -60,8 +60,6 @@ def _job(all_features, neighbors_by_id, reranker_score: float = 0.95) -> Feature
     job = FeatureDedupJob(
         session_factory=factory,
         reranker=reranker,
-        embedding_svc=AsyncMock(),
-        mutation_guard=MagicMock(),
     )
     job._get_all_features = AsyncMock(return_value=all_features)  # type: ignore[method-assign]
     job._find_neighbors = AsyncMock(  # type: ignore[method-assign]
