@@ -123,8 +123,10 @@ def test_no_http_server_arg_defaults_to_stdio(monkeypatch: Any) -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("log_format", ["console", "json"])
 def test_run_server_http_branch_calls_run_http_async_with_kwargs(
     monkeypatch: Any,
+    log_format: str,
 ) -> None:
     """_run_mcp() with http transport must await run_http_async with the correct kwargs.
 
@@ -138,6 +140,8 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
     - json_response=True
     - uvicorn_config={"timeout_graceful_shutdown": 10, "proxy_headers": False,
       "forwarded_allow_ips": ""} so the peer always comes from the socket
+      (plus log_config=None in JSON mode to preserve the stderr formatter)
+    - show_banner=False only in JSON mode to keep every line parseable
     - host and port from settings
     Also verifies run_async (stdio) is NOT called.
     """
@@ -152,6 +156,7 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
         postgres_url=_FAKE_PG_URL,
         brain_mcp_transport="http",
         mcp_http_token="test-token",
+        brain_log_format=log_format,
     )
 
     captured: dict[str, Any] = {}
@@ -167,6 +172,7 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
 
     monkeypatch.setattr(server.mcp, "run_http_async", fake_run_http_async)
     monkeypatch.setattr(server.mcp, "run_async", fake_run_async)
+    server._http_security_configured_servers.discard(server.mcp)
 
     # Call the REAL _run_mcp — no reimplementation
     asyncio.run(server._run_mcp(server.mcp, settings))
@@ -178,12 +184,38 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
         "timeout_graceful_shutdown": 10,
         "proxy_headers": False,
         "forwarded_allow_ips": "",
+        **({"log_config": None} if log_format == "json" else {}),
     }, f"uvicorn_config mismatch: {captured}"
     assert captured.get("host") == settings.mcp_http_host, f"host mismatch: {captured}"
     assert captured.get("port") == settings.mcp_http_port, f"port mismatch: {captured}"
+    assert (
+        captured.get("show_banner") is False
+        if log_format == "json"
+        else "show_banner" not in captured
+    )
     assert not stdio_called, "run_async(stdio) must NOT be called in http branch"
 
     get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("log_format", ["console", "json"])
+def test_stdio_banner_is_suppressed_only_for_json_logs(monkeypatch: Any, log_format: str) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from brain_v42.config import Settings
+    from brain_v42.mcp import server
+
+    settings = Settings(postgres_url=_FAKE_PG_URL, brain_log_format=log_format)
+    mcp = MagicMock()
+    mcp.run_async = AsyncMock()
+    monkeypatch.setattr(server, "prepare_tools_for_transport", AsyncMock())
+    monkeypatch.setattr(server, "_install_signal_handlers", lambda *_: None)
+
+    asyncio.run(server._run_mcp(mcp, settings))
+
+    mcp.run_async.assert_awaited_once_with(
+        transport="stdio", **({"show_banner": False} if log_format == "json" else {})
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -280,3 +312,61 @@ def test_stateless_can_be_restored_by_settings(monkeypatch: Any) -> None:
     asyncio.run(server._run_mcp(server.mcp, settings))
 
     assert captured.get("stateless_http") is True
+
+
+@pytest.mark.parametrize(
+    "host,origin,status",
+    [
+        ("192.0.2.4:8765", None, 200),
+        ("192.0.2.4:9999", None, 421),
+        ("192.0.2.5:8765", None, 421),
+        ("evil.example.test:8765", None, 421),
+        ("127.0.0.1:9000", None, 200),
+        ("localhost:8765", None, 200),
+        ("[::1]:8765", None, 200),
+        ("192.0.2.4:8765", "http://192.0.2.4:8765", 200),
+        ("192.0.2.4:8765", "http://192.0.2.4:9999", 403),
+        ("192.0.2.4:8765", "http://192.0.2.5:8765", 403),
+        ("192.0.2.4:8765", "http://evil.example.test:8765", 403),
+        ("192.0.2.4:8765", "http://localhost:3000", 200),
+    ],
+)
+async def test_http_plan_wires_allowed_hosts_and_keeps_loopback(
+    host: str, origin: str | None, status: int
+) -> None:
+    import httpx
+    from fastmcp import FastMCP
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    from brain_v42.config import Settings
+    from brain_v42.mcp import server
+    from tests.unit.mcp.test_credentials_http import verifier
+
+    config = Settings(
+        postgres_url=_FAKE_PG_URL,
+        brain_mcp_transport="http",
+        brain_mcp_auth_mode="credentials",
+        mcp_http_host="0.0.0.0",
+        mcp_http_allow_non_loopback=True,
+        mcp_http_allowed_hosts="192.0.2.4:8765",
+        _env_file=None,
+    )
+    mcp = FastMCP("allowed-hosts-plan")
+
+    @mcp.custom_route("/health", methods=["GET"])
+    async def health(request: Request) -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    plan = server.plan_http_transport(
+        mcp, config, credential_verifier=await verifier(refresh=False)
+    )
+    app = mcp.http_app(middleware=plan.middleware)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://localhost"
+    ) as client:
+        headers = {"Host": host}
+        if origin is not None:
+            headers["Origin"] = origin
+        response = await client.get("/health", headers=headers)
+    assert response.status_code == status

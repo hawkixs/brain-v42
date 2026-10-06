@@ -1,7 +1,7 @@
 """brain_v42 configuration via pydantic-settings.
 
 All settings are loaded from environment variables or .env file.
-HTTP transport is an opt-in, loopback-only mode; stdio is the default.
+HTTP transport defaults to loopback; off-loopback binds require a named opt-in.
 Neo4j is optional and disabled by default (graph_enabled=False).
 
 Env var naming: every setting is reachable under a BRAIN_-prefixed name
@@ -361,7 +361,8 @@ class Settings(BaseSettings):
     # --- Reranker backend (pluggable wire shape) ---
     # "shim"   — the private POST /rerank contract (raw cross-encoder logits).
     # "cohere" — POST /v1/rerank, implemented by TEI, Jina and vLLM.
-    rerank_backend: Literal["shim", "cohere"] = Field(
+    # "none"   — intentional rollback to RRF ordering, without a client or probe.
+    rerank_backend: Literal["shim", "cohere", "none"] = Field(
         default="shim", validation_alias=_brain_alias("RERANK_BACKEND")
     )
     rerank_model: str = Field(default="", validation_alias=_brain_alias("RERANK_MODEL"))
@@ -411,6 +412,22 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _rerank_key_and_routing_policy(self) -> Self:
+        if self.rerank_backend == "none":
+            conflicts = [
+                name
+                for name, configured in (
+                    ("rerank_model", bool(self.rerank_model)),
+                    ("rerank_api_key", bool(self.rerank_api_key.get_secret_value())),
+                    ("rerank_api_key_file", self.rerank_api_key_file is not None),
+                    ("rerank_provider", self.rerank_provider is not None),
+                    ("reranker_url", "reranker_url" in self.model_fields_set),
+                    ("rerank_health_path", "rerank_health_path" in self.model_fields_set),
+                )
+                if configured
+            ]
+            if conflicts:
+                raise ValueError("rerank_backend='none' refuses: " + ", ".join(conflicts))
+            return self
         if self.rerank_api_key.get_secret_value() and self.rerank_api_key_file is not None:
             raise ValueError(
                 "two sources for one rerank key: rerank_api_key and rerank_api_key_file "
@@ -468,9 +485,14 @@ class Settings(BaseSettings):
     # --- MCP transport ---
     brain_mcp_transport: Literal["stdio", "http"] = "stdio"  # env BRAIN_MCP_TRANSPORT
     brain_mcp_auth_mode: Literal["shared_token", "credentials"] = "shared_token"
-    mcp_http_host: str = Field(
-        default="127.0.0.1", validation_alias=_brain_alias("MCP_HTTP_HOST")
-    )  # loopback-only
+    mcp_http_allow_non_loopback: bool = Field(
+        default=False, validation_alias=_brain_alias("MCP_HTTP_ALLOW_NON_LOOPBACK")
+    )
+    mcp_http_allowed_hosts: Annotated[frozenset[str], NoDecode] = Field(
+        default=frozenset(), validation_alias=_brain_alias("MCP_HTTP_ALLOWED_HOSTS")
+    )
+    """Additional Host authorities, as a comma-separated list of host[:port]."""
+    mcp_http_host: str = Field(default="127.0.0.1", validation_alias=_brain_alias("MCP_HTTP_HOST"))
     mcp_http_port: int = Field(default=8765, validation_alias=_brain_alias("MCP_HTTP_PORT"))
     mcp_http_allow_unauthenticated: bool = Field(
         default=False, validation_alias=_brain_alias("MCP_HTTP_ALLOW_UNAUTHENTICATED")
@@ -483,8 +505,8 @@ class Settings(BaseSettings):
 
     Empty = refused at HTTP startup unless MCP_HTTP_ALLOW_UNAUTHENTICATED=true.
 
-    Non-empty = BearerTokenGuard is activated; every non-/health HTTP request must
-    carry ``Authorization: Bearer <token>``.
+    Non-empty = BearerTokenGuard is activated; HTTP requests outside /health,
+    /healthz and /version must carry ``Authorization: Bearer <token>``.
 
     IMPORTANT — enabling this is a coordinated deployment operation:
     all fleet .mcp.json clients must be updated to inject the Authorization header
@@ -532,14 +554,31 @@ class Settings(BaseSettings):
             "METRICS_ALLOW_NON_LOOPBACK=yes to take that trade deliberately."
         )
 
-    @field_validator("mcp_http_host")
+    @field_validator("mcp_http_allowed_hosts", mode="before")
     @classmethod
-    def _loopback_only(cls, v: str) -> str:
-        if not _is_loopback_host(v):
+    def _parse_mcp_http_allowed_hosts(cls, value: object) -> object:
+        """Parse operator-declared authorities without treating commas as JSON."""
+        if isinstance(value, str):
+            return frozenset(entry.strip() for entry in value.split(",") if entry.strip())
+        return value
+
+    @model_validator(mode="after")
+    def _mcp_bind_requires_named_opt_in(self) -> Self:
+        """A network listener must opt into credentials and an explicit Host boundary."""
+        if not _is_loopback_host(self.mcp_http_host) and not self.mcp_http_allow_non_loopback:
             raise ValueError(
-                f"mcp_http_host must be loopback (got {v!r}); bind-0.0.0.0 is forbidden"
+                "MCP_HTTP_HOST must be loopback unless MCP_HTTP_ALLOW_NON_LOOPBACK=true"
             )
-        return v
+        if self.mcp_http_allow_non_loopback:
+            if self.brain_mcp_auth_mode != "credentials":
+                raise ValueError(
+                    "MCP_HTTP_ALLOW_NON_LOOPBACK requires BRAIN_MCP_AUTH_MODE=credentials"
+                )
+            if not self.mcp_http_allowed_hosts:
+                raise ValueError(
+                    "MCP_HTTP_ALLOW_NON_LOOPBACK requires non-empty MCP_HTTP_ALLOWED_HOSTS"
+                )
+        return self
 
     # --- Metrics sidecar ---
     metrics_enabled: bool = Field(default=False, validation_alias=_brain_alias("METRICS_ENABLED"))

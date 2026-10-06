@@ -131,6 +131,35 @@ async def test_metrics_endpoint_returns_json(
     assert data["database"]["graph_outbox"]["projector"]["healthy"] is True
 
 
+@pytest.mark.parametrize("backend", ["none", "cohere", "shim"])
+async def test_metrics_exposes_configured_backend_without_operations(
+    collector: MetricsCollector,
+    mock_embedding_svc: MagicMock,
+    backend: str,
+) -> None:
+    aggregate = collector.collect_process_metrics.return_value
+    aggregate.update(
+        active_processes=1,
+        decay={"stale_count": 0, "archived_count": 0, "access_log_size": 0},
+        tools={
+            "_reranker": {
+                "backend": backend,
+                "calls": 0,
+                "errors": 0,
+                "recent_errors": 0,
+                "avg_latency_ms": 0.0,
+                "by_identity": {},
+            }
+        },
+    )
+    server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
+    metrics = json.loads((await server._handle_metrics(MagicMock())).body)["reranker"]
+    assert metrics["backend"] == backend
+    assert metrics["by_identity"] == {}
+    for key in ("last_probe_ok", "last_probe_reason", "last_probe_age_s"):
+        assert metrics[key] is None
+
+
 @pytest.mark.parametrize("now, expected_age", [(1005.26, 3.3), (1000.0, 0.0)])
 async def test_metrics_exposes_cross_process_rerank_observations(
     collector: MetricsCollector,

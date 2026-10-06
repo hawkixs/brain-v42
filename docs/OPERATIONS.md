@@ -285,6 +285,18 @@ Focus slots (ADR #34) carry the topics in flight; the tools are described in
 
 ## Network trust boundary (detailed)
 
+MCP HTTP binds to loopback by default. A non-loopback `MCP_HTTP_HOST` requires
+`MCP_HTTP_ALLOW_NON_LOOPBACK=true`, `BRAIN_MCP_AUTH_MODE=credentials`, and a non-empty
+`MCP_HTTP_ALLOWED_HOSTS` comma-separated list of `host[:port]` authorities; enabling
+the opt-in requires credentials mode even when the bind remains loopback. The
+Host/Origin guard accepts listed authorities and the existing loopback hosts;
+an explicit port limits an entry to that port. Unlisted Host headers receive
+`421`, and unlisted Origins receive `403`. `GET /healthz` and `GET /version` are
+unauthenticated exact paths in every authentication mode, while the Host/Origin
+guard still applies. `/healthz` reports process liveness without a database call;
+`/version` reports the package version, `BRAIN_GIT_SHA` and `BRAIN_IMAGE_DIGEST`
+(null when absent), without echoing request headers.
+
 **Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to loopback; metrics and automation default to loopback. The versioned Compose target binds the embedding host publish to loopback and the live runtime matches it — measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and non-empty in the live server process, and `POST /mcp` answers `401` both without a bearer and with a wrong one. The dedicated Docker client network exists and carries the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. Repository-managed WAN isolation remains unproven — the repository manages no firewall rule at all. What would make this paragraph false again, and is watched by no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. `METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the decision, and under that opt-in the three POST receivers stay unregistered and say so on `/healthz`. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
 
 **Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
@@ -328,6 +340,21 @@ The reranker defaults to the local shim (`BRAIN_RERANK_BACKEND=shim`). Pointing 
 a hosted Cohere-style API (`BRAIN_RERANK_BACKEND=cohere`, for example OpenRouter with
 `BRAIN_RERANKER_URL=https://openrouter.ai/api`) uses the settings below. None of
 them changes the shim deployment.
+
+`BRAIN_RERANK_BACKEND=none` is the hosted reranker's configuration rollback:
+no reranking, RRF order, `rerank_mode="disabled"`, no reranker client and no
+background probe. This is an intended state, so it adds no degraded banner.
+RRF scores render as ranks; the effective `min_score` is `0.0`, including when
+a caller supplies an explicit threshold. No reranker key file is read.
+
+For this rollback, clear non-empty `BRAIN_RERANK_MODEL` and `BRAIN_RERANK_API_KEY`,
+unset `BRAIN_RERANK_API_KEY_FILE` and `BRAIN_RERANK_PROVIDER`, and unset explicitly
+configured `BRAIN_RERANKER_URL` / `RERANKER_URL` and `BRAIN_RERANK_HEALTH_PATH`.
+Startup refuses these fields, even when an explicit URL or health path equals
+its default, and names the offending fields without their values.
+The sidecar reports `reranker.backend="none"`, empty `by_identity` and null
+`last_probe_*` fields. The configured backend (`shim`, `cohere` or `none`) is
+persisted even without calls; the latest process report wins across processes.
 
 | Setting | Default | Role |
 |---|---|---|

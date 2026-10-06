@@ -17,6 +17,10 @@ from fastmcp.server.dependencies import get_access_token
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools.base import Tool, ToolResult
 from pydantic import ConfigDict, Field, SecretStr, field_serializer, model_validator
+from starlette.datastructures import Headers
+from starlette.middleware import Middleware as HttpMiddleware
+from starlette.responses import PlainTextResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from brain_v42.mcp.dream_project_authorization import (
     DreamProjectAudit,
@@ -24,6 +28,7 @@ from brain_v42.mcp.dream_project_authorization import (
     authorize_dream_project_request,
     bind_dream_project_scope,
 )
+from brain_v42.mcp.http_security import PUBLIC_HTTP_PATHS, public_probe_scope
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.provenance import get_current_actor
 
@@ -458,6 +463,15 @@ class DreamCapabilityTokenVerifier(TokenVerifier):
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
 
+    def get_middleware(self) -> list[HttpMiddleware]:
+        # FastMCP otherwise authenticates ahead of the public-path exemption.
+        # DreamCapabilityHttpGuard installs the SDK middleware inside its boundary.
+        return []
+
+    def verified_request_middleware(self) -> list[HttpMiddleware]:
+        """Keep the SDK principal context behind the exact public-path exemption."""
+        return super().get_middleware()
+
     async def verify_token(self, token: str) -> AccessToken | None:
         """Return the principal bound to an opaque bearer, if any."""
         try:
@@ -487,6 +501,34 @@ class DreamCapabilityTokenVerifier(TokenVerifier):
             scopes=list(selected.scopes),
             claims=dict(selected.claims),
         )
+
+
+class DreamCapabilityHttpGuard:
+    """Authenticate non-public paths before routing, including redirects and misses.
+
+    FastMCP protects its MCP route; this also covers custom and unknown paths.
+    The SDK still binds the verified MCP principal to the request context.
+    """
+
+    def __init__(self, app: ASGIApp, *, verifier: DreamCapabilityTokenVerifier) -> None:
+        self.app = app
+        for middleware in reversed(verifier.verified_request_middleware()):
+            self.app = middleware.cls(self.app, *middleware.args, **middleware.kwargs)
+        self.verifier = verifier
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") in PUBLIC_HTTP_PATHS:
+            await self.app(public_probe_scope(scope), receive, send)
+            return
+        if scope["type"] == "http":
+            auth = Headers(scope=scope).get("authorization", "")
+            token = auth[7:] if auth.lower().startswith("bearer ") else ""
+            if not token or await self.verifier.verify_token(token) is None:
+                await PlainTextResponse(
+                    "Unauthorized", status_code=401, headers={"WWW-Authenticate": "Bearer"}
+                )(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 def parse_dream_capability_registry(

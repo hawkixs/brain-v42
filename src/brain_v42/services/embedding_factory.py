@@ -283,12 +283,15 @@ def build_rerank_wire(settings: Settings) -> RerankWire:
 
 def build_reranker_client(
     settings: Settings, *, observer: RerankObserver | None = None
-) -> RerankerClient:
+) -> RerankerClient | None:
     """Build the reranker client configured for this deployment.
 
     Reranking stays best-effort: an unavailable or misconfigured reranker
     makes HybridReranker fall back to RRF ordering rather than fail a search.
+    The intentional ``none`` backend returns before resolving any key or calibration.
     """
+    if settings.rerank_backend == "none":
+        return None
     return RerankerClient(
         base_url=settings.reranker_url,
         timeout=settings.reranker_timeout,

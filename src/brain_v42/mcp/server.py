@@ -53,6 +53,7 @@ from brain_v42.mcp.business_errors import surface_business_errors
 from brain_v42.mcp.credentials_http import CredentialGuard, CredentialTokenVerifier
 from brain_v42.mcp.dream_capabilities import (
     DreamCapabilityConfigurationError,
+    DreamCapabilityHttpGuard,
     DreamCapabilityMiddleware,
     DreamCapabilityTokenVerifier,
     parse_dream_capability_registry,
@@ -62,6 +63,7 @@ from brain_v42.mcp.dream_project_authorization import (
     PostgresDreamProjectResolver,
 )
 from brain_v42.mcp.http_security import (
+    _LOOPBACK_HOSTS,
     BearerTokenGuard,
     HostOriginGuard,
     HttpAuthConfigurationError,
@@ -80,7 +82,7 @@ from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.repositories.pg_runbook import PgRunbookRepo
 from brain_v42.repositories.pg_snippet import PgSnippetRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
-from brain_v42.safe_logging import build_logging_processors
+from brain_v42.safe_logging import build_logging_processors, configure_json_logging
 from brain_v42.services.adr_service import ADRService
 from brain_v42.services.agent_trace_net import AgentTraceNet, agent_trace_net_is_armed
 from brain_v42.services.auto_linker import AutoLinker
@@ -126,11 +128,15 @@ def _configure_stdio_logging() -> None:
     pytest's caplog handlers must stay intact).
     """
     log_format = get_settings().brain_log_format
-    structlog.configure(
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-        processors=build_logging_processors(log_format, colors=False),
-    )
-    logging.basicConfig(stream=sys.stderr, level=logging.INFO, force=True)
+    processors = build_logging_processors(log_format, colors=False)
+    if log_format == "json":
+        configure_json_logging(processors)
+    else:
+        structlog.configure(
+            logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+            processors=processors,
+        )
+        logging.basicConfig(stream=sys.stderr, level=logging.INFO, force=True)
     structlog.get_logger(__name__).info(
         "logging.configured", renderer=log_format, service="brain-v42-mcp", pid=os.getpid()
     )
@@ -391,6 +397,23 @@ async def app_lifecycle(
         yield
 
 
+async def healthz_check(request: Request) -> JSONResponse:
+    """Expose process liveness even when database readiness is unavailable."""
+    return JSONResponse({"status": "ok"})
+
+
+async def version_check(request: Request) -> JSONResponse:
+    """Identify the answering build without accessing services or request headers."""
+    return JSONResponse(
+        {
+            "project": "brain-v42",
+            "version": package_version(),
+            "git_sha": os.environ.get("BRAIN_GIT_SHA"),
+            "image_digest": os.environ.get("BRAIN_IMAGE_DIGEST"),
+        }
+    )
+
+
 def create_mcp_instance() -> FastMCP:
     """Build a FastMCP instance with its service-independent wiring.
 
@@ -404,6 +427,8 @@ def create_mcp_instance() -> FastMCP:
     ``build_server`` has already settled that a double is worse than no test.
     """
     instance = FastMCP("brain", mask_error_details=True)
+    instance.custom_route("/healthz", methods=["GET"])(healthz_check)
+    instance.custom_route("/version", methods=["GET"])(version_check)
     # Provenance: installed here and not in register_tools, so it is independent
     # of whether metrics are enabled and of the tool registration order.
     # `apply_tool_catalog_profile` and `maybe_apply_code_mode` return the SAME
@@ -651,6 +676,7 @@ def build_services() -> dict[str, Any]:
     reranker_client = build_reranker_client(
         settings, observer=metrics_collector if settings.metrics_enabled else None
     )
+    metrics_collector.record_rerank_backend(settings.rerank_backend)
 
     # StatusEngine (pure logic — monotonic feature status heuristic)
     from brain_v42.services.status_engine import StatusEngine  # noqa: PLC0415
@@ -744,20 +770,20 @@ def build_services() -> dict[str, Any]:
         graph=graph_service,
     )
 
-    # Hybrid search — uses shared RerankerClient (same service as ClusterGuard)
+    # Hybrid search — optional reranking, with RRF ordering for the rollback.
     from brain_v42.services.search import HybridReranker, HybridSearcher  # noqa: PLC0415
     from brain_v42.services.search.batching_reranker import BatchingRerankerClient  # noqa: PLC0415
 
-    # Wrap the reranker client for the hybrid search path ONLY.
-    # ClusterGuard and FeatureDedupJob use solo calls (single query, no fan-out)
-    # and would pay the coalescing window as pure overhead — keep them on the raw client.
-    # BatchingRerankerClient is transparent: same duck-typed interface as RerankerClient.
-    # 20 ms window: safe for local-network GPU; ~3–6x fan-out arrives within 1–5 ms.
-    batching_reranker_client = BatchingRerankerClient(reranker_client, window_seconds=0.02)
-    hybrid_reranker: Any = HybridReranker(client=batching_reranker_client)  # type: ignore[arg-type]
-    if settings.metrics_enabled:
-        hybrid_reranker = InstrumentedReranker(hybrid_reranker, metrics_collector)
-    hybrid_searcher = HybridSearcher(reranker=hybrid_reranker)
+    # Coalesce search fan-out only; dedup retains solo calls on the raw client.
+    hybrid_reranker: Any = None
+    if reranker_client is not None:
+        batching_reranker_client = BatchingRerankerClient(reranker_client, window_seconds=0.02)
+        hybrid_reranker = HybridReranker(client=batching_reranker_client)  # type: ignore[arg-type]
+        if settings.metrics_enabled:
+            hybrid_reranker = InstrumentedReranker(hybrid_reranker, metrics_collector)
+    hybrid_searcher = HybridSearcher(
+        reranker=hybrid_reranker, reranking_disabled=settings.rerank_backend == "none"
+    )
     logger.info("brain_v42.server.hybrid_search_enabled")
 
     # Plan search service (over indexed_plan_chunks)
@@ -775,8 +801,8 @@ def build_services() -> dict[str, Any]:
         runbook_svc=runbook_svc,
         adr_svc=adr_svc,
         embedding_svc=embedding_svc,
-        min_score=reranker_client.calibration.search_min_score,
-        rerank_identity=reranker_client.calibration.identity,
+        min_score=reranker_client.calibration.search_min_score if reranker_client else 0.0,
+        rerank_identity=reranker_client.calibration.identity if reranker_client else "none",
         metrics_collector=metrics_collector,
         hybrid_searcher=hybrid_searcher,
         decay_calculator=decay_calculator if settings.decay_enabled else None,
@@ -863,6 +889,13 @@ def _configure_http_security(
     if mcp in _http_security_configured_servers:
         raise RuntimeError("HTTP security is already configured for this server")
 
+    allowed_hosts = set(_LOOPBACK_HOSTS | settings.mcp_http_allowed_hosts)
+    host_guard = Middleware(
+        HostOriginGuard,
+        allowed_hosts=allowed_hosts,
+        allowed_origin_hosts=allowed_hosts,
+    )
+
     if settings.brain_mcp_auth_mode == "credentials":
         if (
             settings.brain_dream_capability_enforcement
@@ -885,7 +918,7 @@ def _configure_http_security(
         mcp.add_middleware(FamilyAuthorizationMiddleware(elevation_checker=elevation_checker))
         _http_security_configured_servers.add(mcp)
         return [
-            Middleware(HostOriginGuard),
+            host_guard,
             Middleware(CredentialGuard, verifier=credential_verifier),
             Middleware(RequestBodyLimitGuard, max_body_bytes=settings.mcp_http_max_body_bytes),
         ]
@@ -909,7 +942,7 @@ def _configure_http_security(
             bearer = Middleware(BearerTokenGuard, token="", allow_unauthenticated=True)
             logger.warning("brain_v42.server.http_auth", auth="disabled_by_opt_in")
         middleware = [
-            Middleware(HostOriginGuard),
+            host_guard,
             bearer,
             Middleware(RequestBodyLimitGuard, max_body_bytes=settings.mcp_http_max_body_bytes),
         ]
@@ -937,8 +970,9 @@ def _configure_http_security(
     mcp.add_middleware(DreamCapabilityMiddleware(project_resolver=project_resolver))
     _http_security_configured_servers.add(mcp)
     return [
-        Middleware(HostOriginGuard),
+        host_guard,
         Middleware(RequestBodyLimitGuard, max_body_bytes=settings.mcp_http_max_body_bytes),
+        Middleware(DreamCapabilityHttpGuard, verifier=mcp.auth),
     ]
 
 
@@ -1273,6 +1307,9 @@ async def _run_mcp(
     remember a decorator (ticket 40ab2ced).
     """
     plan = None
+    banner_options: dict[str, Any] = (
+        {"show_banner": False} if settings.brain_log_format == "json" else {}
+    )
     if settings.brain_mcp_transport == "http":
         plan = (
             http_plan
@@ -1297,14 +1334,21 @@ async def _run_mcp(
                 "timeout_graceful_shutdown": 10,
                 "proxy_headers": False,
                 "forwarded_allow_ips": "",
+                **({"log_config": None} if settings.brain_log_format == "json" else {}),
             },
             middleware=plan.middleware,
+            **banner_options,
         )
     else:
         loop = asyncio.get_running_loop()
         shutdown_event = asyncio.Event()
         _install_signal_handlers(loop, shutdown_event)  # stdio only
-        mcp_task = asyncio.create_task(mcp.run_async(transport="stdio"))
+        mcp_task = asyncio.create_task(
+            mcp.run_async(
+                transport="stdio",
+                **banner_options,
+            )
+        )
         shutdown_task = asyncio.create_task(shutdown_event.wait())
         done, pending = await asyncio.wait(
             {mcp_task, shutdown_task},

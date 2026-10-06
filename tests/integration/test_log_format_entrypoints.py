@@ -41,9 +41,8 @@ def test_json_startup_marker_uses_the_service_stream(service: str) -> None:
         timeout=30,
         check=True,
     )
-    output = result.stderr if service == "mcp" else result.stdout
-    assert (result.stdout if service == "mcp" else result.stderr) == ""
-    lines = output.splitlines()
+    assert result.stdout == ""
+    lines = result.stderr.splitlines()
     assert len(lines) == 1
     payload = json.loads(lines[0])
     assert payload["event"] == "logging.configured"

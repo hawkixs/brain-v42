@@ -22,6 +22,7 @@ returning it plainly, so the cache retries under the short
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -244,6 +245,7 @@ class _DbCollectorsMixin:
             live_models: set[str] = set()
             live_backends: set[str] = set()
             live_hosts: set[str] = set()
+            rerank_backend_updated_at: datetime | None = None
 
             for row in rows:
                 agent_name = row[0]
@@ -292,6 +294,13 @@ class _DbCollectorsMixin:
                     agg_tools[name]["total_latency"] += stats.get("total_latency", 0.0)
                     agg_tools[name]["total_candidates"] += stats.get("total_candidates", 0)
                     if name == "_reranker" and agent_name == "_process":
+                        if stats.get("backend") is not None and (
+                            "backend" not in agg_tools[name]
+                            or rerank_backend_updated_at is None
+                            or (updated_at is not None and updated_at >= rerank_backend_updated_at)
+                        ):
+                            agg_tools[name]["backend"] = stats["backend"]
+                            rerank_backend_updated_at = updated_at
                         if "by_identity" in stats:
                             identities = agg_tools[name].setdefault("by_identity", {})
                             for identity, observed in stats["by_identity"].items():
@@ -420,6 +429,13 @@ class _DbCollectorsMixin:
                     entry["by_identity"] = stats["by_identity"]
                 if "last_probe" in stats:
                     entry["last_probe"] = stats["last_probe"]
+                if "backend" in stats:
+                    entry["backend"] = stats["backend"]
+                    if stats["backend"] == "none":
+                        # Retained rows from the previous backend must not suggest an outage.
+                        entry["by_identity"] = {}
+                        entry.pop("last_probe", None)
+                        entry["recent_errors"] = 0
                 tools_with_avg[name] = entry
 
             # by_agent: per-agent breakdown with avg_latency_ms
