@@ -85,6 +85,15 @@ class _AuditRepository(Protocol):
     ) -> int: ...
 
 
+class _UnrenderableRow(Exception):
+    """A claimed row ``render_event`` refused; carries only its id and the error type."""
+
+    def __init__(self, row_id: int, error: str) -> None:
+        super().__init__(error)
+        self.row_id = row_id
+        self.error = error
+
+
 class AuditDrainer:
     """Leave rows unmarked on any failure so a later drain can deliver them again.
 
@@ -116,7 +125,10 @@ class AuditDrainer:
             await self._repository.audit_expired_elevations(now, session=session)
             rows = await self._repository.claim_unemitted_audit(self._batch_size, session=session)
             for row in rows:
-                fields = render_event(row)
+                try:
+                    fields = render_event(row)
+                except Exception as exc:
+                    raise _UnrenderableRow(row.id, type(exc).__name__) from None
                 event_name = fields.pop("event")
                 logger.warning(event_name, **fields)
             await self._repository.mark_audit_emitted(
@@ -137,7 +149,13 @@ class AuditDrainer:
                     continue
             except Exception as exc:
                 try:
-                    logger.warning("credentials.audit_drain_failed", error=type(exc).__name__)
+                    if isinstance(exc, _UnrenderableRow):
+                        # The oldest unrenderable row blocks the outbox head: name it, by id.
+                        logger.warning(
+                            "credentials.audit_drain_failed", error=exc.error, row_id=exc.row_id
+                        )
+                    else:
+                        logger.warning("credentials.audit_drain_failed", error=type(exc).__name__)
                 except Exception:
                     # A broken sink must not turn a retryable drain into a dead loop.
                     pass

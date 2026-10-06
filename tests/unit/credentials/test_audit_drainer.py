@@ -251,7 +251,7 @@ async def test_stop_during_a_full_batch_prevents_another_drain() -> None:
 async def test_poison_row_warns_with_only_the_error_type(event: str, error: str) -> None:
     from brain_v42.credentials.audit import AuditDrainer
 
-    row = AuditRow(1, event, None, {"token": "private-payload-sentinel"}, NOW, None)
+    row = AuditRow(41, event, None, {"token": "private-payload-sentinel"}, NOW, None)
     repo = FakeRepo([row])
     stop = asyncio.Event()
     repo.on_expire = stop.set
@@ -260,7 +260,13 @@ async def test_poison_row_warns_with_only_the_error_type(event: str, error: str)
     assert repo.history[-1] == "rollback"
     assert repo.marked == set()
     assert logs == [
-        {"event": "credentials.audit_drain_failed", "log_level": "warning", "error": error}
+        {
+            "event": "credentials.audit_drain_failed",
+            "log_level": "warning",
+            "error": error,
+            # The id locates the row that blocks the outbox head; it carries no payload.
+            "row_id": 41,
+        }
     ]
 
 
