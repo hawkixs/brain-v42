@@ -510,7 +510,7 @@ on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text)
 
 ## Migration history
 
-The repository migration target is 062. No page in this repository proves a live
+The repository migration target is 063. No page in this repository proves a live
 schema head — measure it, never read it here.
 
 Recovery contract v20 is the recovery asset for the schema through 062. It includes

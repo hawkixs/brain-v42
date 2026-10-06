@@ -1,6 +1,6 @@
 # Architecture — brain_v42
 
-**Repository schema:** the repository carries migrations through revision 062. This is a code target, not a statement about any deployed database. Migration 062 adds two partial observer-error indexes and installs `pg_stat_statements` in the `monitoring` schema. Earlier revisions add measured-fact definitions, delivery attestations, focus slots, ticket release planning, and session connection provenance.
+**Repository schema:** the repository carries migrations through revision 063. This is a code target, not a statement about any deployed database. Migration 063 adds four tables: the client credential registry (`brain_client_credentials`, digests only, with a NOTIFY trigger), time-boxed admin elevations (`brain_admin_elevations`), the schema compatibility ledger (`brain_schema_compat`) and the credential audit outbox (`brain_credential_audit`). Migration 062 adds two partial observer-error indexes and installs `pg_stat_statements` in the `monitoring` schema. Earlier revisions add measured-fact definitions, delivery attestations, focus slots, ticket release planning, and session connection provenance.
 
 **MCP catalog:** 78 always-on + 2 graph-gated = 80.
 
@@ -946,7 +946,7 @@ brain_v42/
 │       ├── server.py             # entry point (stdio+http), build_services(), app_lifecycle()
 │       ├── http_security.py      # HostOriginGuard + BearerTokenGuard ASGI middleware
 │       └── tools/                # 78 always-on + 2 graph-gated = 80
-├── alembic/versions/             # migrations 001–062 defined in the repository
+├── alembic/versions/             # migrations 001–063 defined in the repository
 ├── scripts/                      # legacy import + projection inventory/recovery CLIs
 ├── tests/                        # unit/ + integration/
 ├── docs/

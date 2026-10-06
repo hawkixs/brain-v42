@@ -26,7 +26,7 @@ import pytest
 
 from brain_v42 import release_recovery as rr
 
-SCHEMA_HEAD = "062"
+SCHEMA_HEAD = "063"
 RELEASE_SHA = "b" * 40
 #: `switch_live` validates its `sha` argument as a lowercase 40-character hex
 #: string (task c below) — the release *directory name* it names, not
@@ -146,6 +146,66 @@ def test_publish_image_recovery_binding_copies_assets_and_writes_binding(tmp_pat
         asset = binding[key]
         assert (out_dir / asset["path"]).is_file()
         assert asset["sha256"] == _sha256(out_dir / asset["path"])
+
+
+def test_publish_image_recovery_binding_writes_exactly_the_binding_and_its_assets(
+    tmp_path: Path,
+) -> None:
+    """red-backup reads /app/recovery/ strictly: any other entry makes the binding invalid."""
+    release_dir = _build_release(tmp_path)
+    out_dir = tmp_path / "image-recovery"
+    binding_path, _ = rr.publish_image_recovery_binding(
+        release_dir / "brain-v42", out_dir, RELEASE_SHA
+    )
+    binding = json.loads(binding_path.read_text())
+    listed = {Path(binding[key]["path"]).name for key in rr.ASSET_KEYS}
+    assert {entry.name for entry in out_dir.iterdir()} == listed | {rr.BINDING_FILENAME}
+    for entry in out_dir.iterdir():
+        info = entry.lstat()
+        assert stat.S_ISREG(info.st_mode), entry
+        assert info.st_size > 0, entry
+        assert not entry.name.startswith("."), entry
+
+
+def test_publish_image_recovery_binding_can_republish_its_own_output(tmp_path: Path) -> None:
+    release_dir = _build_release(tmp_path)
+    out_dir = tmp_path / "image-recovery"
+    rr.publish_image_recovery_binding(release_dir / "brain-v42", out_dir, RELEASE_SHA)
+    binding_path, _ = rr.publish_image_recovery_binding(
+        release_dir / "brain-v42", out_dir, RELEASE_SHA
+    )
+    assert binding_path.is_file()
+
+
+@pytest.mark.parametrize("stray", ["notes.txt", ".hidden", "subdir", "link"])
+def test_publish_image_recovery_binding_refuses_a_directory_holding_anything_else(
+    tmp_path: Path, stray: str
+) -> None:
+    release_dir = _build_release(tmp_path)
+    out_dir = tmp_path / "image-recovery"
+    out_dir.mkdir()
+    if stray == "subdir":
+        (out_dir / stray).mkdir()
+    elif stray == "link":
+        (out_dir / stray).symlink_to(tmp_path)
+    else:
+        (out_dir / stray).write_text("x")
+    with pytest.raises(rr.RecoveryBindingError, match="holds entries the binding does not list"):
+        rr.publish_image_recovery_binding(release_dir / "brain-v42", out_dir, RELEASE_SHA)
+    assert not (out_dir / rr.BINDING_FILENAME).exists()
+
+
+@pytest.mark.parametrize("name", ["binding", "asset"])
+def test_publish_image_recovery_binding_refuses_a_directory_under_an_expected_name(
+    tmp_path: Path, name: str
+) -> None:
+    release_dir = _build_release(tmp_path)
+    out_dir = tmp_path / "image-recovery"
+    out_dir.mkdir()
+    planted = rr.BINDING_FILENAME if name == "binding" else "brain-v42-v1.sql"
+    (out_dir / planted).mkdir()
+    with pytest.raises(rr.RecoveryBindingError, match="is not a regular file"):
+        rr.publish_image_recovery_binding(release_dir / "brain-v42", out_dir, RELEASE_SHA)
 
 
 @pytest.mark.parametrize("tamper", ["asset", "schema"])
@@ -357,7 +417,7 @@ def test_publish_recovery_binding_refuses_a_binding_larger_than_the_byte_limit(
 
 
 def test_publish_recovery_binding_refuses_a_stale_schema_head(tmp_path: Path) -> None:
-    release_dir = _build_release(tmp_path, schema_head=SCHEMA_HEAD, declared_schema_head="061")
+    release_dir = _build_release(tmp_path, schema_head=SCHEMA_HEAD, declared_schema_head="062")
 
     with pytest.raises(rr.RecoveryBindingError, match="schema_head"):
         rr.publish_recovery_binding(release_dir)

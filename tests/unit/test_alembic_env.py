@@ -283,6 +283,7 @@ def test_migration_heads_to_latest() -> None:
     assert heads == [latest], f"Expected a sole head, got {heads}"
 
     expected_chain = [
+        ("063", "062"),
         ("062", "061"),
         ("061", "060"),
         ("041", "040"),
