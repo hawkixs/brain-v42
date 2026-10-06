@@ -23,6 +23,7 @@ import httpx
 import structlog
 
 from brain_v42.config import is_relative_request_path
+from brain_v42.services.rerank_calibration import RerankCalibration, calibration_for_identity
 from brain_v42.services.rerank_wire import RerankWire, ShimRerankWire
 
 logger = structlog.get_logger(__name__)
@@ -69,6 +70,7 @@ class RerankerClient:
         self._base_url = base_url
         self._timeout = timeout
         self._wire: RerankWire = wire if wire is not None else ShimRerankWire()
+        self._calibration = calibration_for_identity(self._wire.identity)
         self._api_key = api_key
         self._busy_retries = busy_retries
         self._busy_retry_cap_seconds = busy_retry_cap_seconds
@@ -76,6 +78,11 @@ class RerankerClient:
         self._last_probe_ok: bool | None = None
         self._last_probe_reason: str | None = None
         self._last_probe_monotonic: float | None = None
+
+    @property
+    def calibration(self) -> RerankCalibration:
+        """Expose only the wire's calibration so callers cannot inject another scale."""
+        return self._calibration
 
     @property
     def last_probe_ok(self) -> bool | None:

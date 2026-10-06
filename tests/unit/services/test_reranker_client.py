@@ -6,7 +6,35 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
 from brain_v42.services.reranker_client import RerankerClient
+
+
+@pytest.mark.parametrize(
+    ("wire", "identity", "search_min_score", "dedup_signal"),
+    [
+        (ShimRerankWire(), "shim", 0.2, 0.80),
+        (CohereRerankWire("voyageai/rerank-3-lite"), "cohere:voyageai/rerank-3-lite", 0.50, None),
+    ],
+)
+def test_calibration_follows_the_wire(
+    wire: RerankWire, identity: str, search_min_score: float, dedup_signal: float | None
+) -> None:
+    client = RerankerClient(wire=wire)
+    assert client.calibration.identity == identity
+    assert client.calibration.search_min_score == search_min_score
+    assert client.calibration.dedup_signal == dedup_signal
+
+
+def test_calibration_cannot_be_replaced() -> None:
+    client = RerankerClient()
+    with pytest.raises(AttributeError):
+        client.calibration = object()
+
+
+def test_constructor_accepts_no_calibration_argument() -> None:
+    with pytest.raises(TypeError, match="calibration"):
+        RerankerClient(calibration=object())
 
 
 @pytest.fixture

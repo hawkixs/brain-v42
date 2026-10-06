@@ -21,6 +21,7 @@ import sqlalchemy as sa
 import structlog
 
 from brain_v42.db.tables import features
+from brain_v42.services.rerank_calibration import RerankCalibration
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -32,8 +33,6 @@ logger = structlog.get_logger(__name__)
 # ── thresholds ──────────────────────────────────────────────────────────
 
 COSINE_PREFILTER = 0.50
-# Gates a LOG SIGNAL only: nothing merges on a reranker score (ruling 9e21964f).
-RERANKER_SIGNAL_THRESHOLD = 0.80
 _TOP_K_NEIGHBORS = 3
 
 
@@ -44,7 +43,7 @@ class FeatureDedupJob:
     1. Get all features for a project with embeddings
     2. For each feature, find top-3 neighbors via cosine similarity (>= 0.50)
     3. Run cross-encoder on pre-filtered pairs
-    4. Score >= 0.80 -> probable duplicate, returned for signalling (never merged)
+    4. Score >= calibrated threshold -> probable duplicate, for signalling only
     """
 
     def __init__(
@@ -67,6 +66,15 @@ class FeatureDedupJob:
             List of (target, source, score) tuples where target is the oldest
             feature of the pair and source the newest. Score is the reranker score.
         """
+        cal = getattr(self._reranker, "calibration", None)
+        if not isinstance(cal, RerankCalibration) or cal.dedup_signal is None:
+            identity = getattr(cal, "identity", None)
+            logger.warning(
+                "feature_dedup.reranker_uncalibrated",
+                identity=identity if isinstance(identity, str) else None,
+            )
+            return []
+
         async with self._sf() as session:
             # Step 1: get all features with embeddings
             all_features = await self._get_all_features(session, project_key)
@@ -131,7 +139,7 @@ class FeatureDedupJob:
                 reranker_score = scores[0] if scores else 0.0
 
                 # Step 4: score >= threshold -> probable duplicate
-                if reranker_score >= RERANKER_SIGNAL_THRESHOLD:
+                if reranker_score >= cal.dedup_signal:
                     candidates.append((target, source, reranker_score))
                     logger.info(
                         "feature_dedup.candidate_found",
