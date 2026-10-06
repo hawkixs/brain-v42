@@ -121,7 +121,7 @@ def test_reason_preserves_characters_outside_the_cc_category() -> None:
 @pytest.mark.parametrize(
     ("event", "keys"),
     [
-        ("credentials.issued", {"credential_id", "client_id", "families", "author"}),
+        ("credentials.issued", {"credential_id", "client_id", "families", "author", "reason"}),
         (
             "credentials.revoked",
             {"credential_id", "client_id", "families", "author", "reason"},
@@ -146,6 +146,33 @@ def test_credential_events_pass_through_only_the_repository_fields(
     }
     row = AuditRow(1, event, None, payload, NOW, None)
     assert render_event(row) == {"event": event, **{key: payload[key] for key in keys}}
+
+
+def test_legacy_issued_event_without_reason_keeps_its_original_shape() -> None:
+    from brain_v42.credentials.audit import render_event
+
+    payload = {
+        "credential_id": str(uuid4()),
+        "client_id": "auto-discord",
+        "families": ["read"],
+        "author": "operator",
+    }
+    assert render_event(AuditRow(1, "credentials.issued", None, payload, NOW, None)) == {
+        "event": "credentials.issued",
+        **payload,
+    }
+
+
+def test_issued_reason_is_sanitized_for_the_watcher() -> None:
+    from brain_v42.credentials.audit import render_event
+
+    row = elevation_row(
+        "credentials.issued",
+        credential_id=str(uuid4()),
+        families=["read"],
+        reason="setup\n\x00" + "x" * 250,
+    )
+    assert render_event(row)["reason"] == "setup  " + "x" * 193
 
 
 @pytest.mark.parametrize("event", (*ELEVATION_EVENTS, "credentials.issued", "credentials.revoked"))
