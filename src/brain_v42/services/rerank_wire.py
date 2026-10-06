@@ -20,6 +20,7 @@ Both downstream consumers constrain what a wire may return:
 from __future__ import annotations
 
 import math
+from collections.abc import Mapping
 from typing import Any, Protocol
 
 # logit(p) is infinite at the extremes. Clamping at this epsilon keeps a
@@ -32,6 +33,11 @@ class RerankWire(Protocol):
     """Request shaping and response parsing for one rerank wire format."""
 
     health_path: str
+
+    @property
+    def identity(self) -> str:
+        """Stable name of this wire and its model, for logs and later gates."""
+        ...
 
     def request(self, query: str, candidates: list[str]) -> tuple[str, dict[str, Any]]:
         """Return the (path, json body) that scores ``candidates``."""
@@ -51,6 +57,10 @@ class ShimRerankWire:
 
     health_path = "/health"
 
+    @property
+    def identity(self) -> str:
+        return "shim"
+
     def request(self, query: str, candidates: list[str]) -> tuple[str, dict[str, Any]]:
         return "/rerank", {"query": query, "candidates": candidates}
 
@@ -65,8 +75,17 @@ class CohereRerankWire:
     never by position, always by the reported ``index``.
     """
 
-    def __init__(self, model: str, *, health_path: str = "/health") -> None:
+    def __init__(
+        self,
+        model: str,
+        *,
+        health_path: str = "/health",
+        routing: Mapping[str, Any] | None = None,
+    ) -> None:
         self._model = model
+        # Provider routing for aggregators (OpenRouter's ``provider`` object).
+        # Sent only when set: a TEI or Jina server would not know the key.
+        self._routing = routing
         # Self-hosted Cohere-style servers (TEI, Jina) expose /health, same as
         # the reference shim. Hosted APIs expose no liveness route at all — set
         # this to a path that answers 200, or is_available() pins the reranker
@@ -74,8 +93,12 @@ class CohereRerankWire:
         # for the life of the process.
         self.health_path = health_path
 
+    @property
+    def identity(self) -> str:
+        return f"cohere:{self._model}"
+
     def request(self, query: str, candidates: list[str]) -> tuple[str, dict[str, Any]]:
-        return "/v1/rerank", {
+        body: dict[str, Any] = {
             "model": self._model,
             "query": query,
             "documents": candidates,
@@ -83,6 +106,9 @@ class CohereRerankWire:
             # and the caller would be handed fewer scores than candidates.
             "top_n": len(candidates),
         }
+        if self._routing is not None:
+            body["provider"] = dict(self._routing)
+        return "/v1/rerank", body
 
     def parse(self, payload: Any, expected: int) -> list[float]:
         try:

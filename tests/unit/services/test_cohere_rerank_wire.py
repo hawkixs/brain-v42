@@ -85,3 +85,37 @@ class TestCohereRerankWireParsingRestoresInputOrder:
         payload = {"results": [{"index": 0, "relevance_score": score}]}
         (parsed,) = CohereRerankWire(model="m").parse(payload, expected=1)
         assert math.isfinite(parsed)
+
+
+class TestCohereRerankWireRouting:
+    """Hosted aggregators pick the upstream provider per request."""
+
+    def test_routing_is_sent_as_the_provider_object(self) -> None:
+        routing = {"only": ["voyageai"], "allow_fallbacks": False, "data_collection": "deny"}
+        _, body = CohereRerankWire(model="voyageai/rerank-3-lite", routing=routing).request(
+            "q", ["a"]
+        )
+        assert body["provider"] == routing
+
+    def test_no_provider_key_without_routing(self) -> None:
+        _, body = CohereRerankWire(model="m").request("q", ["a"])
+        assert "provider" not in body
+
+    def test_the_body_does_not_alias_the_callers_routing(self) -> None:
+        routing = {"only": ["voyageai"]}
+        _, body = CohereRerankWire(model="m", routing=routing).request("q", ["a"])
+        body["provider"]["only"] = ["other"]
+        assert routing == {"only": ["voyageai"]}
+
+    def test_health_path_is_honoured(self) -> None:
+        assert CohereRerankWire(model="m", health_path="/v1/key").health_path == "/v1/key"
+
+
+class TestWireIdentity:
+    def test_shim_identity(self) -> None:
+        assert ShimRerankWire().identity == "shim"
+
+    def test_cohere_identity_names_the_model(self) -> None:
+        assert CohereRerankWire(model="voyageai/rerank-3-lite").identity == (
+            "cohere:voyageai/rerank-3-lite"
+        )

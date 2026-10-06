@@ -137,6 +137,19 @@ CPU single batch ~3.4 s; CPU sorted micro-batches of 32 ~1.9 s; CUDA sorted micr
 ~0.3 s (85 candidates) / ~0.4 s (128) — a single CUDA batch of 128x512 OOMs the shared 6 GB GPU.
 CPU vs CUDA scores: max |diff| 0.00012, identical top-10.
 
+### Reranker backends
+
+`RerankerClient` speaks through a wire (`services/rerank_wire.py`). `ShimRerankWire`
+is the private `POST /rerank` contract of the bundled shim, the default.
+`CohereRerankWire` speaks `POST /v1/rerank` (TEI, Jina, vLLM, and hosted APIs such as
+OpenRouter), remaps results to input order and converts the provider's relevance score
+back to a logit so `HybridReranker`'s sigmoid stays idempotent. It can carry an
+optional `provider` routing object, and each wire exposes an `identity` (`shim`,
+`cohere:<model>`). `build_reranker_client` is the single construction path; it resolves
+the cohere key from its own file and never from the shim bearer. The MCP server probes
+the configured health path in the background and records the last outcome on the client;
+see `docs/OPERATIONS.md`, "Hosted reranker settings".
+
 ### Qodo retired from the default stack (2026-09-26)
 
 brain-v42 embeds through the Mistral codestral endpoint since 2026-09-22; the local
