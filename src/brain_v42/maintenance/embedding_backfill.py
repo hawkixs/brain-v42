@@ -32,15 +32,11 @@ from brain_v42.services.embedding_backfill import (
     EmbeddingBacklogRepository,
     persist_backfill_metrics,
 )
-from brain_v42.services.embedding_factory import (
-    build_embedding_service,
-    build_reranker_client,
-)
+from brain_v42.services.embedding_factory import build_embedding_service
 from brain_v42.services.embedding_text import EmbeddingEntityType
 from brain_v42.services.feature_linker import FeatureLinker
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 from brain_v42.services.graph_service import GraphService
-from brain_v42.services.reranker_client import RerankerClient
 from brain_v42.services.status_engine import StatusEngine
 
 
@@ -48,12 +44,10 @@ from brain_v42.services.status_engine import StatusEngine
 class LinkerDependencies:
     feature_linker: FeatureLinker
     auto_linker: AutoLinker | None
-    reranker: RerankerClient
     neo4j_driver: Any | None
     graph_ledger: Any | None
 
     async def close(self) -> None:
-        await self.reranker.close()
         if self.neo4j_driver is not None:
             await self.neo4j_driver.close()
 
@@ -64,11 +58,9 @@ def build_linkers(
     embedding_svc: GPUEmbeddingService,
 ) -> LinkerDependencies:
     """Build the same semantic linkers used by the MCP creation services."""
-    reranker = build_reranker_client(settings)
     cluster_guard = ClusterGuard(
         session_factory=session_factory,
         embedding_svc=embedding_svc,
-        reranker=reranker,
         status_engine=StatusEngine(),
     )
     feature_linker = FeatureLinker(
@@ -93,7 +85,7 @@ def build_linkers(
         )
         auto_linker = AutoLinker(session_factory=session_factory, graph=durable_stack.service)
         graph_ledger = durable_stack.ledger
-    return LinkerDependencies(feature_linker, auto_linker, reranker, neo4j_driver, graph_ledger)
+    return LinkerDependencies(feature_linker, auto_linker, neo4j_driver, graph_ledger)
 
 
 def _positive_int(value: str) -> int:

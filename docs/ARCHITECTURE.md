@@ -144,8 +144,8 @@ Qodo-Embed-1-1.5B GGUF served by `embedding-llama` (llama.cpp) is no longer a br
 dependency. `auto-discord`, the last `/embed` client, is migrating off it in its own
 change. Consequently `embedding-llama` sits behind the `qodo` Compose profile: a plain
 `docker compose up` never starts it, and `embedding-shim` carries no `depends_on` on it
-— the shim starts on its own and serves `/rerank` (used by brain's hybrid search and
-ClusterGuard) regardless of whether qodo is running.
+— the shim starts on its own and serves `/rerank` (used by brain's hybrid search)
+regardless of whether qodo is running.
 
 `POST /embed`, `/embed/query` and `/embed/single` on the shim depend on
 `embedding-llama` and answer with an upstream error while it is stopped — this is
@@ -181,7 +181,7 @@ cross-encoder (see above) and never depended on `embedding-llama`.
 | Postgres 16 + pgvector | 5433 | CRUD + FTS + 1536-d vectors + audit + graph ledger/outbox + time series | `src/brain_v42/db/tables.py`, `alembic/versions/` |
 | Neo4j 5 Community | 7687 (bolt) / 7474 (browser) | Relationship traversal, clusters, neighbourhood, domain classification | `src/brain_v42/db/neo4j.py`, `src/brain_v42/services/graph_service.py` |
 | GPU embedding service | 8003 | Cross-encoder reranker (always on); `/embed*` only when the `qodo` profile runs `embedding-llama` (Qodo-Embed-1-1.5B, 1536 dims) — the shipped configuration (`BRAIN_EMBEDDING_BACKEND=shim`, `BRAIN_EMBEDDING_MODEL=qodo`) embeds through it, so it needs `--profile qodo`; the production deployment instead sets the OpenAI-compatible backend to Mistral codestral | `src/brain_v42/services/gpu_embedding_service.py` |
-| Reranker | 8003 | Cross-encoder rerank for hybrid search + ClusterGuard grey zone (same unified endpoint as embed) | `src/brain_v42/services/reranker_client.py` |
+| Reranker | 8003 | Cross-encoder rerank for hybrid search (same unified endpoint as embed) | `src/brain_v42/services/reranker_client.py` |
 
 ### 43 PG tables (`src/brain_v42/db/tables.py`)
 
@@ -476,7 +476,7 @@ All are optional via settings (`metrics_enabled`, `decay_enabled`, `graph_enable
 
 `min_score` filtering is disabled in degraded mode to avoid silently dropping all results when scores are RRF-based rather than semantic.
 
-**`BatchingRerankerClient`** (`src/brain_v42/services/search/batching_reranker.py`) — wraps `RerankerClient` with a 20 ms coalescing window. All parallel fan-out shards that arrive within the window are batched into a single HTTP request to the reranker, reducing round trips 3–6x. `ClusterGuard` and `FeatureDedupJob` use the raw `RerankerClient` directly (single-query paths with no fan-out).
+**`BatchingRerankerClient`** (`src/brain_v42/services/search/batching_reranker.py`) — wraps `RerankerClient` with a 20 ms coalescing window. All parallel fan-out shards that arrive within the window are batched into a single HTTP request to the reranker, reducing round trips 3–6x. `FeatureDedupJob` uses the raw `RerankerClient` directly (single-query path with no fan-out). `ClusterGuard` does not use the reranker at all: its links come from cosine similarity only and it never merges (operator ruling, brain decision `d4648d84`).
 
 ## Metrics sidecar (port 9200)
 
@@ -846,7 +846,7 @@ change or activation, token creation, live-credential access, or enforcement act
 
 1. Deduplicates on `gitlab_event_id` (unique index, `ON CONFLICT DO NOTHING`).
 2. Extracts text from merge requests, issues, commits, comments.
-3. Embeds and asks `ClusterGuard` to resolve the signal against existing `features` — link, merge, or create.
+3. Embeds and asks `ClusterGuard` to resolve the signal against existing `features` — link, or create.
 4. Writes the raw event to `gitlab_events` for audit, and a typed row to `feature_artifacts`.
 
 Feature creation has two deliberate paths:
@@ -859,7 +859,7 @@ Feature creation has two deliberate paths:
   `design`, `building`, `deployed`, and `done`, while `archived` is rejected. This path bypasses
   `ClusterGuard` and provides neither semantic nor global uniqueness.
 - **Signal-driven resolution.** Eligible artifact, plan, and GitLab paths continue through
-  `ClusterGuard`, which may link, merge, or create within the project using semantic similarity.
+  `ClusterGuard`, which may link or create within the project using cosine similarity alone (never a merge).
 
 `StatusEngine` advances feature status monotonically
 (planned → research → design → building → deployed → done) based on artifact types.
