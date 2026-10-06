@@ -29,6 +29,7 @@ from starlette.responses import JSONResponse
 from brain_v42.config import Settings
 from brain_v42.mcp.dream_capabilities import (
     DreamCapabilityConfigurationError,
+    DreamCapabilityHttpGuard,
     DreamCapabilityMiddleware,
     DreamCapabilityTokenVerifier,
 )
@@ -130,7 +131,11 @@ def test_http_security_wiring_enables_verifier_and_exactly_one_firewall() -> Non
         entry for entry in mcp.middleware if isinstance(entry, DreamCapabilityMiddleware)
     )
     assert installed._project_resolver is resolver
-    assert _middleware_classes(middleware) == [HostOriginGuard, RequestBodyLimitGuard]
+    assert _middleware_classes(middleware) == [
+        HostOriginGuard,
+        RequestBodyLimitGuard,
+        DreamCapabilityHttpGuard,
+    ]
     with pytest.raises(RuntimeError, match="already configured"):
         configure(mcp, settings, project_resolver=resolver)
     assert sum(isinstance(entry, DreamCapabilityMiddleware) for entry in mcp.middleware) == 1
@@ -222,7 +227,11 @@ async def test_run_mcp_wires_enabled_http_before_invoking_uvicorn(
 
     assert isinstance(mcp.auth, DreamCapabilityTokenVerifier)
     assert sum(isinstance(entry, DreamCapabilityMiddleware) for entry in mcp.middleware) == 1
-    assert _middleware_classes(captured["middleware"]) == [HostOriginGuard, RequestBodyLimitGuard]
+    assert _middleware_classes(captured["middleware"]) == [
+        HostOriginGuard,
+        RequestBodyLimitGuard,
+        DreamCapabilityHttpGuard,
+    ]
     # Stateful mode is the default since the transport identity work: the server
     # mints an Mcp-Session-Id, the only way to separate two connections of the
     # same binary without the client's cooperation.
