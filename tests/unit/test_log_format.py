@@ -50,6 +50,16 @@ def test_log_format_loads_from_environment(monkeypatch: pytest.MonkeyPatch, rend
     assert settings.brain_log_format == renderer
 
 
+@pytest.mark.parametrize(("renderer", "utc"), [("console", False), ("json", True)])
+def test_only_json_timestamps_are_utc(renderer: str, utc: bool) -> None:
+    """The console keeps its local timestamps: only the container's JSON lines are UTC."""
+    from brain_v42.safe_logging import build_logging_processors
+
+    stamper = build_logging_processors(renderer)[0]  # type: ignore[arg-type]
+    assert isinstance(stamper, structlog.processors.TimeStamper)
+    assert stamper.utc is utc
+
+
 @pytest.mark.parametrize("renderer", ["yaml", "JSON", "", " json", "console "])
 def test_unknown_log_format_refuses_settings_load(
     monkeypatch: pytest.MonkeyPatch, renderer: str

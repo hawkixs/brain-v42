@@ -27,7 +27,8 @@ def build_logging_processors(
 ) -> list[Processor]:
     """Keep both service log formats aligned without ever capturing frame locals."""
     processors: list[Processor] = [
-        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        # UTC for the JSON lines a follower parses; the console keeps its local time.
+        structlog.processors.TimeStamper(fmt="iso", utc=log_format == "json"),
         structlog.processors.add_log_level,
     ]
     if log_format == "json":

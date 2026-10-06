@@ -97,7 +97,15 @@ def test_mcp_logging_never_renders_frame_locals(monkeypatch: pytest.MonkeyPatch)
     buffer = io.StringIO()
     monkeypatch.setattr(sys, "stderr", buffer)
     monkeypatch.setattr(logging, "basicConfig", lambda **_: None)
-    mcp_server._configure_stdio_logging()
+    # Pin the console renderer: the configure call reads settings, which another test
+    # may have cached in json mode.
+    monkeypatch.setenv("BRAIN_LOG_FORMAT", "console")
+    monkeypatch.setenv("POSTGRES_URL", "postgresql+asyncpg://test@localhost/log_test")
+    get_settings.cache_clear()
+    try:
+        mcp_server._configure_stdio_logging()
+    finally:
+        get_settings.cache_clear()
 
     _log_failure()
 
