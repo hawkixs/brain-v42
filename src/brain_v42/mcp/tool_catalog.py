@@ -16,6 +16,7 @@ from brain_v42.mcp.dream_capabilities import (
     dream_phase_tool_allowlist,
     resolve_dream_capability_principal,
 )
+from brain_v42.mcp.tool_families import FamilyAuthorizationMiddleware
 
 type ToolCatalogProfile = Literal["compact", "native"]
 
@@ -37,11 +38,31 @@ _TOOL_PROFILE_HEADER = "x-brain-tool-profile"
 class _RequestAwareBM25SearchTransform(BM25SearchTransform):
     """Render a native catalog on request while keeping compact as the default."""
 
-    def __init__(self, *, compact_by_default: bool, **kwargs: Any) -> None:
+    def __init__(self, *, mcp: FastMCP, compact_by_default: bool, **kwargs: Any) -> None:
         super().__init__(**kwargs)
+        self._mcp = mcp
         self._compact_by_default = compact_by_default
 
+    def _family_authorizer(self) -> FamilyAuthorizationMiddleware | None:
+        # HTTP planning installs this only in credentials mode, after transforms
+        # may have been created. Looking it up avoids a second mode/rights state.
+        return next(
+            (m for m in self._mcp.middleware if isinstance(m, FamilyAuthorizationMiddleware)),
+            None,
+        )
+
     async def transform_tools(self, tools: Sequence[Tool]) -> Sequence[Tool]:
+        authorizer = self._family_authorizer()
+        if authorizer is not None:
+            tools = await authorizer.filter_tools(tools)
+            if not tools:
+                return ()
+            if (
+                not self._compact_by_default
+                or get_http_headers().get(_TOOL_PROFILE_HEADER) == "native"
+            ):
+                return tools
+            return await super().transform_tools(tools)
         principal = resolve_dream_capability_principal(get_access_token())
         if principal.kind == "scoped" and principal.phase is not None:
             allowed = frozenset(dream_phase_tool_allowlist(principal.phase))
@@ -60,6 +81,13 @@ class _RequestAwareBM25SearchTransform(BM25SearchTransform):
         version: VersionSpec | None = None,
     ) -> Tool | None:
         """Expose compact gateways only to unrestricted compact principals."""
+        authorizer = self._family_authorizer()
+        if authorizer is not None:
+            if not await authorizer.allows_current_tool(name):
+                return None
+            if not self._compact_by_default:
+                return await call_next(name, version=version)
+            return await super().get_tool(name, call_next, version=version)
         principal = resolve_dream_capability_principal(get_access_token())
         if not self._compact_by_default or principal.kind in {"scoped", "invalid"}:
             return await call_next(name, version=version)
@@ -73,6 +101,7 @@ def apply_tool_catalog_profile(
     """Apply the selected tool exposure profile and return the same server."""
     mcp.add_transform(
         _RequestAwareBM25SearchTransform(
+            mcp=mcp,
             compact_by_default=profile == "compact",
             max_results=5,
             always_visible=list(SESSION_LIFECYCLE_TOOLS),
