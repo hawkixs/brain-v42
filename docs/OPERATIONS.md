@@ -326,7 +326,7 @@ credential, nor writer quiescence, nor the absence of Neo4j sessions.
 
 The reranker defaults to the local shim (`BRAIN_RERANK_BACKEND=shim`). Pointing it at
 a hosted Cohere-style API (`BRAIN_RERANK_BACKEND=cohere`, for example OpenRouter with
-`BRAIN_RERANKER_URL=https://openrouter.ai/api`) uses five further settings. None of
+`BRAIN_RERANKER_URL=https://openrouter.ai/api`) uses the settings below. None of
 them changes the shim deployment.
 
 | Setting | Default | Role |
@@ -335,6 +335,7 @@ them changes the shim deployment.
 | `BRAIN_RERANK_HEALTH_PATH` | `/health` | GET path of the availability probe. Hosted APIs have no liveness route: for OpenRouter set `/v1/key`, which is free and answers 200 only with a valid key (401 otherwise), so it proves the route and the key. |
 | `BRAIN_RERANK_PROVIDER` | unset | Provider routing sent with every request, as JSON: `{"only": ["voyageai"]}`. Keys: `only`, `allow_fallbacks` (default `false`), `data_collection` (`deny` by default, or `allow`), `zdr`. Unknown keys are refused. |
 | `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
+| `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole Cohere operation: connection, write, read, parsing and backoff sleeps. |
 
 The key file must be mode `0600` or stricter and have one of two shapes: the bare key value (one token: no whitespace, no `=`, at most
 512 characters), or a dotenv-style file with exactly one `BRAIN_RERANK_API_KEY=<value>`
@@ -362,6 +363,36 @@ or `transport_<ExceptionName>`) when it starts failing and
 `reranker_client.available_again` (INFO) on recovery, and nothing in between. A
 rejected or revoked key shows up there as `http_401` rather than as search results
 silently falling back to RRF ordering.
+
+The Cohere backend retries HTTP 429, 500, 502, 503 and 504, and connection errors,
+at most twice. `Retry-After` accepts seconds or an HTTP-date and is never shortened;
+without a usable header, full jitter chooses a delay between zero and
+`0.1 * 2**attempt` seconds (the first attempt is zero). If the delay cannot fit in
+the remaining budget, no further request is sent. A deadline or exhausted retries
+raises `RerankBudgetExhausted`, an HTTP error that makes search fall back to RRF
+ordering with `degraded={"rerank_mode": "rrf_fallback"}`. Other statuses and transport
+errors fail immediately. The shim retains three busy retries on 503 **with**
+`Retry-After`, with each delay capped at two seconds and each request using its own
+HTTP timeout. It has no elapsed-time budget; a 503 without the header fails at once.
+
+With MCP metrics enabled, the sidecar's `/metrics` `reranker.by_identity` reports operations,
+`operations_by_outcome`, attempts, retries, `status_429`, `status_5xx` and
+`budget_exhausted`. Identities are `shim` or `cohere:<model>` and carry `backend` and
+`model` labels. `fallback_rate` is non-ok operations divided by operations (zero
+before any operation), recomputed from counters summed across processes for each
+identity. `operations_by_outcome` is also summed per outcome. `attempt_latency_ms`
+and `operation_latency_ms` include p50/p95/p99 over each process's retained samples
+from the last 24 hours; the sidecar takes the maximum per percentile across processes
+as a conservative summary, not a percentile of pooled samples. Operation duration
+includes backoff sleeps. Operation outcomes are `ok`, `budget_exhausted`, `http_error`,
+`transport_error` and `parse_error`. The most recent probe across identities and
+processes sets `reranker.last_probe_ok`, `last_probe_reason` and `last_probe_age_s`
+(null before the first probe). The sidecar computes age from wall-clock `at`, clamps
+it to zero and rounds to 0.1 seconds. Flush data keeps per-identity probe state under
+`reranker.last_probe`; the `_reranker` pseudo-tool persists its latest probe as
+`{ok, reason, at, identity}` even without operations, along with `by_identity` when
+present. Existing legacy metrics retain their meanings; observer failures log once
+and never fail a search.
 
 ### Embedding shim static bearer
 

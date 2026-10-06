@@ -17,16 +17,36 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import random
 import time
+from typing import Any, Protocol
 
 import httpx
 import structlog
 
 from brain_v42.config import is_relative_request_path
 from brain_v42.services.rerank_calibration import RerankCalibration, calibration_for_identity
-from brain_v42.services.rerank_wire import RerankWire, ShimRerankWire
+from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
 
 logger = structlog.get_logger(__name__)
+
+
+class RerankBudgetExhausted(httpx.HTTPError):
+    """Keep budget exhaustion on the existing best-effort HTTP fallback path."""
+
+
+class RerankObserver(Protocol):
+    """Synchronous telemetry; status outcomes on attempts count every HTTP failure.
+
+    Operations use ok, budget_exhausted, http_error, transport_error or parse_error.
+    Attempts additionally use http_<status> so the final failure is counted even
+    when no retry is sent. Retry reasons use http_<status> or transport_<type>.
+    """
+
+    def on_attempt(self, identity: str, outcome: str, latency_ms: float) -> None: ...
+    def on_retry(self, identity: str, reason: str) -> None: ...
+    def on_operation(self, identity: str, outcome: str, total_ms: float) -> None: ...
+    def on_probe(self, identity: str, ok: bool, reason: str) -> None: ...
 
 
 class RerankerClient:
@@ -36,7 +56,7 @@ class RerankerClient:
     - Lazy client: httpx.AsyncClient is NOT created at __init__ to allow
       sync construction and avoid event loop issues.
     - Same pattern as GPUEmbeddingService for consistency.
-    - Only one retry case: a busy shim. The shim computes ONE rerank at a
+    - A busy shim keeps its historical retry policy. It computes ONE rerank at a
       time and answers a concurrent request with 503 + ``Retry-After``
       instead of queueing it; the slot frees within seconds (measured
       2026-09-23: 11 % of brain_search reranks fell back to RRF on that 503
@@ -45,6 +65,8 @@ class RerankerClient:
       failure -- including a 503 WITHOUT ``Retry-After``, which is an outage
       rather than a busy slot -- still raises at once: reranking stays
       best-effort and callers fall back to RRF ordering.
+    - Hosted Cohere requests share one elapsed-time budget across all attempts
+      and sleeps, so provider saturation cannot hold up a search indefinitely.
     """
 
     def __init__(
@@ -56,6 +78,9 @@ class RerankerClient:
         api_key: str = "",
         busy_retries: int = 3,
         busy_retry_cap_seconds: float = 2.0,
+        budget_seconds: float = 1.5,
+        max_retries: int = 2,
+        observer: RerankObserver | None = None,
     ) -> None:
         """Initialize RerankerClient without creating the HTTP client.
 
@@ -74,6 +99,10 @@ class RerankerClient:
         self._api_key = api_key
         self._busy_retries = busy_retries
         self._busy_retry_cap_seconds = busy_retry_cap_seconds
+        self._budget_seconds = budget_seconds
+        self._max_retries = max_retries
+        self._observer = observer
+        self._observer_warning_logged = False
         self._client: httpx.AsyncClient | None = None
         self._last_probe_ok: bool | None = None
         self._last_probe_reason: str | None = None
@@ -136,36 +165,113 @@ class RerankerClient:
         if not candidates:
             return []
 
+        started = time.monotonic()
+        outcome = "ok"
+        try:
+            if isinstance(self._wire, CohereRerankWire):
+                deadline = asyncio.get_running_loop().time() + self._budget_seconds
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        scores = await self._rerank(query, candidates, deadline=deadline)
+                        # Synchronous JSON parsing cannot yield to the timeout callback.
+                        if asyncio.get_running_loop().time() >= deadline:
+                            raise RerankBudgetExhausted("rerank latency budget exhausted")
+                        return scores
+                except TimeoutError as exc:
+                    raise RerankBudgetExhausted("rerank latency budget exhausted") from exc
+            return await self._rerank(query, candidates)
+        except RerankBudgetExhausted:
+            outcome = "budget_exhausted"
+            raise
+        except httpx.HTTPStatusError:
+            outcome = "http_error"
+            raise
+        except httpx.HTTPError:
+            outcome = "transport_error"
+            raise
+        except asyncio.CancelledError:
+            outcome = "transport_error"
+            raise
+        except Exception:
+            outcome = "parse_error"
+            raise
+        finally:
+            self._observe("on_operation", outcome, (time.monotonic() - started) * 1000)
+
+    async def _rerank(
+        self, query: str, candidates: list[str], *, deadline: float | None = None
+    ) -> list[float]:
         client = self._get_client()
         path, body = self._wire.request(query, candidates)
-        for attempt in range(self._busy_retries + 1):
-            response = await client.post(path, json=body)
-            delay = self._busy_delay(response)
-            if delay is None or attempt == self._busy_retries:
-                break
+        retries = self._max_retries if deadline is not None else self._busy_retries
+        for attempt in range(retries + 1):
+            delay: float | None
+            try:
+                response = await self._request(client, path, body, deadline=deadline)
+            except httpx.ConnectError as exc:
+                if deadline is None:
+                    raise
+                delay = random.uniform(0, 0.1 * 2**attempt)
+                reason = "transport_ConnectError"
+                if attempt == retries:
+                    raise RerankBudgetExhausted("rerank retries exhausted") from exc
+            else:
+                if isinstance(self._wire, ShimRerankWire):
+                    delay = self._wire.retry_delay(
+                        response, attempt, cap=self._busy_retry_cap_seconds
+                    )
+                else:
+                    delay = self._wire.retry_delay(response, attempt)
+                if delay is None or (deadline is None and attempt == retries):
+                    response.raise_for_status()
+                    return self._wire.parse(response.json(), expected=len(candidates))
+                if attempt == retries:
+                    raise RerankBudgetExhausted("rerank retries exhausted")
+                reason = f"http_{response.status_code}"
+            if deadline is not None and delay >= deadline - asyncio.get_running_loop().time():
+                raise RerankBudgetExhausted("rerank cooldown exceeds remaining latency budget")
+            self._observe("on_retry", reason)
             logger.info(
-                "reranker_client.busy_retry",
+                "reranker_client.busy_retry" if deadline is None else "reranker_client.retry",
                 attempt=attempt + 1,
-                max_retries=self._busy_retries,
+                max_retries=retries,
                 delay_seconds=delay,
                 n_candidates=len(candidates),
             )
             await asyncio.sleep(delay)
-        response.raise_for_status()
-        return self._wire.parse(response.json(), expected=len(candidates))
+        raise AssertionError("unreachable rerank attempt")
 
-    def _busy_delay(self, response: httpx.Response) -> float | None:
-        """Seconds to wait before retrying, or None when the answer is not "busy"."""
-        if response.status_code != 503:
-            return None
-        retry_after = response.headers.get("Retry-After")
-        if retry_after is None:
-            return None
+    async def _request(
+        self,
+        client: httpx.AsyncClient,
+        path: str,
+        body: dict[str, Any],
+        *,
+        deadline: float | None = None,
+    ) -> httpx.Response:
+        started = time.monotonic()
+        outcome = "transport_error"
         try:
-            advertised = float(retry_after)
-        except ValueError:
-            advertised = self._busy_retry_cap_seconds
-        return min(max(advertised, 0.0), self._busy_retry_cap_seconds)
+            response = await client.post(path, json=body)
+            outcome = "ok" if response.is_success else f"http_{response.status_code}"
+            return response
+        except asyncio.CancelledError:
+            if deadline is not None and asyncio.get_running_loop().time() >= deadline:
+                outcome = "budget_exhausted"
+            raise
+        finally:
+            self._observe("on_attempt", outcome, (time.monotonic() - started) * 1000)
+
+    def _observe(self, method: str, *args: Any) -> None:
+        """Telemetry failures must never change search results or flood the logs."""
+        if self._observer is None:
+            return
+        try:
+            getattr(self._observer, method)(self._wire.identity, *args)
+        except Exception:
+            if not self._observer_warning_logged:
+                self._observer_warning_logged = True
+                logger.warning("reranker_client.observer_failed", identity=self._wire.identity)
 
     async def is_available(self) -> bool:
         """Check if the reranker service is healthy.
@@ -201,6 +307,7 @@ class RerankerClient:
         self._last_probe_ok = ok
         self._last_probe_reason = reason
         self._last_probe_monotonic = time.monotonic()
+        self._observe("on_probe", ok, reason)
         if not ok and previous is not False:
             # Never the headers: they carry the bearer.
             logger.warning(

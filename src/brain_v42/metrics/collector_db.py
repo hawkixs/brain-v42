@@ -280,6 +280,48 @@ class _DbCollectorsMixin:
                     agg_tools[name]["recent_errors"] += stats.get("recent_errors", 0)
                     agg_tools[name]["total_latency"] += stats.get("total_latency", 0.0)
                     agg_tools[name]["total_candidates"] += stats.get("total_candidates", 0)
+                    if name == "_reranker" and agent_name == "_process":
+                        if "by_identity" in stats:
+                            identities = agg_tools[name].setdefault("by_identity", {})
+                            for identity, observed in stats["by_identity"].items():
+                                combined = identities.setdefault(
+                                    identity,
+                                    {
+                                        "backend": observed.get("backend", ""),
+                                        "model": observed.get("model", ""),
+                                        "operations_by_outcome": {},
+                                        "attempt_latency_ms": {},
+                                        "operation_latency_ms": {},
+                                    },
+                                )
+                                for counter in (
+                                    "operations",
+                                    "attempts",
+                                    "retries",
+                                    "status_429",
+                                    "status_5xx",
+                                    "budget_exhausted",
+                                ):
+                                    combined[counter] = combined.get(counter, 0) + observed.get(
+                                        counter, 0
+                                    )
+                                outcomes = combined["operations_by_outcome"]
+                                for outcome, count in observed.get(
+                                    "operations_by_outcome", {}
+                                ).items():
+                                    outcomes[outcome] = outcomes.get(outcome, 0) + count
+                                # Process percentiles cannot be merged without samples;
+                                # the per-key maximum is a conservative summary.
+                                for latency in ("attempt_latency_ms", "operation_latency_ms"):
+                                    percentiles = combined[latency]
+                                    for key, value in observed.get(latency, {}).items():
+                                        percentiles[key] = max(percentiles.get(key, value), value)
+                        probe = stats.get("last_probe")
+                        latest_probe = agg_tools[name].get("last_probe")
+                        if probe is not None and (
+                            latest_probe is None or probe["at"] > latest_probe["at"]
+                        ):
+                            agg_tools[name]["last_probe"] = probe
 
                 if agent_name == "_process":
                     # Process-globals: embedding + RSS from _process only
@@ -357,6 +399,16 @@ class _DbCollectorsMixin:
                 }
                 if stats.get("total_candidates"):
                     entry["total_candidates"] = stats["total_candidates"]
+                if "by_identity" in stats:
+                    for identity_stats in stats["by_identity"].values():
+                        operations = identity_stats["operations"]
+                        ok = identity_stats["operations_by_outcome"].get("ok", 0)
+                        identity_stats["fallback_rate"] = (
+                            (operations - ok) / operations if operations else 0.0
+                        )
+                    entry["by_identity"] = stats["by_identity"]
+                if "last_probe" in stats:
+                    entry["last_probe"] = stats["last_probe"]
                 tools_with_avg[name] = entry
 
             # by_agent: per-agent breakdown with avg_latency_ms

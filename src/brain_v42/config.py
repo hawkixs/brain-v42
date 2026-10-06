@@ -397,6 +397,11 @@ class Settings(BaseSettings):
     )
     """Period of the background availability probe run by the MCP server."""
 
+    rerank_budget_seconds: float = Field(
+        default=1.5, gt=0, validation_alias=_brain_alias("RERANK_BUDGET_SECONDS")
+    )
+    """Elapsed-time budget across all hosted rerank attempts and backoff sleeps."""
+
     @field_validator("rerank_health_path")
     @classmethod
     def _rerank_health_path_stays_on_the_base_url(cls, value: str) -> str:

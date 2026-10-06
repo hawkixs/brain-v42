@@ -647,7 +647,9 @@ def build_services() -> dict[str, Any]:
 
     # Reranker client (HTTP, for hybrid search)
 
-    reranker_client = build_reranker_client(settings)
+    reranker_client = build_reranker_client(
+        settings, observer=metrics_collector if settings.metrics_enabled else None
+    )
 
     # StatusEngine (pure logic — monotonic feature status heuristic)
     from brain_v42.services.status_engine import StatusEngine  # noqa: PLC0415

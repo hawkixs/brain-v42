@@ -11,6 +11,26 @@ from brain_v42.services.embedding_factory import build_embedding_service, build_
 from brain_v42.services.embedding_wire import OpenAIWire, ShimWire
 from brain_v42.services.rerank_wire import CohereRerankWire, ShimRerankWire
 
+
+def test_reranker_budget_and_observer_are_wired_through() -> None:
+    from unittest.mock import MagicMock
+
+    observer = MagicMock()
+    client = build_reranker_client(_settings(rerank_budget_seconds=0.75), observer=observer)
+    assert client._budget_seconds == 0.75
+    assert client._observer is observer
+
+
+def test_reranker_budget_setting_alias_and_positive_validation(monkeypatch) -> None:
+    from pydantic import ValidationError
+
+    monkeypatch.setenv("BRAIN_RERANK_BUDGET_SECONDS", "0.75")
+    assert _settings().rerank_budget_seconds == 0.75
+    monkeypatch.setenv("BRAIN_RERANK_BUDGET_SECONDS", "0")
+    with pytest.raises(ValidationError):
+        _settings()
+
+
 DSN = "postgresql+asyncpg://brain:brain@localhost:5433/brain"
 
 
