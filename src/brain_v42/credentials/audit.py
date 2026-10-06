@@ -7,7 +7,6 @@ on ``(event, elevation_id)`` and credential gestures on ``(event, credential_id)
 from __future__ import annotations
 
 import asyncio
-import re
 import unicodedata
 from collections.abc import Callable, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -17,6 +16,7 @@ from typing import Any, Protocol
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_v42.credentials.redact import sanitize_label
 from brain_v42.repositories.pg_client_credentials import AuditRow
 
 logger = structlog.get_logger(__name__)
@@ -43,11 +43,6 @@ _ISSUED_KEYS = frozenset({"credential_id", "client_id", "families", "author"})
 _REVOKED_KEYS = _ISSUED_KEYS | {"reason"}
 
 
-def _sanitize_label(value: str) -> str:
-    """Bound the raw client key before replacing characters unsafe for watchers."""
-    return re.sub(r"[^a-z0-9.:_*-]", "_", value[:64])
-
-
 def _sanitize_reason(value: str) -> str:
     """Bound reasons and replace control characters unsafe for watchers."""
     return "".join(" " if unicodedata.category(char) == "Cc" else char for char in value[:200])
@@ -57,7 +52,7 @@ def render_event(row: AuditRow) -> dict[str, Any]:
     """Allowlist fields so stored metadata cannot expand the public event contract."""
     if row.event in _ELEVATION_EVENTS:
         fields = {key: row.payload[key] for key in ELEVATION_EVENT_KEYS - {"excluded_client_ids"}}
-        fields["session_label"] = _sanitize_label(fields["session_label"])
+        fields["session_label"] = sanitize_label(fields["session_label"])
         fields["reason"] = _sanitize_reason(fields["reason"])
         fields["excluded_client_ids"] = sorted(set(row.payload.get("excluded_client_ids", [])))
     elif row.event == "credentials.issued":
