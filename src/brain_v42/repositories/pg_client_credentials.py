@@ -761,8 +761,9 @@ class PgClientCredentialRepo(BasePgRepository):
         ``FOR UPDATE SKIP LOCKED``: a concurrent drainer skips them. The locks last as long
         as ``session``'s transaction, so the caller emits, then calls ``mark_audit_emitted``
         in the SAME transaction. A crash between the two rolls the claim back and the rows
-        are emitted again: the drain is at-least-once, and the consumer dedupes on
-        ``(event, elevation_id)``.
+        are emitted again: the drain is at-least-once. The consumer dedupes an elevation
+        event on ``(event, elevation_id)`` and ``credentials.issued`` / ``credentials.revoked``
+        on ``(event, credential_id)``: their ``elevation_id`` is NULL.
         """
         audit = brain_credential_audit
         rows = (

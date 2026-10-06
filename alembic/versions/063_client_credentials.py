@@ -50,8 +50,10 @@ Four new tables, a nullable column on ``brain_session_connections`` and another 
   stdout never reaches the container's log stream that the operator's watcher follows, so
   a gesture inserts its row in its OWN transaction and the server's drainer emits it. The
   drain is at-least-once: ``emitted_at`` stays NULL until the event has been emitted, and
-  a crash between the two re-emits, so a consumer dedupes on ``(event, elevation_id)``,
-  which this table also makes unique per elevation. ``elevation_id`` has no foreign key
+  a crash between the two re-emits. A consumer dedupes an elevation event on
+  ``(event, elevation_id)``, which this table also makes unique per elevation, and
+  ``credentials.issued`` / ``credentials.revoked`` on ``(event, credential_id)`` of the
+  payload: their ``elevation_id`` is NULL. ``elevation_id`` has no foreign key
   on purpose: the audit row must outlive the elevation, which follows its session's
   deletion. ``payload`` is the event's body; it never holds a token, a digest or a
   connection id. An AFTER INSERT trigger sends ``pg_notify('brain_credential_audit',
