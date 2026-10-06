@@ -1,4 +1,9 @@
-"""Periodic feature deduplication owned by the automation bounded context."""
+"""Periodic feature deduplication owned by the automation bounded context.
+
+The loop SIGNALS probable duplicates, it never merges them. Operator ruling
+9e21964f (extension of d4648d84): nothing ever merges on a reranker score, and
+the score that selects a pair here is a reranker score, under every backend.
+"""
 
 from __future__ import annotations
 
@@ -28,16 +33,9 @@ class FeatureDedupJobProtocol(Protocol):
         project_key: str,
     ) -> list[tuple[FeatureCandidate, FeatureCandidate, float]]: ...
 
-    async def merge_features(
-        self,
-        session: AsyncSession,
-        target: FeatureCandidate,
-        source: FeatureCandidate,
-    ) -> bool: ...
-
 
 class OwnershipGate(Protocol):
-    """Admission gate checked around each dedup mutation."""
+    """Admission gate checked around each dedup pass."""
 
     def ensure_owned(self) -> None: ...
 
@@ -48,7 +46,14 @@ async def run_dedup_loop(
     interval: float = 21600.0,
     ownership: OwnershipGate | None = None,
 ) -> None:
-    """Run periodic feature deduplication."""
+    """Run periodic duplicate detection; record probable duplicates, never merge.
+
+    WHY no merge: the pair is selected by a reranker score, and an operator
+    ruling (9e21964f, extending d4648d84) forbids any merge on such a score,
+    shim backend included. A human decides from the logged signal. The loop
+    therefore opens no write session and holds no merge bookkeeping: the only
+    session it opens is the read of the project keys.
+    """
     while True:
         try:
             await asyncio.sleep(interval)
@@ -77,61 +82,16 @@ async def run_dedup_loop(
                     )
                     continue
 
-                consumed_ids: set[object] = set()
                 for target, source, score in candidates:
-                    if target.id in consumed_ids or source.id in consumed_ids:
-                        logger.info(
-                            "dedup_loop.skipped_consumed",
-                            project_key=project_key,
-                            target=str(target.name),
-                            source=str(source.name),
-                            score=score,
-                        )
-                        continue
-                    try:
-                        async with session_factory() as session:
-                            if ownership is not None:
-                                ownership.ensure_owned()
-                            merged = await dedup_job.merge_features(session, target, source)
-                            if ownership is not None:
-                                ownership.ensure_owned()
-                            await session.commit()
-                            if ownership is not None:
-                                ownership.ensure_owned()
-                    except asyncio.CancelledError:
-                        raise
-                    except OwnershipLostError:
-                        raise
-                    except Exception as exc:
-                        logger.exception(
-                            "dedup_loop.candidate_error",
-                            project_key=project_key,
-                            target=str(target.name),
-                            source=str(source.name),
-                            score=score,
-                            error_type=type(exc).__name__,
-                            exc_info=True,
-                        )
-                        continue
-                    if ownership is not None:
-                        ownership.ensure_owned()
-                    if merged:
-                        consumed_ids.add(source.id)
-                        logger.info(
-                            "dedup_loop.merged",
-                            project_key=project_key,
-                            target=str(target.name),
-                            source=str(source.name),
-                            score=score,
-                        )
-                    else:
-                        logger.info(
-                            "dedup_loop.skipped_missing",
-                            project_key=project_key,
-                            target=str(target.name),
-                            source=str(source.name),
-                            score=score,
-                        )
+                    logger.info(
+                        "dedup_loop.probable_duplicate",
+                        project_key=project_key,
+                        target_id=str(target.id),
+                        target=str(target.name),
+                        source_id=str(source.id),
+                        source=str(source.name),
+                        score=score,
+                    )
         except asyncio.CancelledError:
             raise
         except OwnershipLostError:

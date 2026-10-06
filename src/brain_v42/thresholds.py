@@ -130,13 +130,14 @@ REGISTRY: tuple[ThresholdSpec, ...] = (
     ThresholdSpec(
         name="feature_dedup_min_similarity",
         value=0.50,
-        location="src/brain_v42/services/feature_dedup_job.py:45",
+        location="src/brain_v42/services/feature_dedup_job.py:34",
         scale="cosine",
         calibrated=False,
         last_calibrated=None,
         calibration_script=None,
         corpus_dependency="feature-domain cosines",
-        notes="Top-3 neighbour cutoff for feature dedup.",
+        notes="Top-3 neighbour cutoff for feature dedup; "
+        "pairs are only signalled, never merged (9e21964f).",
     ),
     ThresholdSpec(
         name="search_min_score",
