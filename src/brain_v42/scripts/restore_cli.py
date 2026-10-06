@@ -94,11 +94,13 @@ def _connection() -> tuple[list[str], dict[str, str]]:
     return args, env
 
 
-def _run(args: list[str], env: dict[str, str]) -> str:
+def _run(args: list[str], env: dict[str, str], *, keep_trailing_space: bool = False) -> str:
     result = subprocess.run(args, env=env, capture_output=True, text=True, check=False)
     if result.returncode:
         # Neither stderr nor the command/DSN belongs in a diagnostic.
         raise RestoreError("restore_subprocess_failed")
+    if keep_trailing_space:
+        return result.stdout.strip("\n")
     return result.stdout.strip()
 
 
@@ -166,12 +168,17 @@ def _check_role_list(raw: str, *, allow_public: bool = False) -> set[str]:
 
 def _verify_roles(dump: Path, env: dict[str, str]) -> set[str]:
     roles = set()
-    toc = _run(["pg_restore", "--list", str(dump)], env)
+    # The trailing space is significant: pg_restore --list leaves the owner
+    # column empty, ending the line with a space, for ownerless entries such
+    # as extensions, whose last word is then their name, not a role.
+    toc = _run(["pg_restore", "--list", str(dump)], env, keep_trailing_space=True)
     for line in toc.splitlines():
         if not line or line.startswith(";"):
             continue
         if not re.match(r"^\d+;\s+\d+\s+\d+\s+", line):
             raise RestoreError("invalid_dump_toc")
+        if line[-1].isspace():
+            continue
         owner = line.rsplit(None, 1)[-1]
         if owner != "-":
             roles.update(_check_role_list(owner))

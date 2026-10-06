@@ -327,6 +327,25 @@ def test_public_schema_predefined_owner_is_accepted(runner: FakeRunner, dump: Pa
     )
 
 
+def test_ownerless_toc_entries_are_not_read_as_roles(runner: FakeRunner, dump: Path) -> None:
+    # pg_restore --list leaves the owner column empty, with a trailing space,
+    # for extensions and their comments; the last word there is the extension.
+    runner.toc += (
+        "3; 3079 9198377 EXTENSION - pg_stat_statements \n"
+        "4757; 0 0 COMMENT - EXTENSION pg_stat_statements \n"
+        "2; 3079 9196697 EXTENSION - vector \n"
+        "4758; 0 0 COMMENT - EXTENSION vector \n"
+    )
+    assert restore_cli.main(["--dump", str(dump)]) == 0
+    assert runner.restores
+
+
+def test_an_owned_entry_still_names_its_owner(runner: FakeRunner, dump: Path) -> None:
+    runner.toc += "219; 1259 9197027 TABLE public decisions postgres\n"
+    assert restore_cli.main(["--dump", str(dump)]) != 0
+    assert not runner.mutations
+
+
 @pytest.mark.parametrize("role", ["postgres", "pg_read_all_data", "pg_write_all_data"])
 def test_other_predefined_roles_remain_refused(runner: FakeRunner, dump: Path, role: str) -> None:
     runner.toc += f"4602; 0 0 ACL - SCHEMA public {role}\n"
