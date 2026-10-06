@@ -69,7 +69,7 @@ class AsyncDisposer(Protocol):
 class LegacyAutomationResources:
     """Business resources constructed only after the legacy lease is acquired."""
 
-    reranker: AsyncCloser
+    reranker: AsyncCloser | None
     dedup_job: FeatureDedupJobProtocol
     gitlab_ingestor: GitLabEventProcessor | None
     project_key_resolver: ProjectKeyResolver | None

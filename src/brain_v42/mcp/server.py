@@ -650,6 +650,7 @@ def build_services() -> dict[str, Any]:
     reranker_client = build_reranker_client(
         settings, observer=metrics_collector if settings.metrics_enabled else None
     )
+    metrics_collector.record_rerank_backend(settings.rerank_backend)
 
     # StatusEngine (pure logic — monotonic feature status heuristic)
     from brain_v42.services.status_engine import StatusEngine  # noqa: PLC0415
@@ -743,20 +744,20 @@ def build_services() -> dict[str, Any]:
         graph=graph_service,
     )
 
-    # Hybrid search — uses shared RerankerClient (same service as ClusterGuard)
+    # Hybrid search — optional reranking, with RRF ordering for the rollback.
     from brain_v42.services.search import HybridReranker, HybridSearcher  # noqa: PLC0415
     from brain_v42.services.search.batching_reranker import BatchingRerankerClient  # noqa: PLC0415
 
-    # Wrap the reranker client for the hybrid search path ONLY.
-    # ClusterGuard and FeatureDedupJob use solo calls (single query, no fan-out)
-    # and would pay the coalescing window as pure overhead — keep them on the raw client.
-    # BatchingRerankerClient is transparent: same duck-typed interface as RerankerClient.
-    # 20 ms window: safe for local-network GPU; ~3–6x fan-out arrives within 1–5 ms.
-    batching_reranker_client = BatchingRerankerClient(reranker_client, window_seconds=0.02)
-    hybrid_reranker: Any = HybridReranker(client=batching_reranker_client)  # type: ignore[arg-type]
-    if settings.metrics_enabled:
-        hybrid_reranker = InstrumentedReranker(hybrid_reranker, metrics_collector)
-    hybrid_searcher = HybridSearcher(reranker=hybrid_reranker)
+    # Coalesce search fan-out only; dedup retains solo calls on the raw client.
+    hybrid_reranker: Any = None
+    if reranker_client is not None:
+        batching_reranker_client = BatchingRerankerClient(reranker_client, window_seconds=0.02)
+        hybrid_reranker = HybridReranker(client=batching_reranker_client)  # type: ignore[arg-type]
+        if settings.metrics_enabled:
+            hybrid_reranker = InstrumentedReranker(hybrid_reranker, metrics_collector)
+    hybrid_searcher = HybridSearcher(
+        reranker=hybrid_reranker, reranking_disabled=settings.rerank_backend == "none"
+    )
     logger.info("brain_v42.server.hybrid_search_enabled")
 
     # Plan search service (over indexed_plan_chunks)
@@ -774,8 +775,8 @@ def build_services() -> dict[str, Any]:
         runbook_svc=runbook_svc,
         adr_svc=adr_svc,
         embedding_svc=embedding_svc,
-        min_score=reranker_client.calibration.search_min_score,
-        rerank_identity=reranker_client.calibration.identity,
+        min_score=reranker_client.calibration.search_min_score if reranker_client else 0.0,
+        rerank_identity=reranker_client.calibration.identity if reranker_client else "none",
         metrics_collector=metrics_collector,
         hybrid_searcher=hybrid_searcher,
         decay_calculator=decay_calculator if settings.decay_enabled else None,

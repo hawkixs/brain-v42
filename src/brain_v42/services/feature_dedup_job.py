@@ -15,7 +15,7 @@ Usage:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import sqlalchemy as sa
 import structlog
@@ -49,7 +49,7 @@ class FeatureDedupJob:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        reranker: RerankerClient,
+        reranker: RerankerClient | None,
     ) -> None:
         self._sf = session_factory
         self._reranker = reranker
@@ -135,7 +135,9 @@ class FeatureDedupJob:
             # Step 3: run cross-encoder on pre-filtered pairs
             candidates: list[tuple[Any, Any, float]] = []
             for target, source, _cosine_score in pre_filtered:
-                scores = await self._reranker.rerank(target.name, [source.name])
+                scores = await cast("RerankerClient", self._reranker).rerank(
+                    target.name, [source.name]
+                )
                 reranker_score = scores[0] if scores else 0.0
 
                 # Step 4: score >= threshold -> probable duplicate

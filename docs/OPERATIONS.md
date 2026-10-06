@@ -329,6 +329,21 @@ a hosted Cohere-style API (`BRAIN_RERANK_BACKEND=cohere`, for example OpenRouter
 `BRAIN_RERANKER_URL=https://openrouter.ai/api`) uses the settings below. None of
 them changes the shim deployment.
 
+`BRAIN_RERANK_BACKEND=none` is the hosted reranker's configuration rollback:
+no reranking, RRF order, `rerank_mode="disabled"`, no reranker client and no
+background probe. This is an intended state, so it adds no degraded banner.
+RRF scores render as ranks; the effective `min_score` is `0.0`, including when
+a caller supplies an explicit threshold. No reranker key file is read.
+
+For this rollback, clear non-empty `BRAIN_RERANK_MODEL` and `BRAIN_RERANK_API_KEY`,
+unset `BRAIN_RERANK_API_KEY_FILE` and `BRAIN_RERANK_PROVIDER`, and unset explicitly
+configured `BRAIN_RERANKER_URL` / `RERANKER_URL` and `BRAIN_RERANK_HEALTH_PATH`.
+Startup refuses these fields, even when an explicit URL or health path equals
+its default, and names the offending fields without their values.
+The sidecar reports `reranker.backend="none"`, empty `by_identity` and null
+`last_probe_*` fields. The configured backend (`shim`, `cohere` or `none`) is
+persisted even without calls; the latest process report wins across processes.
+
 | Setting | Default | Role |
 |---|---|---|
 | `BRAIN_RERANK_API_KEY_FILE` | unset | **Path** of the API key, read once at startup. Never a value: `systemctl show` and `docker inspect` print an environment verbatim. Mutually exclusive with `BRAIN_RERANK_API_KEY`, and refused with the shim backend. |
