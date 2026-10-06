@@ -73,7 +73,7 @@ def test_head_archive_restores_runtime_grants_into_empty_database(
     # to 'brain'. Every executed connection below names a disposable database.
     monkeypatch.setattr(
         restore_cli,
-        "get_settings",
+        "Settings",
         lambda: SimpleNamespace(postgres_url=url.set(database="brain")),
     )
     connection, env = restore_cli._connection()
