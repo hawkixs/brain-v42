@@ -26,11 +26,29 @@ sides.
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 
 from brain_v42.services.feature_dedup_job import FeatureDedupJob
+from brain_v42.services.rerank_wire import ShimRerankWire
+from brain_v42.services.reranker_client import RerankerClient
+
+
+@pytest.fixture
+async def shim_reranker() -> AsyncIterator[RerankerClient]:
+    """Keep pinned-source checks on the real calibrated shim signalling path."""
+    reranker = RerankerClient(wire=ShimRerankWire())
+    reranker._client = httpx.AsyncClient(
+        base_url="http://shim",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"scores": [0.95]})),
+    )
+    try:
+        yield reranker
+    finally:
+        await reranker.close()
 
 
 def _row(*, pinned: bool, created_at: float, name: str, similarity: float | None = None):
@@ -48,14 +66,11 @@ def _row(*, pinned: bool, created_at: float, name: str, similarity: float | None
     return row
 
 
-def _job(all_features, neighbors_by_id, reranker_score: float = 0.95) -> FeatureDedupJob:
+def _job(all_features, neighbors_by_id, reranker: RerankerClient) -> FeatureDedupJob:
     session = AsyncMock()
     factory = MagicMock()
     factory.return_value.__aenter__ = AsyncMock(return_value=session)
     factory.return_value.__aexit__ = AsyncMock(return_value=False)
-
-    reranker = AsyncMock()
-    reranker.rerank = AsyncMock(return_value=[reranker_score])
 
     job = FeatureDedupJob(
         session_factory=factory,
@@ -69,24 +84,28 @@ def _job(all_features, neighbors_by_id, reranker_score: float = 0.95) -> Feature
 
 
 @pytest.mark.asyncio
-async def test_a_pinned_feature_is_never_proposed_for_absorption() -> None:
+async def test_a_pinned_feature_is_never_proposed_for_absorption(
+    shim_reranker: RerankerClient,
+) -> None:
     """The case measured on 2026-08-14: the recent one is pinned, the older eats it."""
     ancienne = _row(pinned=False, created_at=1000.0, name="Roadmap curation")
     epinglee = _row(pinned=True, created_at=2000.0, name="Roadmap curation v2", similarity=0.93)
 
-    job = _job([ancienne, epinglee], {ancienne.id: [epinglee]})
+    job = _job([ancienne, epinglee], {ancienne.id: [epinglee]}, shim_reranker)
     candidates = await job.find_candidates("brain-v42")
 
     assert candidates == [], "une feature épinglée a été proposée à l'absorption"
 
 
 @pytest.mark.asyncio
-async def test_an_unpinned_feature_is_still_absorbed_normally() -> None:
+async def test_an_unpinned_feature_is_still_absorbed_normally(
+    shim_reranker: RerankerClient,
+) -> None:
     """The guard must not switch off the deduplication — otherwise it is undetectable."""
     ancienne = _row(pinned=False, created_at=1000.0, name="Roadmap curation")
     recente = _row(pinned=False, created_at=2000.0, name="Roadmap curation v2", similarity=0.93)
 
-    job = _job([ancienne, recente], {ancienne.id: [recente]})
+    job = _job([ancienne, recente], {ancienne.id: [recente]}, shim_reranker)
     candidates = await job.find_candidates("brain-v42")
 
     assert len(candidates) == 1
@@ -96,12 +115,14 @@ async def test_an_unpinned_feature_is_still_absorbed_normally() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_pinned_target_may_still_absorb_an_unpinned_source() -> None:
+async def test_a_pinned_target_may_still_absorb_an_unpinned_source(
+    shim_reranker: RerankerClient,
+) -> None:
     """Nominal case: the commitment survives and eats the duplicate, the intended effect."""
     epinglee_ancienne = _row(pinned=True, created_at=1000.0, name="Roadmap curation")
     recente = _row(pinned=False, created_at=2000.0, name="Roadmap curation v2", similarity=0.93)
 
-    job = _job([epinglee_ancienne, recente], {epinglee_ancienne.id: [recente]})
+    job = _job([epinglee_ancienne, recente], {epinglee_ancienne.id: [recente]}, shim_reranker)
     candidates = await job.find_candidates("brain-v42")
 
     assert len(candidates) == 1
@@ -109,18 +130,20 @@ async def test_a_pinned_target_may_still_absorb_an_unpinned_source() -> None:
 
 
 @pytest.mark.asyncio
-async def test_two_pinned_features_are_left_alone() -> None:
+async def test_two_pinned_features_are_left_alone(shim_reranker: RerankerClient) -> None:
     """Two commitments: the dedup has no business choosing which one dies."""
     a = _row(pinned=True, created_at=1000.0, name="Roadmap curation")
     b = _row(pinned=True, created_at=2000.0, name="Roadmap curation v2", similarity=0.93)
 
-    job = _job([a, b], {a.id: [b]})
+    job = _job([a, b], {a.id: [b]}, shim_reranker)
 
     assert await job.find_candidates("brain-v42") == []
 
 
 @pytest.mark.asyncio
-async def test_the_guard_reads_pinned_and_does_not_rely_on_truthiness() -> None:
+async def test_the_guard_reads_pinned_and_does_not_rely_on_truthiness(
+    shim_reranker: RerankerClient,
+) -> None:
     """A source whose `pinned` is None or 0 must stay mergeable.
 
     This test exists because the column is nullable in the database: a naive
@@ -131,6 +154,6 @@ async def test_the_guard_reads_pinned_and_does_not_rely_on_truthiness() -> None:
     recente = _row(pinned=False, created_at=2000.0, name="Roadmap curation v2", similarity=0.93)
     recente.pinned = None
 
-    job = _job([ancienne, recente], {ancienne.id: [recente]})
+    job = _job([ancienne, recente], {ancienne.id: [recente]}, shim_reranker)
 
     assert len(await job.find_candidates("brain-v42")) == 1

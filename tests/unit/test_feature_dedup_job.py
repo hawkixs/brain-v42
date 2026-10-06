@@ -7,11 +7,17 @@ The job only finds candidate pairs for signalling; it never merges (ruling
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncIterator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
+from structlog.testing import capture_logs
 
 from brain_v42.services.feature_dedup_job import FeatureDedupJob
+from brain_v42.services.rerank_wire import CohereRerankWire, ShimRerankWire
+from brain_v42.services.reranker_client import RerankerClient
 
 # ── helpers ────────────────────────────────────────────────────────────
 
@@ -50,22 +56,30 @@ def _make_feature_row(
 
 
 @pytest.fixture
-def mock_deps():
-    """Create mock dependencies for FeatureDedupJob."""
+async def mock_deps() -> AsyncIterator[dict[str, Any]]:
+    """Use the real shim wire so the tests exercise calibrated signalling."""
     session = AsyncMock()
     factory = MagicMock()
     factory.return_value.__aenter__ = AsyncMock(return_value=session)
     factory.return_value.__aexit__ = AsyncMock(return_value=False)
 
-    reranker = AsyncMock()
-    reranker.is_available = AsyncMock(return_value=True)
-    reranker.rerank = AsyncMock(return_value=[0.85])
+    scores = [0.85]
+    reranker = RerankerClient(wire=ShimRerankWire())
+    reranker._client = httpx.AsyncClient(
+        base_url="http://shim",
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"scores": scores})),
+    )
+    reranker.rerank = AsyncMock(wraps=reranker.rerank)
 
-    return {
-        "session_factory": factory,
-        "session": session,
-        "reranker": reranker,
-    }
+    try:
+        yield {
+            "session_factory": factory,
+            "session": session,
+            "reranker": reranker,
+            "scores": scores,
+        }
+    finally:
+        await reranker.close()
 
 
 def _build_job(deps: dict) -> FeatureDedupJob:
@@ -76,6 +90,77 @@ def _build_job(deps: dict) -> FeatureDedupJob:
 
 
 # ── find_candidates tests ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_voyage_skips_before_session_and_transport() -> None:
+    transport = MagicMock(return_value=httpx.Response(200, json={"results": []}))
+    reranker = RerankerClient(wire=CohereRerankWire("voyageai/rerank-3-lite"))
+    reranker._client = httpx.AsyncClient(transport=httpx.MockTransport(transport))
+    factory = MagicMock(side_effect=AssertionError("Uncalibrated reranker opened a DB session"))
+    job = FeatureDedupJob(factory, reranker)
+    try:
+        with capture_logs() as records:
+            assert await job.find_candidates("brain-v42") == []
+    finally:
+        await reranker.close()
+    factory.assert_not_called()
+    factory.return_value.__aenter__.assert_not_called()
+    transport.assert_not_called()
+    assert records == [
+        {
+            "event": "feature_dedup.reranker_uncalibrated",
+            "identity": "cohere:voyageai/rerank-3-lite",
+            "log_level": "warning",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_calibration", [False, True])
+async def test_uncalibrated_mock_skips_without_reranking(missing_calibration: bool) -> None:
+    reranker = MagicMock()
+    reranker.rerank = AsyncMock()
+    if missing_calibration:
+        del reranker.calibration
+    factory = MagicMock(side_effect=AssertionError("Uncalibrated reranker opened a DB session"))
+    job = FeatureDedupJob(factory, reranker)
+    with capture_logs() as records:
+        assert await job.find_candidates("brain-v42") == []
+    factory.assert_not_called()
+    reranker.rerank.assert_not_awaited()
+    assert len(records) == 1
+    assert records[0]["event"] == "feature_dedup.reranker_uncalibrated"
+    assert records[0]["log_level"] == "warning"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("score", "signals"), [(0.81, True), (0.80, True), (0.79, False)])
+async def test_shim_signal_threshold_is_unchanged(
+    mock_deps: dict[str, Any], score: float, signals: bool
+) -> None:
+    older = _make_feature_row(name="Feature A", created_at=100.0)
+    newer = _make_feature_row(name="Feature B", created_at=200.0, similarity=0.75)
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"scores": [score]})
+
+    reranker = RerankerClient(wire=ShimRerankWire())
+    reranker._client = httpx.AsyncClient(
+        base_url="http://shim", transport=httpx.MockTransport(handler)
+    )
+    job = FeatureDedupJob(mock_deps["session_factory"], reranker)
+    job._get_all_features = AsyncMock(return_value=[older, newer])
+    job._find_neighbors = AsyncMock(side_effect=[[newer], []])
+    try:
+        candidates = await job.find_candidates("brain-v42")
+    finally:
+        await reranker.close()
+    assert candidates == ([(older, newer, score)] if signals else [])
+    assert len(requests) == 1
+    assert requests[0].url.path == "/rerank"
 
 
 @pytest.mark.asyncio
@@ -145,7 +230,7 @@ async def test_find_candidates_returns_high_score_pairs(mock_deps):
     )
 
     # Reranker gives high score (only called once for deduplicated pair)
-    mock_deps["reranker"].rerank = AsyncMock(return_value=[0.90])
+    mock_deps["scores"][:] = [0.90]
 
     job = _build_job(mock_deps)
     candidates = await job.find_candidates("brain_v42")
@@ -180,7 +265,7 @@ async def test_find_candidates_skips_low_reranker_score(mock_deps):
     )
 
     # Reranker returns low score
-    mock_deps["reranker"].rerank = AsyncMock(return_value=[0.45])
+    mock_deps["scores"][:] = [0.45]
 
     job = _build_job(mock_deps)
     candidates = await job.find_candidates("brain_v42")
