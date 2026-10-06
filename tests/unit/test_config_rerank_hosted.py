@@ -187,3 +187,41 @@ class TestHealthPathCannotRedirectTheBearer:
     @pytest.mark.parametrize("path", ["/health", "/v1/key"])
     def test_a_relative_path_is_accepted(self, path: str) -> None:
         assert _settings(rerank_health_path=path).rerank_health_path == path
+
+
+class TestHostIsReadTheWayTheTransportReadsIt:
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://openrouter.ai./api",
+            "https://openrouter\u3002ai/api",
+            "https://OpenRouter.AI/api",
+            "https://eu.openrouter.ai./api",
+        ],
+    )
+    def test_a_spelling_httpx_resolves_to_openrouter_still_needs_routing(self, url: str) -> None:
+        with pytest.raises(ValidationError, match="rerank_provider"):
+            _openrouter(reranker_url=url, rerank_provider=None)
+
+
+class TestASuppliedRoutingIsNeverLaxerThanThePolicy:
+    """The routing object is sent whatever the host: an aggregator reached through
+    a proxy or an alias must not get a looser one than OpenRouter would."""
+
+    @pytest.mark.parametrize(
+        ("provider", "setting"),
+        [
+            ({"only": ["voyageai"], "allow_fallbacks": True}, "allow_fallbacks"),
+            ({"only": ["cohere"]}, "rerank_provider.only"),
+            ({"only": ["voyageai"], "data_collection": "allow"}, "data_collection"),
+        ],
+    )
+    def test_lax_routing_on_a_non_openrouter_host_is_refused(
+        self, provider: dict[str, object], setting: str
+    ) -> None:
+        with pytest.raises(ValidationError, match=setting):
+            _openrouter(reranker_url="https://proxy.example/api", rerank_provider=provider)
+
+    def test_policy_conforming_routing_on_a_proxy_is_accepted(self) -> None:
+        settings = _openrouter(reranker_url="https://proxy.example/api")
+        assert settings.rerank_provider is not None

@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Self
 from urllib.parse import urlsplit
 
+import httpx
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -174,7 +175,17 @@ def is_relative_request_path(path: str) -> bool:
 
 
 def _is_openrouter_host(url: str) -> bool:
-    host = urlsplit(url).hostname or ""
+    """Read the host the way the transport will, not the way ``urlsplit`` does.
+
+    ``https://openrouter.ai./`` (trailing dot) and ``https://openrouter\u3002ai/``
+    (ideographic full stop) both reach openrouter.ai, and ``urlsplit`` calls
+    neither of them that. httpx normalises both; so does this predicate.
+    """
+    try:
+        host = httpx.URL(url).host
+    except httpx.InvalidURL as exc:
+        raise ValueError("reranker_url is not a valid URL") from exc
+    host = host.lower().rstrip(".")
     return host == "openrouter.ai" or host.endswith(".openrouter.ai")
 
 
@@ -379,16 +390,16 @@ class Settings(BaseSettings):
                 # here would be ignored, and the operator would believe it armed.
                 raise ValueError("rerank_api_key_file requires rerank_backend='cohere'")
             return self
-        if not _is_openrouter_host(self.reranker_url):
-            return self
         provider = self.rerank_provider
         if provider is None:
-            raise ValueError("rerank_provider is required when reranker_url targets openrouter.ai")
+            if _is_openrouter_host(self.reranker_url):
+                raise ValueError(
+                    "rerank_provider is required when reranker_url targets openrouter.ai"
+                )
+            return self
         author, separator, _ = self.rerank_model.partition("/")
         if not separator or not author:
-            raise ValueError(
-                "rerank_model must be '<author>/<name>' when reranker_url targets openrouter.ai"
-            )
+            raise ValueError("rerank_model must be '<author>/<name>' when rerank_provider is set")
         if provider.only != [author]:
             raise ValueError(
                 f"rerank_provider.only must be exactly [{author!r}], the author of rerank_model"
