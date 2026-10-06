@@ -234,3 +234,228 @@ async def test_rerank_does_not_retry_a_503_without_retry_after(recorded_sleeps):
         await client.rerank("q", ["a"])
 
     assert mock_http.post.await_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Hosted reranker: URL composition and probe state
+# ---------------------------------------------------------------------------
+
+
+def _client_over(handler, *, base_url: str, wire):
+    """A real RerankerClient whose httpx.AsyncClient talks to ``handler``.
+
+    Patching the constructor rather than assigning ``_client`` keeps the
+    client's own base_url handling under test.
+    """
+    import functools
+
+    import httpx
+
+    transport = httpx.MockTransport(handler)
+    real_async_client = httpx.AsyncClient
+    client = RerankerClient(base_url=base_url, wire=wire)
+    patcher = patch(
+        "brain_v42.services.reranker_client.httpx.AsyncClient",
+        functools.partial(real_async_client, transport=transport),
+    )
+    patcher.start()
+    return client, patcher
+
+
+@pytest.mark.asyncio
+async def test_hosted_urls_compose_under_the_base_path() -> None:
+    import httpx
+
+    from brain_v42.services.rerank_wire import CohereRerankWire
+
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, str(request.url)))
+        if request.method == "POST":
+            return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.5}]})
+        return httpx.Response(200)
+
+    client, patcher = _client_over(
+        handler,
+        base_url="https://openrouter.ai/api",
+        wire=CohereRerankWire(model="voyageai/rerank-3-lite", health_path="/v1/key"),
+    )
+    try:
+        await client.rerank("q", ["a"])
+        assert await client.is_available() is True
+    finally:
+        await client.close()
+        patcher.stop()
+
+    assert seen == [
+        ("POST", "https://openrouter.ai/api/v1/rerank"),
+        ("GET", "https://openrouter.ai/api/v1/key"),
+    ]
+
+
+class TestProbeState:
+    @staticmethod
+    def _probe_client(handler):
+        from brain_v42.services.rerank_wire import CohereRerankWire
+
+        return _client_over(
+            handler,
+            base_url="https://openrouter.ai/api",
+            wire=CohereRerankWire(model="m", health_path="/v1/key"),
+        )
+
+    @pytest.mark.asyncio
+    async def test_200_is_available_and_recorded(self) -> None:
+        import httpx
+
+        client, patcher = self._probe_client(lambda request: httpx.Response(200))
+        try:
+            assert client.last_probe_ok is None
+            assert await client.is_available() is True
+        finally:
+            await client.close()
+            patcher.stop()
+        assert client.last_probe_ok is True
+        assert client.last_probe_reason == "ok"
+        assert client.last_probe_monotonic is not None
+
+    @pytest.mark.asyncio
+    async def test_401_is_unavailable_with_the_status_as_reason(self) -> None:
+        import httpx
+
+        client, patcher = self._probe_client(lambda request: httpx.Response(401))
+        try:
+            assert await client.is_available() is False
+        finally:
+            await client.close()
+            patcher.stop()
+        assert client.last_probe_ok is False
+        assert client.last_probe_reason == "http_401"
+
+    @pytest.mark.asyncio
+    async def test_any_transport_error_is_unavailable_not_raised(self) -> None:
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("refused")
+
+        client, patcher = self._probe_client(handler)
+        try:
+            assert await client.is_available() is False
+        finally:
+            await client.close()
+            patcher.stop()
+        assert client.last_probe_reason == "transport_ConnectError"
+
+    @pytest.mark.asyncio
+    async def test_an_http_error_outside_connect_and_timeout_is_also_caught(self) -> None:
+        import httpx
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.RemoteProtocolError("peer closed")
+
+        client, patcher = self._probe_client(handler)
+        try:
+            assert await client.is_available() is False
+        finally:
+            await client.close()
+            patcher.stop()
+        assert client.last_probe_reason == "transport_RemoteProtocolError"
+
+    @pytest.mark.asyncio
+    async def test_logs_only_on_state_change(self) -> None:
+        import httpx
+        from structlog.testing import capture_logs
+
+        status = {"code": 401}
+        client, patcher = self._probe_client(lambda request: httpx.Response(status["code"]))
+        try:
+            with capture_logs() as records:
+                await client.is_available()  # first probe, fails: counts
+                await client.is_available()  # still failing: silent
+                status["code"] = 200
+                await client.is_available()  # recovery
+                await client.is_available()  # still fine: silent
+        finally:
+            await client.close()
+            patcher.stop()
+
+        events = [
+            (r["event"], r["log_level"])
+            for r in records
+            if r["event"] in ("reranker_client.unavailable", "reranker_client.available_again")
+        ]
+        assert events == [
+            ("reranker_client.unavailable", "warning"),
+            ("reranker_client.available_again", "info"),
+        ]
+        unavailable = next(r for r in records if r["event"] == "reranker_client.unavailable")
+        assert unavailable["reason"] == "http_401"
+        assert unavailable["health_path"] == "/v1/key"
+
+    @pytest.mark.asyncio
+    async def test_a_healthy_first_probe_is_silent(self) -> None:
+        import httpx
+        from structlog.testing import capture_logs
+
+        client, patcher = self._probe_client(lambda request: httpx.Response(200))
+        try:
+            with capture_logs() as records:
+                await client.is_available()
+        finally:
+            await client.close()
+            patcher.stop()
+        assert [r["event"] for r in records if r["event"].startswith("reranker_client.")] == [
+            "reranker_client.client_created"
+        ]
+
+
+class TestProbeLoop:
+    @pytest.mark.asyncio
+    async def test_probes_at_start_then_every_interval_and_survives_a_raise(self) -> None:
+        import asyncio
+
+        from brain_v42.services.reranker_client import run_rerank_probe_loop
+
+        calls = 0
+        second_call = asyncio.Event()
+
+        class FakeClient:
+            async def is_available(self) -> bool:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    raise RuntimeError("probe blew up")
+                second_call.set()
+                return True
+
+        task = asyncio.create_task(run_rerank_probe_loop(FakeClient(), interval_seconds=0.01))  # type: ignore[arg-type]
+        await asyncio.wait_for(second_call.wait(), timeout=2)
+        assert calls >= 2
+        assert not task.done()
+
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    @pytest.mark.asyncio
+    async def test_the_first_probe_does_not_wait_for_the_interval(self) -> None:
+        import asyncio
+
+        from brain_v42.services.reranker_client import run_rerank_probe_loop
+
+        first = asyncio.Event()
+
+        class FakeClient:
+            async def is_available(self) -> bool:
+                first.set()
+                return True
+
+        task = asyncio.create_task(run_rerank_probe_loop(FakeClient(), interval_seconds=3600))  # type: ignore[arg-type]
+        try:
+            await asyncio.wait_for(first.wait(), timeout=2)
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
