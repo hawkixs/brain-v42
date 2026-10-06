@@ -45,6 +45,7 @@ from brain_v42.provenance import (
     normalize_session,
     normalize_transport,
     set_current_actor,
+    set_current_peer,
     set_current_session,
     set_current_transport,
 )
@@ -85,6 +86,11 @@ class ProvenanceMiddleware(Middleware):
         set_current_actor(actor)
         set_current_session(session)
         set_current_transport(transport)
+        try:
+            peer = getattr(getattr(get_http_request(), "client", None), "host", None)
+        except RuntimeError:
+            peer = None
+        set_current_peer(peer)
 
         token = enter_call()
         try:

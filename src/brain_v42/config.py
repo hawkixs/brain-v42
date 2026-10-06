@@ -33,7 +33,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 def _is_loopback_host(value: str | None) -> bool:
@@ -173,6 +173,24 @@ class Settings(BaseSettings):
     # --- Database ---
     postgres_url: str = Field(validation_alias=_brain_alias("POSTGRES_URL"))
     """PostgreSQL connection URL. Must use postgresql+asyncpg:// scheme."""
+
+    elevatable_client_ids: Annotated[frozenset[str], NoDecode] = Field(
+        default=frozenset({"workstation-claude"}),
+        validation_alias="BRAIN_ELEVATABLE_CLIENT_IDS",
+    )
+    """Clients allowed to claim an unowned operator session; never declared actors."""
+
+    @field_validator("elevatable_client_ids", mode="before")
+    @classmethod
+    def validate_elevatable_client_ids(cls, value: object) -> frozenset[str]:
+        """Refuse malformed entries rather than silently widen the attribution allowlist."""
+        entries = value.split(",") if isinstance(value, str) else value
+        if not isinstance(entries, (list, tuple, set, frozenset)) or any(
+            not isinstance(entry, str) or re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,63}", entry) is None
+            for entry in entries
+        ):
+            raise ValueError("elevatable client ids must be comma-separated valid client ids")
+        return frozenset(entries)
 
     # Session budgets sent to PostgreSQL at connection time, in MILLISECONDS; 0
     # disables, exactly as in PostgreSQL. Three profiles because three very
