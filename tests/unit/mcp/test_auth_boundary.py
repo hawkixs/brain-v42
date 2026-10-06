@@ -1,20 +1,33 @@
 """Exercise credential refusals through the served FastMCP HTTP transport."""
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from datetime import datetime
+from hashlib import sha256
+from typing import Any
 
 import httpx
 import pytest
 from fastmcp import FastMCP
+from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import JSONResponse
+from starlette.types import Receive, Scope, Send
 from structlog.testing import capture_logs
 
 from brain_v42.credentials import verifier as verifier_module
 from brain_v42.credentials.reasons import refusal_counts, reset_refusal_counts
-from brain_v42.credentials.verifier import CredentialVerifier
+from brain_v42.credentials.redact import short_id
+from brain_v42.credentials.verifier import CredentialVerifier, VerifiedPrincipal
 from brain_v42.mcp import server
-from brain_v42.provenance import get_current_actor, get_current_principal
+from brain_v42.mcp.provenance_middleware import ProvenanceMiddleware
+from brain_v42.provenance import (
+    get_current_actor,
+    get_current_principal,
+    set_current_actor,
+    set_current_principal,
+)
 from brain_v42.repositories.pg_client_credentials import CredentialRow
 from tests.unit.mcp.test_credentials_http import NOW, TOKEN, Registry
 from tests.unit.mcp.test_credentials_http_wiring import settings
@@ -37,7 +50,7 @@ def isolated_observations(monkeypatch: pytest.MonkeyPatch) -> None:
 
 async def transport_request(
     *,
-    headers: dict[str, str],
+    headers: dict[str, str] | list[tuple[str, str]],
     issuers: tuple[str, ...] = (),
     stale: bool = False,
     path: str = "/mcp",
@@ -161,3 +174,315 @@ async def test_registry_down_past_90_seconds_emits_exactly_one_safe_503() -> Non
 
 async def test_health_is_available_without_a_bearer() -> None:
     assert (await transport_request(headers={}, path="/health")).status_code == 200
+
+
+class TwoClientRegistry(ReviewerRegistry):
+    async def active_rows(self, now: datetime) -> list[CredentialRow]:
+        rows = await super().active_rows(now)
+        return [
+            rows[0],
+            replace(
+                rows[0], client_id="other-client", token_sha256=sha256(b"other-token").digest()
+            ),
+        ]
+
+
+@asynccontextmanager
+async def stateful_client(
+    *,
+    poison_context: bool = False,
+) -> AsyncIterator[tuple[httpx.AsyncClient, dict[str, str], list[dict[str, str | None]]]]:
+    from fastmcp.server.middleware import Middleware
+
+    seen: list[dict[str, str | None]] = []
+    registry = CredentialVerifier(
+        TwoClientRegistry(("agent:*",)), clock=lambda: NOW, monotonic=lambda: 0.0
+    )
+    assert await registry.refresh()
+    mcp = FastMCP("stateful-credential-boundary")
+
+    class StaleSessionContext(Middleware):
+        async def on_call_tool(self, context: Any, call_next: Any) -> Any:
+            if poison_context and seen:
+                # Simulate identity inherited from the long-lived session task.
+                set_current_principal("stale-session-client")
+                set_current_actor("stale-session-actor")
+            return await call_next(context)
+
+    mcp.add_middleware(StaleSessionContext())
+    mcp.add_middleware(ProvenanceMiddleware())
+
+    @mcp.tool
+    async def identity() -> dict[str, str | None]:
+        result = {"principal": get_current_principal(), "actor": get_current_actor()}
+        seen.append(result)
+        return result
+
+    plan = server.plan_http_transport(mcp, settings(), credential_verifier=registry)
+    app = mcp.http_app(middleware=plan.middleware, stateless_http=False, json_response=True)
+    headers = {"Authorization": "Bearer " + TOKEN, "Accept": "application/json, text/event-stream"}
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app, client=("127.0.0.7", 4321)),
+            base_url="http://localhost",
+        ) as client,
+    ):
+        initialized = await client.post(
+            "/mcp",
+            headers=headers,
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2025-03-26",
+                    "capabilities": {},
+                    "clientInfo": {"name": "test", "version": "1"},
+                },
+            },
+        )
+        assert initialized.status_code == 200
+        headers["Mcp-Session-Id"] = initialized.headers["Mcp-Session-Id"]
+        notified = await client.post(
+            "/mcp",
+            headers=headers,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+        assert notified.status_code == 202
+        yield client, headers, seen
+
+
+async def call_identity(
+    client: httpx.AsyncClient, headers: dict[str, str], call_id: int
+) -> httpx.Response:
+    return await client.post(
+        "/mcp",
+        headers=headers,
+        json={
+            "jsonrpc": "2.0",
+            "id": call_id,
+            "method": "tools/call",
+            "params": {"name": "identity", "arguments": {}},
+        },
+    )
+
+
+async def test_stateful_session_refuses_foreign_client_before_forwarding() -> None:
+    async with stateful_client() as (client, headers, seen):
+        assert (await call_identity(client, headers, 2)).status_code == 200
+        session_id = headers["Mcp-Session-Id"]
+        headers["Authorization"] = "Bearer other-token"
+        with capture_logs() as logs:
+            response = await call_identity(client, headers, 3)
+        assert response.status_code == 403
+        assert response.json() == {"error": "foreign_client_attach"}
+        assert len(seen) == 1
+        events = [event for event in logs if event["event"] == "mcp_auth.refused"]
+        assert len(events) == 1
+        assert events[0] == {
+            "event": "mcp_auth.refused",
+            "log_level": "warning",
+            "reason": "foreign_client_attach",
+            "status": 403,
+            "requesting_client_id": "other-client",
+            "owner_client_id": "red-rail-reviewer",
+            "session_id": short_id(session_id),
+            "peer": "127.0.0.7",
+            "path": "/mcp",
+        }
+        assert session_id not in str(events) + response.text
+        assert refusal_counts() == {"foreign_client_attach": 1}
+
+
+async def test_stateful_tool_identity_uses_its_request_and_ignores_stale_context() -> None:
+    async with stateful_client(poison_context=True) as (client, headers, seen):
+        first = await call_identity(client, headers, 2)
+        assert first.json()["result"]["structuredContent"] == {
+            "principal": "red-rail-reviewer",
+            "actor": "red-rail-reviewer",
+        }
+        headers["X-Brain-Agent"] = "agent:second"
+        second = await call_identity(client, headers, 3)
+        assert second.json()["result"]["structuredContent"] == {
+            "principal": "red-rail-reviewer",
+            "actor": "agent:second",
+        }
+        assert len(seen) == 2
+
+
+@asynccontextmanager
+async def minting_client() -> AsyncIterator[tuple[httpx.AsyncClient, list[tuple[str, str | None]]]]:
+    from brain_v42.mcp.credentials_http import CredentialGuard
+
+    registry = CredentialVerifier(TwoClientRegistry(), clock=lambda: NOW, monotonic=lambda: 0.0)
+    assert await registry.refresh()
+
+    forwarded: list[tuple[str, str | None]] = []
+    minted = 0
+
+    async def accepted(scope: Scope, receive: Receive, send: Send) -> None:
+        nonlocal minted
+        session_id = Headers(scope=scope).get("mcp-session-id")
+        forwarded.append((scope["method"], session_id))
+        response_headers = {}
+        if session_id is None:
+            response_headers["Mcp-Session-Id"] = f"{minted:032x}"
+            minted += 1
+        await JSONResponse({"accepted": True}, headers=response_headers)(scope, receive, send)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(CredentialGuard(accepted, verifier=registry)),
+        base_url="http://localhost",
+    ) as client:
+        yield client, forwarded
+
+
+@pytest.mark.parametrize("token", [TOKEN, "other-token"])
+@pytest.mark.parametrize("method", ["GET", "POST", "DELETE"])
+async def test_never_minted_session_is_refused_without_forwarding(token: str, method: str) -> None:
+    session_id = "never-minted-session-identifier"
+    async with minting_client() as (client, forwarded):
+        with capture_logs() as logs:
+            response = await client.request(
+                method,
+                "/mcp",
+                headers={"Authorization": "Bearer " + token, "Mcp-Session-Id": session_id},
+            )
+        assert response.status_code == 403
+        assert response.json() == {"error": "foreign_client_attach"}
+        assert forwarded == []
+        assert logs[0]["owner_client_id"] is None
+        assert logs[0]["session_id"] == short_id(session_id)
+        assert logs[0]["requesting_client_id"] == (
+            "red-rail-reviewer" if token == TOKEN else "other-client"
+        )
+        assert session_id not in str(logs) + response.text
+        assert refusal_counts() == {"foreign_client_attach": 1}
+
+
+async def test_session_owner_memory_evicts_least_recently_used_binding_per_client() -> None:
+    async with minting_client() as (client, forwarded):
+        headers = {"Authorization": "Bearer " + TOKEN}
+        for index in range(256):
+            initialized = await client.post("/mcp", headers=headers)
+            assert initialized.headers["Mcp-Session-Id"] == f"{index:032x}"
+        headers["Mcp-Session-Id"] = f"{0:032x}"
+        assert (await client.get("/mcp", headers=headers)).status_code == 200
+        del headers["Mcp-Session-Id"]
+        assert (await client.post("/mcp", headers=headers)).status_code == 200
+        headers["Mcp-Session-Id"] = f"{1:032x}"
+        before = len(forwarded)
+        for token in (TOKEN, "other-token"):
+            headers["Authorization"] = "Bearer " + token
+            with capture_logs() as logs:
+                response = await client.get("/mcp", headers=headers)
+            assert response.status_code == 403
+            assert logs[0]["owner_client_id"] is None
+        assert len(forwarded) == before
+        headers["Authorization"] = "Bearer other-token"
+        headers["Mcp-Session-Id"] = f"{0:032x}"
+        assert (await client.get("/mcp", headers=headers)).status_code == 403
+        headers["Authorization"] = "Bearer " + TOKEN
+        assert (await client.get("/mcp", headers=headers)).status_code == 200
+        headers["Mcp-Session-Id"] = f"{256:032x}"
+        assert (await client.get("/mcp", headers=headers)).status_code == 200
+
+
+async def test_client_quota_cannot_evict_or_steal_another_clients_minted_session() -> None:
+    async with minting_client() as (client, forwarded):
+        victim = await client.post("/mcp", headers={"Authorization": "Bearer " + TOKEN})
+        victim_id = victim.headers["Mcp-Session-Id"]
+        headers = {"Authorization": "Bearer other-token", "Mcp-Session-Id": victim_id}
+        # Ownership must exist before the owner's first attach.
+        assert (await client.get("/mcp", headers=headers)).status_code == 403
+        del headers["Mcp-Session-Id"]
+        for _ in range(257):
+            assert (await client.post("/mcp", headers=headers)).status_code == 200
+        headers["Mcp-Session-Id"] = f"{1:032x}"
+        assert (await client.get("/mcp", headers=headers)).status_code == 403
+        headers["Mcp-Session-Id"] = victim_id
+        before = len(forwarded)
+        assert (await client.get("/mcp", headers=headers)).status_code == 403
+        assert len(forwarded) == before
+        headers["Authorization"] = "Bearer " + TOKEN
+        assert (await client.get("/mcp", headers=headers)).status_code == 200
+
+
+async def test_only_an_authorized_delete_expires_the_session_binding() -> None:
+    async with minting_client() as (client, forwarded):
+        headers = {"Authorization": "Bearer " + TOKEN}
+        initialized = await client.post("/mcp", headers=headers)
+        headers["Mcp-Session-Id"] = initialized.headers["Mcp-Session-Id"]
+        headers["Authorization"] = "Bearer other-token"
+        assert (await client.delete("/mcp", headers=headers)).status_code == 403
+        headers["Authorization"] = "Bearer " + TOKEN
+        assert (await client.get("/mcp", headers=headers)).status_code == 200
+        assert (await client.delete("/mcp", headers=headers)).status_code == 200
+        before = len(forwarded)
+        for token in (TOKEN, "other-token"):
+            headers["Authorization"] = "Bearer " + token
+            with capture_logs() as logs:
+                response = await client.get("/mcp", headers=headers)
+            assert response.status_code == 403
+            assert logs[0]["owner_client_id"] is None
+        assert len(forwarded) == before
+
+
+@pytest.mark.parametrize(
+    "authorization",
+    [
+        [("Authorization", "Bearer " + TOKEN), ("authorization", "Bearer " + TOKEN)],
+        [("Authorization", "Bearer  " + TOKEN)],
+        [("Authorization", "Bearer " + TOKEN + " extra")],
+        [("Authorization", "Bearer " + TOKEN + "\t")],
+        [("Authorization", "Bearer ")],
+        [("Authorization", "Bearer")],
+    ],
+    ids=["duplicate", "two-spaces", "token-space", "token-tab", "empty", "no-space"],
+)
+async def test_malformed_bearer_is_refused_before_verification(
+    authorization: list[tuple[str, str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock
+
+    verify = AsyncMock(wraps=CredentialVerifier.verify)
+
+    async def observed_verify(self: CredentialVerifier, token: str | None) -> VerifiedPrincipal:
+        return await verify(self, token)
+
+    monkeypatch.setattr(CredentialVerifier, "verify", observed_verify)
+    with capture_logs() as logs:
+        response = await transport_request(headers=authorization, path="/identity")
+    verify.assert_not_awaited()
+    assert response.status_code == 401
+    assert response.json() == {"error": "missing_token"}
+    events = [event for event in logs if event["event"] == "mcp_auth.refused"]
+    assert len(events) == 1
+    assert events[0]["reason"] == "missing_token"
+    assert refusal_counts() == {"missing_token": 1}
+    assert TOKEN not in str(events) + response.text
+
+
+async def test_lowercase_bearer_and_guard_identity_survive_downstream_header_differential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.mcp import provenance_middleware
+
+    original_headers = provenance_middleware.get_http_headers
+
+    def divergent_headers(**kwargs: Any) -> dict[str, str]:
+        return {**(original_headers(**kwargs) or {}), "x-brain-agent": "unverified-actor"}
+
+    monkeypatch.setattr(provenance_middleware, "get_http_headers", divergent_headers)
+    async with stateful_client() as (client, headers, seen):
+        headers["Authorization"] = "bearer " + TOKEN
+        headers["X-Brain-Agent"] = "agent:verified"
+        response = await call_identity(client, headers, 2)
+        assert response.status_code == 200
+        assert response.json()["result"]["structuredContent"] == {
+            "principal": "red-rail-reviewer",
+            "actor": "agent:verified",
+        }
+        assert len(seen) == 1
