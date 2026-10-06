@@ -9,8 +9,9 @@ import json
 import re
 import socket
 from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -18,6 +19,135 @@ import structlog
 from structlog.testing import capture_logs
 
 from brain_v42.mcp.activity_reporter import _MAX_BUFFERED, ActivityReporter, _is_a_decade
+
+
+async def test_credential_created_later_activates_reporting_without_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token_file = tmp_path / "activity" / "token"
+    token_file.parent.mkdir()
+    now = 0.0
+    monkeypatch.setattr("brain_v42.mcp.activity_reporter.time.monotonic", lambda: now)
+    reporter = ActivityReporter("http://unused", token_file=token_file)
+    client = AsyncMock()
+    client.post.return_value = httpx.Response(200)
+    with patch.object(reporter, "_client", client), capture_logs() as logs:
+        reporter.report("codex", None)
+        await reporter.drain()
+        token_file.write_text("test-only-late-telemetry\n")
+        token_file.chmod(0o600)
+        reporter.report("codex", None)
+        await reporter.drain()
+        client.post.assert_not_called()
+        now = 5.0
+        reporter.report("codex", None)
+        await reporter.drain()
+    assert reporter.unauthenticated_suspended == 2
+    assert len(logs) == 1
+    assert logs[0]["event"] == "client_activity.unauthenticated_suspended"
+    assert logs[0]["log_level"] == "info"
+    client.post.assert_awaited_once()
+    assert (
+        client.post.await_args.kwargs["headers"]["Authorization"]
+        == "Bearer test-only-late-telemetry"
+    )
+    assert "test-only-late-telemetry" not in json.dumps(logs)
+    await reporter.close()
+
+
+@pytest.mark.parametrize("unsafe", ["permissions", "symlink", "empty", "too_large", "directory"])
+async def test_unusable_credential_file_suspends_without_error_spam(
+    tmp_path: Path, unsafe: str
+) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("test-only-telemetry")
+    token_file.chmod(0o600)
+    if unsafe == "permissions":
+        token_file.chmod(0o644)
+    elif unsafe == "symlink":
+        source = tmp_path / "source"
+        token_file.rename(source)
+        token_file.symlink_to(source)
+    elif unsafe == "empty":
+        token_file.write_text("")
+    elif unsafe == "too_large":
+        token_file.write_text("x" * 4097)
+    elif unsafe == "directory":
+        token_file.unlink()
+        token_file.mkdir()
+    reporter = ActivityReporter("http://unused", token_file=token_file)
+    with patch.object(reporter, "_client", AsyncMock()) as client, capture_logs() as logs:
+        await reporter._post("{}", 3)
+        await reporter._post("{}", 2)
+        client.post.assert_not_called()
+    assert reporter.unauthenticated_suspended == 5
+    assert reporter.lost == reporter.refused == 0
+    assert len(logs) == 1
+    assert "test-only-telemetry" not in json.dumps(logs)
+    await reporter.close()
+
+
+async def test_401_invalidates_cached_credential_and_rereads_the_file(tmp_path: Path) -> None:
+    token_file = tmp_path / "token"
+    token_file.write_text("test-only-old-telemetry")
+    token_file.chmod(0o600)
+    reporter = ActivityReporter("http://unused", token_file=token_file)
+    client = AsyncMock()
+    client.post.side_effect = [httpx.Response(401), httpx.Response(200)]
+    with patch.object(reporter, "_client", client), capture_logs() as logs:
+        await reporter._post("{}", 1)
+        replacement = tmp_path / "replacement"
+        replacement.write_text("test-only-new-telemetry")
+        replacement.chmod(0o600)
+        replacement.replace(token_file)
+        await reporter._post("{}", 1)
+    assert [call.kwargs["headers"]["Authorization"] for call in client.post.await_args_list] == [
+        "Bearer test-only-old-telemetry",
+        "Bearer test-only-new-telemetry",
+    ]
+    assert reporter.refused == reporter.lost == 1
+    assert "test-only-old-telemetry" not in json.dumps(logs)
+    assert "test-only-new-telemetry" not in json.dumps(logs)
+    await reporter.close()
+
+
+async def test_credential_read_failure_is_bounded_and_does_not_leak_error_text(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reporter = ActivityReporter("http://unused", token_file=tmp_path / "token")
+    reader = MagicMock(side_effect=OSError("test-only-secret-error-text"))
+    monkeypatch.setattr(reporter, "_read_token_file", reader)
+    with patch.object(reporter, "_client", AsyncMock()) as client, capture_logs() as logs:
+        await reporter._post("{}", 1)
+        await reporter._post("{}", 1)
+    reader.assert_called_once()
+    client.post.assert_not_called()
+    assert "test-only-secret-error-text" not in json.dumps(logs)
+    await reporter.close()
+
+
+def test_lazy_reporter_receives_token_path_from_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+
+    from brain_v42.mcp import activity_reporter
+
+    monkeypatch.setattr(
+        activity_reporter,
+        "get_settings",
+        lambda: SimpleNamespace(
+            client_activity_reporting_enabled=True,
+            client_activity_url="http://unused",
+            client_activity_token_file=str(tmp_path / "token"),
+        ),
+    )
+    reporter = activity_reporter.get_activity_reporter()
+    assert reporter is not None
+    assert reporter._token_file == tmp_path / "token"
+
 
 FAKE_UUID = "12345678-1234-4abc-8def-1234567890ab"
 

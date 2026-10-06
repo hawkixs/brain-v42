@@ -90,6 +90,7 @@ class CredentialGuard:
     """Own HTTP refusals and isolate the verified client to the current request."""
 
     def __init__(self, app: ASGIApp, *, verifier: CredentialVerifier) -> None:
+        self._route_app = app
         self.app = app
         for middleware in reversed(CredentialTokenVerifier(verifier).verified_request_middleware()):
             self.app = middleware.cls(self.app, *middleware.args, **middleware.kwargs)
@@ -105,6 +106,10 @@ class CredentialGuard:
             return
         if scope.get("path") in PUBLIC_HTTP_PATHS:
             await self.app(public_probe_scope(scope), receive, send)
+            return
+        if scope.get("path") == "/admin/elevations" and scope.get("method") == "POST":
+            # This route verifies its own elevation-only bearer, outside SDK auth.
+            await self._route_app(scope, receive, send)
             return
         headers = Headers(scope=scope)
         authorization = headers.getlist("authorization")

@@ -215,6 +215,7 @@ class _DbCollectorsMixin:
 
             agg_tools: dict[str, dict[str, Any]] = {}
             mcp_auth_refused: dict[str, int] = {}
+            elevation_refused: dict[str, int] = {}
             agg_emb: dict[str, Any] = {
                 "total_requests": 0,
                 "total_errors": 0,
@@ -257,15 +258,18 @@ class _DbCollectorsMixin:
 
                 # Aggregate tools across ALL rows (real tools + pseudo-tools are disjoint)
                 for name, stats in tool_stats.items():
-                    if name == "_mcp_auth_refused":
+                    if name in {"_mcp_auth_refused", "_elevation_refused"}:
                         # Cumulative snapshots belong to the emitting process,
                         # never to individual agents or generic tool reducers.
                         if agent_name == "_process" and isinstance(stats, dict):
+                            counts = (
+                                mcp_auth_refused
+                                if name == "_mcp_auth_refused"
+                                else elevation_refused
+                            )
                             for reason, count in stats.items():
                                 if isinstance(count, int) and count >= 0:
-                                    mcp_auth_refused[reason] = (
-                                        mcp_auth_refused.get(reason, 0) + count
-                                    )
+                                    counts[reason] = counts.get(reason, 0) + count
                         continue
                     if name in _GAUGE_PSEUDO_TOOLS:
                         # Latest-row-wins (by updated_at), split out BEFORE the
@@ -468,6 +472,7 @@ class _DbCollectorsMixin:
                 "total_memory_rss_bytes": total_rss,
                 "tools": tools_with_avg,
                 "mcp_auth_refused": mcp_auth_refused,
+                "elevation_refused": elevation_refused,
                 "embedding": {
                     "total_requests": emb_total,
                     "total_errors": agg_emb["total_errors"],
@@ -495,6 +500,7 @@ class _DbCollectorsMixin:
                 "total_memory_rss_bytes": 0,
                 "tools": {},
                 "mcp_auth_refused": {},
+                "elevation_refused": {},
                 "decay": dict(_DECAY_ZERO),
                 "embedding_identity": None,
                 "embedding": {

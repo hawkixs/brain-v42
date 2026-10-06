@@ -21,7 +21,10 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import os
+import stat
 import time
+from pathlib import Path
 
 import httpx
 import structlog
@@ -90,11 +93,18 @@ class ActivityReporter:
         url: str,
         timeout: float = 1.0,
         max_in_flight: int = 8,
+        *,
+        token_file: str | Path | None = None,
     ) -> None:
         self._url = url
         self._client = httpx.AsyncClient(timeout=timeout)
         self._max_in_flight = max_in_flight
         self._pending: set[asyncio.Task[None]] = set()
+        self._token_file = Path(token_file) if token_file is not None else None
+        self._token: str | None = None
+        self._next_token_check = 0.0
+        self.unauthenticated_suspended = 0
+        self._suspension_logged = False
         # Two loss modes, two counters: conflating them would make "no call"
         # and "every observation refused" indistinguishable.
         self.dropped = 0  # local back-pressure: in-flight slots saturated
@@ -222,11 +232,27 @@ class ActivityReporter:
 
     async def _post(self, body: str, observation_count: int = 0) -> None:
         try:
+            headers = {"Content-Type": "application/json"}
+            token = None
+            if self._token_file is not None:
+                token = await self._get_token()
+                if token is None:
+                    self.unauthenticated_suspended += observation_count
+                    if not self._suspension_logged:
+                        self._suspension_logged = True
+                        logger.info("client_activity.unauthenticated_suspended")
+                    return
+                headers["Authorization"] = "Bearer " + token
             response = await self._client.post(
                 self._url,
                 content=body,
-                headers={"Content-Type": "application/json"},
+                headers=headers,
             )
+            if response.status_code == 401 and token is not None and self._token == token:
+                # A rotated file in the mounted directory is visible on the next call.
+                # An older in-flight refusal must not invalidate a newer credential.
+                self._token = None
+                self._next_token_check = 0.0
             if response.is_success:
                 self._loss_warning_signatures.clear()
             else:
@@ -254,6 +280,39 @@ class ActivityReporter:
             self._warn_loss(
                 "activity_reporter.post_failed", error=type(exc).__name__, lost=self.lost
             )
+
+    async def _get_token(self) -> str | None:
+        """Retry absent files at most once per five seconds, without blocking a tool."""
+        if self._token is not None:
+            return self._token
+        now = time.monotonic()
+        if now < self._next_token_check:
+            return None
+        # Reserve before awaiting: concurrent posts share the bounded file check.
+        self._next_token_check = now + 5.0
+        try:
+            self._token = await asyncio.to_thread(self._read_token_file)
+        except Exception:  # noqa: BLE001 - file errors never interrupt the observed tool
+            self._token = None
+        return self._token
+
+    def _read_token_file(self) -> str | None:
+        """Read a bounded private regular file; reject links and special files safely."""
+        if self._token_file is None:
+            return None
+        descriptor = os.open(self._token_file, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            metadata = os.fstat(descriptor)
+            if not stat.S_ISREG(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) != 0o600:
+                return None
+            with os.fdopen(descriptor, "rb", closefd=False) as stream:
+                raw = stream.read(4097)
+            if len(raw) > 4096:
+                return None
+            token = raw.decode("utf-8").strip()
+            return token if token and not any(character.isspace() for character in token) else None
+        finally:
+            os.close(descriptor)
 
     def _warn_loss(self, event: str, **fields: object) -> None:
         """Report each new loss signature; throttle repeats for one minute."""
@@ -341,7 +400,12 @@ def get_activity_reporter() -> ActivityReporter | None:
             settings = get_settings()
             if not settings.client_activity_reporting_enabled:
                 return None
-            _reporter = ActivityReporter(url=settings.client_activity_url)
+            _reporter = ActivityReporter(
+                url=settings.client_activity_url,
+                token_file=getattr(
+                    settings, "client_activity_token_file", "/etc/brain-v42/activity/token"
+                ),
+            )
         except Exception as exc:
             # Type only, same reason as in ``_post``: the frames traversed here
             # are those of settings construction, whose local variables carry

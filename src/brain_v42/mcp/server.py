@@ -49,6 +49,7 @@ from brain_v42.db.engine import dispose_engine, get_session_factory, use_engine_
 from brain_v42.db.neo4j import close_neo4j_driver, create_neo4j_driver
 from brain_v42.facts.definitions_startup import register_fact_definitions
 from brain_v42.mcp.activity_reporter import close_activity_reporter
+from brain_v42.mcp.admin_elevations import ELEVATION_PATH, AdminElevations
 from brain_v42.mcp.business_errors import surface_business_errors
 from brain_v42.mcp.credentials_http import CredentialGuard, CredentialTokenVerifier
 from brain_v42.mcp.dream_capabilities import (
@@ -907,6 +908,12 @@ def _configure_http_security(
         if credential_verifier is None:
             raise HttpAuthConfigurationError("credentials mode requires a registry verifier")
         mcp.auth = CredentialTokenVerifier(credential_verifier)
+        elevations = AdminElevations(
+            verifier=credential_verifier,
+            repository=lambda: PgClientCredentialRepo(get_session_factory()),
+            elevatable_client_ids=settings.elevatable_client_ids,
+        )
+        mcp.custom_route(ELEVATION_PATH, methods=["POST"])(elevations.handle)
 
         # HTTP planning is the mode boundary: shared-token and stdio keep their
         # existing middleware. Provenance was installed first by the factory.
