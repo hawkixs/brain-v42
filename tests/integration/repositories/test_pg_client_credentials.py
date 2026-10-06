@@ -408,6 +408,27 @@ async def test_an_elevation_matches_only_its_frozen_pair(session: AsyncSession) 
     assert not await repo.has_active_elevation("conn-z", "workstation-claude", at, session=session)
 
 
+async def test_a_reattributed_connection_keeps_its_frozen_pair(session: AsyncSession) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    await _grant(repo, session, operator, ["conn-a"])
+    # Re-attribute the live row, triggers bypassed like the legacy rows of ``_link``.
+    await session.execute(sa.text("SET LOCAL session_replication_role = replica"))
+    await session.execute(
+        sa.text(
+            "UPDATE brain_session_connections SET client_id = 'red-rail' "
+            "WHERE session_id = :id AND connection_id = 'conn-a'"
+        ),
+        {"id": operator},
+    )
+    await session.execute(sa.text("SET LOCAL session_replication_role = origin"))
+    at = NOW + timedelta(minutes=1)
+
+    assert await repo.has_active_elevation("conn-a", "workstation-claude", at, session=session)
+    assert not await repo.has_active_elevation("conn-a", "red-rail", at, session=session)
+
+
 async def test_a_connection_linked_after_the_grant_is_not_elevated(session: AsyncSession) -> None:
     repo = PgClientCredentialRepo()
     operator = await _make_session(session)
