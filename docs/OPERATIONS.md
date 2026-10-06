@@ -400,6 +400,90 @@ Rollback, once the previous image is tagged before the build:
 docker tag <previous-image-id> brain_v42_embedding_shim:pre-bearer-<date>
 ```
 
+## MCP HTTP input bounds and residuals
+
+`MCP_HTTP_MAX_BODY_BYTES` defaults to 2,097,152 bytes (2 MiB), with allowed values
+from 65,536 to 67,108,864. Declared oversize requests get 413 without reading the
+body; streamed bodies are buffered up to the cap before reaching MCP and get the
+same `{"detail": "Request body too large"}` response if they exceed it. Invalid or
+negative `Content-Length` returns 400 with `{"detail": "Invalid Content-Length"}`.
+Tool fields separately have character/list bounds documented in
+[MCP_TOOLS.md](MCP_TOOLS.md#input-bounds); values are refused, never truncated.
+
+HTTP startup raises `HttpAuthConfigurationError` when `MCP_HTTP_TOKEN` is empty or
+blank unless `MCP_HTTP_ALLOW_UNAUTHENTICATED=true`. This opt-out is **development
+only**, refused alongside a non-empty token and under Dream capability enforcement;
+it must never appear in the production systemd unit. Clearing the production token
+now causes an outage through startup refusal rather than unauthenticated access.
+The measured network-boundary paragraph above still describes that configuration
+drift literally; its measurements have not been changed. There is no minimum token
+length and the systemd preflight is unchanged in this release.
+
+`/health` remains auth-exempt and retains status, version, alembic_head and pool.
+Concurrent probes share one database round trip, with no TTL cache; sequential probes
+always check the database again.
+
+Residuals retained for follow-up:
+
+- `X-Brain-Agent` and `X-Brain-Session` are attribution, not authorisation.
+- One shared admin bearer remains; per-client scoped admin bearers need a future ticket.
+- `SHIM_BEARER_MODE=optional` remains pending ticket `9ef5c69d`.
+- There is no body-read deadline or ingress concurrency cap. In capability enforcement
+  mode, authentication rejects at the route inside user middleware, so unauthenticated
+  clients can cause buffering up to the cap before receiving 401. Host checks still run.
+  In ordinary bearer mode, authentication precedes buffering. The transport is loopback.
+- FastMCP may log the full rejected argument at WARNING, bounded by the HTTP body cap.
+- ADR deprecation builds an `ADRUpdate`: existing consequences within about 2,000
+  characters of the 50,000-character cap can refuse the appended reason. This is accepted
+  headroom risk; the measured maximum was 2,279 characters.
+- Backfill similarity thresholds retain their existing semantics and are not clamped.
+
+## PostgreSQL timeouts
+
+Every connection of the shared engine (`brain_v42.db.engine`) carries session budgets, sent
+as asyncpg `server_settings` at connect time. All values are milliseconds; `0` disables, as
+in PostgreSQL. Each one is read from the environment (`BRAIN_PG_*`, the bare name also
+works), so retuning a unit needs a drop-in and a restart, not a release.
+
+| Profile | Used by | statement | lock | idle in transaction | `application_name` |
+|---|---|---|---|---|---|
+| interactive | MCP server, codex gateway, automation runtime | 120000 | 30000 | 300000 | `brain-v42-interactive` |
+| maintenance (default of `get_engine()`) | maintenance jobs, repair and backfill scripts | 1800000 | 300000 | 0 | `brain-v42-maintenance` |
+| metrics | sidecar scrape path | 10000 | 5000 | 60000 | `brain-v42-metrics` |
+| delivery observer | observer loop (constants) | 15000 | 5000 | 60000 | `brain-v42-delivery-observer` |
+
+Environment names: `BRAIN_PG_STATEMENT_TIMEOUT_MS`, `BRAIN_PG_LOCK_TIMEOUT_MS`,
+`BRAIN_PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS` (interactive);
+`BRAIN_PG_MAINTENANCE_STATEMENT_TIMEOUT_MS`, `BRAIN_PG_MAINTENANCE_LOCK_TIMEOUT_MS`,
+`BRAIN_PG_MAINTENANCE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS` (maintenance);
+`BRAIN_METRICS_PG_STATEMENT_TIMEOUT_MS` (metrics). The metrics lock and idle budgets and the
+observer's budgets are constants.
+
+- Only the long-lived processes opt into the tight profile, in their entry point
+  (`python -m brain_v42.mcp.server`, the codex gateway launcher). Anything that calls
+  `get_engine()` bare gets the generous maintenance profile; the maintenance profile has no
+  idle limit because some jobs hold a transaction open on purpose (the embedding-backfill
+  advisory-lock session).
+- A non-zero idle-in-transaction budget is raised at engine build to the longest external
+  client timeout (`BRAIN_EMBEDDING_TIMEOUT`, `RERANKER_TIMEOUT`, `NEO4J_TIMEOUT`) plus 30 s,
+  because some jobs (the dedup job) hold a transaction across an embedding and a rerank
+  call. So `BRAIN_EMBEDDING_TIMEOUT=600` yields at least a 630000 ms idle budget on every
+  profile; `0` stays `0`.
+- `scripts/dream/*.py` build their own engines and stay unbounded on purpose: they are batch
+  jobs.
+- The sidecar's legacy dedup job, if ever enabled, shares the metrics budget (10 s).
+- `alembic/env.py` forces `statement_timeout` and `idle_in_transaction_session_timeout` to 0
+  for migrations, so they never inherit a short budget, even from a future
+  `ALTER ROLE` / `ALTER DATABASE ... SET`.
+- Neo4j: the driver gives up connecting after 5 s and waiting for a pooled connection after
+  10 s (driver defaults: 30 s and 60 s). Per-query budgets are `NEO4J_TIMEOUT`.
+
+A request cut by a budget fails with SQLSTATE `57014` (statement timeout), `55P03` (lock not
+available) or `25P03` (idle-in-transaction session timeout). To retune, read the slowest
+statements from `monitoring.pg_stat_statements` (`max_exec_time`, `calls`) after a week of
+traffic; the view needs `shared_preload_libraries = pg_stat_statements` on the server and USAGE
+on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text).
+
 ## Migration history
 
 The repository migration target is 046. No page in this repository proves a live
@@ -431,6 +515,45 @@ nullable and none is backfilled: `NULL` means "before 046". Migration 045 widens
 `dream_runs.model` to `varchar(120)`: two of the five configured phase models did not
 fit in 30 characters, and an overflow loses the whole row rather than the column
 (the INSERT being best-effort).
+
+Migration 062 adds two partial indexes on `delivery_confirmations`
+(`idx_delivery_confirmations_binding_errors`, `idx_delivery_confirmations_context_errors`).
+The observer's failure count reads them once the set-based queue change
+(`feat/delivery-queue-summary-retention`, which merges first) is in: its binding branch
+must repeat `subject_kind = 'artifact_binding'` for the planner to use the partial index.
+062 also creates `pg_stat_statements` in a dedicated
+schema, `monitoring`. It must not be created in `public`: the extension grants SELECT on its
+view to PUBLIC, and recovery contract ACL v11 counts that as a mismatch. Facts to know before
+applying it:
+
+- **Lock.** Plain `CREATE INDEX` inside the migration transaction takes a SHARE lock, so the
+  observer's inserts wait; on about a hundred thousand rows this is well under a second, and
+  the revision sets `lock_timeout = 30s` so a stuck lock holder fails the migration atomically.
+  The observer's own inserts carry a 5 s `lock_timeout` (SQLSTATE `55P03`): stop
+  `brain-v42-delivery-observer` while `alembic upgrade 062` runs, or accept one lost pass.
+- **Relocation.** If `pg_stat_statements` already exists in another schema (for instance
+  `public`), the migration moves it with `ALTER EXTENSION ... SET SCHEMA monitoring` (it is
+  relocatable, and this needs the extension owner) instead of leaving it where ACL v11
+  refuses its PUBLIC grants.
+- **Superuser.** `pg_stat_statements` is not a trusted extension. Under a least-privilege
+  migration role, a superuser pre-creates it first:
+  `CREATE SCHEMA monitoring; CREATE EXTENSION pg_stat_statements WITH SCHEMA monitoring;`.
+  The migration then skips both steps (the schema step checks `pg_namespace` first, because
+  `CREATE SCHEMA IF NOT EXISTS` demands the CREATE privilege on the database even when the
+  schema exists). Reading `monitoring.pg_stat_statements` needs USAGE on `monitoring`;
+  `pg_read_all_stats` is only needed to see other roles' query text.
+- **Preload.** Creating the extension does not need `shared_preload_libraries`; reading the
+  view does (SQLSTATE `55000` otherwise).
+- **Contrib files.** The server image must ship the contrib extension files, and so must the
+  image that restores a dump: a 062 dump carries `CREATE EXTENSION pg_stat_statements`. The
+  red-backup restore sandbox must be PostgreSQL 16 with contrib (`pg_stat_statements 1.10` is
+  pinned in the v20 extension inventory).
+- **Downgrade.** Drops the extension, then the schema (RESTRICT): an object of your own in
+  `monitoring` stops it with an error instead of being dropped. It drops both even when a
+  superuser pre-created them and needs the extension owner, so a rollback to 0.6.7
+  (downgrade 061) needs a superuser. The downgrade runs under a 30 s `lock_timeout` and rolls
+  back entirely if a concurrent transaction holds `delivery_confirmations`. The statistics live in shared
+  memory, so nothing durable is lost.
 
 The 038→039 cutover was conducted with
 [`docs/PLAN_INDEX_REPAIR_RUNBOOK.md`](PLAN_INDEX_REPAIR_RUNBOOK.md) (isolated restore,

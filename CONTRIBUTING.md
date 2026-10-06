@@ -66,8 +66,17 @@ pytest tests/integration -v
 ```
 
 The suite migrates that database itself, under an advisory lock; you do not
-run `alembic` by hand for it. A URL whose database name is `brain` is
-refused outright.
+run `alembic` by hand for it. A URL that is not a test database is refused
+outright: the session stops at startup (`tests/database_guards.py`, tickets
+`e3292865` and `2687faf0`) unless the database is `brain_test`,
+`brain_migration_*`, `brain_fresh_*` or a name ending in `_test`, and is not the
+same host, port and database as your `POSTGRES_URL`. For the same reason the
+session points `POSTGRES_URL` (and `.env`) at the test database, or at an
+unreachable address when none is set, and a `BRAIN_V42_TEST_NEO4J_URL` that
+addresses the production bolt port (`127.0.0.1:7687`, or any Neo4j your
+settings name) is refused; the Neo4j fixture also refuses a target that holds a
+project key outside `integ-`/`test-`. Graph tests skip when no test Neo4j is
+configured.
 
 **Without `BRAIN_V42_TEST_DB_URL` the whole suite skips and exits 0** —
 measured on 2026-09-02: `423 skipped in 1.04s`. That is green, and it proves
@@ -83,11 +92,12 @@ write into whatever `POSTGRES_URL` happens to be exported in your shell.
 The rest of `tests/unit` needs no database at all, including on a fresh
 clone with nothing exported: an autouse fixture in `tests/unit/conftest.py`
 hands `Settings()` a syntactically valid, unreachable DSN whenever neither
-`POSTGRES_URL` nor `BRAIN_POSTGRES_URL` is already set, so a test that merely
+`POSTGRES_URL` nor `BRAIN_POSTGRES_URL` is configured, so a test that merely
 constructs `Settings`/`get_settings()` but never opens a connection passes
 instead of crashing on `pydantic_core.ValidationError: BRAIN_POSTGRES_URL
-Field required`. It never overrides a URL you already exported, and it never
-touches the `BRAIN_V42_TEST_DB_URL` opt-in above.
+Field required`. A URL you already exported is overridden at session start
+(see above), never honoured: the suite cannot reach your real database. The
+`BRAIN_V42_TEST_DB_URL` opt-in above is untouched.
 
 ## Linting and types
 

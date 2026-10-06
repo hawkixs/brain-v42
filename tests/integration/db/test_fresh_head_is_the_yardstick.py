@@ -20,19 +20,21 @@ value and their ticket — never tolerated as a band: a drift that grows (049 ad
 an index) breaks the pin, a drift that heals (the asset brought up to date) breaks
 it too, and the exception is removed instead of surviving.
 
-**The current candidate is v19 for head 061.** v19 adds the measured
-`brain_session_connections` table, its constraints and its index to v18; its two
-SQL variants were minted from a fresh 061 head and a real restore of a chain-built
-060 source.
+**The current candidate is v20 for head 062.** v20 adds the two measured partial
+indexes on `delivery_confirmations` to v19 and moves the database-wide extension
+inventory to `pg_stat_statements 1.10, plpgsql 1.0, vector 0.8.2`; its two SQL
+variants were minted from a fresh 062 head and a real restore of a chain-built
+061 source migrated to 062.
 `PINNED_ASSET_DRIFT` remains an exact guard: any unexplained difference from the
 chain-built head fails this yardstick.
 
 The `-pgrestore` twin was measured on a real custom-format restore of a
-chain-built 060 database, migrated to 061 after the restore. Its replay here is
+chain-built 061 database, migrated to 062 after the restore. Its replay here is
 deliberately a fresh-head check: it confirms that the restored-target
-fingerprints describe head 061, canonicalisation included. Migration 061 adds
-one table with its constraints and index, and no trigger. No new twin divergence
-was measured: the existing index and view divergence remains the only pinned gap.
+fingerprints describe head 062, canonicalisation included. Migration 062 adds
+two partial indexes and an extension in schema `monitoring`, and no table or
+trigger. No new twin divergence was measured: the existing index and view
+divergence remains the only pinned gap.
 
 The disposable databases live in the SAME server as `BRAIN_V42_TEST_DB_URL`, like
 `brain_test` itself; they are created and destroyed by the module. They never
@@ -80,9 +82,9 @@ from tests.integration.disposable_db import (
 pytestmark = pytest.mark.integration
 
 PROJECT_ROOT = Path(__file__).parents[3]
-V19_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v19.sql"
-V19_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v19.json"
-V19_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v19-pgrestore.sql"
+V20_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v20.sql"
+V20_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v20.json"
+V20_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v20-pgrestore.sql"
 
 #: The contract checks that attest the DATA carried by a restoration. A fresh
 #: database is empty by construction: they cannot pass here and that is not a
@@ -339,7 +341,7 @@ async def test_a_create_all_bench_accepts_what_production_accepts(
 async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     fresh_head_db_url: str,
 ) -> None:
-    """Replays `brain-v42-v19.sql` against the head-061 yardstick.
+    """Replays `brain-v42-v20.sql` against the head-062 yardstick.
 
     Every check of the receipt must pass, except:
     * the DATA checks (`DATA_CHECK_KINDS`) — a fresh database is empty;
@@ -347,7 +349,7 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     * `extension_versions`, whose observed value is the build of the server hosting
       the disposable database, not a property of the alembic chain.
 
-    v19 carries the measured 061 connection-set schema delta. This yardstick requires
+    v20 carries the measured 062 index delta and the moved extension inventory. This yardstick requires
     every other structural check to match the chain.
 
     A migration that adds an index without bringing the asset up to date makes an
@@ -357,11 +359,11 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     appears on a live replay, a manual gesture" — is closed by this automatic
     replay.
     """
-    failures = await _replay(fresh_head_db_url, V19_SQL)
+    failures = await _replay(fresh_head_db_url, V20_SQL)
 
     # The receipt does not carry `kind`; each check's nature lives in the JSON
     # contract, the same source as red-backup's DSL engine.
-    contract = json.loads(V19_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V20_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -371,7 +373,7 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
         and check_id != "extension_versions"
     }
     assert not unexplained, (
-        "the v19 candidate and the alembic chain disagree beyond the pinned drift:\n"
+        "the v20 candidate and the alembic chain disagree beyond the pinned drift:\n"
         + json.dumps(unexplained, indent=2, default=str)
     )
 
@@ -395,9 +397,10 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     assert extensions is not None, (
         "extension_versions now passes: the asset was re-minted — remove its pin"
     )
-    assert extensions["expected"] == "plpgsql 1.0, vector 0.8.2"
+    assert extensions["expected"] == "pg_stat_statements 1.10, plpgsql 1.0, vector 0.8.2"
     assert extensions["observed"] in {
-        f"plpgsql 1.0, vector {version}" for version in RESTORE_BUILD_VECTOR_VERSIONS
+        f"pg_stat_statements 1.10, plpgsql 1.0, vector {version}"
+        for version in RESTORE_BUILD_VECTOR_VERSIONS
     }
 
 
@@ -405,16 +408,16 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
 async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_index(
     fresh_head_db_url: str,
 ) -> None:
-    """The v19 `-pgrestore` twin against the fresh-head yardstick.
+    """The v20 `-pgrestore` twin against the fresh-head yardstick.
 
-    The v19 twin was measured on a real custom-format restore of a chain-built
-    060 database migrated to 061. This fresh-head replay remains a distinct check:
-    it proves that the restored-target fingerprints still describe the head-061
-    schema, canonicalisation included. Migration 061 adds one table with its
-    constraints and index; no new twin divergence was measured.
+    The v20 twin was measured on a real custom-format restore of a chain-built
+    061 database migrated to 062. This fresh-head replay remains a distinct check:
+    it proves that the restored-target fingerprints still describe the head-062
+    schema, canonicalisation included. Migration 062 adds two partial indexes and
+    an extension; no new twin divergence was measured.
 
-    It does say so: the v19 twin's measured fingerprints land exactly,
-    `brain_session_connections` included. What does not land exactly is ONE pre-existing
+    It does say so: the v20 twin's measured fingerprints land exactly, the two
+    `delivery_confirmations` error indexes included. What does not land exactly is ONE pre-existing
     index, `idx_dream_promotions_source_materialized`, and ONE view,
     `knowledge_claim_current`, both inherited unchanged from v13: the twin
     pins both in the form `pg_restore` re-serialises and the alembic chain
@@ -425,9 +428,9 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
     What this test still does not prove: the `pg_dump`/`pg_restore` round-trip
     itself. That needs a bench.
     """
-    failures = await _replay(fresh_head_db_url, V19_PGRESTORE)
+    failures = await _replay(fresh_head_db_url, V20_PGRESTORE)
 
-    contract = json.loads(V19_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V20_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -436,13 +439,13 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
         and check_id not in {"table_shape", "brain_runtime_032_036_037"}
     }
     assert not unexplained, (
-        "the v19 -pgrestore twin disagrees with the alembic chain somewhere other "
+        "the v20 -pgrestore twin disagrees with the alembic chain somewhere other "
         "than its one re-serialized index:\n" + json.dumps(unexplained, indent=2, default=str)
     )
 
     # The twin only requires the extension NAMES: unlike the base asset, it MUST
     # pass this check on a fresh database. If it fails, the v6 mint's names-only
-    # rule has been lost by the v19 candidate.
+    # rule has been lost by the v20 candidate.
     assert "extension_versions" not in failures, (
         "the twin now judges extension VERSIONS — the names-only rule was lost"
     )

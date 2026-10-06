@@ -7,7 +7,7 @@
 
 Most tools return formatted markdown strings. The v4 session lifecycle tools return structured Pydantic results. Through the `brain_call_tool` gateway the two shapes stay different: a tool with a structured output schema (`brain_session_relay`, `brain_fact_get`, the lifecycle tools) comes back as the bare object, while a string-result tool comes back wrapped as `{"result": "<markdown>"}`. That is FastMCP's `x-fastmcp-wrap-result` behaviour, not a defect: a client that goes through the gateway must parse each tool by its own shape. Their repository contract is documented below. Lifecycle v4 has run in production since 24 July 2026, after revision 036, explicit schema proof and a restart-last MCP cutover with authenticated E2E canaries.
 
-Migration 061 is the repository target: `brain_session_connections` retains the connections seen by operator lifecycle calls for exact absorption across transport changes. Migration 060: focus slots (ADR #34), three tables and two nullable `brain_sessions` columns, plus the 16314b31 CHECK fix; downgrade refuses to destroy slots without `-x allow_focus_slots_downgrade=yes`. Migration 059: `tickets.target_release`, nullable with no default or backfill, validated as `major.minor.patch` and indexed for planned tickets; downgrade refuses to erase plans without `-x allow_target_release_downgrade=yes`. Migration 058: the `knowledge_claims` provenance CHECK also accepts `extracted` (claims the server derives from knowledge prose, decision f99ca46f); its downgrade refuses while such rows exist. Migration 057 before it: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
+Migration 062 is the repository target: two partial error indexes on `delivery_confirmations` and `pg_stat_statements` in schema `monitoring`, no new table and no MCP surface. Migration 061: `brain_session_connections` retains the connections seen by operator lifecycle calls for exact absorption across transport changes. Migration 060: focus slots (ADR #34), three tables and two nullable `brain_sessions` columns, plus the 16314b31 CHECK fix; downgrade refuses to destroy slots without `-x allow_focus_slots_downgrade=yes`. Migration 059: `tickets.target_release`, nullable with no default or backfill, validated as `major.minor.patch` and indexed for planned tickets; downgrade refuses to erase plans without `-x allow_target_release_downgrade=yes`. Migration 058: the `knowledge_claims` provenance CHECK also accepts `extracted` (claims the server derives from knowledge prose, decision f99ca46f); its downgrade refuses while such rows exist. Migration 057 before it: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
 so a reader can tell a PROVEN attribution (`derived_connection`, same connection) from a DEDUCED
 one (`derived_window`, sole covering session at the instant of creation) — and undo the second
 kind. Migration 047 removes the closing XOR, so a session whose ledger
@@ -582,6 +582,47 @@ The count reached 18 by measurement on 2026-09-04, after saying 13 and then 16. 
 
 The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this message.
 
+## Input bounds
+
+Bounds count **characters**, never bytes, and refuse excess input without truncation.
+The same validation holds through `brain_call_tool`. Read models stay unbounded so
+previously stored rows remain readable; `brain_update(fields=...)` validates the
+corresponding `*Update` model.
+
+| Constant | Cap | Applies to |
+| --- | ---: | --- |
+| `KNOWLEDGE_TEXT_MAX_LENGTH` | 50,000 | Knowledge bodies, ticket bodies/messages, project description |
+| `SHORT_TEXT_MAX_LENGTH` | 2,000 | Short attributes and short-text list items |
+| `TAG_MAX_LENGTH` | 100 | Each tag |
+| `LIST_MAX_ITEMS` | 100 | Tags, short-text lists, runbook steps, ADR alternatives |
+| `RELATIONS_MAX_ITEMS` | 50 | Explicit `related_to` relations |
+| `SEARCH_QUERY_MAX_LENGTH` | 10,000 | Search query |
+| `MCP_HTTP_MAX_BODY_BYTES` | 2,097,152 bytes | Whole HTTP request; configurable from 65,536 to 67,108,864 |
+
+Existing title, focus, slot, summary, reason, checkpoint, feature-description and
+claim-count caps are unchanged. UUID/short-id arguments and canonical project keys
+retain their parsing contracts. Object properties are covered by the HTTP body cap.
+
+Refusal contracts:
+
+- Tool arguments raise Pydantic `ValidationError` before a service call. MCP returns
+  `CallToolResult(isError=true)` with `string_too_long` / “String should have at most
+  N characters”, or `too_long` for lists, even when error details are masked.
+- `brain_update(fields=...)` uses its existing business error:
+  `Invalid fields: ... Valid fields: ...`.
+- HTTP bodies over the cap return `413 {"detail": "Request body too large"}`.
+  Malformed or negative `Content-Length` returns
+  `400 {"detail": "Invalid Content-Length"}`.
+- An empty/blank HTTP bearer refuses startup with `HttpAuthConfigurationError` naming
+  `MCP_HTTP_TOKEN` and `MCP_HTTP_ALLOW_UNAUTHENTICATED`, without printing a secret.
+  The guard independently returns 401 with `WWW-Authenticate: Bearer` for every
+  non-`/health` request unless the development opt-out is set.
+
+List limits are clamped with a notice and the call proceeds: consolidation, backfill
+and clusters use [1, 100]; backfill `max_links` uses [1, 10]; cluster
+`max_members_per_cluster` uses [1, 200]. Negative offsets in `brain_list` and
+`brain_list_curation_proposals` become 0.
+
 ## Removed / deprecated (no longer exposed)
 
 | Old tool | Replacement |
@@ -883,7 +924,7 @@ brain_session_checkpoint(session_id, expected_client_key, seq, progress, next_st
 ```
 Publish one semantic checkpoint of an `open` session, in a single call, into the append-only `brain_session_checkpoints` table (migration 052). It records JUDGMENT — where the work stands, what blocks it, what comes next — published together so a reader can tell a complete snapshot from a partial one.
 
-The repository migration target is migration 061; this does not enable delivery operations in MCP.
+The repository migration target is migration 062; this does not enable delivery operations in MCP.
 
 It is **not** a lifecycle command and **not** a presence signal: it writes no `last_heartbeat_at`, touches no focus or `focus_revision`, attributes no artifact, and neither opens nor closes a session. Liveness already comes from the observation stamped by every tool call, which is why the checkpoint carries no heartbeat effect at all — on a real checkpoint or on a replay.
 
@@ -1170,7 +1211,7 @@ Reset `freshness_status='fresh'`, stamp `last_accessed_at=now()`.
 ```
 brain_consolidation_candidates(entity_type=None, limit=20)
 ```
-List quasi-duplicate pairs detected by embedding similarity (`ConsolidationJob`). Filters out already-merged rows.
+List quasi-duplicate pairs detected by embedding similarity (`ConsolidationJob`). Filters out already-merged rows. `limit` is clamped to [1, 100] with a notice.
 
 ### brain_merge_entities
 ```
@@ -1191,6 +1232,8 @@ brain_backfill_links_batch(entity_type=None, limit=50,
 ```
 Find entities in Neo4j with zero `RELATED_TO` edges, fetch their PG embeddings, and call `AutoLinker` to create missing semantic links. Used by the CONNECT phase of the nightly dream orchestrator.
 
+`limit` is clamped to [1, 100] and `max_links` to [1, 10], with notices.
+
 **`max_links` contract** (operator decision 2026-08-18, ticket fb62624f): the cap bounds **successful** links (`created` + `matched`). Errors do not consume it; attempts are in fact bounded by the `2×max_links` selected candidates, so an entity whose writes all fail can report up to `2×max_links` errors. To estimate a number of faulty entities from `errors`, divide by `2×max_links`, never by `max_links`.
 
 ### brain_get_clusters
@@ -1200,7 +1243,7 @@ brain_get_clusters(min_size=2, limit=20,
 ```
 Run union-find over all `RELATED_TO` edges, return connected components sorted by size. Each cluster member is enriched with PG metadata (type + title).
 
-**Anti-token-bomb**: members per cluster are capped at `max_members_per_cluster` (default **30**). A trailing notice identifies the number of omitted members.
+**Anti-token-bomb**: `limit` is clamped to [1, 100] and `max_members_per_cluster` to [1, 200] (default **30**), with notices. A trailing notice identifies the number of omitted members.
 
 ### brain_list_orphans_for_classification
 ```

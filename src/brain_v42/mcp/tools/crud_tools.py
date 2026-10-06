@@ -56,6 +56,10 @@ from brain_v42.models.brain_session import KnowledgeCapturedError
 from brain_v42.models.decision import DecisionUpdate
 from brain_v42.models.indexed_plan import IndexedPlan
 from brain_v42.models.indexed_plan_chunk import IndexedPlanChunk
+from brain_v42.models.input_bounds import (
+    RelationList,
+    TagList,
+)
 from brain_v42.models.learning import Confidence, LearningUpdate
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.relation import RelationInput
@@ -405,7 +409,7 @@ def register_crud_tools(
         entity_type: MutableKnowledgeType,
         entity_id: str,
         fields: dict,
-        related_to: list[dict] | None = None,
+        related_to: RelationList | None = None,
         claims: list[dict] | None = None,
         expected_active_claim_ids: list[str] | None = None,
     ) -> str:
@@ -650,7 +654,7 @@ def register_crud_tools(
         status: str | None = None,
         confidence: Confidence | None = None,
         language: SnippetLanguage | None = None,
-        tags: list[str] | None = None,
+        tags: TagList | None = None,
         include_archived: bool = False,
         summary_only: bool = False,
     ) -> str:
@@ -671,6 +675,7 @@ def register_crud_tools(
                 freshness_status). For full-corpus pagination such as Dream
                 REORG Part 1 where the body is unused.
         """
+        offset = max(0, offset)
         if entity_type not in ALL_TYPES:
             return format_error(f"Unknown entity type: {entity_type}. Use: {', '.join(ALL_TYPES)}")
 

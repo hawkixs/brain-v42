@@ -27,10 +27,11 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 from uuid import UUID
 
 import structlog
+from pydantic import Field
 from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
@@ -52,6 +53,15 @@ from brain_v42.mcp.tools.tool_annotations import (
 from brain_v42.models.adr import AlternativeConsidered
 from brain_v42.models.brain import ALL_TYPES, KnowledgeType
 from brain_v42.models.decision import DecisionCreate
+from brain_v42.models.input_bounds import (
+    LIST_MAX_ITEMS,
+    KnowledgeText,
+    RelationList,
+    SearchQuery,
+    ShortText,
+    ShortTextList,
+    TagList,
+)
 from brain_v42.models.learning import Confidence, LearningCreate, SourceType
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.relation import RelationInput
@@ -209,14 +219,14 @@ def register_tools(
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_log_decision(
         title: str,
-        context: str,
-        decision_made: str,
-        reasoning: str,
-        alternatives: list[str] | None = None,
-        consequences: str | None = None,
+        context: KnowledgeText,
+        decision_made: KnowledgeText,
+        reasoning: KnowledgeText,
+        alternatives: ShortTextList | None = None,
+        consequences: KnowledgeText | None = None,
         project_key: str | None = None,
-        tags: list[str] | None = None,
-        related_to: list[dict] | None = None,
+        tags: TagList | None = None,
+        related_to: RelationList | None = None,
         claims: list[dict] | None = None,
     ) -> str:
         """Log a technical/architectural decision (the WHY, not just the WHAT).
@@ -317,13 +327,13 @@ def register_tools(
     async def brain_supersede_decision(
         old_decision_id: str,
         title: str,
-        context: str,
-        decision_made: str,
-        reasoning: str,
-        alternatives: list[str] | None = None,
-        consequences: str | None = None,
+        context: KnowledgeText,
+        decision_made: KnowledgeText,
+        reasoning: KnowledgeText,
+        alternatives: ShortTextList | None = None,
+        consequences: KnowledgeText | None = None,
         project_key: str | None = None,
-        tags: list[str] | None = None,
+        tags: TagList | None = None,
     ) -> str:
         """Supersede an existing decision with a new one."""
         data = DecisionCreate(
@@ -401,7 +411,7 @@ def register_tools(
         @mcp.tool(version="1.0", annotations=_READ_ANNOTATIONS)
         async def brain_get_neighbors(
             entity_id: str,
-            rel_types: list[str] | None = None,
+            rel_types: ShortTextList | None = None,
             depth: int = 1,
         ) -> str:
             """Return the local neighborhood (1-3 hops) around an entity.
@@ -458,7 +468,7 @@ def register_tools(
             source_id: str,
             target_id: str,
             max_depth: int = 3,
-            rel_types: list[str] | None = None,
+            rel_types: ShortTextList | None = None,
         ) -> str:
             """Return the shortest graph path between two entities (1-6 hops).
 
@@ -523,13 +533,13 @@ def register_tools(
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_learn(
         topic: str,
-        insight: str,
-        source: str | None = None,
+        insight: KnowledgeText,
+        source: ShortText | None = None,
         source_type: SourceType = "experience",
         confidence: Confidence = "medium",
         project_key: str | None = None,
-        tags: list[str] | None = None,
-        related_to: list[dict] | None = None,
+        tags: TagList | None = None,
+        related_to: RelationList | None = None,
         claims: list[dict] | None = None,
     ) -> str:
         """Record an insight, gotcha, or discovery (last-resort tool).
@@ -689,12 +699,15 @@ def register_tools(
     @mcp.tool(version="2.0", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_propose_adr(
         title: str,
-        context: str,
-        decision: str,
-        consequences: str,
+        context: KnowledgeText,
+        decision: KnowledgeText,
+        consequences: KnowledgeText,
         project_key: str,
-        alternatives_considered: list[AlternativeConsidered] | None = None,
-        tags: list[str] | None = None,
+        alternatives_considered: Annotated[
+            list[AlternativeConsidered], Field(max_length=LIST_MAX_ITEMS)
+        ]
+        | None = None,
+        tags: TagList | None = None,
         claims: list[dict] | None = None,
     ) -> str:
         """Propose an Architecture Decision Record (ADR) in status='proposed'.
@@ -815,13 +828,16 @@ def register_tools(
     @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
     async def brain_promote_adr(
         title: str,
-        context: str,
-        decision: str,
-        consequences: str,
+        context: KnowledgeText,
+        decision: KnowledgeText,
+        consequences: KnowledgeText,
         project_key: str,
         source_learning_id: str,
-        alternatives_considered: list[AlternativeConsidered] | None = None,
-        tags: list[str] | None = None,
+        alternatives_considered: Annotated[
+            list[AlternativeConsidered], Field(max_length=LIST_MAX_ITEMS)
+        ]
+        | None = None,
+        tags: TagList | None = None,
         dream_run_id: int | None = None,
     ) -> str:
         """Graduate a mature learning into an ACCEPTED ADR (Dream promotion path).
@@ -968,7 +984,7 @@ def register_tools(
         )
 
     @mcp.tool(version="1.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
-    async def brain_deprecate_adr(adr_id: str, reason: str | None = None) -> str:
+    async def brain_deprecate_adr(adr_id: str, reason: ShortText | None = None) -> str:
         """Deprecate an ADR, setting status to 'deprecated'.
 
         Args:
@@ -992,7 +1008,7 @@ def register_tools(
 
     @mcp.tool(version="1.0", annotations=_READ_ANNOTATIONS)
     async def brain_search(
-        query: str,
+        query: SearchQuery,
         types: list[KnowledgeType] | None = None,
         project_key: str | None = None,
         project_group: str | None = None,
@@ -1000,7 +1016,7 @@ def register_tools(
         min_score: float = 0.2,
         include_archived: bool = False,
         group_by_type: bool = False,
-        tags: list[str] | None = None,
+        tags: TagList | None = None,
         include_related: bool = False,
         full: bool = False,
     ) -> str:

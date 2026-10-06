@@ -60,7 +60,13 @@ async def _execute(
         connect_args={
             "timeout": 10,
             "command_timeout": 15,
-            "server_settings": {"application_name": "brain-v42-delivery-observer"},
+            "server_settings": {
+                "application_name": "brain-v42-delivery-observer",
+                # Same budgets as the metrics scrape path: short, fixed constants.
+                "statement_timeout": "15000",
+                "lock_timeout": "5000",
+                "idle_in_transaction_session_timeout": "60000",
+            },
         },
     )
     owner = ObserverOwnership(engine)

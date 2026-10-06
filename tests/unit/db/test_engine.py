@@ -13,10 +13,12 @@ def reset_engine_singletons():
 
     engine_module._engine = None
     engine_module._session_factory = None
+    engine_module._profile = "maintenance"
     yield
     # Cleanup after test - reset singletons
     engine_module._engine = None
     engine_module._session_factory = None
+    engine_module._profile = "maintenance"
 
 
 @pytest.fixture(autouse=True)
@@ -25,6 +27,18 @@ def mock_settings(monkeypatch):
     mock = MagicMock()
     mock.postgres_url = "postgresql+asyncpg://brain:brain@localhost:5433/brain_test"
     mock.db_echo = False
+    # Integers, not MagicMock attributes: a MagicMock would stringify into a
+    # plausible-looking GUC and make the profile assertions meaningless.
+    mock.pg_statement_timeout_ms = 120_000
+    mock.pg_lock_timeout_ms = 30_000
+    mock.pg_idle_in_transaction_session_timeout_ms = 300_000
+    mock.pg_maintenance_statement_timeout_ms = 1_800_000
+    mock.pg_maintenance_lock_timeout_ms = 300_000
+    mock.pg_maintenance_idle_in_transaction_session_timeout_ms = 0
+    mock.metrics_pg_statement_timeout_ms = 10_000
+    mock.embedding_timeout = 30.0
+    mock.reranker_timeout = 10.0
+    mock.neo4j_timeout = 5.0
     monkeypatch.setattr("brain_v42.db.engine.get_settings", lambda: mock)
     return mock
 
@@ -173,3 +187,135 @@ def test_engine_log_masks_password(mock_settings):
     assert len(created) == 1
     assert "s3cret" not in created[0]["url"]
     assert "***" in created[0]["url"]
+
+
+@pytest.fixture
+def captured_engine_kwargs(monkeypatch):
+    """Capture the kwargs get_engine() hands to create_async_engine."""
+    import brain_v42.db.engine as engine_module
+
+    captured: dict = {}
+
+    def fake_create(url, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(spec=AsyncEngine, url=MagicMock())
+
+    monkeypatch.setattr(engine_module, "create_async_engine", fake_create)
+    return captured
+
+
+def test_default_profile_is_maintenance(captured_engine_kwargs):
+    """Scripts and jobs that call get_engine() bare get the generous profile."""
+    from brain_v42.db.engine import get_engine
+
+    get_engine()
+
+    assert captured_engine_kwargs["connect_args"]["server_settings"] == {
+        "statement_timeout": "1800000",
+        "lock_timeout": "300000",
+        "idle_in_transaction_session_timeout": "0",
+        "application_name": "brain-v42-maintenance",
+    }
+
+
+def test_interactive_profile_is_bounded(captured_engine_kwargs):
+    from brain_v42.db.engine import get_engine, use_engine_profile
+
+    use_engine_profile("interactive")
+    get_engine()
+
+    assert captured_engine_kwargs["connect_args"]["server_settings"] == {
+        "statement_timeout": "120000",
+        "lock_timeout": "30000",
+        "idle_in_transaction_session_timeout": "300000",
+        "application_name": "brain-v42-interactive",
+    }
+
+
+def test_metrics_profile_uses_its_own_statement_budget(mock_settings):
+    from brain_v42.db.engine import pg_server_settings
+
+    assert pg_server_settings(mock_settings, "metrics") == {
+        "statement_timeout": "10000",
+        "lock_timeout": "5000",
+        "idle_in_transaction_session_timeout": "60000",
+        "application_name": "brain-v42-metrics",
+    }
+
+
+def test_zero_disables(captured_engine_kwargs, mock_settings):
+    """0 is PostgreSQL's own 'disabled': it is sent as such, never dropped."""
+    mock_settings.pg_statement_timeout_ms = 0
+    from brain_v42.db.engine import get_engine, use_engine_profile
+
+    use_engine_profile("interactive")
+    get_engine()
+
+    assert captured_engine_kwargs["connect_args"]["server_settings"]["statement_timeout"] == "0"
+
+
+def test_profile_after_engine_built_warns_and_keeps_engine(captured_engine_kwargs):
+    """A late opt-in must not raise (a test may inject an engine first) nor swap it."""
+    from structlog.testing import capture_logs
+
+    import brain_v42.db.engine as engine_module
+
+    first = engine_module.get_engine()
+    with capture_logs() as logs:
+        engine_module.use_engine_profile("interactive")
+
+    assert engine_module.get_engine() is first
+    assert engine_module._profile == "maintenance"
+    assert [e["log_level"] for e in logs if e["event"] == "engine_profile_too_late"] == ["warning"]
+
+
+@pytest.mark.asyncio
+async def test_dispose_resets_profile(captured_engine_kwargs):
+    import brain_v42.db.engine as engine_module
+    from brain_v42.db.engine import dispose_engine, get_engine, use_engine_profile
+
+    use_engine_profile("interactive")
+    engine = get_engine()
+    engine.dispose = _async_noop  # type: ignore[method-assign]
+
+    await dispose_engine()
+
+    assert engine_module._profile == "maintenance"
+
+
+async def _async_noop() -> None:
+    return None
+
+
+def test_idle_budget_is_never_shorter_than_the_longest_external_call(mock_settings):
+    """A transaction may wait on embedding/rerank/Neo4j: idle must outlive that call.
+
+    The dedup job holds a FOR UPDATE transaction across an embedding call bounded by
+    BRAIN_EMBEDDING_TIMEOUT; an idle budget below it would kill a healthy request.
+    """
+    from brain_v42.db.engine import pg_server_settings
+
+    mock_settings.embedding_timeout = 600.0
+    interactive = pg_server_settings(mock_settings, "interactive")
+    metrics = pg_server_settings(mock_settings, "metrics")
+
+    # 600 s call + 30 s margin, for the interactive default (300 s) and the metrics one.
+    assert interactive["idle_in_transaction_session_timeout"] == "630000"
+    assert metrics["idle_in_transaction_session_timeout"] == "630000"
+
+
+def test_a_larger_configured_idle_budget_is_kept(mock_settings):
+    from brain_v42.db.engine import pg_server_settings
+
+    mock_settings.pg_idle_in_transaction_session_timeout_ms = 900_000
+    settings = pg_server_settings(mock_settings, "interactive")
+    assert settings["idle_in_transaction_session_timeout"] == "900000"
+
+
+def test_a_disabled_idle_budget_stays_disabled(mock_settings):
+    """0 means no limit, which is trivially longer than any call: never raised."""
+    from brain_v42.db.engine import pg_server_settings
+
+    mock_settings.embedding_timeout = 600.0
+    settings = pg_server_settings(mock_settings, "maintenance")
+    assert settings["idle_in_transaction_session_timeout"] == "0"

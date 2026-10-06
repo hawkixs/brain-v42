@@ -33,7 +33,33 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize("database", ["brain", "brain_live"])
+def test_rebinding_the_test_url_to_production_is_an_error_at_runtime(
+    monkeypatch: pytest.MonkeyPatch, database: str
+) -> None:
+    from tests.database_guards import UnsafeTestDatabase
+    from tests.integration.conftest import _get_integration_db_url_or_skip
+
+    monkeypatch.setenv("BRAIN_V42_TEST_DB_URL", "postgresql://u:p@localhost:5433/brain_test")
+    assert _get_integration_db_url_or_skip().endswith("/brain_test")
+    monkeypatch.setenv("BRAIN_V42_TEST_DB_URL", f"postgresql://u:p@localhost:5433/{database}")
+
+    with pytest.raises(UnsafeTestDatabase):
+        _get_integration_db_url_or_skip()
+
+
+def test_missing_test_url_still_skips_at_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tests.integration.conftest import _get_integration_db_url_or_skip
+
+    monkeypatch.delenv("BRAIN_V42_TEST_DB_URL", raising=False)
+
+    with pytest.raises(pytest.skip.Exception, match="BRAIN_V42_TEST_DB_URL is not set"):
+        _get_integration_db_url_or_skip()
 
 
 class TestTheSummaryLineIsBuiltHonestly:
@@ -168,20 +194,16 @@ class TestTheLineReachesARealTerminal:
         assert "BRAIN_V42_TEST_DB_URL" in completed.stdout, completed.stdout[-2000:]
         assert "brain_test" in completed.stdout, completed.stdout[-2000:]
 
-    def test_a_real_run_whose_variable_was_REJECTED_says_so_too(self) -> None:
-        """The defect the first version of this guard left open, reproduced.
+    def test_a_real_run_whose_variable_was_REJECTED_fails_the_session(self) -> None:
+        """A rejected value no longer skips: it stops the session (ticket e3292865).
 
-        The banner used to return early on `os.environ.get(...)` being non-empty
-        — the presence of a KEYSTROKE, never the presence of a MEASUREMENT. But
-        `_resolve_integration_db_url` rejects a URL pointing at the prod `brain`
-        database, and `_get_integration_db_url_or_skip` turns that into
-        `pytest.skip` — the very bucket the banner exists to explain. Measured on
-        2026-09-02 at HEAD 610c24d: both runs print `423 skipped` and exit 0, one
-        warns and the other is silent, and the silent one is the run of the
-        person who tried to configure the suite and got it wrong.
-
-        Setting the variable is exactly when a reader is most convinced the suite
-        ran.
+        This test used to pin the banner for a rejected URL: the integration
+        resolver skipped on a production `brain` URL and the run exited 0 with
+        `423 skipped`. A green exit was the wrong answer to a configuration that
+        names production -- the unit suite, which had no such refusal, wrote 40 rows
+        to production `dream_runs` on 2026-09-21. `tests/database_guards.py` now
+        refuses it at `pytest_configure`: non-zero exit, the reason on screen, and
+        never the DSN, which carries a password.
         """
         completed = subprocess.run(
             [sys.executable, "-m", "pytest", "tests/integration", "-q", "-p", "no:randomly"],
@@ -195,8 +217,7 @@ class TestTheLineReachesARealTerminal:
             timeout=300,
         )
 
-        assert "not measured" in completed.stdout, completed.stdout[-2000:]
-        assert "brain_test" in completed.stdout, completed.stdout[-2000:]
-        assert "postgresql" not in completed.stdout.split("short test summary")[-1], (
-            "the summary must never echo the DSN — it carries a password"
-        )
+        output = completed.stdout + completed.stderr
+        assert completed.returncode != 0, output[-2000:]
+        assert "BRAIN_V42_TEST_DB_URL refused" in output, output[-2000:]
+        assert "brain:x@" not in output, "the refusal must never echo the DSN"

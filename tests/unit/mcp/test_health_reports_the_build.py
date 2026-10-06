@@ -11,6 +11,7 @@ Everything runs in process: the engine is a double, no PostgreSQL required.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -134,6 +135,72 @@ async def test_health_does_not_measure_the_head_per_request(
 # ---------------------------------------------------------------------------
 # Startup log
 # ---------------------------------------------------------------------------
+
+
+class _SlowEngine(_FakeEngine):
+    def __init__(self) -> None:
+        super().__init__()
+        self.connects = 0
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    def connect(self) -> Any:
+        self.connects += 1
+
+        @asynccontextmanager
+        async def connection() -> AsyncIterator[_FakeConnection]:
+            self.entered.set()
+            await self.release.wait()
+            yield _FakeConnection()
+
+        return connection()
+
+
+async def test_concurrent_probes_share_one_database_round_trip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _SlowEngine()
+    _install_engine(monkeypatch, engine)
+    callers = [asyncio.create_task(server.health_check(_request())) for _ in range(20)]
+    try:
+        await asyncio.wait_for(engine.entered.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert engine.connects == 1
+        engine.release.set()
+        responses = await asyncio.gather(*callers)
+        assert all(response.status_code == 200 for response in responses)
+    finally:
+        engine.release.set()
+        await asyncio.gather(*callers, return_exceptions=True)
+
+
+async def test_a_sequential_probe_is_never_served_from_a_previous_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_engine(monkeypatch, _FakeEngine())
+    assert (await server.health_check(_request())).status_code == 200
+    _install_engine(monkeypatch, _FakeEngine(broken=True))
+    assert (await server.health_check(_request())).status_code == 503
+
+
+async def test_a_cancelled_caller_does_not_cancel_the_shared_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _SlowEngine()
+    _install_engine(monkeypatch, engine)
+    first = asyncio.create_task(server.health_check(_request()))
+    second = asyncio.create_task(server.health_check(_request()))
+    try:
+        await asyncio.wait_for(engine.entered.wait(), timeout=1)
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+        engine.release.set()
+        assert (await second).status_code == 200
+        assert engine.connects == 1
+    finally:
+        engine.release.set()
+        await asyncio.gather(first, second, return_exceptions=True)
 
 
 def _settings() -> Any:

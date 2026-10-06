@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -84,3 +85,26 @@ def test_private_token_file_requires_current_process_owner(
 
     with pytest.raises(RuntimeError, match="owned"):
         load_gateway_token_file(token_file)
+
+
+def test_run_selects_interactive_engine_profile_before_composing_the_app(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gateway is a long-lived interactive process: bounded budgets, set before use."""
+    from brain_v42.codex_gateway import launcher
+
+    token_file = tmp_path / "token.env"
+    token_file.write_text("BRAIN_CODEX_GATEWAY_TOKEN=" + "t" * 48 + "\n")
+    token_file.chmod(0o600)
+    monkeypatch.setenv("BRAIN_CODEX_GATEWAY_TOKEN_FILE", str(token_file))
+    order: list[str] = []
+    monkeypatch.setattr(launcher, "use_engine_profile", lambda profile: order.append(profile))
+    monkeypatch.setattr(
+        launcher, "create_production_app", lambda settings: order.append("compose") or object()
+    )
+    monkeypatch.setattr(launcher.uvicorn, "run", lambda *a, **k: order.append("serve"))
+    monkeypatch.setattr(launcher, "get_settings", MagicMock())
+
+    launcher.run()
+
+    assert order == ["interactive", "compose", "serve"]

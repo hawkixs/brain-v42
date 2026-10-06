@@ -174,6 +174,44 @@ class Settings(BaseSettings):
     postgres_url: str = Field(validation_alias=_brain_alias("POSTGRES_URL"))
     """PostgreSQL connection URL. Must use postgresql+asyncpg:// scheme."""
 
+    # Session budgets sent to PostgreSQL at connection time, in MILLISECONDS; 0
+    # disables, exactly as in PostgreSQL. Three profiles because three very
+    # different jobs share the engine factory (see ``brain_v42.db.engine``):
+    # the long-lived interactive processes (MCP server, codex gateway, automation
+    # runtime) are tight, so a stuck query or lock wait fails in minutes instead of
+    # exhausting the pool; maintenance jobs and scripts are generous and carry NO
+    # idle-in-transaction limit, because some hold a transaction open on purpose
+    # (the embedding-backfill advisory-lock session); the metrics sidecar's scrape
+    # path is the tightest. Retune from ``monitoring.pg_stat_statements`` and an
+    # environment override, without a release.
+    pg_statement_timeout_ms: int = Field(
+        default=120_000, ge=0, validation_alias=_brain_alias("PG_STATEMENT_TIMEOUT_MS")
+    )
+    pg_lock_timeout_ms: int = Field(
+        default=30_000, ge=0, validation_alias=_brain_alias("PG_LOCK_TIMEOUT_MS")
+    )
+    pg_idle_in_transaction_session_timeout_ms: int = Field(
+        default=300_000,
+        ge=0,
+        validation_alias=_brain_alias("PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS"),
+    )
+    pg_maintenance_statement_timeout_ms: int = Field(
+        default=1_800_000,
+        ge=0,
+        validation_alias=_brain_alias("PG_MAINTENANCE_STATEMENT_TIMEOUT_MS"),
+    )
+    pg_maintenance_lock_timeout_ms: int = Field(
+        default=300_000, ge=0, validation_alias=_brain_alias("PG_MAINTENANCE_LOCK_TIMEOUT_MS")
+    )
+    pg_maintenance_idle_in_transaction_session_timeout_ms: int = Field(
+        default=0,
+        ge=0,
+        validation_alias=_brain_alias("PG_MAINTENANCE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS"),
+    )
+    metrics_pg_statement_timeout_ms: int = Field(
+        default=10_000, ge=0, validation_alias=_brain_alias("METRICS_PG_STATEMENT_TIMEOUT_MS")
+    )
+
     # --- Logging ---
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", validation_alias=_brain_alias("LOG_LEVEL")
@@ -274,13 +312,16 @@ class Settings(BaseSettings):
         default="127.0.0.1", validation_alias=_brain_alias("MCP_HTTP_HOST")
     )  # loopback-only
     mcp_http_port: int = Field(default=8765, validation_alias=_brain_alias("MCP_HTTP_PORT"))
+    mcp_http_allow_unauthenticated: bool = Field(
+        default=False, validation_alias=_brain_alias("MCP_HTTP_ALLOW_UNAUTHENTICATED")
+    )
+    """Development only; refused with a token or under capability enforcement."""
     mcp_http_token: str = Field(
         default="", repr=False, validation_alias=_brain_alias("MCP_HTTP_TOKEN")
     )
-    """Bearer token for HTTP transport auth (opt-in).
+    """Bearer token for HTTP transport authentication.
 
-    Empty string (default) = auth disabled — current fleet behaviour is preserved
-    without any changes to .mcp.json files.
+    Empty = refused at HTTP startup unless MCP_HTTP_ALLOW_UNAUTHENTICATED=true.
 
     Non-empty = BearerTokenGuard is activated; every non-/health HTTP request must
     carry ``Authorization: Bearer <token>``.
@@ -406,6 +447,12 @@ class Settings(BaseSettings):
     # operator session (03291fdc). The 900 s deadline produced ~480 evictions a
     # day; eight hours covers a working day's pauses and still releases a dead
     # client's state the same day.
+    mcp_http_max_body_bytes: int = Field(
+        default=2_097_152,
+        ge=65_536,
+        le=67_108_864,
+        validation_alias=_brain_alias("MCP_HTTP_MAX_BODY_BYTES"),
+    )
     mcp_http_session_idle_seconds: float = Field(
         default=8 * 3600.0, validation_alias=_brain_alias("MCP_HTTP_SESSION_IDLE_SECONDS")
     )
