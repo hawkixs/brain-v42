@@ -17,7 +17,9 @@ import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+from structlog.testing import capture_logs
 
+from brain_v42.credentials.audit import AuditDrainer
 from brain_v42.repositories.pg_client_credentials import (
     ClientCredentialError,
     ElevationRow,
@@ -441,3 +443,116 @@ async def test_no_audit_row_holds_a_digest_or_a_connection_id(session: AsyncSess
     assert digest.hex() not in dump
     assert digest.hex()[:16] not in dump
     assert str(expiring.id) in dump
+
+
+async def test_drainer_crash_between_log_and_mark_reemits_the_same_elevation(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    granted = await _grant(session, operator, ["conn-a"])
+    drainer = AuditDrainer(repo, transaction=lambda: repo.transaction(session), clock=lambda: NOW)
+
+    with capture_logs() as logs:
+
+        async def crash_before_mark(
+            ids: Sequence[int], now: datetime, *, session: AsyncSession | None = None
+        ) -> int:
+            assert logs[-1]["elevation_id"] == str(granted.id)
+            raise _Rollback
+
+        with monkeypatch.context() as patch:
+            patch.setattr(repo, "mark_audit_emitted", crash_before_mark)
+            with pytest.raises(_Rollback):
+                await drainer.drain_once()
+
+        stamp = await session.scalar(
+            sa.text("SELECT emitted_at FROM brain_credential_audit WHERE elevation_id = :id"),
+            {"id": granted.id},
+        )
+        assert stamp is None
+        assert await drainer.drain_once() == 1
+        assert await drainer.drain_once() == 0
+
+    elevated = [entry for entry in logs if entry["event"] == "credentials.elevated"]
+    assert len(elevated) == 2
+    assert elevated[0]["elevation_id"] == elevated[1]["elevation_id"] == str(granted.id)
+
+
+async def test_drainer_emits_one_natural_expiry_over_two_drains(session: AsyncSession) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    granted = await _grant(session, operator, ["conn-a"], ttl=timedelta(minutes=1))
+    drainer = AuditDrainer(
+        repo,
+        transaction=lambda: repo.transaction(session),
+        clock=lambda: NOW + timedelta(minutes=2),
+    )
+
+    with capture_logs() as logs:
+        assert await drainer.drain_once() == 2
+        assert await drainer.drain_once() == 0
+
+    expired = [entry for entry in logs if entry["event"] == "credentials.elevation_expired"]
+    assert len(expired) == 1
+    assert expired[0]["elevation_id"] == str(granted.id)
+    assert expired[0]["log_level"] == "warning"
+
+
+async def test_drainer_renders_and_marks_all_five_real_repository_event_types(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    prior_ids = {row.id for row in await _audit_rows(session)}
+    issued = await repo.issue(
+        "workstation-claude", uuid4().bytes * 2, ["read"], [], "operator", session=session
+    )
+    await repo.revoke(issued.id, "rotated", NOW, author="revoker", session=session)
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    granted = await _grant(session, operator, ["conn-a"])
+    await repo.end_elevation(granted.id, NOW, author="ender", session=session)
+    expiring = await _grant(session, operator, ["conn-a"], ttl=timedelta(minutes=1))
+    emitted_at = NOW + timedelta(minutes=2)
+    assert await repo.audit_expired_elevations(emitted_at, session=session) == 1
+
+    rows = [row for row in await _audit_rows(session) if row.id not in prior_ids]
+    assert [row.event for row in rows] == [
+        "credentials.issued",
+        "credentials.revoked",
+        "credentials.elevated",
+        "credentials.unelevated",
+        "credentials.elevated",
+        "credentials.elevation_expired",
+    ]
+    assert rows[-1].elevation_id == expiring.id
+    drainer = AuditDrainer(
+        repo,
+        transaction=lambda: repo.transaction(session),
+        clock=lambda: emitted_at,
+    )
+    with capture_logs() as logs:
+        assert await drainer.drain_once() == len(rows)
+        assert await drainer.drain_once() == 0
+
+    expected = []
+    for row in rows:
+        if row.event == "credentials.issued":
+            keys = {"credential_id", "client_id", "families", "author"}
+        elif row.event == "credentials.revoked":
+            keys = {"credential_id", "client_id", "families", "author", "reason"}
+        else:
+            keys = ELEVATED_KEYS - {"author"}
+        expected.append(
+            {"event": row.event, "log_level": "warning", **{key: row.payload[key] for key in keys}}
+        )
+    assert logs == expected
+    marks = (
+        await session.execute(
+            sa.text("SELECT id, emitted_at FROM brain_credential_audit WHERE id = ANY(:ids)"),
+            {"ids": [row.id for row in rows]},
+        )
+    ).all()
+    assert {row.id: row.emitted_at for row in marks} == {row.id: emitted_at for row in rows}
