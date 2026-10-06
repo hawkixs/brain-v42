@@ -3,8 +3,8 @@
 Provides async fixtures against a real PostgreSQL+pgvector instance.
 The DB URL is resolved exclusively from BRAIN_V42_TEST_DB_URL. Defaults and
 POSTGRES_URL fallback are intentionally absent — if the dedicated variable is
-unset, or if it points at the production `brain` database, the suite skips
-loudly rather than silently corrupting prod.
+unset, the suite skips loudly. A production target is an error, including when
+the variable is rebound after startup.
 
 All tests in this suite require a running PostgreSQL instance with the
 brain_v42 schema applied. Tests are skipped gracefully when the DB is
@@ -45,6 +45,12 @@ from sqlalchemy.ext.asyncio import (
 )
 from sqlalchemy.pool import NullPool
 
+from tests.database_guards import (
+    UnsafeTestDatabase,
+    refuse_neo4j_holding_production_data,
+    validate_test_database_url,
+    validate_test_neo4j_url,
+)
 from tests.integration.disposable_db import fresh_head_database
 from tests.integration.schema_fingerprint import (
     SchemaProbe,
@@ -78,9 +84,8 @@ def _resolve_integration_db_url() -> str:
     ignored so a developer shell configured for a live database cannot redirect
     the integration suite.
 
-    Raises ValueError if:
-    - The dedicated test env var is unset
-    - The resolved URL points at the production database (db name == 'brain')
+    Raises ValueError if the dedicated test env var is unset or malformed.
+    Raises UnsafeTestDatabase if it names a production or non-test database.
 
     This is an importable helper so it can be unit-tested without triggering
     pytest.skip inside a fixture. Fixes Bug 2: the previous code defaulted to
@@ -103,21 +108,25 @@ def _resolve_integration_db_url() -> str:
             "Unsafe integration DB URL — database override query parameters are forbidden"
         )
     if db_name == _PROD_DB_NAME:
-        raise ValueError(
+        raise UnsafeTestDatabase(
             f"Resolved URL targets the prod '{_PROD_DB_NAME}' database — "
-            "skipping integration tests to avoid polluting prod. "
+            "refusing integration tests to avoid polluting prod. "
             "Set BRAIN_V42_TEST_DB_URL to a test database (e.g. brain_test)."
         )
-    return url
+    # Same validator as the session hook (tests/database_guards.py): a test that
+    # rebinds the variable after startup meets the same refusal.
+    return validate_test_database_url(url)
 
 
 def _get_integration_db_url_or_skip() -> str:
-    """Return the integration DB URL, or call pytest.skip() if it is unsafe.
+    """Return the integration DB URL; skip missing configuration, refuse production.
 
     Used by session-scoped fixtures that need the URL at fixture-setup time.
     """
     try:
         return _resolve_integration_db_url()
+    except UnsafeTestDatabase:
+        raise  # a production target is an error even after the session started
     except ValueError as exc:
         pytest.skip(str(exc))
 
@@ -1018,7 +1027,10 @@ def _resolve_integration_neo4j_config() -> tuple[str, tuple[str, str]]:
             "BRAIN_V42_TEST_NEO4J_URL, BRAIN_V42_TEST_NEO4J_USER, and "
             "BRAIN_V42_TEST_NEO4J_PASSWORD are required for graph integration tests"
         )
-    return url, (user, password)
+    # By identity, never by hope: BRAIN_V42_TEST_NEO4J_URL naming the production bolt
+    # address is refused (ticket 2687faf0). UnsafeTestDatabase is a ValueError, and
+    # the neo4j_url fixture lets it through as an error instead of a skip.
+    return validate_test_neo4j_url(url), (user, password)
 
 
 def _require_destructive_neo4j_recovery_target(url: str) -> None:
@@ -1035,6 +1047,8 @@ def neo4j_url() -> str:
     """Dedicated Neo4j test URL, or skip before any driver is built."""
     try:
         url, _auth = _resolve_integration_neo4j_config()
+    except UnsafeTestDatabase:
+        raise  # a production target is a misconfiguration: red, never a green skip
     except ValueError as exc:
         pytest.skip(str(exc))
     return url
@@ -1076,6 +1090,12 @@ async def neo4j_driver(neo4j_url: str, neo4j_auth: tuple[str, str]):  # type: ig
     except Exception:  # noqa: BLE001
         pytest.skip("Neo4j test database is not reachable")
         return
+
+    try:
+        await refuse_neo4j_holding_production_data(driver)
+    except UnsafeTestDatabase:
+        await driver.close()
+        raise
 
     yield driver  # type: ignore[misc]
 

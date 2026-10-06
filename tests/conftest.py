@@ -7,6 +7,12 @@ import signal
 
 import pytest
 
+from tests.database_guards import (
+    UnsafeTestDatabase,
+    enforce_database_isolation,
+    validate_test_database_url,
+)
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """Restore SIGINT when the suite was launched with it ignored (ticket 29e9d695).
@@ -19,13 +25,20 @@ def pytest_configure(config: pytest.Config) -> None:
     """
     if signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
         signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        enforce_database_isolation()
+    except UnsafeTestDatabase as exc:
+        raise pytest.UsageError(
+            f"{exc} -- the test sessions never touch a production database "
+            "(tickets e3292865, 2687faf0; tests/database_guards.py)"
+        ) from None
 
 
 FAKE_EMBEDDING: list[float] = [0.1] * 1536
 
 
 def require_test_db_url() -> str:
-    """Return BRAIN_V42_TEST_DB_URL, or skip the test.
+    """Return BRAIN_V42_TEST_DB_URL, or skip the test; refuse a production database.
 
     Unit tests that touch a real PostgreSQL used to fall back to the default
     POSTGRES_URL (prod DB on localhost:5433). Every `pytest tests/unit` run
@@ -36,6 +49,12 @@ def require_test_db_url() -> str:
     BRAIN_V42_TEST_DB_URL pointing at an isolated test database. In CI this
     is set per-job; locally, set it in your shell when you want to run the
     DB-touching tests. If it's missing, skip loudly rather than corrupt prod.
+
+    That opt-in was not enough on its own (ticket e3292865): the variable itself
+    could name production, and 40 rows reached ``dream_runs`` on 2026-09-21. A URL
+    that names a production database now fails the whole session in
+    ``pytest_configure``; the validation here is the run-time second line, for a
+    test that rebinds the variable after the session started.
     """
     url = os.getenv("BRAIN_V42_TEST_DB_URL")
     if not url:
@@ -43,4 +62,4 @@ def require_test_db_url() -> str:
             "BRAIN_V42_TEST_DB_URL not set — skipping DB-backed tests to avoid "
             "polluting prod (POSTGRES_URL fallback removed)"
         )
-    return url
+    return validate_test_database_url(url)
