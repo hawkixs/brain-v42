@@ -810,10 +810,12 @@ Increment `execution_count`, stamp `last_executed_at`, set `last_execution_statu
 ### brain_search
 ```
 brain_search(query, types=None, project_key=None, project_group=None,
-             limit=20, min_score=0.2, include_archived=False,
+             limit=20, min_score=None, include_archived=False,
              group_by_type=False, tags=None, include_related=False)
 ```
 Hybrid semantic search: pgvector fan-out across services + `BatchingRerankerClient` rerank (20 ms coalescing window). `types` subset of {decision, learning, snippet, runbook, adr, plan}. `project_key` XOR `project_group` scope. `tags` filter by overlap. Results render with `[s:score]` prefix sorted by score desc. `group_by_type=True` groups output into sections (former `brain_what_do_i_know_about`); `types` still scopes which sections are searched and rendered in grouped mode. `include_related=True` appends a `### Related` graph-neighbour block.
+
+`min_score` defaults to the active reranker's calibrated floor (0.2 shim, 0.50 Voyage rerank-3-lite); diagnostics report the threshold applied and the reranker identity. An explicit caller value overrides this default.
 
 **Grouped mode ignores `tags` and `include_related`**: `what_do_i_know_about()` has no `tags` parameter at all and never renders a `### Related` section, so `group_by_type=True` structurally cannot honour either — use flat search (`group_by_type=False`) for both. The `mcp.brain_search.grouped` telemetry event journals the EFFECTIVE values (`tags_present=false`, `tags_count=0`, `include_related=false`), not the caller's raw request, so the log never claims an effect that never happened. When the result set is EMPTY and the caller passed either, the rendered markdown carries the same warning in-band: `note: grouped mode ignores tags [...] and include_related — use group_by_type=False for either.` — the non-empty grouped rendering stays silent on this (out of scope for now; see the telemetry event for that case).
 

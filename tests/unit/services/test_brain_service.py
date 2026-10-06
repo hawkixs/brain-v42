@@ -36,6 +36,7 @@ from brain_v42.models.indexed_plan_chunk import IndexedPlanChunk
 from brain_v42.models.learning import Learning
 from brain_v42.models.snippet import Snippet
 from brain_v42.services.brain_service import BrainService
+from brain_v42.services.rerank_calibration import calibration_for_identity
 from brain_v42.services.search.hybrid import HybridSearcher
 
 # ---------------------------------------------------------------------------
@@ -161,6 +162,9 @@ def make_brain_service(
     runbook_results: list[tuple] | None = None,
     adr_results: list[tuple] | None = None,
     min_score: float = 0.0,
+    rerank_identity: str | None = None,
+    hybrid_searcher: Any | None = None,
+    project_context_svc: Any | None = None,
 ) -> tuple[BrainService, tuple]:
     svcs = make_mock_services(
         decision_results=decision_results,
@@ -178,6 +182,9 @@ def make_brain_service(
         adr_svc=adr_svc,
         embedding_svc=embedding_svc,
         min_score=min_score,
+        **({"rerank_identity": rerank_identity} if rerank_identity is not None else {}),
+        hybrid_searcher=hybrid_searcher,
+        project_context_svc=project_context_svc,
     )
     return brain, svcs
 
@@ -934,6 +941,71 @@ class TestBrainServiceTagFiltering:
 
 
 class TestBrainServiceScoreThreshold:
+    @pytest.mark.parametrize(
+        "identity, floor", [("shim", 0.2), ("cohere:voyageai/rerank-3-lite", 0.50)]
+    )
+    @pytest.mark.parametrize("grouped", [False, True])
+    @pytest.mark.parametrize("override", [None, 0.3, 0.0])
+    async def test_backend_default_and_explicit_override(
+        self, identity: str, floor: float, grouped: bool, override: float | None
+    ) -> None:
+        calibration = calibration_for_identity(identity)
+        scores = [0.1, 0.2, 0.3, 0.49, 0.5, 0.6]
+        brain, _ = make_brain_service(
+            decision_results=[(make_decision(), score) for score in scores],
+            min_score=calibration.search_min_score,
+            rerank_identity=calibration.identity,
+        )
+        search = brain.what_do_i_know_about if grouped else brain.search
+        kwargs = {} if override is None else {"min_score": override}
+        response = await search("query", **kwargs)
+        threshold = floor if override is None else override
+        results = response.by_type.decisions if grouped else response.results
+        assert [result.score for result in results] == [
+            score for score in sorted(scores, reverse=not grouped) if score >= threshold
+        ]
+        assert response.diagnostics.min_score_requested == threshold
+        assert response.diagnostics.min_score_effective == threshold
+        assert response.diagnostics.rerank_identity == identity
+        assert response.diagnostics.model_dump()["rerank_identity"] == identity
+
+    @pytest.mark.parametrize("grouped", [False, True])
+    async def test_degraded_search_preserves_identity_without_score_floor(
+        self, grouped: bool
+    ) -> None:
+        hybrid = MagicMock()
+        hybrid.search = AsyncMock(return_value=([(make_decision(), 0.01)], "rrf_fallback"))
+        brain, _ = make_brain_service(
+            min_score=0.50,
+            rerank_identity="cohere:voyageai/rerank-3-lite",
+            hybrid_searcher=hybrid,
+        )
+        search = brain.what_do_i_know_about if grouped else brain.search
+        response = await search("query", types=["decision"])
+        assert response.total == 1
+        assert response.diagnostics.min_score_requested == 0.50
+        assert response.diagnostics.min_score_effective == 0.0
+        assert response.diagnostics.rerank_identity == "cohere:voyageai/rerank-3-lite"
+
+    @pytest.mark.parametrize("grouped", [False, True])
+    async def test_unresolved_group_reports_backend_default_and_identity(
+        self, grouped: bool
+    ) -> None:
+        project_context = MagicMock()
+        project_context.get_keys_by_group = AsyncMock(return_value=[])
+        brain, _ = make_brain_service(
+            min_score=0.50,
+            rerank_identity="cohere:voyageai/rerank-3-lite",
+            project_context_svc=project_context,
+        )
+        search = brain.what_do_i_know_about if grouped else brain.search
+        response = await search("query", project_group="missing")
+        assert response.total == 0
+        assert response.diagnostics.project_group_unresolved is True
+        assert response.diagnostics.min_score_requested == 0.50
+        assert response.diagnostics.min_score_effective == 0.50
+        assert response.diagnostics.rerank_identity == "cohere:voyageai/rerank-3-lite"
+
     async def test_results_below_min_score_are_filtered(self) -> None:
         """Results with score < min_score are excluded from search results."""
         decision_high = make_decision(title="High score")

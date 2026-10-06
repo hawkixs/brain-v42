@@ -772,6 +772,8 @@ def build_services() -> dict[str, Any]:
         runbook_svc=runbook_svc,
         adr_svc=adr_svc,
         embedding_svc=embedding_svc,
+        min_score=reranker_client.calibration.search_min_score,
+        rerank_identity=reranker_client.calibration.identity,
         metrics_collector=metrics_collector,
         hybrid_searcher=hybrid_searcher,
         decay_calculator=decay_calculator if settings.decay_enabled else None,

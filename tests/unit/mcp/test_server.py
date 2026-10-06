@@ -10,6 +10,38 @@ def test_mcp_module_importable() -> None:
     import brain_v42.mcp  # noqa: F401
 
 
+@pytest.mark.parametrize(
+    "identity, floor", [("shim", 0.2), ("cohere:voyageai/rerank-3-lite", 0.50)]
+)
+def test_build_services_passes_reranker_calibration_to_search(identity: str, floor: float) -> None:
+    from brain_v42.config import Settings
+    from brain_v42.mcp.server import build_services
+    from brain_v42.services.rerank_calibration import calibration_for_identity
+
+    settings = Settings(
+        _env_file=None,
+        postgres_url="postgresql+asyncpg://test:test@localhost/brain_unit",
+        metrics_enabled=False,
+        decay_enabled=False,
+        graph_enabled=False,
+    )
+    client = MagicMock(calibration=calibration_for_identity(identity))
+    with (
+        patch("brain_v42.mcp.server.get_session_factory", return_value=MagicMock()),
+        patch("brain_v42.mcp.server.get_settings", return_value=settings),
+        patch("brain_v42.mcp.server.build_embedding_service", return_value=MagicMock()),
+        patch("brain_v42.mcp.server.build_reranker_client", return_value=client),
+        patch("brain_v42.db.engine.get_engine", return_value=MagicMock()),
+        patch("brain_v42.metrics.collector.get_settings", return_value=settings),
+        patch("brain_v42.mcp.server.create_neo4j_driver", return_value=None),
+        patch("brain_v42.mcp.server.BrainService") as brain_cls,
+    ):
+        build_services()
+
+    assert brain_cls.call_args.kwargs["min_score"] == floor
+    assert brain_cls.call_args.kwargs["rerank_identity"] == identity
+
+
 def test_server_module_importable() -> None:
     """src/brain_v42/mcp/server.py exists and is importable."""
     import brain_v42.mcp.server  # noqa: F401
