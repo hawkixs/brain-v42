@@ -361,7 +361,8 @@ class Settings(BaseSettings):
     # --- Reranker backend (pluggable wire shape) ---
     # "shim"   — the private POST /rerank contract (raw cross-encoder logits).
     # "cohere" — POST /v1/rerank, implemented by TEI, Jina and vLLM.
-    rerank_backend: Literal["shim", "cohere"] = Field(
+    # "none"   — intentional rollback to RRF ordering, without a client or probe.
+    rerank_backend: Literal["shim", "cohere", "none"] = Field(
         default="shim", validation_alias=_brain_alias("RERANK_BACKEND")
     )
     rerank_model: str = Field(default="", validation_alias=_brain_alias("RERANK_MODEL"))
@@ -411,6 +412,22 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _rerank_key_and_routing_policy(self) -> Self:
+        if self.rerank_backend == "none":
+            conflicts = [
+                name
+                for name, configured in (
+                    ("rerank_model", bool(self.rerank_model)),
+                    ("rerank_api_key", bool(self.rerank_api_key.get_secret_value())),
+                    ("rerank_api_key_file", self.rerank_api_key_file is not None),
+                    ("rerank_provider", self.rerank_provider is not None),
+                    ("reranker_url", "reranker_url" in self.model_fields_set),
+                    ("rerank_health_path", "rerank_health_path" in self.model_fields_set),
+                )
+                if configured
+            ]
+            if conflicts:
+                raise ValueError("rerank_backend='none' refuses: " + ", ".join(conflicts))
+            return self
         if self.rerank_api_key.get_secret_value() and self.rerank_api_key_file is not None:
             raise ValueError(
                 "two sources for one rerank key: rerank_api_key and rerank_api_key_file "

@@ -340,3 +340,43 @@ class TestKeyFileMayBeADotenvFile:
         assert "BRAIN_RERANK_API_KEY=<value>" in message or "key value" in message
         for leaked in (_RERANK_KEY, "sentinel-other"):
             assert leaked not in message
+
+
+class TestDefaultRerankBackendIsInert:
+    """The 0.6.9 release ships the 0.6.10 hosted-reranker code before the switch.
+
+    With no rerank setting at all, it must behave as the shim deployment did:
+    no hosted wire, no key file read, today's thresholds. Pinned so a later
+    default change cannot quietly arm the hosted path.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _no_rerank_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+
+        for name in list(os.environ):
+            if name.startswith(("BRAIN_RERANK", "RERANK")):
+                monkeypatch.delenv(name)
+
+    def test_defaults_select_the_shim_with_no_key_file_and_no_routing(self) -> None:
+        settings = _settings()
+        assert settings.rerank_backend == "shim"
+        assert settings.rerank_api_key_file is None
+        assert settings.rerank_provider is None
+        assert settings.rerank_health_path == "/health"
+
+    def test_default_client_reads_no_file_and_keeps_the_shim_thresholds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from pathlib import Path
+
+        def _no_read(self: Path, *args: object, **kwargs: object) -> str:
+            raise AssertionError(f"default rerank client read {self}")
+
+        monkeypatch.setattr(Path, "read_text", _no_read)
+        client = build_reranker_client(_settings())
+        assert isinstance(client._wire, ShimRerankWire)
+        assert client._api_key == ""
+        assert client.calibration.identity == "shim"
+        assert client.calibration.search_min_score == 0.2
+        assert client.calibration.dedup_signal == 0.80

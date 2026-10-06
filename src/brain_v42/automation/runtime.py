@@ -66,7 +66,7 @@ class AutomationResources:
     session_factory: async_sessionmaker[AsyncSession]
     lease: AutomationOwnershipLease
     embedding_svc: AsyncCloser
-    reranker: AsyncCloser
+    reranker: AsyncCloser | None
     dedup_job: FeatureDedupJobProtocol
     server: AutomationServer
 
@@ -158,7 +158,8 @@ class AutomationRuntime:
 
         await self._attempt(self._resources.server.stop, errors)
         await self._attempt(self._resources.embedding_svc.close, errors)
-        await self._attempt(self._resources.reranker.close, errors)
+        if self._resources.reranker is not None:
+            await self._attempt(self._resources.reranker.close, errors)
         await self._attempt_protected(self._resources.lease.release, errors)
         await self._attempt(self._resources.engine.dispose, errors)
         return errors

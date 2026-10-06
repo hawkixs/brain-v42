@@ -25,6 +25,7 @@ logger = structlog.get_logger(__name__)
 RERANK_MODE_RERANKED = "reranked"
 RERANK_MODE_RRF_FALLBACK = "rrf_fallback"
 RERANK_MODE_RRF_ONLY = "rrf_only"
+RERANK_MODE_DISABLED = "disabled"
 
 # W33 "a rank is not a score" — these name the PROVENANCE of a score, not
 # just its value. A rank ordinal rescaled into (0, 1] (rrf_fallback) is
@@ -256,8 +257,10 @@ class HybridSearcher:
     it composes them.
     """
 
-    def __init__(self, reranker: Any | None = None) -> None:
+    def __init__(self, reranker: Any | None = None, *, reranking_disabled: bool = False) -> None:
         self._reranker = reranker
+        # Explicit intent preserves the legacy rrf_only diagnostics for other callers.
+        self._reranking_disabled = reranking_disabled
 
     async def search(
         self,
@@ -293,7 +296,7 @@ class HybridSearcher:
 
         Returns:
             2-tuple (list[tuple[entity, score]], rerank_mode) sorted by score desc.
-            rerank_mode is one of: "reranked", "rrf_fallback", "rrf_only".
+            rerank_mode is one of: "reranked", "rrf_fallback", "rrf_only", "disabled".
         """
         round_ = _CURRENT_ROUND.get()
         ticket = round_.ticket() if round_ is not None else None
@@ -394,6 +397,6 @@ class HybridSearcher:
                 # version, 0 on this one).
                 rerank_mode = RERANK_MODE_RERANKED
         else:
-            rerank_mode = RERANK_MODE_RRF_ONLY
+            rerank_mode = RERANK_MODE_DISABLED if self._reranking_disabled else RERANK_MODE_RRF_ONLY
 
         return [(c.entity, c.score) for c in fused[:limit]], rerank_mode

@@ -501,6 +501,7 @@ class MetricsServer:
             if reranker_agg:
                 probe = reranker_agg.get("last_probe")
                 metrics["reranker"] = {
+                    **({"backend": reranker_agg["backend"]} if "backend" in reranker_agg else {}),
                     "total_calls": reranker_agg["calls"],
                     "total_errors": reranker_agg["errors"],
                     "recent_errors": reranker_agg["recent_errors"],
