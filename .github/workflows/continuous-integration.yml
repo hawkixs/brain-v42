@@ -275,7 +275,7 @@ jobs:
         env:
           CI_COMMIT_SHA: ${{ github.sha }}
         run: |
-          docker build --build-arg UV_VERSION=$UV_VERSION -t brain-v42-ci-smoke:${CI_COMMIT_SHA} -f Dockerfile .
+          docker build --build-arg UV_VERSION=$UV_VERSION --build-arg GIT_SHA=$CI_COMMIT_SHA -t brain-v42-ci-smoke:${CI_COMMIT_SHA} -f Dockerfile .
           docker run --pull=never --rm brain-v42-ci-smoke:${CI_COMMIT_SHA} python -c 'import os, pathlib, sys; import brain_v42.mcp.server; venv = pathlib.Path("/app/.venv"); entrypoint = pathlib.Path(brain_v42.mcp.server.__file__); assert sys.executable == "/app/.venv/bin/python"; assert os.geteuid() == 1000; assert venv.stat().st_uid == 0; assert entrypoint.stat().st_uid == 0; assert not os.access(venv, os.W_OK); assert not os.access(entrypoint, os.W_OK)'
 
   # Dependency vulnerabilities. Audits the exported lock rather than the live venv,
