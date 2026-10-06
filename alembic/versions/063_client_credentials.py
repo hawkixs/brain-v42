@@ -1,6 +1,7 @@
-"""063 — client credential registry, admin elevations and the schema compatibility ledger.
+"""063 — client credential registry, admin elevations, the schema compatibility ledger and the audit outbox.
 
-Three new tables and one nullable column on ``brain_session_connections``.
+Four new tables, a nullable column on ``brain_session_connections`` and another on
+``brain_sessions``.
 
 * ``brain_client_credentials``: one row per issued bearer credential. Only the SHA-256
   digest of the token is stored, never the token. ``families`` is the set of capability
@@ -44,6 +45,17 @@ Three new tables and one nullable column on ``brain_session_connections``.
   The refusal message names no connection id.
 * ``brain_schema_compat``: the ledger of the oldest code head compatible with a schema
   head. This revision inserts no row: a later step's migrate command records it.
+* ``brain_credential_audit``: the outbox of the credential gestures (issue, revoke, elevate,
+  unelevate, natural expiry). Why a table: the CLI runs through ``docker exec``, whose
+  stdout never reaches the container's log stream that the operator's watcher follows, so
+  a gesture inserts its row in its OWN transaction and the server's drainer emits it. The
+  drain is at-least-once: ``emitted_at`` stays NULL until the event has been emitted, and
+  a crash between the two re-emits, so a consumer dedupes on ``(event, elevation_id)``,
+  which this table also makes unique per elevation. ``elevation_id`` has no foreign key
+  on purpose: the audit row must outlive the elevation, which follows its session's
+  deletion. ``payload`` is the event's body; it never holds a token, a digest or a
+  connection id. An AFTER INSERT trigger sends ``pg_notify('brain_credential_audit',
+  <row id>)`` to wake the drainer, the id only. A partial index serves the unemitted rows.
 
 Locking: the foreign key takes a SHARE ROW EXCLUSIVE lock on ``brain_sessions``, and the
 ``ALTER TABLE`` statements an ACCESS EXCLUSIVE lock on ``brain_session_connections`` and on
@@ -185,6 +197,54 @@ def upgrade() -> None:
     )
     op.execute(
         """
+        CREATE TABLE brain_credential_audit (
+            id bigserial PRIMARY KEY,
+            event text NOT NULL,
+            elevation_id uuid,
+            payload jsonb NOT NULL,
+            created_at timestamptz NOT NULL DEFAULT now(),
+            emitted_at timestamptz,
+            CONSTRAINT brain_credential_audit_event_valid
+                CHECK (event IN ('credentials.issued', 'credentials.revoked',
+                                 'credentials.elevated', 'credentials.unelevated',
+                                 'credentials.elevation_expired')),
+            CONSTRAINT brain_credential_audit_elevation_pair
+                CHECK ((event IN ('credentials.elevated', 'credentials.unelevated',
+                                  'credentials.elevation_expired'))
+                       = (elevation_id IS NOT NULL)),
+            CONSTRAINT brain_credential_audit_payload_object
+                CHECK (jsonb_typeof(payload) = 'object')
+        )
+        """
+    )
+    op.execute(
+        "CREATE UNIQUE INDEX uq_brain_credential_audit_event_elevation "
+        "ON brain_credential_audit (event, elevation_id) WHERE elevation_id IS NOT NULL"
+    )
+    op.execute(
+        "CREATE INDEX idx_brain_credential_audit_unemitted "
+        "ON brain_credential_audit (id) WHERE emitted_at IS NULL"
+    )
+    op.execute(
+        """
+        CREATE FUNCTION brain_credential_audit_notify() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        BEGIN
+            PERFORM pg_notify('brain_credential_audit', NEW.id::text);
+            RETURN NULL;
+        END
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER brain_credential_audit_notify
+        AFTER INSERT ON brain_credential_audit
+        FOR EACH ROW EXECUTE FUNCTION brain_credential_audit_notify()
+        """
+    )
+    op.execute(
+        """
         ALTER TABLE brain_session_connections
             ADD COLUMN client_id text,
             ADD CONSTRAINT brain_session_connections_client_id_format
@@ -269,6 +329,9 @@ def downgrade() -> None:
         "ALTER TABLE brain_session_connections "
         "DROP CONSTRAINT brain_session_connections_client_id_format, DROP COLUMN client_id"
     )
+    op.execute("DROP TRIGGER brain_credential_audit_notify ON brain_credential_audit")
+    op.execute("DROP FUNCTION brain_credential_audit_notify()")
+    op.execute("DROP TABLE brain_credential_audit")
     op.execute("DROP TABLE brain_schema_compat")
     op.execute("DROP TABLE brain_admin_elevations")
     op.execute("DROP TRIGGER brain_client_credentials_notify_update ON brain_client_credentials")

@@ -24,7 +24,12 @@ from tests.integration.disposable_db import asyncpg_dsn
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).parents[3]
 
-TABLES = ("brain_client_credentials", "brain_admin_elevations", "brain_schema_compat")
+TABLES = (
+    "brain_client_credentials",
+    "brain_admin_elevations",
+    "brain_schema_compat",
+    "brain_credential_audit",
+)
 DIGEST = "ab" * 32
 
 
@@ -122,7 +127,7 @@ async def _elevation(
     )
 
 
-async def test_upgrade_creates_the_three_tables_and_the_trigger(engine: AsyncEngine) -> None:
+async def test_upgrade_creates_the_four_tables_and_the_trigger(engine: AsyncEngine) -> None:
     async with engine.connect() as connection:
         for table in TABLES:
             assert (
@@ -623,6 +628,14 @@ async def test_downgrade_drops_the_tables_and_function_then_reupgrade_restores_t
             )
             == 0
         )
+        assert (
+            await connection.scalar(
+                sa.text(
+                    "SELECT count(*) FROM pg_proc WHERE proname = 'brain_credential_audit_notify'"
+                )
+            )
+            == 0
+        )
     up = _run_alembic("upgrade", "head")
     assert up.returncode == 0, up.stderr
     async with engine.connect() as connection:
@@ -660,3 +673,117 @@ async def test_an_elevation_defaults_to_no_exclusion_and_refuses_a_negative_coun
                 ),
                 {"id": session_id},
             )
+
+
+async def _audit(
+    connection: AsyncConnection,
+    *,
+    event: str = "credentials.issued",
+    elevation_id: UUID | None = None,
+    payload: str = "{}",
+) -> None:
+    await connection.execute(
+        sa.text(
+            "INSERT INTO brain_credential_audit (event, elevation_id, payload) "
+            "VALUES (:event, :elevation_id, CAST(:payload AS jsonb))"
+        ),
+        {"event": event, "elevation_id": elevation_id, "payload": payload},
+    )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "constraint"),
+    [
+        ({"event": "credentials.deleted"}, "brain_credential_audit_event_valid"),
+        ({"event": "credentials.elevated"}, "brain_credential_audit_elevation_pair"),
+        (
+            {"event": "credentials.issued", "elevation_id": uuid4()},
+            "brain_credential_audit_elevation_pair",
+        ),
+        ({"payload": "[]"}, "brain_credential_audit_payload_object"),
+    ],
+)
+async def test_audit_checks_refuse_their_bad_row(
+    operator: tuple[AsyncConnection, UUID], overrides: dict[str, object], constraint: str
+) -> None:
+    connection, _ = operator
+    with pytest.raises(IntegrityError, match=constraint):
+        async with connection.begin_nested():
+            await _audit(connection, **overrides)  # type: ignore[arg-type]
+
+
+async def test_an_elevation_event_is_stored_once_per_elevation(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, _ = operator
+    elevation_id = uuid4()
+    await _audit(connection, event="credentials.elevation_expired", elevation_id=elevation_id)
+    await _audit(connection, event="credentials.elevated", elevation_id=elevation_id)
+    with pytest.raises(IntegrityError, match="uq_brain_credential_audit_event_elevation"):
+        async with connection.begin_nested():
+            await _audit(
+                connection, event="credentials.elevation_expired", elevation_id=elevation_id
+            )
+    await _audit(connection)
+    await _audit(connection)
+
+
+async def test_an_audit_row_starts_unemitted_and_survives_its_elevation(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, session_id = operator
+    await _elevation(connection, session_id, hours=1, connection_ids=["c"])
+    elevation_id = await connection.scalar(
+        sa.text("SELECT id FROM brain_admin_elevations WHERE session_id = :id"),
+        {"id": session_id},
+    )
+    await _audit(connection, event="credentials.elevated", elevation_id=elevation_id)
+    await connection.execute(
+        sa.text("DELETE FROM brain_sessions WHERE id = :id"), {"id": session_id}
+    )
+    row = (
+        await connection.execute(
+            sa.text(
+                "SELECT emitted_at, created_at FROM brain_credential_audit WHERE elevation_id = :id"
+            ),
+            {"id": elevation_id},
+        )
+    ).one()
+    assert row.emitted_at is None
+    assert row.created_at is not None
+
+
+async def test_the_audit_notify_payload_is_the_row_id_only(engine: AsyncEngine) -> None:
+    dsn = asyncpg_dsn(os.environ["BRAIN_V42_TEST_DB_URL"])
+    listener = await asyncpg.connect(dsn)
+    received: asyncio.Queue[str] = asyncio.Queue()
+    await listener.add_listener(
+        "brain_credential_audit", lambda _c, _pid, _channel, payload: received.put_nowait(payload)
+    )
+    try:
+        async with engine.begin() as connection:
+            row_id = await connection.scalar(
+                sa.text(
+                    "INSERT INTO brain_credential_audit (event, payload) "
+                    "VALUES ('credentials.issued', '{\"secret\": \"never-notified\"}') RETURNING id"
+                )
+            )
+        assert await asyncio.wait_for(received.get(), timeout=5) == str(row_id)
+        async with engine.begin() as connection:
+            await connection.execute(
+                sa.text("DELETE FROM brain_credential_audit WHERE id = :id"), {"id": row_id}
+            )
+    finally:
+        await listener.close()
+
+
+async def test_unemitted_audit_rows_have_a_partial_index(engine: AsyncEngine) -> None:
+    async with engine.connect() as connection:
+        definition = await connection.scalar(
+            sa.text(
+                "SELECT indexdef FROM pg_indexes "
+                "WHERE indexname = 'idx_brain_credential_audit_unemitted'"
+            )
+        )
+    assert definition is not None
+    assert "WHERE (emitted_at IS NULL)" in definition

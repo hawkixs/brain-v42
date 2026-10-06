@@ -1181,6 +1181,45 @@ brain_schema_compat = Table(
     Column("recorded_by_version", Text, nullable=False),
 )
 
+# Outbox of the credential gestures (063). A gesture inserts its row in its own
+# transaction; the server's drainer emits it and stamps `emitted_at` (at-least-once).
+# `elevation_id` has no foreign key: the row outlives its elevation.
+brain_credential_audit = Table(
+    "brain_credential_audit",
+    METADATA,
+    Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    Column("event", Text, nullable=False),
+    Column("elevation_id", UUID(as_uuid=True), nullable=True),
+    Column("payload", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("emitted_at", DateTime(timezone=True), nullable=True),
+    sa.CheckConstraint(
+        "event IN ('credentials.issued', 'credentials.revoked', 'credentials.elevated', "
+        "'credentials.unelevated', 'credentials.elevation_expired')",
+        name="brain_credential_audit_event_valid",
+    ),
+    sa.CheckConstraint(
+        "(event IN ('credentials.elevated', 'credentials.unelevated', "
+        "'credentials.elevation_expired')) = (elevation_id IS NOT NULL)",
+        name="brain_credential_audit_elevation_pair",
+    ),
+    sa.CheckConstraint(
+        "jsonb_typeof(payload) = 'object'", name="brain_credential_audit_payload_object"
+    ),
+    Index(
+        "uq_brain_credential_audit_event_elevation",
+        "event",
+        "elevation_id",
+        unique=True,
+        postgresql_where=sa.text("elevation_id IS NOT NULL"),
+    ),
+    Index(
+        "idx_brain_credential_audit_unemitted",
+        "id",
+        postgresql_where=sa.text("emitted_at IS NULL"),
+    ),
+)
+
 # ─── brain_session_artifacts (explicit per-session provenance) ───────────────
 
 brain_session_artifacts = Table(

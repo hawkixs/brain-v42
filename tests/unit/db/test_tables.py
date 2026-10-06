@@ -52,6 +52,7 @@ class TestMetadataAndTablePresence:
             "brain_client_credentials",
             "brain_admin_elevations",
             "brain_schema_compat",
+            "brain_credential_audit",
             "search_log",
             "process_metrics",
             "features",

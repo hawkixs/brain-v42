@@ -7,6 +7,12 @@ the connections of one OPERATOR session and bounded to four hours. Only the conn
 of an allowlisted client are elevated, and a session's attributed connections must all
 belong to the client that owns it (``claim_or_check_session_owner``).
 
+Every gesture (issue, revoke, grant, end) inserts its audit row into
+``brain_credential_audit`` in the SAME transaction, so the two commit together or not at
+all. The outbox is drained at-least-once through ``claim_unemitted_audit`` and
+``mark_audit_emitted``, and the natural expiry of an elevation is audited by
+``audit_expired_elevations``. No audit row holds a token, a digest or a connection id.
+
 Rows are revoked, never deleted: there is no delete path here. Every method accepts an
 optional ``session`` so a caller can compose it into a larger transaction, as the other
 ``pg_*`` repositories do; without one, each call opens its own.
@@ -16,8 +22,8 @@ from __future__ import annotations
 
 from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Literal
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -27,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from brain_v42.db.tables import (
     brain_admin_elevations,
     brain_client_credentials,
+    brain_credential_audit,
     brain_session_connections,
     brain_sessions,
 )
@@ -108,8 +115,21 @@ class ElevationRow:
     expiry_audited_at: datetime | None
 
 
+@dataclass(frozen=True, slots=True)
+class AuditRow:
+    """One outbox row: ``payload`` is the event's body, ``emitted_at`` is None until drained."""
+
+    id: int
+    event: str
+    elevation_id: UUID | None
+    payload: dict[str, Any]
+    created_at: datetime
+    emitted_at: datetime | None
+
+
 _CREDENTIAL_COLUMNS = list(brain_client_credentials.c)
 _ELEVATION_COLUMNS = list(brain_admin_elevations.c)
+_AUDIT_COLUMNS = list(brain_credential_audit.c)
 
 
 def _credential(row: RowMapping) -> CredentialRow:
@@ -120,8 +140,48 @@ def _elevation(row: RowMapping) -> ElevationRow:
     return ElevationRow(**{column.name: row[column.name] for column in _ELEVATION_COLUMNS})
 
 
+def _audit(row: RowMapping) -> AuditRow:
+    return AuditRow(**{column.name: row[column.name] for column in _AUDIT_COLUMNS})
+
+
+def _elevation_event(
+    row: ElevationRow, session_label: str, *, via: str, client_id: str | None
+) -> dict[str, Any]:
+    """The body of an elevation event: the grant's fields, never a connection id.
+
+    ``via`` and ``client_id`` are the GESTURE's (the grant's, or the ending one's), and
+    ``session_label`` is the session's raw ``client_key``: the emitter sanitises it.
+    """
+    return {
+        "elevation_id": str(row.id),
+        "session_id": str(row.session_id),
+        "session_label": session_label,
+        "expires_at": row.expires_at.astimezone(UTC).isoformat(),
+        "ttl_seconds": int((row.expires_at - row.granted_at).total_seconds()),
+        "reason": row.reason,
+        "via": via,
+        "client_id": client_id,
+        "connection_count": len(row.connection_ids),
+        "excluded_client_ids": list(row.excluded_client_ids),
+        "excluded_connection_count": row.excluded_connection_count,
+    }
+
+
+async def _write_audit(
+    sess: AsyncSession,
+    event: str,
+    payload: dict[str, Any],
+    elevation_id: UUID | None = None,
+) -> None:
+    await sess.execute(
+        sa.insert(brain_credential_audit).values(
+            event=event, elevation_id=elevation_id, payload=payload
+        )
+    )
+
+
 class PgClientCredentialRepo(BasePgRepository):
-    """Own ``brain_client_credentials`` and ``brain_admin_elevations``."""
+    """Own the credential registry, the elevations and their audit outbox."""
 
     table = brain_client_credentials
     fts_columns: list[str] = []
@@ -162,6 +222,16 @@ class PgClientCredentialRepo(BasePgRepository):
                 )
                 .mappings()
                 .one()
+            )
+            await _write_audit(
+                sess,
+                "credentials.issued",
+                {
+                    "credential_id": str(row["id"]),
+                    "client_id": row["client_id"],
+                    "families": list(row["families"]),
+                    "author": row["created_by"],
+                },
             )
         return _credential(row)
 
@@ -239,6 +309,16 @@ class PgClientCredentialRepo(BasePgRepository):
                 raise ClientCredentialError(
                     "already_revoked", f"credential {credential_id} is already revoked"
                 )
+            await _write_audit(
+                sess,
+                "credentials.revoked",
+                {
+                    "credential_id": str(row["id"]),
+                    "client_id": row["client_id"],
+                    "families": list(row["families"]),
+                    "reason": row["revoked_reason"],
+                },
+            )
         return _credential(row)
 
     async def touch_last_used(
@@ -318,7 +398,11 @@ class PgClientCredentialRepo(BasePgRepository):
             # FOR SHARE: a session closing concurrently waits for this grant or is seen closed.
             owner = (
                 await sess.execute(
-                    sa.select(brain_sessions.c.status, brain_sessions.c.nature)
+                    sa.select(
+                        brain_sessions.c.status,
+                        brain_sessions.c.nature,
+                        brain_sessions.c.client_key,
+                    )
                     .where(brain_sessions.c.id == session_id)
                     .with_for_update(read=True)
                 )
@@ -397,7 +481,16 @@ class PgClientCredentialRepo(BasePgRepository):
                 .mappings()
                 .one()
             )
-        return _elevation(row)
+            granted = _elevation(row)
+            await _write_audit(
+                sess,
+                "credentials.elevated",
+                _elevation_event(
+                    granted, owner.client_key, via=via, client_id=requested_by_client_id
+                ),
+                granted.id,
+            )
+        return granted
 
     async def claim_or_check_session_owner(
         self,
@@ -531,4 +624,109 @@ class PgClientCredentialRepo(BasePgRepository):
                 raise ClientCredentialError(
                     "already_ended", f"elevation {elevation_id} is already ended"
                 )
-        return _elevation(row)
+            ended = _elevation(row)
+            session_label = await sess.scalar(
+                sa.select(brain_sessions.c.client_key).where(
+                    brain_sessions.c.id == ended.session_id
+                )
+            )
+            # Only the CLI ends an elevation in 0.6.x: the ending gesture names no credential.
+            await _write_audit(
+                sess,
+                "credentials.unelevated",
+                _elevation_event(ended, str(session_label), via="cli", client_id=None),
+                ended.id,
+            )
+        return ended
+
+    async def audit_expired_elevations(
+        self, now: datetime, *, session: AsyncSession | None = None
+    ) -> int:
+        """Audit, once each, the elevations that ran out without being ended.
+
+        In ONE transaction: select the elevations expired at ``now``, neither ended nor
+        audited yet (``FOR UPDATE SKIP LOCKED``, so two sweepers never take the same one),
+        write one ``credentials.elevation_expired`` row per elevation and stamp
+        ``expiry_audited_at``. Idempotent: an audited elevation is never selected again.
+        Returns how many elevations it audited.
+        """
+        elevations = brain_admin_elevations
+        async with self._maybe_session(session, write=True) as sess:
+            due = (
+                (
+                    await sess.execute(
+                        sa.select(elevations, brain_sessions.c.client_key.label("session_label"))
+                        .join(brain_sessions, brain_sessions.c.id == elevations.c.session_id)
+                        .where(
+                            elevations.c.expires_at <= now,
+                            elevations.c.revoked_at.is_(None),
+                            elevations.c.expiry_audited_at.is_(None),
+                        )
+                        .order_by(elevations.c.expires_at, elevations.c.id)
+                        .with_for_update(of=elevations, skip_locked=True)
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            for row in due:
+                expired = _elevation(row)
+                await _write_audit(
+                    sess,
+                    "credentials.elevation_expired",
+                    _elevation_event(
+                        expired,
+                        row["session_label"],
+                        via=expired.via,
+                        client_id=expired.requested_by_client_id,
+                    ),
+                    expired.id,
+                )
+            if due:
+                await sess.execute(
+                    sa.update(elevations)
+                    .where(elevations.c.id.in_([row["id"] for row in due]))
+                    .values(expiry_audited_at=now)
+                )
+        return len(due)
+
+    async def claim_unemitted_audit(self, limit: int, *, session: AsyncSession) -> list[AuditRow]:
+        """Lock up to ``limit`` unemitted rows, oldest first, for the drainer to emit.
+
+        ``FOR UPDATE SKIP LOCKED``: a concurrent drainer skips them. The locks last as long
+        as ``session``'s transaction, so the caller emits, then calls ``mark_audit_emitted``
+        in the SAME transaction. A crash between the two rolls the claim back and the rows
+        are emitted again: the drain is at-least-once, and the consumer dedupes on
+        ``(event, elevation_id)``.
+        """
+        audit = brain_credential_audit
+        rows = (
+            (
+                await session.execute(
+                    sa.select(audit)
+                    .where(audit.c.emitted_at.is_(None))
+                    .order_by(audit.c.id)
+                    .limit(limit)
+                    .with_for_update(skip_locked=True)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        return [_audit(row) for row in rows]
+
+    async def mark_audit_emitted(
+        self, ids: Sequence[int], now: datetime, *, session: AsyncSession | None = None
+    ) -> int:
+        """Stamp ``emitted_at`` on rows not yet stamped: the first stamp stands."""
+        if not ids:
+            return 0
+        audit = brain_credential_audit
+        async with self._maybe_session(session, write=True) as sess:
+            marked = await sess.execute(
+                sa.update(audit)
+                .where(audit.c.id.in_(list(ids)), audit.c.emitted_at.is_(None))
+                .values(emitted_at=now)
+                .returning(audit.c.id)
+            )
+            return len(marked.all())

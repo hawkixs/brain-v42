@@ -264,8 +264,9 @@ if TYPE_CHECKING:
 # `project_contexts` change.
 #
 # Bumped to 063 after reviewing the complete migration, inert by TABLE: it adds
-# three new tables (`brain_client_credentials`, `brain_admin_elevations`,
-# `brain_schema_compat`) and one trigger, on `brain_client_credentials` only.
+# four new tables (`brain_client_credentials`, `brain_admin_elevations`,
+# `brain_schema_compat`, `brain_credential_audit`) and one trigger, on
+# `brain_client_credentials` only.
 # `brain_admin_elevations` references `brain_sessions` with a cascading key and
 # changes nothing on it. No plan-index table, no `project_contexts` change.
 #

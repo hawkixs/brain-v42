@@ -39,8 +39,8 @@ def _expected_checks() -> list[dict[str, Any]]:
             # with 053, `delivery_attestations` with 054 and the three
             # `knowledge_*` claim ledgers with 055, the three `focus_slot*`
             # tables with 060, `brain_session_connections` with 061 and the
-            # three `brain_client_credentials` / `brain_admin_elevations` /
-            # `brain_schema_compat` tables with 063 — all long after the 035
+            # four `brain_client_credentials` / `brain_admin_elevations` /
+            # `brain_schema_compat` / `brain_credential_audit` tables with 063 — all long after the 035
             # this asset describes. See the revision-by-revision review in
             # test_recovery_contract.py.
             if name
@@ -48,6 +48,7 @@ def _expected_checks() -> list[dict[str, Any]]:
                 "access_log_daily",
                 "brain_admin_elevations",
                 "brain_client_credentials",
+                "brain_credential_audit",
                 "brain_schema_compat",
                 "brain_session_artifacts",
                 "brain_session_checkpoints",
