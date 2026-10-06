@@ -130,6 +130,9 @@ def _resolve_shim_bearer(settings: Settings, api_key: str) -> str:
     return token
 
 
+_RERANK_KEY_MAX_LENGTH = 512
+
+
 def _resolve_rerank_bearer(settings: Settings) -> str:
     """The key the reranker client sends as ``Authorization: Bearer``.
 
@@ -157,6 +160,10 @@ def _resolve_rerank_bearer(settings: Settings) -> str:
     key = raw.strip()
     if not key:
         raise RerankKeyError(f"rerank key file {path} is empty")
+    # The whole content becomes a bearer sent to a third party, so a file that is
+    # really an env fragment ("NAME=value" lines) must be refused, not forwarded.
+    if len(key) > _RERANK_KEY_MAX_LENGTH or "=" in key or any(ch.isspace() for ch in key):
+        raise RerankKeyError(f"rerank key file {path} must hold only the key value")
     return key
 
 

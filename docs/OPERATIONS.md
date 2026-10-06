@@ -336,8 +336,9 @@ them changes the shim deployment.
 | `BRAIN_RERANK_PROVIDER` | unset | Provider routing sent with every request, as JSON: `{"only": ["voyageai"]}`. Keys: `only`, `allow_fallbacks` (default `false`), `data_collection` (`deny` by default, or `allow`), `zdr`. Unknown keys are refused. |
 | `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
 
-The key file must be mode `0600` or stricter; anything readable beyond its owner,
-empty, or unreadable stops the runtime at construction with a `RerankKeyError` that
+The key file must be mode `0600` or stricter and hold only the key value (one token:
+no whitespace, no `=`, at most 512 characters, so an env fragment is never forwarded);
+anything readable beyond its owner, malformed, empty, or unreadable stops the runtime at construction with a `RerankKeyError` that
 names the path, never the content. Create it the way the shim bearer is created, with
 a redirection under a tight `umask`. The cohere backend never reads
 `BRAIN_EMBEDDING_TOKEN_FILE`: that file is the shim's bearer and must not reach a
@@ -347,8 +348,11 @@ When the cohere backend targets `openrouter.ai` (or a subdomain), the routing is
 **policed at load time, not just required**: `BRAIN_RERANK_PROVIDER` must be set,
 `only` must hold exactly one slug equal to the author prefix of `BRAIN_RERANK_MODEL`
 (`voyageai` for `voyageai/rerank-3-lite`), `allow_fallbacks` must be `false`, and
-`data_collection` must be `deny` unless `zdr` is `true`. A self-hosted Cohere-style
-server (TEI, Jina, vLLM) needs no routing.
+`data_collection` must be `deny` unless `zdr` is `true`. A routing object supplied for any other cohere host must satisfy the same rules.
+On OpenRouter the key comes from `BRAIN_RERANK_API_KEY_FILE` only: an inline
+`BRAIN_RERANK_API_KEY` is refused there. The health path must be a plain path
+starting with `/`, never a URL. A self-hosted Cohere-style server (TEI, Jina, vLLM)
+needs no routing and may use an inline key.
 
 The probe logs `reranker_client.unavailable` (WARNING, with the reason `http_<status>`
 or `transport_<ExceptionName>`) when it starts failing and

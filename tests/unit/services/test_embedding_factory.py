@@ -161,7 +161,12 @@ class TestRerankBearer:
         shim_token = tmp_path / "shim.token"
         shim_token.write_text("shim-bearer\n", encoding="utf-8")
         client = build_reranker_client(
-            _hosted(brain_embedding_token_file=shim_token, rerank_api_key=SecretStr("inline"))
+            _hosted(
+                reranker_url="http://tei.test:8080",
+                rerank_provider=None,
+                brain_embedding_token_file=shim_token,
+                rerank_api_key=SecretStr("inline"),
+            )
         )
         assert client._get_client().headers["authorization"] == "Bearer inline"
 
@@ -209,3 +214,36 @@ class TestRerankBearer:
             build_reranker_client(
                 _settings(brain_embedding_token_file=shim_token, rerank_api_key=SecretStr("k"))
             )
+
+
+class TestKeyFileHoldsOnlyTheKey:
+    """The whole stripped content becomes a bearer sent to a third party: a file
+    that is really an env fragment must never be forwarded wholesale."""
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            f"BRAIN_RERANK_API_KEY={_RERANK_KEY}",
+            f"{_RERANK_KEY}\nOTHER_SECRET=hunter2",
+            f"{_RERANK_KEY} trailing words",
+            "k" * 513,
+        ],
+    )
+    def test_anything_but_a_single_token_is_refused_without_leaking_it(
+        self, tmp_path, content: str
+    ) -> None:
+        from brain_v42.services.embedding_factory import RerankKeyError
+
+        path = _key_file(tmp_path, content=content)
+        with pytest.raises(RerankKeyError) as excinfo:
+            build_reranker_client(_hosted(rerank_api_key_file=path))
+        assert str(path) in str(excinfo.value)
+        assert "must hold only the key value" in str(excinfo.value)
+        for leaked in (_RERANK_KEY, "hunter2", content):
+            assert leaked not in str(excinfo.value)
+
+    def test_a_key_at_the_length_limit_is_accepted(self, tmp_path) -> None:
+        client = build_reranker_client(
+            _hosted(rerank_api_key_file=_key_file(tmp_path, content="k" * 512))
+        )
+        assert client._get_client().headers["authorization"] == "Bearer " + "k" * 512

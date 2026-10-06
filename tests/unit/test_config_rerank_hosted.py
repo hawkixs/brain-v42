@@ -225,3 +225,32 @@ class TestASuppliedRoutingIsNeverLaxerThanThePolicy:
     def test_policy_conforming_routing_on_a_proxy_is_accepted(self) -> None:
         settings = _openrouter(reranker_url="https://proxy.example/api")
         assert settings.rerank_provider is not None
+
+
+class TestOpenRouterKeyComesFromAFileOnly:
+    """An inline key can arrive through the shared .env, which is readable by far
+    more than the key file is; the hosted vendor's key is never allowed there."""
+
+    def test_an_inline_key_on_openrouter_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="BRAIN_RERANK_API_KEY_FILE") as excinfo:
+            _openrouter(rerank_api_key=SENTINEL)
+        assert SENTINEL not in str(excinfo.value)
+
+    def test_an_inline_key_on_a_spelling_variant_of_openrouter_is_refused(self) -> None:
+        with pytest.raises(ValidationError, match="BRAIN_RERANK_API_KEY_FILE"):
+            _openrouter(reranker_url="https://openrouter.ai./api", rerank_api_key=SENTINEL)
+
+    def test_a_key_file_on_openrouter_is_accepted(self, tmp_path: Path) -> None:
+        assert _openrouter(rerank_api_key_file=tmp_path / "key").rerank_api_key_file
+
+    def test_an_inline_key_on_a_self_hosted_endpoint_is_accepted(self) -> None:
+        settings = _settings(
+            rerank_backend="cohere",
+            rerank_model="bge",
+            reranker_url="http://tei.test:8080",
+            rerank_api_key=SENTINEL,
+        )
+        assert settings.rerank_api_key.get_secret_value() == SENTINEL
+
+    def test_the_shim_path_keeps_its_inline_key(self) -> None:
+        assert _settings(rerank_api_key=SENTINEL).rerank_api_key.get_secret_value() == SENTINEL

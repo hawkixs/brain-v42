@@ -390,9 +390,18 @@ class Settings(BaseSettings):
                 # here would be ignored, and the operator would believe it armed.
                 raise ValueError("rerank_api_key_file requires rerank_backend='cohere'")
             return self
+        openrouter = _is_openrouter_host(self.reranker_url)
+        if openrouter and self.rerank_api_key.get_secret_value():
+            # An inline value can arrive through the shared .env, which many more
+            # processes can read than a 0600 file. The hosted vendor's key goes
+            # through the file only.
+            raise ValueError(
+                "rerank_api_key is refused when reranker_url targets openrouter.ai; "
+                "set BRAIN_RERANK_API_KEY_FILE to the key file's path"
+            )
         provider = self.rerank_provider
         if provider is None:
-            if _is_openrouter_host(self.reranker_url):
+            if openrouter:
                 raise ValueError(
                     "rerank_provider is required when reranker_url targets openrouter.ai"
                 )
