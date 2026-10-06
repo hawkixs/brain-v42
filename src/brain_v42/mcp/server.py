@@ -524,9 +524,18 @@ def _neo4j_connection_settings(settings: Settings) -> tuple[str | None, str, str
 
 
 def build_credential_verifier(settings: Settings) -> CredentialVerifier | None:
-    """Leave shared-token and stdio deployments independent of the registry."""
-    if settings.brain_mcp_transport != "http" or settings.brain_mcp_auth_mode != "credentials":
+    """Build the registry verifier for credentials mode; shared-token stays independent of it.
+
+    A stdio server has no transport boundary, so credentials mode there would run with no
+    guard at all: it is refused here, at server start, rather than at settings load, which
+    other entry points (the metrics sidecar, the CLIs) share without serving MCP.
+    """
+    if settings.brain_mcp_auth_mode != "credentials":
         return None
+    if settings.brain_mcp_transport != "http":
+        raise HttpAuthConfigurationError(
+            "credentials mode requires BRAIN_MCP_TRANSPORT=http: a stdio server has no guard"
+        )
     return CredentialVerifier(
         PgClientCredentialRepo(get_session_factory()),
         clock=lambda: datetime.now(UTC),

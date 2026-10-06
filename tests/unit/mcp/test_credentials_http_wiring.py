@@ -20,16 +20,29 @@ def settings() -> Settings:
     )
 
 
-def test_registry_composition_is_dormant_outside_credential_http(
+def test_registry_composition_is_dormant_in_shared_token_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     factory = Mock()
     monkeypatch.setattr(server, "get_session_factory", factory)
-    for transport, mode in (("stdio", "credentials"), ("http", "shared_token")):
-        config = settings()
-        config.brain_mcp_transport = transport
-        config.brain_mcp_auth_mode = mode
-        assert server.build_credential_verifier(config) is None
+    config = settings()
+    config.brain_mcp_transport = "http"
+    config.brain_mcp_auth_mode = "shared_token"
+    assert server.build_credential_verifier(config) is None
+    factory.assert_not_called()
+
+
+def test_credentials_mode_refuses_a_stdio_server(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A stdio server has no transport boundary: credentials mode there would run unguarded."""
+    from brain_v42.mcp.http_security import HttpAuthConfigurationError
+
+    factory = Mock()
+    monkeypatch.setattr(server, "get_session_factory", factory)
+    config = settings()
+    config.brain_mcp_transport = "stdio"
+    config.brain_mcp_auth_mode = "credentials"
+    with pytest.raises(HttpAuthConfigurationError, match="BRAIN_MCP_TRANSPORT=http"):
+        server.build_credential_verifier(config)
     factory.assert_not_called()
 
 
