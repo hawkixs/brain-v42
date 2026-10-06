@@ -19,18 +19,32 @@ Three new tables and one nullable column on ``brain_session_connections``.
   ``brain_session_connections`` (061). The grant freezes ATTRIBUTED pairs: the
   ``connection_ids`` and the parallel ``connection_client_ids`` (same cardinality, no
   NULL), so a checker compares a call's (connection, credential) to what was frozen and
-  never to the mutable connection table. ``via`` says which gesture granted it; a
-  ``hook`` grant names its requester. Elevations never exclude one another.
+  never to the mutable connection table. Only the pairs of an ALLOWLISTED client are
+  frozen: the other attributed connections are not elevated, and the grant records them
+  (``excluded_client_ids``, sorted and distinct, and ``excluded_connection_count``) so
+  the audit event can say what it left out. ``via`` says which gesture granted it, and
+  the requester follows it in both directions (CHECKs): a ``hook`` grant names its
+  requester, a ``cli`` grant names none. Elevations never exclude one another.
   ``expiry_audited_at`` marks the elevation whose natural expiry has been audited.
 * ``brain_session_connections.client_id``: the credential that first presented the
   connection, NULL on every historical row. Written once by the recording call sites
   (a later step); this revision only adds the column and its format CHECK.
+* ``brain_sessions.opener_client_id``: the attribution lock. The client that owns an
+  OPERATOR session (``nature IS NULL``), claimed by the first allowlisted client that
+  attaches (the repository's ``claim_or_check_session_owner``, before it writes the
+  connection row). An AFTER row trigger on ``brain_session_connections`` is the
+  backstop: it refuses an attributed row on an operator session whose opener is NULL or
+  another client, so a writer that forgets the check still cannot attach a foreign
+  client. Rows with a NULL ``client_id`` (historical) and agent traces are not checked.
+  The trigger is AFTER, not BEFORE, so the column's format CHECK still answers first.
+  The refusal message names no connection id.
 * ``brain_schema_compat``: the ledger of the oldest code head compatible with a schema
   head. This revision inserts no row: a later step's migrate command records it.
 
-Locking: the foreign key takes a SHARE ROW EXCLUSIVE lock on ``brain_sessions`` and the
-``ALTER TABLE`` an ACCESS EXCLUSIVE lock on ``brain_session_connections`` (a metadata-only
-change: the column has no default, so no row is rewritten), so the revision bounds its own wait with a 30 s ``lock_timeout`` (same device as 062) and a
+Locking: the foreign key takes a SHARE ROW EXCLUSIVE lock on ``brain_sessions``, and the
+``ALTER TABLE`` statements an ACCESS EXCLUSIVE lock on ``brain_session_connections`` and on
+``brain_sessions`` (metadata-only changes: the columns have no default, so no row is
+rewritten; the CHECK on a column that is NULL everywhere validates instantly), so the revision bounds its own wait with a 30 s ``lock_timeout`` (same device as 062) and a
 stuck lock holder fails the migration atomically.
 """
 
@@ -125,6 +139,8 @@ def upgrade() -> None:
             reason text NOT NULL,
             via text NOT NULL DEFAULT 'cli',
             requested_by_client_id text,
+            excluded_client_ids text[] NOT NULL DEFAULT '{}',
+            excluded_connection_count integer NOT NULL DEFAULT 0,
             revoked_at timestamptz,
             expiry_audited_at timestamptz,
             CONSTRAINT brain_admin_elevations_connection_ids_nonempty
@@ -136,6 +152,10 @@ def upgrade() -> None:
                 CHECK (via IN ('hook', 'cli')),
             CONSTRAINT brain_admin_elevations_hook_requester
                 CHECK (via <> 'hook' OR requested_by_client_id IS NOT NULL),
+            CONSTRAINT brain_admin_elevations_cli_no_requester
+                CHECK (via <> 'cli' OR requested_by_client_id IS NULL),
+            CONSTRAINT brain_admin_elevations_excluded_count
+                CHECK (excluded_connection_count >= 0),
             CONSTRAINT brain_admin_elevations_reason_length
                 CHECK (char_length(reason) BETWEEN 1 AND 200),
             CONSTRAINT brain_admin_elevations_window
@@ -167,11 +187,56 @@ def upgrade() -> None:
                 CHECK (client_id IS NULL OR client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$')
         """
     )
+    op.execute(
+        """
+        ALTER TABLE brain_sessions
+            ADD COLUMN opener_client_id text,
+            ADD CONSTRAINT brain_sessions_opener_client_id_format
+                CHECK (opener_client_id IS NULL
+                       OR opener_client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$')
+        """
+    )
+    op.execute(
+        """
+        CREATE FUNCTION brain_session_connections_owner_check() RETURNS trigger
+        LANGUAGE plpgsql AS $$
+        DECLARE
+            owner_nature text;
+            owner_opener text;
+        BEGIN
+            SELECT nature, opener_client_id INTO owner_nature, owner_opener
+            FROM brain_sessions WHERE id = NEW.session_id;
+            IF FOUND AND owner_nature IS NULL AND owner_opener IS DISTINCT FROM NEW.client_id THEN
+                RAISE EXCEPTION
+                    'brain_session_connections: foreign client attach to an operator session refused'
+                    USING ERRCODE = 'check_violation';
+            END IF;
+            RETURN NULL;
+        END
+        $$
+        """
+    )
+    op.execute(
+        """
+        CREATE TRIGGER brain_session_connections_owner_check
+        AFTER INSERT OR UPDATE OF client_id ON brain_session_connections
+        FOR EACH ROW WHEN (NEW.client_id IS NOT NULL)
+        EXECUTE FUNCTION brain_session_connections_owner_check()
+        """
+    )
     op.execute("SET LOCAL lock_timeout TO DEFAULT")
 
 
 def downgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '30s'")
+    op.execute(
+        "DROP TRIGGER brain_session_connections_owner_check ON brain_session_connections"
+    )
+    op.execute("DROP FUNCTION brain_session_connections_owner_check()")
+    op.execute(
+        "ALTER TABLE brain_sessions "
+        "DROP CONSTRAINT brain_sessions_opener_client_id_format, DROP COLUMN opener_client_id"
+    )
     op.execute(
         "ALTER TABLE brain_session_connections "
         "DROP CONSTRAINT brain_session_connections_client_id_format, DROP COLUMN client_id"

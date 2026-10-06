@@ -239,6 +239,10 @@ async def test_elevation_checks_refuse_their_bad_row(
         ),
         ({"via": "api"}, "brain_admin_elevations_via_valid"),
         ({"via": "hook"}, "brain_admin_elevations_hook_requester"),
+        (
+            {"via": "cli", "requested_by": "workstation-elevate"},
+            "brain_admin_elevations_cli_no_requester",
+        ),
         ({"reason": "x" * 201}, "brain_admin_elevations_reason_length"),
     ],
 )
@@ -274,14 +278,25 @@ async def test_a_hook_elevation_with_its_requester_and_a_200_char_reason_is_stor
     assert audited is None
 
 
+_INSERT_CONNECTION = sa.text(
+    "INSERT INTO brain_session_connections (session_id, connection_id, client_id) "
+    "VALUES (:session_id, :connection_id, :client_id)"
+)
+
+
+async def _set_opener(connection: AsyncConnection, session_id: UUID, client_id: str | None) -> None:
+    await connection.execute(
+        sa.text("UPDATE brain_sessions SET opener_client_id = :client WHERE id = :id"),
+        {"client": client_id, "id": session_id},
+    )
+
+
 async def test_the_connection_client_id_is_nullable_and_format_checked(
     operator: tuple[AsyncConnection, UUID],
 ) -> None:
     connection, session_id = operator
-    insert = sa.text(
-        "INSERT INTO brain_session_connections (session_id, connection_id, client_id) "
-        "VALUES (:session_id, :connection_id, :client_id)"
-    )
+    insert = _INSERT_CONNECTION
+    await _set_opener(connection, session_id, "workstation-claude")
     for connection_id, client_id in (("historical", None), ("attributed", "workstation-claude")):
         await connection.execute(
             insert,
@@ -405,6 +420,127 @@ async def test_a_last_used_stamp_does_not_notify_but_a_revocation_does(
         await listener.close()
 
 
+async def test_the_opener_is_nullable_and_format_checked(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, session_id = operator
+    assert (
+        await connection.scalar(
+            sa.text("SELECT opener_client_id FROM brain_sessions WHERE id = :id"),
+            {"id": session_id},
+        )
+        is None
+    )
+    await _set_opener(connection, session_id, "workstation-claude")
+    with pytest.raises(IntegrityError, match="brain_sessions_opener_client_id_format"):
+        async with connection.begin_nested():
+            await _set_opener(connection, session_id, "Bad_Id")
+
+
+async def test_the_trigger_refuses_an_attributed_connection_that_is_not_the_openers(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, session_id = operator
+    await _set_opener(connection, session_id, "workstation-claude")
+    await connection.execute(
+        _INSERT_CONNECTION,
+        {"session_id": session_id, "connection_id": "own", "client_id": "workstation-claude"},
+    )
+    await connection.execute(
+        _INSERT_CONNECTION,
+        {"session_id": session_id, "connection_id": "historical", "client_id": None},
+    )
+    with pytest.raises(IntegrityError, match="foreign client") as foreign:
+        async with connection.begin_nested():
+            await connection.execute(
+                _INSERT_CONNECTION,
+                {"session_id": session_id, "connection_id": "secret-conn", "client_id": "red-rail"},
+            )
+    assert "secret-conn" not in str(foreign.value.orig)
+    with pytest.raises(IntegrityError, match="foreign client"):
+        async with connection.begin_nested():
+            await connection.execute(
+                sa.text(
+                    "UPDATE brain_session_connections SET client_id = 'red-rail' "
+                    "WHERE session_id = :id AND connection_id = 'historical'"
+                ),
+                {"id": session_id},
+            )
+    assert (
+        await connection.scalar(
+            sa.text("SELECT count(*) FROM brain_session_connections WHERE session_id = :id"),
+            {"id": session_id},
+        )
+        == 2
+    )
+
+
+async def test_the_trigger_refuses_an_attributed_connection_on_an_unowned_operator_session(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, session_id = operator
+    with pytest.raises(IntegrityError, match="foreign client"):
+        async with connection.begin_nested():
+            await connection.execute(
+                _INSERT_CONNECTION,
+                {
+                    "session_id": session_id,
+                    "connection_id": "conn",
+                    "client_id": "workstation-claude",
+                },
+            )
+
+
+async def test_the_trigger_leaves_an_agent_trace_alone(engine: AsyncEngine) -> None:
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        try:
+            key = f"integ-063-{uuid4().hex[:16]}"
+            await connection.execute(
+                sa.text(
+                    "INSERT INTO project_contexts (project_key, name, description) "
+                    "VALUES (:key, :key, 'migration 063')"
+                ),
+                {"key": key},
+            )
+            trace = await connection.scalar(
+                sa.text(
+                    "INSERT INTO brain_sessions (project_key, client_key, started_focus_revision, "
+                    "nature, connection_id) VALUES (:key, 'integ-063-trace', 0, 'agent', 'c') "
+                    "RETURNING id"
+                ),
+                {"key": key},
+            )
+            await connection.execute(
+                _INSERT_CONNECTION,
+                {"session_id": trace, "connection_id": "c", "client_id": "red-rail"},
+            )
+        finally:
+            await transaction.rollback()
+
+
+async def _has_opener_and_trigger(connection: AsyncConnection) -> bool:
+    column = await connection.scalar(
+        sa.text(
+            "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' "
+            "AND table_name = 'brain_sessions' AND column_name = 'opener_client_id'"
+        )
+    )
+    trigger = await connection.scalar(
+        sa.text(
+            "SELECT count(*) FROM pg_trigger WHERE tgrelid = "
+            "'public.brain_session_connections'::regclass AND NOT tgisinternal"
+        )
+    )
+    function = await connection.scalar(
+        sa.text(
+            "SELECT count(*) FROM pg_proc WHERE proname = 'brain_session_connections_owner_check'"
+        )
+    )
+    assert (column, trigger, function) in {(0, 0, 0), (1, 1, 1)}
+    return bool(column)
+
+
 async def _has_connection_client_id(connection: AsyncConnection) -> bool:
     return bool(
         await connection.scalar(
@@ -426,6 +562,7 @@ async def test_downgrade_drops_the_tables_and_function_then_reupgrade_restores_t
         for table in TABLES:
             assert await connection.scalar(sa.text(f"SELECT to_regclass('public.{table}')")) is None
         assert await _has_connection_client_id(connection) is False
+        assert await _has_opener_and_trigger(connection) is False
         assert (
             await connection.scalar(
                 sa.text(
@@ -442,3 +579,32 @@ async def test_downgrade_drops_the_tables_and_function_then_reupgrade_restores_t
                 await connection.scalar(sa.text(f"SELECT to_regclass('public.{table}')")) == table
             )
         assert await _has_connection_client_id(connection) is True
+        assert await _has_opener_and_trigger(connection) is True
+
+
+async def test_an_elevation_defaults_to_no_exclusion_and_refuses_a_negative_count(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, session_id = operator
+    await _elevation(connection, session_id, hours=1, connection_ids=["c"])
+    row = (
+        await connection.execute(
+            sa.text(
+                "SELECT excluded_client_ids, excluded_connection_count "
+                "FROM brain_admin_elevations WHERE session_id = :id"
+            ),
+            {"id": session_id},
+        )
+    ).one()
+    assert (row.excluded_client_ids, row.excluded_connection_count) == ([], 0)
+    with pytest.raises(IntegrityError, match="brain_admin_elevations_excluded_count"):
+        async with connection.begin_nested():
+            await connection.execute(
+                sa.text(
+                    "INSERT INTO brain_admin_elevations (session_id, connection_ids, "
+                    "connection_client_ids, expires_at, granted_by, reason, "
+                    "excluded_connection_count) VALUES (:id, ARRAY['c'], ARRAY['auto-discord'], "
+                    "now() + interval '1 hour', 'op', 'why', -1)"
+                ),
+                {"id": session_id},
+            )

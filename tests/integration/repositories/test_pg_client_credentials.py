@@ -16,15 +16,19 @@ import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from brain_v42.repositories.pg_client_credentials import (
+    DEFAULT_ELEVATABLE_CLIENT_IDS,
     ClientCredentialError,
     CredentialRow,
     ElevationRow,
+    ForeignClientAttachError,
     PgClientCredentialRepo,
 )
 
 pytestmark = pytest.mark.integration
 
 NOW = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
+#: Every client the fixtures link, so a test about something else is not about the allowlist.
+ANY_CLIENT = frozenset({"auto-discord", "workstation-claude", "red-rail"})
 
 
 @pytest_asyncio.fixture
@@ -44,6 +48,16 @@ async def _link(
     *connection_ids: str,
     client_id: str | None = "auto-discord",
 ) -> None:
+    """Link connections, standing the session's opener on ``client_id`` first.
+
+    A later call with another client re-points the opener, which is how a test builds a
+    session whose rows pre-date the attribution lock: the lock itself refuses the mix.
+    """
+    if client_id is not None:
+        await session.execute(
+            sa.text("UPDATE brain_sessions SET opener_client_id = :client WHERE id = :id"),
+            {"client": client_id, "id": session_id},
+        )
     for connection_id in connection_ids:
         await session.execute(
             sa.text(
@@ -186,6 +200,7 @@ async def test_grant_elevation_refuses_agent_closed_and_unknown_sessions(
                 "operator",
                 "maintenance",
                 NOW,
+                elevatable_client_ids=ANY_CLIENT,
                 session=session,
             )
         assert refused.value.code == code
@@ -203,12 +218,20 @@ async def test_elevation_lifecycle_through_active_and_end(session: AsyncSession)
         "operator",
         "maintenance",
         NOW,
+        elevatable_client_ids=ANY_CLIENT,
         session=session,
     )
     assert granted.connection_ids == ["conn-1", "conn-2"]
     assert granted.revoked_at is None
     expired = await repo.grant_elevation(
-        operator, ["conn-3"], NOW + timedelta(minutes=5), "operator", "short", NOW, session=session
+        operator,
+        ["conn-3"],
+        NOW + timedelta(minutes=5),
+        "operator",
+        "short",
+        NOW,
+        elevatable_client_ids=ANY_CLIENT,
+        session=session,
     )
 
     at_30_minutes = {
@@ -232,6 +255,7 @@ async def _grant(
     session: AsyncSession,
     session_id: UUID,
     connection_ids: list[str],
+    elevatable_client_ids: frozenset[str] = ANY_CLIENT,
 ) -> ElevationRow:
     return await repo.grant_elevation(
         session_id,
@@ -240,6 +264,7 @@ async def _grant(
         "operator",
         "maintenance",
         NOW,
+        elevatable_client_ids=elevatable_client_ids,
         session=session,
     )
 
@@ -422,6 +447,7 @@ async def test_a_hook_elevation_records_its_requester_and_a_cli_one_does_not(
         NOW,
         via="hook",
         requested_by_client_id="workstation-elevate",
+        elevatable_client_ids=ANY_CLIENT,
         session=session,
     )
     assert (by_cli.via, by_cli.requested_by_client_id) == ("cli", None)
@@ -437,9 +463,191 @@ async def test_grant_elevation_refuses_a_hook_without_requester_and_a_long_reaso
     await _link(session, operator, "conn-1")
     window = (operator, ["conn-1"], NOW + timedelta(hours=1), "operator")
     with pytest.raises(ClientCredentialError) as no_requester:
-        await repo.grant_elevation(*window, "why", NOW, via="hook", session=session)
+        await repo.grant_elevation(
+            *window, "why", NOW, via="hook", elevatable_client_ids=ANY_CLIENT, session=session
+        )
     assert no_requester.value.code == "requester_required"
     with pytest.raises(ClientCredentialError) as too_long:
-        await repo.grant_elevation(*window, "x" * 201, NOW, session=session)
+        await repo.grant_elevation(
+            *window, "x" * 201, NOW, elevatable_client_ids=ANY_CLIENT, session=session
+        )
     assert too_long.value.code == "reason_too_long"
     assert await session.scalar(sa.text("SELECT count(*) FROM brain_admin_elevations")) == 0
+
+
+async def test_only_the_allowlisted_pairs_are_frozen_and_the_rest_is_recorded_as_excluded(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-historical", client_id=None)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    await _link(session, operator, "conn-b", client_id="red-rail")
+    await _link(session, operator, "conn-c", client_id="red-rail")
+
+    granted = await _grant(
+        repo,
+        session,
+        operator,
+        ["conn-historical", "conn-b", "conn-a", "conn-c"],
+        DEFAULT_ELEVATABLE_CLIENT_IDS,
+    )
+
+    assert (granted.connection_ids, granted.connection_client_ids) == (
+        ["conn-a"],
+        ["workstation-claude"],
+    )
+    assert granted.excluded_client_ids == ["red-rail"]
+    assert granted.excluded_connection_count == 2
+    at = NOW + timedelta(minutes=1)
+    assert await repo.has_active_elevation("conn-a", "workstation-claude", at, session=session)
+    assert not await repo.has_active_elevation("conn-b", "red-rail", at, session=session)
+
+
+async def test_a_grant_that_excludes_nothing_records_no_exclusion(session: AsyncSession) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    granted = await _grant(repo, session, operator, ["conn-a"], DEFAULT_ELEVATABLE_CLIENT_IDS)
+    assert (granted.excluded_client_ids, granted.excluded_connection_count) == ([], 0)
+
+
+async def test_a_grant_whose_attributed_connections_are_all_foreign_is_refused(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-historical", client_id=None)
+    await _link(session, operator, "conn-b", client_id="red-rail")
+    with pytest.raises(ClientCredentialError) as refused:
+        await _grant(
+            repo, session, operator, ["conn-historical", "conn-b"], DEFAULT_ELEVATABLE_CLIENT_IDS
+        )
+    assert refused.value.code == "no_elevatable_connection"
+    assert await session.scalar(sa.text("SELECT count(*) FROM brain_admin_elevations")) == 0
+
+
+async def test_a_grant_needs_a_non_empty_allowlist(session: AsyncSession) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    with pytest.raises(ClientCredentialError) as refused:
+        await _grant(repo, session, operator, ["conn-a"], frozenset())
+    assert refused.value.code == "no_elevatable_clients"
+
+
+async def test_a_cli_elevation_that_names_a_requester_is_refused(session: AsyncSession) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-1")
+    with pytest.raises(ClientCredentialError) as refused:
+        await repo.grant_elevation(
+            operator,
+            ["conn-1"],
+            NOW + timedelta(hours=1),
+            "operator",
+            "maintenance",
+            NOW,
+            via="cli",
+            requested_by_client_id="workstation-elevate",
+            elevatable_client_ids=ANY_CLIENT,
+            session=session,
+        )
+    assert refused.value.code == "requester_forbidden"
+    assert await session.scalar(sa.text("SELECT count(*) FROM brain_admin_elevations")) == 0
+
+
+async def _opener(session: AsyncSession, session_id: UUID) -> str | None:
+    return await session.scalar(
+        sa.text("SELECT opener_client_id FROM brain_sessions WHERE id = :id"), {"id": session_id}
+    )
+
+
+async def test_the_first_allowlisted_client_claims_an_unowned_operator_session(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    owner = await repo.claim_or_check_session_owner(
+        operator,
+        "workstation-claude",
+        elevatable_client_ids=DEFAULT_ELEVATABLE_CLIENT_IDS,
+        session=session,
+    )
+    assert owner == "workstation-claude"
+    assert await _opener(session, operator) == "workstation-claude"
+    again = await repo.claim_or_check_session_owner(
+        operator,
+        "workstation-claude",
+        elevatable_client_ids=DEFAULT_ELEVATABLE_CLIENT_IDS,
+        session=session,
+    )
+    assert again == "workstation-claude"
+
+
+async def test_a_foreign_client_cannot_claim_an_unowned_operator_session(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    with pytest.raises(ForeignClientAttachError) as refused:
+        await repo.claim_or_check_session_owner(
+            operator,
+            "red-rail",
+            elevatable_client_ids=DEFAULT_ELEVATABLE_CLIENT_IDS,
+            session=session,
+        )
+    assert refused.value.code == "foreign_client_attach"
+    assert (refused.value.requesting_client_id, refused.value.owner_client_id) == (
+        "red-rail",
+        None,
+    )
+    assert await _opener(session, operator) is None
+
+
+async def test_a_foreign_client_is_refused_on_a_claimed_session_and_nothing_is_written(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await repo.claim_or_check_session_owner(
+        operator,
+        "workstation-claude",
+        elevatable_client_ids=DEFAULT_ELEVATABLE_CLIENT_IDS,
+        session=session,
+    )
+    with pytest.raises(ForeignClientAttachError) as refused:
+        await repo.claim_or_check_session_owner(
+            operator,
+            "red-rail",
+            elevatable_client_ids=ANY_CLIENT,
+            session=session,
+        )
+    assert (refused.value.requesting_client_id, refused.value.owner_client_id) == (
+        "red-rail",
+        "workstation-claude",
+    )
+    assert "conn" not in str(refused.value)
+    assert await _opener(session, operator) == "workstation-claude"
+
+
+async def test_an_agent_trace_is_not_checked_and_never_claimed(session: AsyncSession) -> None:
+    repo = PgClientCredentialRepo()
+    trace = await _make_session(session, nature="agent")
+    owner = await repo.claim_or_check_session_owner(
+        trace, "red-rail", elevatable_client_ids=DEFAULT_ELEVATABLE_CLIENT_IDS, session=session
+    )
+    assert owner == "red-rail"
+    assert await _opener(session, trace) is None
+
+
+async def test_claiming_an_unknown_session_is_refused(session: AsyncSession) -> None:
+    repo = PgClientCredentialRepo()
+    with pytest.raises(ClientCredentialError) as refused:
+        await repo.claim_or_check_session_owner(
+            uuid4(),
+            "workstation-claude",
+            elevatable_client_ids=DEFAULT_ELEVATABLE_CLIENT_IDS,
+            session=session,
+        )
+    assert refused.value.code == "unknown_session"

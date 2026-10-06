@@ -854,6 +854,13 @@ brain_sessions = Table(
     Column("intent", String(500), nullable=True),
     Column("nature", String(16), nullable=True),
     Column("connection_id", String(64), nullable=True),
+    # Migration 063: the credential client that owns an OPERATOR session (the attribution
+    # lock). Nullable, no backfill; never public on `BrainSession`, like the 060 columns.
+    Column("opener_client_id", Text, nullable=True),
+    sa.CheckConstraint(
+        "opener_client_id IS NULL OR opener_client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="brain_sessions_opener_client_id_format",
+    ),
     # Migration 060 (ADR #34): the slot a session is bound to, and the session a
     # relay ended. Nullable, no backfill. Never public on `BrainSession`: the
     # lifecycle output-schema budget has 35 bytes left (S12).
@@ -1129,6 +1136,8 @@ brain_admin_elevations = Table(
     Column("reason", Text, nullable=False),
     Column("via", Text, nullable=False, server_default=sa.text("'cli'")),
     Column("requested_by_client_id", Text, nullable=True),
+    Column("excluded_client_ids", ARRAY(Text), nullable=False, server_default=sa.text("'{}'")),
+    Column("excluded_connection_count", Integer, nullable=False, server_default=sa.text("0")),
     Column("revoked_at", DateTime(timezone=True), nullable=True),
     Column("expiry_audited_at", DateTime(timezone=True), nullable=True),
     sa.CheckConstraint(
@@ -1144,6 +1153,13 @@ brain_admin_elevations = Table(
     sa.CheckConstraint(
         "via <> 'hook' OR requested_by_client_id IS NOT NULL",
         name="brain_admin_elevations_hook_requester",
+    ),
+    sa.CheckConstraint(
+        "via <> 'cli' OR requested_by_client_id IS NULL",
+        name="brain_admin_elevations_cli_no_requester",
+    ),
+    sa.CheckConstraint(
+        "excluded_connection_count >= 0", name="brain_admin_elevations_excluded_count"
     ),
     sa.CheckConstraint(
         "char_length(reason) BETWEEN 1 AND 200", name="brain_admin_elevations_reason_length"

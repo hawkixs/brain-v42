@@ -3,7 +3,9 @@
 Brain stores the SHA-256 digest of a bearer token and never the token. Two walls keep
 ``admin`` out of a credential: this module refuses it before any SQL, and the table's
 CHECK refuses it again. Administrative power exists only as an elevation, granted to
-the connections of one OPERATOR session and bounded to four hours.
+the connections of one OPERATOR session and bounded to four hours. Only the connections
+of an allowlisted client are elevated, and a session's attributed connections must all
+belong to the client that owns it (``claim_or_check_session_owner``).
 
 Rows are revoked, never deleted: there is no delete path here. Every method accepts an
 optional ``session`` so a caller can compose it into a larger transaction, as the other
@@ -12,7 +14,7 @@ optional ``session`` so a caller can compose it into a larger transaction, as th
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Literal
@@ -38,6 +40,10 @@ LAST_USED_RESOLUTION = timedelta(minutes=1)
 #: The longest elevation. The table's CHECK states the same bound.
 MAX_ELEVATION = timedelta(hours=4)
 
+#: The clients whose connections an elevation may freeze, and the only ones that may claim
+#: an operator session nobody owns yet. The server's configuration will override it.
+DEFAULT_ELEVATABLE_CLIENT_IDS = frozenset({"workstation-claude"})
+
 #: The longest elevation reason, in characters. The table's CHECK states the same bound.
 MAX_REASON_LENGTH = 200
 
@@ -48,6 +54,22 @@ class ClientCredentialError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         super().__init__(message)
         self.code = code
+
+
+class ForeignClientAttachError(ClientCredentialError):
+    """A client tried to attach to an operator session that is not its own.
+
+    Carries both client ids for the caller's refusal event. The message names no
+    connection id, and ``owner_client_id`` is None while nobody owns the session.
+    """
+
+    def __init__(self, requesting_client_id: str, owner_client_id: str | None) -> None:
+        super().__init__(
+            "foreign_client_attach",
+            "a client cannot attach to an operator session that is not its own",
+        )
+        self.requesting_client_id = requesting_client_id
+        self.owner_client_id = owner_client_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +102,8 @@ class ElevationRow:
     reason: str
     via: str
     requested_by_client_id: str | None
+    excluded_client_ids: list[str]
+    excluded_connection_count: int
     revoked_at: datetime | None
     expiry_audited_at: datetime | None
 
@@ -252,11 +276,15 @@ class PgClientCredentialRepo(BasePgRepository):
         reason: str,
         now: datetime,
         *,
+        elevatable_client_ids: Collection[str],
         via: Literal["hook", "cli"] = "cli",
         requested_by_client_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> ElevationRow:
-        """Freeze the ATTRIBUTED (connection, client) pairs of ``connection_ids``.
+        """Freeze the ATTRIBUTED (connection, client) pairs of an allowlisted client.
+
+        Attributed connections of any other client are not elevated: the row records their
+        client ids and count (``excluded_*``) so the audit can report what was left out.
 
         Several elevations may be active at once, on one session or on several: a grant is
         never refused because another is in force.
@@ -273,6 +301,14 @@ class PgClientCredentialRepo(BasePgRepository):
         if via == "hook" and requested_by_client_id is None:
             raise ClientCredentialError(
                 "requester_required", "a hook elevation names the credential that asked for it"
+            )
+        if via == "cli" and requested_by_client_id is not None:
+            raise ClientCredentialError(
+                "requester_forbidden", "a cli elevation names no requesting credential"
+            )
+        if not elevatable_client_ids:
+            raise ClientCredentialError(
+                "no_elevatable_clients", "an elevation needs a non-empty set of elevatable clients"
             )
         if not now < expires_at <= now + MAX_ELEVATION:
             raise ClientCredentialError(
@@ -321,11 +357,22 @@ class PgClientCredentialRepo(BasePgRepository):
                     f"connection(s) {shown} not linked to session {session_id}",
                 )
             # A historical connection has no attributed credential, and no pair to freeze.
-            frozen = [(conn, linked[conn]) for conn in connection_ids if linked[conn] is not None]
-            if not frozen:
+            attributed = [
+                (conn, linked[conn]) for conn in connection_ids if linked[conn] is not None
+            ]
+            if not attributed:
                 raise ClientCredentialError(
                     "no_attributed_connection",
                     f"session {session_id} has no connection attributed to a credential",
+                )
+            frozen = [
+                (conn, client) for conn, client in attributed if client in elevatable_client_ids
+            ]
+            excluded = [client for _, client in attributed if client not in elevatable_client_ids]
+            if not frozen:
+                raise ClientCredentialError(
+                    "no_elevatable_connection",
+                    f"session {session_id} has no connection attributed to an elevatable client",
                 )
             row = (
                 (
@@ -341,6 +388,8 @@ class PgClientCredentialRepo(BasePgRepository):
                             reason=reason,
                             via=via,
                             requested_by_client_id=requested_by_client_id,
+                            excluded_client_ids=sorted(set(excluded)),
+                            excluded_connection_count=len(excluded),
                         )
                         .returning(*_ELEVATION_COLUMNS)
                     )
@@ -349,6 +398,48 @@ class PgClientCredentialRepo(BasePgRepository):
                 .one()
             )
         return _elevation(row)
+
+    async def claim_or_check_session_owner(
+        self,
+        session_id: UUID,
+        client_id: str,
+        *,
+        elevatable_client_ids: Collection[str],
+        session: AsyncSession | None = None,
+    ) -> str:
+        """Bind an OPERATOR session to the client that attaches to it, or refuse another.
+
+        Locks the session row, so two attaching clients cannot both claim it. Call it
+        BEFORE writing the connection row: the trigger on ``brain_session_connections``
+        refuses an attributed row whose client is not the opener. An unowned session is
+        claimed only by an allowlisted client, so a write credential that knows the
+        session id and client key cannot take a pre-cutover operator session ahead of the
+        operator's own client. Agent traces are not checked, and ``client_id`` comes back.
+        """
+        async with self._maybe_session(session, write=True) as sess:
+            owner = (
+                await sess.execute(
+                    sa.select(brain_sessions.c.nature, brain_sessions.c.opener_client_id)
+                    .where(brain_sessions.c.id == session_id)
+                    .with_for_update()
+                )
+            ).one_or_none()
+            if owner is None:
+                raise ClientCredentialError("unknown_session", f"no session {session_id}")
+            if owner.nature is not None:
+                return client_id
+            if owner.opener_client_id is None:
+                if client_id not in elevatable_client_ids:
+                    raise ForeignClientAttachError(client_id, None)
+                await sess.execute(
+                    sa.update(brain_sessions)
+                    .where(brain_sessions.c.id == session_id)
+                    .values(opener_client_id=client_id)
+                )
+                return client_id
+            if owner.opener_client_id != client_id:
+                raise ForeignClientAttachError(client_id, owner.opener_client_id)
+            return client_id
 
     async def active_elevations(
         self, now: datetime, *, session: AsyncSession | None = None
