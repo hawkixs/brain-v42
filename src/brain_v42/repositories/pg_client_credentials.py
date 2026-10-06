@@ -51,6 +51,9 @@ MAX_ELEVATION = timedelta(hours=4)
 #: an operator session nobody owns yet. The server's configuration will override it.
 DEFAULT_ELEVATABLE_CLIENT_IDS = frozenset({"workstation-claude"})
 
+#: What a presented digest is, as far as the registry knows: ``unknown`` has no row.
+Disposition = Literal["active", "revoked", "expired", "unknown"]
+
 #: The longest elevation reason, in characters. The table's CHECK states the same bound.
 MAX_REASON_LENGTH = 200
 
@@ -257,6 +260,33 @@ class PgClientCredentialRepo(BasePgRepository):
                 .all()
             )
         return [_credential(row) for row in rows]
+
+    async def disposition_by_digest(
+        self, token_sha256: bytes, now: datetime, *, session: AsyncSession | None = None
+    ) -> tuple[str | None, Disposition]:
+        """Say why a digest is refused, which ``active_rows`` cannot: revoked rows count here.
+
+        Returns ``(client_id, disposition)``, and ``(None, "unknown")`` when no row has
+        the digest. A revoked row is ``revoked`` even if it has also expired: the
+        operator's revocation is the more telling answer. A row is ``expired`` from the
+        instant ``now`` reaches its ``expires_at``, as ``active_rows`` decides.
+        """
+        credentials = brain_client_credentials
+        async with self._maybe_session(session, write=False) as sess:
+            row = (
+                await sess.execute(
+                    sa.select(
+                        credentials.c.client_id, credentials.c.revoked_at, credentials.c.expires_at
+                    ).where(credentials.c.token_sha256 == token_sha256)
+                )
+            ).one_or_none()
+        if row is None:
+            return None, "unknown"
+        if row.revoked_at is not None:
+            return row.client_id, "revoked"
+        if row.expires_at is not None and row.expires_at <= now:
+            return row.client_id, "expired"
+        return row.client_id, "active"
 
     async def list_rows(self, *, session: AsyncSession | None = None) -> list[CredentialRow]:
         credentials = brain_client_credentials

@@ -153,6 +153,32 @@ async def test_expired_and_revoked_rows_are_not_active_but_are_listed(
     assert [row.created_at for row in listed] == sorted(row.created_at for row in listed)
 
 
+async def test_disposition_by_digest_tells_revoked_from_expired_from_unknown(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    live = await _issue(repo, session, client_id="red-rail")
+    expiring = await _issue(repo, session, client_id="auto-discord", expires_at=NOW)
+    revoked = await _issue(repo, session, client_id="workstation-claude")
+    await repo.revoke(revoked.id, "leaked", NOW, session=session)
+    # Revoked, THEN past its expiry: the revocation is what the operator did, so it wins.
+    both = await _issue(repo, session, client_id="red-watcher", expires_at=NOW - timedelta(hours=1))
+    await repo.revoke(both.id, "leaked", NOW, session=session)
+
+    async def disposition(digest: bytes, now: datetime = NOW) -> tuple[str | None, str]:
+        return await repo.disposition_by_digest(digest, now, session=session)
+
+    assert await disposition(live.token_sha256) == ("red-rail", "active")
+    assert await disposition(expiring.token_sha256, NOW - timedelta(seconds=1)) == (
+        "auto-discord",
+        "active",
+    )
+    assert await disposition(expiring.token_sha256) == ("auto-discord", "expired")
+    assert await disposition(revoked.token_sha256) == ("workstation-claude", "revoked")
+    assert await disposition(both.token_sha256) == ("red-watcher", "revoked")
+    assert await disposition(_digest()) == (None, "unknown")
+
+
 async def test_revoke_stamps_the_row_and_a_second_revoke_is_refused(
     session: AsyncSession,
 ) -> None:
