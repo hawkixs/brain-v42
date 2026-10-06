@@ -26,6 +26,7 @@ import structlog
 
 from brain_v42.config import get_settings
 from brain_v42.mcp import server as mcp_server
+from brain_v42.metrics import __main__ as metrics_entrypoint
 from brain_v42.metrics.runtime import build_sidecar_structlog_processors
 
 _SECRET = f"s3cr3t-{uuid.uuid4().hex}"
@@ -58,7 +59,17 @@ def _assert_traceback_without_locals(rendered: str) -> None:
 @pytest.fixture(autouse=True)
 def _restore_structlog() -> Iterator[None]:
     saved = structlog.get_config()
+    root = logging.getLogger()
+    saved_handlers, saved_level = root.handlers[:], root.level
+    uvicorn_loggers = [
+        logging.getLogger(name)
+        for name in ("fastmcp", "uvicorn", "uvicorn.error", "uvicorn.access")
+    ]
+    saved_uvicorn = [(log.handlers[:], log.propagate, log.level) for log in uvicorn_loggers]
     yield
+    root.handlers, root.level = saved_handlers, saved_level
+    for log, (handlers, propagate, level) in zip(uvicorn_loggers, saved_uvicorn, strict=True):
+        log.handlers, log.propagate, log.level = handlers, propagate, level
     structlog.reset_defaults()
     structlog.configure(**saved)
 
@@ -119,17 +130,13 @@ def test_json_exception_is_one_line_without_frame_locals(
     buffer = io.StringIO()
     monkeypatch.setenv("BRAIN_LOG_FORMAT", "json")
     monkeypatch.setenv("POSTGRES_URL", "postgresql+asyncpg://test@localhost/log_test")
+    monkeypatch.setattr(sys, "stderr", buffer)
     get_settings.cache_clear()
     try:
         if service == "mcp":
-            monkeypatch.setattr(sys, "stderr", buffer)
-            monkeypatch.setattr(logging, "basicConfig", lambda **_: None)
             mcp_server._configure_stdio_logging()
         else:
-            structlog.configure(
-                processors=build_sidecar_structlog_processors(MagicMock(), log_format="json"),
-                logger_factory=structlog.PrintLoggerFactory(file=buffer),
-            )
+            metrics_entrypoint._configure_logging(MagicMock())
         buffer.seek(0)
         buffer.truncate()
 
@@ -139,9 +146,49 @@ def test_json_exception_is_one_line_without_frame_locals(
         assert len(rendered.splitlines()) == 1
         payload = json.loads(rendered)
         assert payload["event"] == "db.connect_failed"
+        assert payload["logger"] == "test.no_locals"
+        assert payload["level"] == "error"
         assert "ConnectionRefusedError" in json.dumps(payload["exception"])
         assert "postgres down" in json.dumps(payload["exception"])
         assert _SECRET not in rendered, "frame local leaked into the rendered traceback"
+        assert "exc_info" not in payload
+        for exception in payload["exception"]:
+            for frame in exception["frames"]:
+                assert not frame.get("locals")
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.mark.parametrize("service", ["mcp", "metrics"])
+def test_json_stdlib_exception_is_one_line_without_frame_locals(
+    monkeypatch: pytest.MonkeyPatch, service: str
+) -> None:
+    buffer = io.StringIO()
+    monkeypatch.setenv("BRAIN_LOG_FORMAT", "json")
+    monkeypatch.setenv("POSTGRES_URL", "postgresql+asyncpg://test@localhost/log_test")
+    monkeypatch.setattr(sys, "stderr", buffer)
+    get_settings.cache_clear()
+    try:
+        if service == "mcp":
+            mcp_server._configure_stdio_logging()
+        else:
+            metrics_entrypoint._configure_logging(MagicMock())
+        buffer.seek(0)
+        buffer.truncate()
+
+        try:
+            _connect()
+        except ConnectionRefusedError:
+            logging.getLogger("test.foreign_exception").exception("db.connect_failed")
+
+        rendered = buffer.getvalue()
+        assert len(rendered.splitlines()) == 1
+        payload = json.loads(rendered)
+        assert payload["event"] == "db.connect_failed"
+        assert payload["logger"] == "test.foreign_exception"
+        assert payload["level"] == "error"
+        assert "ConnectionRefusedError" in json.dumps(payload["exception"])
+        assert _SECRET not in rendered
         assert "exc_info" not in payload
         for exception in payload["exception"]:
             for frame in exception["frames"]:

@@ -16,6 +16,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from brain_v42.credentials.reasons import TRANSPORT_STATUSES, emit_refusal
 from brain_v42.credentials.redact import short_id
 from brain_v42.credentials.verifier import CredentialRefused, CredentialVerifier, VerifiedPrincipal
+from brain_v42.mcp.http_security import PUBLIC_HTTP_PATHS, public_probe_scope
 from brain_v42.provenance import (
     get_current_actor,
     get_current_principal,
@@ -99,8 +100,11 @@ class CredentialGuard:
         self._client_sessions: dict[str, OrderedDict[bytes, None]] = {}
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or scope.get("path") == "/health":
+        if scope["type"] != "http":
             await self.app(scope, receive, send)
+            return
+        if scope.get("path") in PUBLIC_HTTP_PATHS:
+            await self.app(public_probe_scope(scope), receive, send)
             return
         headers = Headers(scope=scope)
         authorization = headers.getlist("authorization")

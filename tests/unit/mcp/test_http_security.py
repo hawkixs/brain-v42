@@ -222,3 +222,27 @@ async def test_origin_lookalike_rejected() -> None:
             },
         )
     assert resp.status_code == 403
+
+
+@pytest.mark.parametrize(
+    "host,status",
+    [
+        ("192.0.2.4:8765", 200),
+        ("192.0.2.4:9999", 421),
+        ("192.0.2.4", 421),
+        ("192.0.2.5:8765", 421),
+        ("mcp.example.test:8765", 200),
+        ("[2001:db8::4]:8765", 200),
+        ("[2001:db8::4]:9999", 421),
+    ],
+)
+async def test_allowed_authorities_respect_explicit_ports(host: str, status: int) -> None:
+    guard = HostOriginGuard(
+        _ok_app,
+        allowed_hosts={"192.0.2.4:8765", "mcp.example.test", "[2001:db8::4]:8765"},
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=guard), base_url="http://localhost"
+    ) as client:
+        response = await client.get("/", headers={"Host": host})
+    assert response.status_code == status
