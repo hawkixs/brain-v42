@@ -490,7 +490,7 @@ observer's budgets are constants.
   advisory-lock session).
 - A non-zero idle-in-transaction budget is raised at engine build to the longest external
   client timeout (`BRAIN_EMBEDDING_TIMEOUT`, `RERANKER_TIMEOUT`, `NEO4J_TIMEOUT`) plus 30 s,
-  because some jobs (the dedup job) hold a transaction across an embedding and a rerank
+  because some jobs (the dedup job) hold a transaction across a rerank
   call. So `BRAIN_EMBEDDING_TIMEOUT=600` yields at least a 630000 ms idle budget on every
   profile; `0` stays `0`.
 - `scripts/dream/*.py` build their own engines and stay unbounded on purpose: they are batch

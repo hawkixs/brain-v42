@@ -1,33 +1,30 @@
-"""FeatureDedupJob — periodic feature deduplication using cosine pre-filter + cross-encoder.
+"""FeatureDedupJob — periodic detection of probable duplicate features.
 
 Scans all features in a project, finds near-duplicate pairs using a two-stage
 pipeline (pgvector cosine similarity pre-filter, then cross-encoder reranker),
-and merges confirmed duplicates (oldest absorbs newest).  The absorbed feature
-is archived with a ``merged_into`` pointer so roadmap history remains auditable.
+and returns them for SIGNALLING only.  It never merges: operator ruling 9e21964f
+(extension of d4648d84) forbids any merge on a reranker score, under every
+backend, and this job writes nothing.
 
 Usage:
-    job = FeatureDedupJob(session_factory, reranker, embedding_svc)
+    job = FeatureDedupJob(session_factory, reranker)
     candidates = await job.find_candidates("brain_v42")
     for target, source, score in candidates:
-        async with session_factory() as session:
-            await job.merge_features(session, target, source)
-            await session.commit()
+        logger.info("probable duplicate", target=target.name, source=source.name)
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 import sqlalchemy as sa
 import structlog
 
-from brain_v42.db.tables import feature_artifacts, features, gitlab_events
+from brain_v42.db.tables import features
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
     from brain_v42.services.reranker_client import RerankerClient
 
 logger = structlog.get_logger(__name__)
@@ -35,42 +32,40 @@ logger = structlog.get_logger(__name__)
 # ── thresholds ──────────────────────────────────────────────────────────
 
 COSINE_PREFILTER = 0.50
-RERANKER_MERGE_THRESHOLD = 0.80
+# Gates a LOG SIGNAL only: nothing merges on a reranker score (ruling 9e21964f).
+RERANKER_SIGNAL_THRESHOLD = 0.80
 _TOP_K_NEIGHBORS = 3
 
 
 class FeatureDedupJob:
-    """Periodic feature deduplication using cosine pre-filter + cross-encoder reranker.
+    """Probable-duplicate detection using cosine pre-filter + cross-encoder reranker.
 
     Pipeline:
     1. Get all features for a project with embeddings
     2. For each feature, find top-3 neighbors via cosine similarity (>= 0.50)
     3. Run cross-encoder on pre-filtered pairs
-    4. Score >= 0.80 -> candidate for merge (oldest absorbs newest)
+    4. Score >= 0.80 -> probable duplicate, returned for signalling (never merged)
     """
 
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
         reranker: RerankerClient,
-        embedding_svc: GPUEmbeddingService,
-        *,
-        mutation_guard: Callable[[], None] | None = None,
     ) -> None:
         self._sf = session_factory
         self._reranker = reranker
-        self._embedding_svc = embedding_svc
-        self._mutation_guard = mutation_guard
 
     async def find_candidates(
         self,
         project_key: str,
     ) -> list[tuple[Any, Any, float]]:
-        """Find duplicate feature pairs using cosine pre-filter + cross-encoder.
+        """Find probable duplicate pairs using cosine pre-filter + cross-encoder.
+
+        Read-only: the pairs are for signalling, never for merging.
 
         Returns:
             List of (target, source, score) tuples where target is the oldest
-            feature that absorbs the newest (source). Score is the reranker score.
+            feature of the pair and source the newest. Score is the reranker score.
         """
         async with self._sf() as session:
             # Step 1: get all features with embeddings
@@ -135,8 +130,8 @@ class FeatureDedupJob:
                 scores = await self._reranker.rerank(target.name, [source.name])
                 reranker_score = scores[0] if scores else 0.0
 
-                # Step 4: score >= threshold -> candidate
-                if reranker_score >= RERANKER_MERGE_THRESHOLD:
+                # Step 4: score >= threshold -> probable duplicate
+                if reranker_score >= RERANKER_SIGNAL_THRESHOLD:
                     candidates.append((target, source, reranker_score))
                     logger.info(
                         "feature_dedup.candidate_found",
@@ -147,231 +142,7 @@ class FeatureDedupJob:
 
             return candidates
 
-    async def merge_features(
-        self,
-        session: AsyncSession,
-        target: Any,
-        source: Any,
-    ) -> bool:
-        """Merge source into target: transfer artifacts, archive source.
-
-        Returns:
-            True  — merge was performed.
-            False — merge was skipped (one or both rows no longer exist).
-
-        Steps:
-        0. Re-SELECT target and source FOR UPDATE to verify both still exist.
-           If either is missing or no longer a live merge root, skip the merge
-           and emit a warning.  This prevents stale candidates from merging an
-           archived row back into its own survivor.
-        1. Enrich target description with source description — read from the
-           authoritative FOR UPDATE rows, not from the stale snapshot objects
-           passed as arguments (which may reflect a pre-merge state).
-        2. Re-embed target via embedding_svc.embed(); on failure, KEEP the
-           existing target embedding (do NOT write None — that would make the
-           feature permanently invisible in cosine searches).
-        3. Transfer all feature_artifacts from source to target.
-        4. Transfer all gitlab_events from source to target (avoids FK violation).
-        5. Re-parent features previously merged into source (self-FK without cascade).
-        6. Update target row (description + embedding).
-        7. Archive source feature with ``merged_into=target``.
-        8. Log that the merge is staged; the scheduler logs durable success only
-           after commit.
-        """
-        target_id = target.id
-        source_id = source.id
-
-        if target_id == source_id:
-            logger.warning(
-                "feature_dedup.merge_skipped_same_id",
-                feature_id=str(target_id),
-            )
-            return False
-
-        # 0. Existence re-check with FOR UPDATE — serializes concurrent merges
-        #    and guards against chain-of-merges where source was already deleted.
-        self._ensure_mutation_allowed()
-        recheck_result = await session.execute(
-            sa.select(features).where(features.c.id.in_([target_id, source_id])).with_for_update()
-        )
-        self._ensure_mutation_allowed()
-        found_rows = recheck_result.fetchall()
-        found_ids = {row.id for row in found_rows}
-
-        if target_id not in found_ids or source_id not in found_ids:
-            missing = []
-            if target_id not in found_ids:
-                missing.append(f"target={target_id}")
-            if source_id not in found_ids:
-                missing.append(f"source={source_id}")
-            logger.warning(
-                "feature_dedup.merge_skipped_missing",
-                missing=missing,
-                target_id=str(target_id),
-                source_id=str(source_id),
-            )
-            return False
-
-        # Read descriptions and embedding from the authoritative FOR UPDATE rows,
-        # not from the stale snapshot objects passed as arguments.  The snapshot
-        # may reflect a pre-merge state (e.g. target.description lacks previously
-        # absorbed text after a prior merge in the same run).
-        target_row = next(r for r in found_rows if r.id == target_id)
-        source_row = next(r for r in found_rows if r.id == source_id)
-        if (
-            target_row.status == "archived"
-            or target_row.merged_into is not None
-            or source_row.status == "archived"
-            or source_row.merged_into is not None
-        ):
-            logger.warning(
-                "feature_dedup.merge_skipped_not_live_root",
-                target_id=str(target_id),
-                target_status=target_row.status,
-                target_merged_into=str(target_row.merged_into)
-                if target_row.merged_into is not None
-                else None,
-                source_id=str(source_id),
-                source_status=source_row.status,
-                source_merged_into=str(source_row.merged_into)
-                if source_row.merged_into is not None
-                else None,
-            )
-            return False
-        # `find_candidates` already filters pinned sources, but that filter
-        # lives on the DISCOVERY path. This is the MUTATION path, and it is the
-        # only place where the invariant can really hold:
-        #
-        # - `run_dedup_loop` collects ALL of a project's candidates, then merges
-        #   them one by one, each in its own session and after a reranker round
-        #   trip. A human pinning during that window would see their gesture
-        #   ignored, the decision having been taken on an earlier snapshot.
-        # - `merge_features` is public and the module docstring documents it as
-        #   directly callable. Such a caller inherits no guard.
-        #
-        # Hence the read on `source_row`, the row re-read FOR UPDATE, and NEVER
-        # on the `source` argument: the snapshot is precisely what can be stale.
-        #
-        # WE BLOCK, WE DO NOT INVERT. Swapping the roles would decide the
-        # survivor by pinning rather than by age, and would still merge two
-        # scopes nothing proves identical — the score comes from the reranker on
-        # NAMES alone. Same choice as `find_candidates`, so the two paths do not
-        # tell two stories. And a mutation primitive that silently did something
-        # other than what it was asked would be worse here than in a filter.
-        #
-        # BOTH pinned is a sub-case of this one, hence blocked too. It is logged
-        # separately: nothing says which of the two intentions must give way,
-        # that is a human judgement, not a rule to write into the code.
-        #
-        # `bool()` and not `is True`: the column is nullable (`server_default
-        # false`), and NULL means "not pinned", not "unknown".
-        if bool(source_row.pinned):
-            logger.warning(
-                "feature_dedup.merge_skipped_pinned_source",
-                target_id=str(target_id),
-                source_id=str(source_id),
-                both_pinned=bool(target_row.pinned),
-            )
-            return False
-
-        target_desc: Any = target_row.description
-        source_desc: Any = source_row.description
-        existing_embedding: Any = target_row.embedding
-
-        # 1. Enrich and re-embed before staging DML.  The authoritative feature
-        #    row locks remain held, but artifact/event locks are not held across
-        #    the remote embedding call.
-        enriched_desc = f"{target_desc}\n---\n{source_desc}"
-        new_embedding: Any = existing_embedding
-        try:
-            new_embedding = await self._embedding_svc.embed(enriched_desc)
-        except Exception:
-            logger.warning(
-                "feature_dedup.embed_failed_keeping_existing",
-                target_id=str(target_id),
-                source_id=str(source_id),
-                exc_info=True,
-            )
-        # This guard must remain outside the best-effort embedding exception
-        # handler so OwnershipLostError cannot be swallowed.
-        self._ensure_mutation_allowed()
-
-        # 2. Transfer artifacts
-        self._ensure_mutation_allowed()
-        await session.execute(
-            sa.update(feature_artifacts)
-            .where(feature_artifacts.c.feature_id == source_id)
-            .values(feature_id=target_id)
-        )
-        self._ensure_mutation_allowed()
-
-        # 3. Transfer gitlab_events — without this the final DELETE trips
-        # the gitlab_events.feature_id FK (ON DELETE NO ACTION) whenever the
-        # source has any webhook event attached, silently rolling back the
-        # whole merge transaction.
-        self._ensure_mutation_allowed()
-        await session.execute(
-            sa.update(gitlab_events)
-            .where(gitlab_events.c.feature_id == source_id)
-            .values(feature_id=target_id)
-        )
-        self._ensure_mutation_allowed()
-
-        # 4. Flatten archived/merged descendants onto the surviving target.
-        self._ensure_mutation_allowed()
-        await session.execute(
-            sa.update(features)
-            .where(features.c.merged_into == source_id)
-            .values(merged_into=target_id)
-        )
-        self._ensure_mutation_allowed()
-
-        # 5. Update target
-        self._ensure_mutation_allowed()
-        await session.execute(
-            sa.update(features)
-            .where(features.c.id == target_id)
-            .values(
-                description=enriched_desc,
-                embedding=new_embedding,
-                updated_at=sa.text("NOW()"),
-            )
-        )
-        self._ensure_mutation_allowed()
-
-        # 6. Preserve the source as an auditable archive.  Roadmap curation
-        #    proposals reference feature rows with ON DELETE CASCADE, so a
-        #    physical DELETE would erase their history.
-        self._ensure_mutation_allowed()
-        await session.execute(
-            sa.update(features)
-            .where(features.c.id == source_id)
-            .values(
-                status="archived",
-                merged_into=target_id,
-                status_updated_at=sa.text("NOW()"),
-                updated_at=sa.text("NOW()"),
-            )
-        )
-        self._ensure_mutation_allowed()
-
-        # 7. The transaction is still pending; durable success is logged by the
-        # scheduler only after its guarded commit.
-        logger.info(
-            "feature_dedup.merge_staged",
-            target_id=str(target_id),
-            source_id=str(source_id),
-            target_name=target.name,
-            source_name=source.name,
-        )
-
-        return True
-
     # ── internal helpers ────────────────────────────────────────────────
-
-    def _ensure_mutation_allowed(self) -> None:
-        if self._mutation_guard is not None:
-            self._mutation_guard()
 
     async def _get_all_features(
         self,

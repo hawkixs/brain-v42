@@ -532,11 +532,11 @@ automation acquires it before metrics restarts. The committed automation unit re
 dormant; [the systemd runbook](../deploy/systemd/README.md) is the only operator procedure.
 
 The automation and legacy metrics builders inject the lease's synchronous ownership check
-as an optional mutation guard into `GitLabIngestor`, `ClusterGuard`, and `FeatureDedupJob`.
-The scheduler checks ownership after candidate discovery and merge, around commit, and
-before advancing or logging. `FeatureDedupJob` re-embeds before DML and checks ownership
-outside the best-effort embedding handler and around every SQL await. Non-automation
-consumers retain the default `None` guard.
+as an optional mutation guard into `GitLabIngestor` and `ClusterGuard`. The dedup scheduler
+checks ownership before each pass and after each candidate discovery. `FeatureDedupJob`
+takes no guard: it is read-only, and the scheduler only logs `dedup_loop.probable_duplicate`
+for the pairs it finds. Nothing merges on a reranker score (decisions 9e21964f and
+d4648d84). Non-automation consumers retain the default `None` guard.
 
 The PostgreSQL advisory lease remains non-fencing. The guards close the observed handover
 window, including losses during embedding or reranking, but cannot revoke a transaction
@@ -545,13 +545,6 @@ and `feature_artifacts` insertion use independent transactions. A loss detected 
 commit can therefore replay a merge or leave the artifact row absent;
 `gitlab_events.feature_id` still records the feature association. Eliminating this Medium
 recovery risk requires cross-step atomicity or durable reconciliation, outside this lot.
-
-A dedup `commit()` already entered in PostgreSQL remains non-fencing: its post-commit guard
-can stop the pass and later logs, but cannot restore prior state. The two feature rows also
-remain locked from `SELECT ... FOR UPDATE` until re-embedding returns or the transaction is
-rolled back. Runtime cancellation bounds the normal lease-loss path, while a blocked
-embedding can prolong those locks. `feature_dedup.merge_staged` is pre-commit; only
-`dedup_loop.merged` reports guarded post-commit progress.
 
 After the split, automation events no longer feed the in-process metrics snapshot, so
 `cockpit.recent` intentionally loses those event entries; health, Prometheus metrics and
