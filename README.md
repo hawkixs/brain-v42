@@ -28,7 +28,8 @@ back to full-text retrieval and writes can be stored without an embedding for la
 backfill. The default embedding and reranking endpoint is `http://localhost:8003`; the
 reranker uses the unified embedding endpoint `:8003/rerank`. The `shim` backend uses
 the bundled service protocol; `openai` supports OpenAI-compatible embeddings, and
-`cohere` selects the OpenAI-style reranking protocol. Hosted providers receive the
+`cohere` selects the Cohere-style reranking protocol (`POST /v1/rerank`, as implemented
+by TEI, Jina and vLLM). Hosted providers receive the
 text sent for embedding or reranking.
 
 `EMBEDDING_DIMENSION` defaults to 1536 and must be at most 2000 for pgvector's HNSW
@@ -77,7 +78,8 @@ python -m brain_v42.mcp.server
 
 The opt-in is required only when the database name is exactly `brain`; never export it persistently.
 
-Alembic reads its URL from the environment, not directly from `.env`. Production HTTP
+Alembic reads its URL from the environment, not directly from `.env`, and rejects DSN
+query parameters: use the plain `postgresql+asyncpg://user:password@host:port/db` form. Production HTTP
 requires bearer authentication; an empty token is refused unless the explicit
 development-only unauthenticated option is enabled. For local stdio MCP configuration:
 

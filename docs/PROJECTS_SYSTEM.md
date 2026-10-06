@@ -10,8 +10,9 @@ The canonical key rule is implemented in `src/brain_v42/models/project_key.py`.
 Keys match `^[a-z0-9]+([:-][a-z0-9]+)*$`: lowercase letters and digits separated
 by single hyphens or colons. A colon is a naming convention, not a parent-child
 relationship. Do not change this regex without an audit: copies exist across the
-code, SQL constraints, and recovery assets, and no test links `_KEBAB` to the SQL
-CHECK `projects_key_format_valid`. Project comparisons are exact except where an
+code, SQL constraints, and recovery assets.
+`tests/unit/db/test_project_key_regex_single_source_anchor.py` pins those copies, the
+SQL CHECK `projects_key_format_valid` included, against `_KEBAB`: change them together. Project comparisons are exact except where an
 explicit project-group scope is used.
 
 The exact legacy aliases `brain` and `brain_v42` canonicalize to `brain-v42`.
