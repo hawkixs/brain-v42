@@ -1037,3 +1037,30 @@ condition = "AND"
 regexTarget = "line"
 paths = ['''^ops/recovery/brain-v42-v21-pgrestore\.sql$''']
 regexes = ['''^\s*(?:\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)|\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\)|\('brain_client_credentials_notify', 'b079d467097c9f60ceb85eb9e2d4e8f9170ac6281b751bf9428b64146d2cbafc', 151\)|\('brain_credential_audit_notify', 'eb4befc2fb9cf3c8f6d396d96091b5d218568226cc39d1774e5d40c2647fe645', 131\)),?\s*$''']
+
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-10-06. The v22 contract (head 064) names four exact public \
+tuples that the generic-api-key heuristic misreads: the md5 fingerprint of \
+brain_sessions_pkey and the source sha256 of reject_project_context_key_change \
+(inherited unchanged through v21), and the source sha256 of the two 063 NOTIFY \
+trigger functions. All are public schema metadata. Exact tuples only.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v22\.sql$''']
+regexes = ['''^\s*(?:\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)|\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\)|\('brain_client_credentials_notify', 'b079d467097c9f60ceb85eb9e2d4e8f9170ac6281b751bf9428b64146d2cbafc', 151\)|\('brain_credential_audit_notify', 'eb4befc2fb9cf3c8f6d396d96091b5d218568226cc39d1774e5d40c2647fe645', 131\)),?\s*$''']
+
+[[rules.allowlists]]
+description = """
+Triaged 2026-10-06. The v22 pg_restore twin contract (head 064) names four exact public \
+tuples that the generic-api-key heuristic misreads: the md5 fingerprint of \
+brain_sessions_pkey and the source sha256 of reject_project_context_key_change \
+(inherited unchanged through v21), and the source sha256 of the two 063 NOTIFY \
+trigger functions. All are public schema metadata. Exact tuples only.
+"""
+condition = "AND"
+regexTarget = "line"
+paths = ['''^ops/recovery/brain-v42-v22-pgrestore\.sql$''']
+regexes = ['''^\s*(?:\('brain_sessions_pkey', '6763cd8159ef6f0131abbfedfea044bc'\)|\('reject_project_context_key_change', 'e800aecbe1054d8333babd1c43f1f52893db81b6b8f4e7fc6d167c6cd6f9de82', 226\)|\('brain_client_credentials_notify', 'b079d467097c9f60ceb85eb9e2d4e8f9170ac6281b751bf9428b64146d2cbafc', 151\)|\('brain_credential_audit_notify', 'eb4befc2fb9cf3c8f6d396d96091b5d218568226cc39d1774e5d40c2647fe645', 131\)),?\s*$''']
