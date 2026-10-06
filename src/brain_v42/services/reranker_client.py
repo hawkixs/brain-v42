@@ -181,6 +181,10 @@ class RerankerClient:
             response = await client.get(self._wire.health_path)
         except httpx.HTTPError as exc:
             return self._record_probe(False, f"transport_{type(exc).__name__}")
+        except Exception as exc:
+            # A probe must never raise, and an unexpected failure is still a state:
+            # recorded and logged on entry like any other, not a traceback per tick.
+            return self._record_probe(False, f"error_{type(exc).__name__}")
         if response.status_code == 200:
             return self._record_probe(True, "ok")
         return self._record_probe(False, f"http_{response.status_code}")

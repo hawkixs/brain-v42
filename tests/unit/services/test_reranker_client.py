@@ -487,3 +487,30 @@ class TestAHealthPathNeverLeavesTheBaseUrl:
             patcher.stop()
         assert seen == []
         assert client.last_probe_reason == "invalid_health_path"
+
+
+class TestAnUnexpectedProbeErrorIsStateNotNoise:
+    @pytest.mark.asyncio
+    async def test_it_is_recorded_and_logged_once_per_entry(self) -> None:
+        from structlog.testing import capture_logs
+
+        from brain_v42.services.rerank_wire import CohereRerankWire
+
+        client = RerankerClient(
+            base_url="https://openrouter.ai/api",
+            wire=CohereRerankWire(model="m", health_path="/v1/key"),
+        )
+        with (
+            patch.object(client, "_get_client", side_effect=RuntimeError("boom")),
+            capture_logs() as records,
+        ):
+            assert await client.is_available() is False
+            assert await client.is_available() is False
+
+        assert client.last_probe_ok is False
+        assert client.last_probe_reason == "error_RuntimeError"
+        assert client.last_probe_monotonic is not None
+        warnings = [r for r in records if r["event"] == "reranker_client.unavailable"]
+        assert len(warnings) == 1
+        assert warnings[0]["reason"] == "error_RuntimeError"
+        assert not [r for r in records if r["event"] == "reranker_client.probe_failed"]
