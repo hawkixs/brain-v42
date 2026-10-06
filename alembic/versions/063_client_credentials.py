@@ -315,9 +315,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.execute("SET LOCAL lock_timeout = '30s'")
-    op.execute(
-        "DROP TRIGGER brain_session_connections_owner_check ON brain_session_connections"
-    )
+    op.execute("DROP TRIGGER brain_session_connections_owner_check ON brain_session_connections")
     op.execute("DROP FUNCTION brain_session_connections_owner_check()")
     op.execute("DROP TRIGGER brain_sessions_opener_immutable ON brain_sessions")
     op.execute("DROP FUNCTION brain_sessions_opener_immutable()")
