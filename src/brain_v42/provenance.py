@@ -4,6 +4,9 @@ The ``X-Brain-Agent`` header is declared by the client, hence falsifiable: it is
 a hygiene signal, not a security boundary — the same posture as the session
 ``client_key``, "declared, not proven".
 
+The principal is different: only a verified credential supplies it, and the
+declared actor never feeds connection ownership.
+
 A leaf module on purpose: no MCP and no database dependency, so it is importable
 from the transport layer as well as from the services.
 """
@@ -76,6 +79,18 @@ _current_actor: ContextVar[str] = ContextVar(
     default=UNKNOWN_ACTOR,
 )
 
+_current_principal: ContextVar[str | None] = ContextVar("brain_v42_current_principal", default=None)
+
+
+def set_current_principal(client_id: str | None) -> None:
+    """Set only the verified credential identity, independently of declared actors."""
+    _current_principal.set(client_id)
+
+
+def get_current_principal() -> str | None:
+    """Shared-token and non-request contexts carry no verified client identity."""
+    return _current_principal.get()
+
 
 def normalize_agent(value: str | None) -> str:
     """Reduce a raw ``X-Brain-Agent`` to a clean actor name.
@@ -134,6 +149,18 @@ _current_transport: ContextVar[str | None] = ContextVar(
     "brain_v42_current_transport",
     default=None,
 )
+
+_current_peer: ContextVar[str | None] = ContextVar("brain_v42_current_peer", default=None)
+
+
+def set_current_peer(peer: str | None) -> None:
+    """Keep transport peer observations available without importing MCP into services."""
+    _current_peer.set(peer)
+
+
+def get_current_peer() -> str | None:
+    """Read the transport peer, absent for stdio and non-request contexts."""
+    return _current_peer.get()
 
 
 def normalize_transport(value: str | None) -> str | None:

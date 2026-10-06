@@ -64,7 +64,16 @@ def emit_refusal(
         "mcp_auth.refused",
         reason=reason,
         status=status,
-        **{key: value for key, value in context.items() if value is not None},
+        **{
+            key: value
+            for key, value in context.items()
+            if value is not None
+            or (
+                key == "owner_client_id"
+                and reason == "foreign_client_attach"
+                and session_id is not None
+            )
+        },
     )
 
 
