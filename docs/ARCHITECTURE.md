@@ -1,41 +1,32 @@
 # Architecture — brain_v42
 
-**Updated:** 2026-07-24
-**Repository and production state:** migrations 001–062 defined, 50 PG tables modeled; MCP catalog: 78 always-on + 2 graph-gated = 80. Production runs lifecycle v4 since 24 July 2026: revision 036 was applied and validated first, then 037 was proved before the restart-last MCP cutover and authenticated lifecycle-v4 E2E. The deployed Alembic head has since advanced and is not asserted here — measure it with `select version_num from alembic_version`. Last measurement: `045` on 16 August 2026, right after the 044→045 cutover.
+**Repository schema:** the repository carries migrations through revision 062. This is a code target, not a statement about any deployed database. Migration 062 adds two partial observer-error indexes and installs `pg_stat_statements` in the `monitoring` schema. Earlier revisions add measured-fact definitions, delivery attestations, focus slots, ticket release planning, and session connection provenance.
 
-**Repository target: 062.** Revision 062 adds two partial indexes on `delivery_confirmations` for the observer's failure count and `pg_stat_statements` in the new schema `monitoring` (not `public`, so ACL v11 stays valid); it adds no table. Revision 061 adds `brain_session_connections`, the connections seen by an operator session's lifecycle calls, so exact derived absorption survives transport changes even when a coordinating session blocks the temporal window. Artifacts remain bounded by the operator session's start. Revision 060 adds the focus slots of ADR #34 — `focus_slots`, `focus_slot_anchors` (written once) and `focus_slot_history` (append-only, one row per slot revision, required at COMMIT by a deferred constraint trigger created enabled) — plus `brain_sessions.slot_id` and `relayed_from_session_id` with their CHECKs and partial unique indexes, and fixes 16314b31: the `closed_inactive` branch now refuses a NULL nature. Its downgrade refuses while any slot, slot history row or bound session exists unless explicitly opted into with `-x allow_focus_slots_downgrade=yes`. Revision 059 adds nullable `tickets.target_release` (text, no default or backfill; `NULL` means no release is planned), validates the `major.minor.patch` shape, and adds a partial index on `(to_project, target_release)` for planned tickets. Its downgrade refuses to erase plans unless explicitly opted into with `-x allow_target_release_downgrade=yes`. Revision 058 widens the `knowledge_claims` provenance CHECK to accept `extracted` (claims the server derives from knowledge prose at write time, decision f99ca46f); its downgrade refuses while such rows exist. Revision 057 adds `search_log.embedding_model` (text, nullable, no default, no backfill): a prerequisite for judging the codestral embedding trial (ticket 4fac067a, operator decision 1669d429), attributed at insert time from the same live identity as `config.py`'s `embedding_model` — the configured model NAME only, never its `embedding_backend`, and never a caller-supplied value or the `SecretStr` API key beside it. `NULL` means a pre-057 row, a search that ran `search_mode == "fts_fallback"` (the embedding service was down and the search was served by FTS alone, `brain_service.py`), or a search whose `project_group` resolved to no project (answered empty before any embedding call) — no embedding model produced that row, so none is attributed. Its downgrade carries no named opt-in, unlike 056 or 049: `search_log` already expires every row after 30 days (`MetricsFlusher`), so nothing this column attributes outlives a migration window regardless. Revision 056 gives `project_contexts` its first and only lifecycle: `archived_at` and `archived_reason`, nullable with no default and no backfill, so `archived_at IS NULL` IS the definition of active and none of the 63 existing rows is rewritten. Nothing existing was reusable — `current_phase` is free prose one project already uses to say it is dormant, `project_group` is a grouping whose real value a lifecycle would destroy, and `metadata` is empty on every row. A CHECK keeps the pair honest (a reason without a date describes nothing) and a partial index on `project_key WHERE archived_at IS NOT NULL` serves the default-view filter, which asks for a handful of keys out of 63. Archiving deletes nothing: an archived project keeps every learning, decision, snippet, runbook, ADR and plan, and only leaves the default views. **Fail-closed** downgrade — dropping the columns un-archives every project at once, silently, so it refuses while any project is archived; opt-in `-x allow_archival_downgrade=yes`. Revision 055 adds the claim ledgers of lot B (spec 2026-09-19, measured facts and claims): `knowledge_fact_definitions`, the immutable history of the fact catalogue keyed by `(fact_name, definition_version)` and guarded by a digest over the seven declared fields, so a definition that changes without a version bump is detected at server start rather than believed; `knowledge_claims`, where a claim KEY is content identity and a claim OCCURRENCE is a row with its own lifecycle, uniqueness binding ACTIVE occurrences only so a retired key can be re-asserted with `replaces_id` naming its predecessor; and `knowledge_claim_verdicts`, append-only, ordered by a `seq` that is `GENERATED ALWAYS AS IDENTITY` — the first identity columns in this schema, because the server insertion order IS the read order and a `bigserial` DEFAULT could be overridden by the writer whose order it records. Immutability is enforced BY SQL: two refuse-always triggers, a narrow UPDATE gate that admits only `retired_at` moving from NULL once, an anchor gate that refuses a claim whose `entity_type`, `project_key`, `scope_kind` or `lifecycle` disagrees with its `brain_entities` row, and a chain gate that accepts only the LATEST retired occurrence as predecessor so the chain can neither fork nor skip. Grants are written too, but measured 2026-09-21 they buy nothing today: the application role is a superuser and privilege checks are bypassed — the triggers, not the grants, carry the guarantee. The deterministic view `knowledge_claim_current` projects the latest attempt and the latest CONCLUSIVE verdict with no clock, staleness being derived at read time (decision d8c016fc). **Fail-closed** downgrade naming the rows of each of the three tables it would destroy; opt-in `-x allow_claims_downgrade=yes`. Revision 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest` and `brain_delivery_attestation_list` (ticket 04bc1f4a, the ledger/policy boundary with red-rail): Brain stores the fact and validates its form — kind shape, JSON-object payload, server-computed digest, one idempotency key per issuer and ticket — and never judges its kind; the downgrade is fail-closed and names the rows it would destroy. Revision 053 adds versioned delivery workflows: immutable contracts and dependency identities, proposed PR bindings, append-only provider confirmation subjects, receipts and idempotency events. Required repository-document context is a workflow-level observation subject before any PR exists; both it and an artifact binding retain separate latest-success and latest-attempt confirmation pointers. This is a repository target only: no production rollout or live recovery attestation is implied. Revision 051 is M-C of the projects/sessions overhaul: `brain_session_checkpoints`, an append-only ledger of session JUDGMENT — progress, blocker and next step published together in one call. Append-only is enforced by a `BEFORE UPDATE OR DELETE` trigger rather than by the absence of a code path, and its FK carries `ON DELETE RESTRICT` so that guard needs no exception for cascades — with the consequence, named rather than discovered, that a session holding checkpoints becomes indelible. Idempotence comes from `UNIQUE(session_id, seq)` + `ON CONFLICT DO NOTHING` instead of a CAS, because agent retries are the norm; the same `seq` with different content is refused rather than absorbed. It writes no `last_heartbeat_at` (ADR §0bis.4, D4 amended in place). Its downgrade is fail-closed behind `-x allow_checkpoint_downgrade=yes` and names the sessions whose judgment it would destroy. Revision 050 is M-D of the projects/sessions overhaul, the head 049 reserved for it: `project_focus_history`, an append-only audit trail of every focus revision, seeded from the contexts present at upgrade time (NULL focuses included). It ships a DEFERRED CONSTRAINT TRIGGER on `project_contexts`, scoped `AFTER UPDATE OF current_focus` so the plan-index repair stays out of its reach, and **created DISABLED** — arming it is a named operator gesture after the MCP restart, because until then the live process writes no history row and the trigger would abort every `brain_session_end` that applies a focus. Its downgrade is fail-closed outside the seed behind `-x allow_focus_history_downgrade=yes`. Revision 049 carries three objects of one family (nullable ADD COLUMN + widened CHECK), grouped under criterion (c) of decision 9d22bc6a — their downgrades fail independently, each behind its own named opt-in: `dream_runs.closed_inactive_count` (the per-night series of inactivity closures, kept distinct from abandonments), `dream_runs.thinking_tokens` (the agy rail was under-declaring ~38% of its tokens), and the `freshness_source` vocabulary widened with `manual_update` and `plan_reindex` on the six decay tables — the plan upsert now declares its provenance. Revision 048 adds `brain_session_artifacts.attribution_mode`,
-which records BY WHICH KEY a row was attributed: `explicit` (a human named the UUID),
-`derived_deposit` (the server parked it in a tracer), `derived_connection` (the exact match)
-and `derived_window` (deduced by temporal exclusivity). Nullable, no backfill — `NULL` means
-"written before 048". Only the deduced mode carries a partial index: undoing a guess must be a
-query, not a scan, and its downgrade is fail-closed because dropping the column makes a
-deduction indistinguishable from a human's explicit capture. Revision 047 removes the closing
-XOR — non-empty ledger XOR
-`nothing_to_capture_reason` — from the `ended` branch of `brain_sessions_terminal_state_valid`.
-That check measured whether the CLIENT had declared; derived capture would now feed its signal
-from the server, and a check is hollow the moment the thing it checks can influence its own
-signal. It also made any session whose ledger the server had filled impossible to close. Its
-downgrade is fail-closed and names the closures it would destroy. Revision 046 gives sessions
-their identity (`connection_id`,
-`started_by_actor`, `intent`, `nature`) and the `closed_inactive` terminal state, behind flags
-that ship closed. It follows 045, which widened `dream_runs.model`, itself after the focus stamp,
-provenance, freshness and decay work of 040 through 044. Revisions 038 and 039 — Dream
-ticket-extraction attempts, and the project-context timestamp-trigger isolation that lets repair
-transactions preserve signed timestamps — went to production during the 2026-08-03 cutover.
-This line states what the REPOSITORY carries, never what runs live: it claims no deployed head,
-and a test derives the number above from `alembic/versions/` instead of trusting this sentence.
+**MCP catalog:** 78 always-on + 2 graph-gated = 80.
 
-**Production graph state:** cutover validated at head 035 on 22 July 2026. The production
-instance uses the private projector credential and `GRAPH_LEDGER_WRITE_ENABLED=true`; the safe
-default remains `false` for every fresh, restored, or otherwise unproved environment. The
-[graph ledger runbook](GRAPH_LEDGER_RUNBOOK.md) is authoritative for the renewable evidence.
-
-Successor of `datalake_v2` (7-container HTTP chain). brain_v42 uses one shared FastMCP
-application process backed by Postgres + pgvector, with Neo4j as an optional relationship index
-and a local unified GPU embedding/reranker service. The production fleet runs HTTP transport (see below); stdio
-is the dev/fallback mode.
+brain-v42 is a persistent FastMCP application backed by PostgreSQL and pgvector.
+Neo4j is a derived relationship projection; HTTP is used for persistent connections
+and stdio remains available for development and fallback deployments.
 
 ## Overview
+
+The current runtime has distinct MCP, metrics, delivery-observer, graph-projector,
+and embedding components. The MCP server composes tool services with HTTP middleware
+for host/origin checks, fail-closed bearer authentication, request-size enforcement,
+and request provenance. Bounded input models constrain tool arguments. HTTP
+connections can own server-created agent traces; transport termination closes
+those traces. Operator sessions can absorb eligible artifacts from traces and
+from the connections on which the operator session was observed.
+
+PostgreSQL is the source of truth for knowledge, projects, sessions, delivery data,
+and graph facts. The transactional graph ledger/outbox records graph changes;
+the separate graph projector consumes it and updates Neo4j, a rebuildable
+relationship projection. Search uses PostgreSQL FTS and pgvector, with embedding
+and reranking supplied by the configured endpoint. The metrics sidecar reads
+operational state and exposes metrics and health. The delivery observer polls
+providers and records confirmations for ticket and release views. The facts
+registry exposes definitions and measured values through `brain_fact_get` and
+`brain_fact_list`. Dream provides separately gated consolidation and maintenance.
 
 ```
                             Claude Code
@@ -72,7 +63,7 @@ is the dev/fallback mode.
    unified GPU embedding/reranker service are separate and independently restartable.
 2. **PG is the source of truth.** All CRUD, FTS (tsvector), vector search (pgvector HNSW, 1536 dims), supersession chains (recursive CTE), and audit tables live in PG.
 3. **Neo4j is a relationship index.** Canonical entity data stays in PostgreSQL. Neo4j stores bounded identity/display fields, graph edges (`SUPERSEDES`, `MOTIVATED_BY`, `IMPLEMENTS`, `DOCUMENTS`, `USES`, `RELATED_TO`, `CONTAINS`, `DEPENDS_ON`, `BELONGS_TO`, `MERGED_INTO`, `BELONGS_TO_DOMAIN`), and internal projection fence/cursor nodes. It enriches search results through a "Related" section or explicit `brain_get_neighbors`.
-4. **Additive graph cutover.** With `graph_ledger_write_enabled=false`, services keep the historical PG-then-Neo4j write-through path. Migrations 033–035 can be installed and backfilled without changing that owner. Production completed the separately authorized cutover on 22 July 2026: PostgreSQL owns graph facts and an at-least-once outbox projects them to Neo4j. Fresh or unproved environments stay at the safe `false` default until their own gates close. Durable ledger failures propagate instead of degrading into success; `graph_enabled=false` disables both graph paths.
+4. **Graph projection is explicit.** PostgreSQL stores graph facts and the transactional outbox; the graph projector delivers them to Neo4j. Configuration controls whether graph integration and ledger writes are enabled. Durable ledger failures propagate instead of degrading into success.
 5. **Stdout is sacred.** All logs go to stderr via `_configure_stdio_logging()` in `src/brain_v42/mcp/server.py` — any stray `print` corrupts JSON-RPC and silently drops the tool list.
 
 ## Transport
@@ -122,6 +113,8 @@ Activated by `BRAIN_MCP_TRANSPORT=stdio` (default) or omitting the env var. Used
 ### Network trust boundary
 
 **Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to loopback; metrics and automation default to loopback. The versioned Compose target binds the embedding host publish to loopback and the live runtime matches it — measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and non-empty in the live server process, and `POST /mcp` answers `401` both without a bearer and with a wrong one. The dedicated Docker client network exists and carries the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. Repository-managed WAN isolation remains unproven — the repository manages no firewall rule at all. What would make this paragraph false again, and is watched by no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. `METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the decision, and under that opt-in the three POST receivers stay unregistered and say so on `/healthz`. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
+
+**Embedding topology**: the backend and model are selected by configuration. The shim and OpenAI-compatible backends share the embedding service interface; reranking uses the configured reranker endpoint.
 
 **Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
 
@@ -219,7 +212,13 @@ two: a plan is a declaration, a release is a measurement (see `docs/OPERATIONS.m
 See `docs/SCHEMA.md` for the maintained schema reference. Migration files and
 `src/brain_v42/db/tables.py` remain authoritative.
 
-### Canonical graph ledger, fencing, and recovery (migrations 033–035, active in production)
+### Canonical graph ledger, fencing, and recovery (migrations 033–035)
+
+Historical cutover record:
+
+**Production graph state:** cutover validated at head 035 on 22 July 2026
+
+To measure the live Alembic head, run `docker exec brain_v42_postgres psql -U brain -d brain -Atc "select version_num from alembic_version"`. The repository migration head is not evidence of the deployed database head.
 
 Migration 033 installs and backfills the canonical graph ledger. Migration 034 adds durable
 projector coordination and a cross-store fence. Migration 035 adds a resumable recovery
@@ -317,29 +316,21 @@ introduced through 035. The CLI checks those five explicit confirmations; their 
 assertions rather than discovering external state. A Neo4j backup or correlated restore is not a
 gate because Neo4j never supplies canonical recovery state.
 
+Historical evidence, kept for reference: the earlier head-035 restore proves the graph cutover
+state. DR-v5 run `20260724_150315` renewed the PostgreSQL restore evidence at head 037 with
+24/24 checks and an independent SQL attestation. A future recovery must revalidate the evidence
+for its own instance and deployed head.
+
 The relation row and its outbox instruction are atomic with each other, not necessarily with
 the earlier business-row commit. When a service commits an entity before staging a related
 edge, a ledger failure propagates but may leave that entity committed without the relation.
 Clients must treat the operation as a retryable saga. The cutover drill must exercise this
 window and prove its retry/reconciliation contract.
 
-The production activation was explicitly authorized and completed on 22 July 2026 with
-`GRAPH_LEDGER_WRITE_ENABLED=true`. Its instance-specific evidence includes:
-
-- a PostgreSQL sandbox restore at head 035 followed by the DR-v3 contract at 24/24;
-- recovery UUID `776fd1b9-dbd0-4a1c-b7e3-cd3398ebf93a` completed before projector generation 3;
-- stopped legacy writers, credential rotation, zero legacy sessions and authenticated refusal
-  of the revoked credential;
-- a rebuild into an empty dedicated Neo4j database, followed by matching counts of 4,678
-  entities, 11,888 relations and 16,566 cursors, an empty outbox and an MCP smoke test.
-
-These proofs do not authorize another instance or a future rebuild. Such an environment must
-remain at `GRAPH_LEDGER_WRITE_ENABLED=false` until the runbook's four gates are repeated and
-reviewed. Repository migrations 036–037 were deployed separately on 24 July 2026. The earlier
-head-035 restore still proves the graph cutover state historically. DR-v5 run
-`20260724_150315` renewed the current PostgreSQL restore evidence at head 037 with 24/24 checks
-and an independent SQL attestation; a future recovery must revalidate the evidence for its own
-instance and deployed head.
+The code supports enabling graph ledger writes and projection through configuration.
+Those settings and recovery proofs are environment-specific and are not asserted by this
+architecture reference. Follow the [graph ledger runbook](GRAPH_LEDGER_RUNBOOK.md) for
+the required preconditions and recovery procedure.
 
 The runtime cannot detect an arbitrary PostgreSQL PITR within an already armed generation.
 The restored ledger may be older than Neo4j cursors while both retain a valid fence lineage.
@@ -357,9 +348,12 @@ tested-restore gate. See the
 
 ### Persistent session lifecycle (repository migrations 032 and 037)
 
-Migration 032 adds `brain_sessions`, persistent session UUIDs, and `project_contexts.focus_revision`. The v4 lifecycle delivered with migration 037 adds the durable capture ledger, heartbeat, identity checks, and persisted focus outcomes. It follows migration 036 in the single Alembic chain. Both are active in production since 24 July 2026, with schema, health and authenticated E2E proofs. DR-v5 now certifies an isolated PostgreSQL restore at head 037. Full disaster recovery remains open until roles, owners and ACLs are replayed, a dedicated Neo4j rebuild is proved, DR-v5 runs from the production timer, and an encrypted off-host copy plus alert delivery are verified.
-
-The lifecycle has three database-constrained states: `open`, `ended`, and `abandoned`.
+The session schema adds persistent operator sessions, exclusive capture attribution,
+server-owned HTTP agent traces, focus history, slots, checkpoints, and recorded
+connections. Session rows distinguish `open`, `ended`, `abandoned`, and
+`closed_inactive`; database constraints validate terminal fields and slot bindings.
+This describes the repository schema, not a deployed database or a completed
+disaster-recovery proof.
 
 - **User-controlled boundaries.** Only an explicit user command may start, capture, heartbeat, list, resume, bind, relay, end, or abandon a session on the agent and client side. Hooks and agents never infer a boundary or close a stale session. **Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly enabled counts as a standing user command for one gesture only: `brain_session_relay` of an open operator session, onto its focus slot when it is bound to one and onto the project base when it is not — capture, end and start of its successor under a new `client_key`, in one transaction. The model makes the call and chooses its captures, summary and handover; the mod only triggers the turn and replays the result at compaction. The base form writes the handover as the project's whole base focus under a compare-and-swap on its revision, and refuses a handover under 70% of the current base (`base_focus_shrink`): only an operator relay may override that guard, never the mod. The standing command covers nothing else: not `brain_session_abandon`, not `brain_session_end` of any session, not the relay of a server-opened trace, not any write of the project base outside that relay, not opening, closing or changing a slot, and not `start`, `resume` or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Hooks still never capture, close or commit on their own. Cross-cutting work without a ticket needs no anchor: left unbound, it is relayed onto the project base, under the same guards. The only server-side exception is the Dream `sweep` phase, shipped disabled and dry, which abandons an open session with no heartbeat for seven days (`abandonment_reason = 'auto_stale_7d'`) without touching project focus.
 - **Concurrent starts.** Multiple open sessions may share a project. Idempotence is enforced by unique `(project_key, client_key)`; retrying the same key while its session is open returns the same UUID.
@@ -844,11 +838,6 @@ HTTP MCP service, prove the historical global admin contract, then re-enable the
 handle any persistent catch-up. This delivery performed no deployment, service restart, timer
 change or activation, token creation, live-credential access, or enforcement activation.
 
-Designs: [provider migration](../.specs/plans/dream-codex-agent-migration.design.md); original Dream mode
-(`docs/superpowers/specs/2026-04-05-dream-mode-design.md`) and v3 actionability
-(`docs/superpowers/specs/2026-04-17-dream-v3-actionability-design.md`), both in the private
-brain-v42-internal repository.
-
 ## GitLab webhook ingestion
 
 `src/brain_v42/services/gitlab_ingestor.py` receives webhook payloads and:
@@ -870,19 +859,12 @@ Feature creation has two deliberate paths:
 - **Signal-driven resolution.** Eligible artifact, plan, and GitLab paths continue through
   `ClusterGuard`, which may link, merge, or create within the project using semantic similarity.
 
-Decision and concurrency boundary: explicit roadmap feature creation
-(`docs/superpowers/specs/2026-07-23-explicit-roadmap-feature-creation-design.md` in the
-private brain-v42-internal repository).
-
 `StatusEngine` advances feature status monotonically
 (planned → research → design → building → deployed → done) based on artifact types.
 
 ## GitNexus integration
 
 Side-by-side, not merged. GitNexus is a second MCP stdio server exposing `gitnexus_*` tools (code graph: AST + call chains + impact analysis). Isolation invariants: disjoint MCP surfaces (`brain_*` vs `gitnexus_*`), disjoint data (`.gitnexus/` vs PG+Neo4j), disjoint compute (transformers.js CPU vs GPU embed :8003). Nightly reindex at 04:30 finishes before the Dream timer's 06:00 window (plus up to 120 seconds of jitter).
-
-Design: `docs/superpowers/specs/2026-04-20-gitnexus-integration-design.md` in the private
-brain-v42-internal repository.
 
 ## Configuration
 
@@ -996,12 +978,22 @@ brain_v42/
 | Maintenance | manual | Dream mode nightly + DecayFlusher + ConsolidationJob |
 | Observability | none | /metrics :9200 + /api/cockpit + process_metrics |
 
+## Planned deployment
+
+The planned production direction is a dedicated server operated by the red-rail
+release rail as one Compose project: PostgreSQL, Neo4j, the MCP server, metrics
+sidecar, delivery observer, a one-shot migration service that proves the recovery
+contract, and Compose-scheduled work. Clients will reach MCP over a private
+WireGuard network with bearer authentication. Each client service is planned to
+have its own credential with scoped read, write, delivery, or admin rights; admin
+access is intended to require time-boxed operator elevation. Delivery attestation
+issuers are planned to be proven against the credential in attestation API v1.1.
+After deployment work, planned priorities are search and embedding quality,
+disaster-recovery proof, and metrics. Dream is suspended and is planned to be
+re-armed later.
+
 ## References
 
 - `docs/SCHEMA.md` — PG schema column-level
 - `docs/MCP_TOOLS.md` — tool catalog
 - `docs/GRAPH_LEDGER_RUNBOOK.md` — import, cutover, rebuild, observability, and rollback gates
-- Feature design specs (memory decay, roadmap v2, the Neo4j knowledge graph, project-group
-  and key normalization, Dream mode, plan chunking/indexing, Dream v3 actionability, the
-  GitNexus integration): `docs/superpowers/specs/` in the private brain-v42-internal
-  repository.
