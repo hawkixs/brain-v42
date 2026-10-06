@@ -697,6 +697,38 @@ async def test_resolve_stops_after_ownership_loss_during_reranking(mock_deps):
 
 
 @pytest.mark.asyncio
+async def test_resolve_stops_after_ownership_loss_during_failed_reranking(mock_deps):
+    """A failing rerank is still reranker I/O: lease loss during it must stop the
+    resolution, even on the knowledge-signal path that would only skip."""
+    gate = _MutableMutationGate()
+    candidate = _make_feature_row(similarity=0.55)
+    candidates = MagicMock()
+    candidates.fetchall.return_value = [candidate]
+    mock_deps["session"].execute = AsyncMock(return_value=candidates)
+
+    async def rerank_failing_after_losing_ownership(
+        _text: str,
+        _candidate_texts: list[str],
+    ) -> list[float]:
+        gate.owned = False
+        raise RuntimeError("reranker crashed")
+
+    mock_deps["reranker"].rerank = AsyncMock(side_effect=rerank_failing_after_losing_ownership)
+    guard = _build_guard(mock_deps)
+    guard._mutation_guard = gate.ensure_owned  # type: ignore[attr-defined]
+
+    with pytest.raises(OwnershipLostError, match="inside cluster resolution"):
+        await guard.resolve(
+            text="grey-zone knowledge signal",
+            embedding=[0.1] * 1536,
+            project_key="brain_v42",
+            signal_type="learning",
+        )
+
+    mock_deps["session"].commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_resolve_does_not_commit_when_ownership_is_lost_during_insert(mock_deps):
     """A post-INSERT lease check must prevent a newly created feature commit."""
     gate = _MutableMutationGate()

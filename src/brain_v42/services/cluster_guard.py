@@ -222,6 +222,9 @@ class ClusterGuard:
             # scores would always reach RERANKER_MERGE. Take the same
             # cosine-only path as an unavailable reranker, which never merges.
             logger.warning("cluster_guard.rerank_failed", exc_info=True)
+            # A failed rerank is still reranker I/O: re-check ownership before
+            # anything else, as the success path does just below.
+            self._ensure_mutation_allowed()
             return await self._fallback_cosine_only(
                 session, text, embedding, project_key, signal_type, candidates
             )
