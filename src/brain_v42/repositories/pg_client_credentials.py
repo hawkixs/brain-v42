@@ -420,7 +420,9 @@ class PgClientCredentialRepo(BasePgRepository):
         _require_author(granted_by)
         connection_ids = list(dict.fromkeys(connection_ids))
         if not connection_ids:
-            raise ClientCredentialError("no_connections", "an elevation needs a connection")
+            raise ClientCredentialError(
+                "no_attributed_connection", f"session {session_id} has no connection to elevate"
+            )
         if not reason.strip():
             raise ClientCredentialError("blank_reason", "an elevation needs a reason")
         if len(reason) > MAX_REASON_LENGTH:

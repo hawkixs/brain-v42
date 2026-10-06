@@ -380,6 +380,18 @@ async def test_grant_elevation_without_an_attributed_connection_is_refused(
     assert await session.scalar(sa.text("SELECT count(*) FROM brain_admin_elevations")) == 0
 
 
+async def test_grant_elevation_on_a_session_without_connections_is_refused(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    with pytest.raises(ClientCredentialError) as refused:
+        await _grant(repo, session, operator, [])
+    assert refused.value.code == "no_attributed_connection"
+    assert await session.scalar(sa.text("SELECT count(*) FROM brain_admin_elevations")) == 0
+    assert await session.scalar(sa.text("SELECT count(*) FROM brain_credential_audit")) == 0
+
+
 async def test_an_elevation_matches_only_its_frozen_pair(session: AsyncSession) -> None:
     repo = PgClientCredentialRepo()
     operator = await _make_session(session)
