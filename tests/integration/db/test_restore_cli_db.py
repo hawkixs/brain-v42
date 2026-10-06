@@ -37,7 +37,7 @@ WITH object_acls AS (
     SELECT 'schema' AS kind, nspname AS name, nspacl AS acl
     FROM pg_catalog.pg_namespace WHERE nspname = 'public'
     UNION ALL
-    SELECT 'relation', c.relkind || ':' || c.relname, c.relacl
+    SELECT 'relation', c.relkind::text || ':' || c.relname, c.relacl
     FROM pg_catalog.pg_class c
     JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
@@ -47,7 +47,7 @@ WITH object_acls AS (
     JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public'
     UNION ALL
-    SELECT 'default', r.rolname || ':' || COALESCE(n.nspname, '') || ':' || d.defaclobjtype,
+    SELECT 'default', r.rolname || ':' || COALESCE(n.nspname, '') || ':' || d.defaclobjtype::text,
            d.defaclacl
     FROM pg_catalog.pg_default_acl d
     JOIN pg_catalog.pg_roles r ON r.oid = d.defaclrole
