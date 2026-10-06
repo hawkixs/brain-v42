@@ -22,6 +22,7 @@ import time
 import httpx
 import structlog
 
+from brain_v42.config import is_relative_request_path
 from brain_v42.services.rerank_wire import RerankWire, ShimRerankWire
 
 logger = structlog.get_logger(__name__)
@@ -171,6 +172,10 @@ class RerankerClient:
             True if the service responds with 200, False otherwise. Never raises
             on a transport error.
         """
+        if not is_relative_request_path(self._wire.health_path):
+            # Defence in depth behind the settings validator: httpx would send the
+            # bearer to the host an absolute URL names, ignoring base_url.
+            return self._record_probe(False, "invalid_health_path")
         try:
             client = self._get_client()
             response = await client.get(self._wire.health_path)

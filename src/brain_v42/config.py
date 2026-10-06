@@ -156,6 +156,23 @@ class RerankProviderRouting(BaseModel):
     zdr: bool | None = None
 
 
+def is_relative_request_path(path: str) -> bool:
+    """True for a plain absolute-path reference like ``/v1/key``.
+
+    httpx resolves an absolute URL against ``base_url`` by IGNORING the base, so a
+    health path such as ``https://other.example/x`` would carry the client's
+    Authorization header to that host. ``//host/x`` is refused for the same reason,
+    and a backslash because some parsers read it as a slash. Shared by the settings
+    validator and the client: one predicate, not two that can drift.
+    """
+    if not path.startswith("/") or path.startswith("//") or "\\" in path:
+        return False
+    if any(ch.isspace() or ord(ch) < 0x20 for ch in path):
+        return False
+    parts = urlsplit(path)
+    return not parts.scheme and not parts.netloc
+
+
 def _is_openrouter_host(url: str) -> bool:
     host = urlsplit(url).hostname or ""
     return host == "openrouter.ai" or host.endswith(".openrouter.ai")
@@ -341,6 +358,13 @@ class Settings(BaseSettings):
         default=300.0, gt=0, validation_alias=_brain_alias("RERANK_PROBE_INTERVAL_SECONDS")
     )
     """Period of the background availability probe run by the MCP server."""
+
+    @field_validator("rerank_health_path")
+    @classmethod
+    def _rerank_health_path_stays_on_the_base_url(cls, value: str) -> str:
+        if not is_relative_request_path(value):
+            raise ValueError("rerank_health_path must be a path starting with '/', not a URL")
+        return value
 
     @model_validator(mode="after")
     def _rerank_key_and_routing_policy(self) -> Self:

@@ -170,3 +170,20 @@ class TestKeySources:
     def test_a_key_file_alone_is_accepted(self, tmp_path: Path) -> None:
         settings = _settings(rerank_backend="cohere", rerank_api_key_file=tmp_path / "key")
         assert settings.rerank_api_key_file == tmp_path / "key"
+
+
+class TestHealthPathCannotRedirectTheBearer:
+    """An absolute URL as health path makes httpx ignore base_url, and the client
+    would send its Authorization header to whatever host the path names."""
+
+    @pytest.mark.parametrize(
+        "path",
+        ["https://evil.example/x", "//evil.example/x", "v1/key", "/\\evil.example", "", "/a b"],
+    )
+    def test_a_non_relative_path_is_refused(self, path: str) -> None:
+        with pytest.raises(ValidationError, match="rerank_health_path"):
+            _settings(rerank_health_path=path)
+
+    @pytest.mark.parametrize("path", ["/health", "/v1/key"])
+    def test_a_relative_path_is_accepted(self, path: str) -> None:
+        assert _settings(rerank_health_path=path).rerank_health_path == path

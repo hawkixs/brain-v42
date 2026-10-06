@@ -459,3 +459,31 @@ class TestProbeLoop:
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+
+
+class TestAHealthPathNeverLeavesTheBaseUrl:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["https://evil.example/x", "//evil.example/x", "v1/key"])
+    async def test_a_non_relative_health_path_sends_nothing(self, path: str) -> None:
+        import httpx
+
+        from brain_v42.services.rerank_wire import CohereRerankWire
+
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(200)
+
+        client, patcher = _client_over(
+            handler,
+            base_url="https://openrouter.ai/api",
+            wire=CohereRerankWire(model="m", health_path=path),
+        )
+        try:
+            assert await client.is_available() is False
+        finally:
+            await client.close()
+            patcher.stop()
+        assert seen == []
+        assert client.last_probe_reason == "invalid_health_path"
