@@ -6,6 +6,10 @@ declares that check not applicable because red-backup restores with --no-owner
 --no-acl, without an application role. No LOGIN or password is required by either
 schema contract. The optional pg_catalog.pg_control_system grant belongs to R1.
 
+The separate live ACL asset extends v11's codex/ownership proof with 064's
+runtime grants and expected role. Historical assets remain immutable; no ACL
+asset applies to a --no-owner --no-acl restore sandbox.
+
 Like the v21 mint, replacements are anchored, the manifest is canonical JSON,
 and database verification accepts only disposable DSNs and checks the actual
 connection. The integration twin replays chain-built and real restored sources.
@@ -288,6 +292,62 @@ def mint_manifest(src: Path, dst: Path) -> None:
     dst.write_text(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
 
 
+def mint_acl_sql(text: str) -> str:
+    """Retain v11's negative checks and add only migration-declared runtime ACLs."""
+    text = _replace_once(
+        text,
+        "WITH expected_contract_grants(object_name, grantee, privilege_type) AS (\n",
+        "WITH "
+        + live_delta()
+        + "expected_contract_grants(object_name, grantee, privilege_type) AS (\n",
+    )
+    text = _replace_once(
+        text,
+        "\n),\nexpected_roles(role_name) AS (",
+        "\n UNION ALL\n"
+        " SELECT relation_record.relname, 'brain_app', expected_grant.privilege\n"
+        " FROM runtime_expected_relations AS expected_grant\n"
+        " JOIN pg_catalog.pg_class AS relation_record\n"
+        "   ON relation_record.oid = expected_grant.object_oid\n"
+        "),\nexpected_roles(role_name) AS (",
+    )
+    text = _replace_once(
+        text,
+        " VALUES ('brain'), ('codex_ro')",
+        " VALUES ('brain'), ('codex_ro'), ('brain_app')",
+    )
+    text = _replace_once(
+        text, "NOT IN ('brain', 'codex_ro')", "NOT IN ('brain', 'codex_ro', 'brain_app')"
+    )
+    text = _replace_once(text, CHECK_ANCHOR, CHECK_ANCHOR + check_delta(restored=False))
+    text = _replace_once(
+        text,
+        " 'contract_id', 'brain-v42/postgresql-recovery/v11-acl',",
+        " 'contract_id', 'brain-v42/postgresql-recovery/v22-acl',",
+    )
+    return _replace_once(text, " 'schema_version', 11", " 'schema_version', 22")
+
+
+def mint_acl_manifest(src: Path, dst: Path) -> None:
+    """Publish the inherited codex proof and the live-only 064 grant declarations."""
+    document = json.loads(src.read_text(encoding="utf-8"))
+    if document["contract_id"] != "brain-v42/postgresql-recovery/v11-acl":
+        raise SystemExit("not the v11 ACL manifest")
+    document.update(contract_id="brain-v42/postgresql-recovery/v22-acl", schema_version=22)
+    document["checks"][0]["roles"].append("brain_app")
+    document["checks"].append(
+        {
+            "id": CHECK_ID,
+            "kind": "migration_runtime_acl_invariant",
+            "revision": "064",
+            "grants": runtime_grants(),
+            "proof_scope": "live-only",
+            "restore_rule": "not-applicable-no-owner-no-acl",
+        }
+    )
+    dst.write_text(json.dumps(document, sort_keys=True, separators=(",", ":")) + "\n")
+
+
 async def main(dsn: str, src: Path, dst: Path) -> int:
     """Measure the declared delta read-only before publishing a measured variant."""
     text = mint_sql(src.read_text(), restored="-pgrestore" in src.name)
@@ -319,6 +379,10 @@ def mint_all() -> None:
             mint_sql(source.read_text(), restored=restored)
         )
     mint_manifest(RECOVERY / "brain-v42-v21.json", RECOVERY / "brain-v42-v22.json")
+    (RECOVERY / "brain-v42-v22-acl.sql").write_text(
+        mint_acl_sql((RECOVERY / "brain-v42-v11-acl.sql").read_text())
+    )
+    mint_acl_manifest(RECOVERY / "brain-v42-v11-acl.json", RECOVERY / "brain-v42-v22-acl.json")
     for key, suffix in (
         ("attestation_sql", ".sql"),
         ("restored_attestation_sql", "-pgrestore.sql"),
