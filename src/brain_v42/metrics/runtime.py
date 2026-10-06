@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 import sqlalchemy as sa
 import structlog
@@ -37,7 +37,7 @@ from brain_v42.metrics.collector import MetricsCollector
 from brain_v42.metrics.recent_log import RecentLogProcessor
 from brain_v42.metrics.retention import PROCESS_METRICS_STALE_SQL
 from brain_v42.metrics.server import MetricsServer
-from brain_v42.safe_logging import safe_console_renderer
+from brain_v42.safe_logging import build_logging_processors
 from brain_v42.services.brain_graph_projection import (
     BrainGraphProjectionService,
     Neo4jGraphSnapshotReader,
@@ -263,10 +263,16 @@ class MetricsRuntime:
             errors.append(exc)
 
 
-def build_sidecar_structlog_processors(collector: MetricsCollector) -> list[Any]:
+def build_sidecar_structlog_processors(
+    collector: MetricsCollector, *, log_format: Literal["console", "json"] = "console"
+) -> list[Any]:
     """Return the structlog chain used only by the metrics sidecar."""
     priorities = {"critical": 3, "exception": 3, "error": 3, "warning": 4, "info": 6, "debug": 7}
-    console_renderer = safe_console_renderer()
+    processors: list[Any] = list(build_logging_processors(log_format))
+    processors.insert(2, RecentLogProcessor(collector, min_level="info"))
+    if log_format == "json":
+        return processors
+    console_renderer = processors[-1]
 
     def render_lines(_logger: Any, method: str, event_dict: dict[str, Any]) -> str:
         level = event_dict.get("level", method)
@@ -275,13 +281,9 @@ def build_sidecar_structlog_processors(collector: MetricsCollector) -> list[Any]
         lines = rendered.split("\n")
         return "\n".join(f"<{priority}> {line}" if line.strip() else line for line in lines)
 
-    return [
-        structlog.stdlib.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso"),
-        RecentLogProcessor(collector, min_level="info"),
-        structlog.processors.format_exc_info,
-        render_lines,
-    ]
+    processors[-1] = render_lines
+    processors.insert(-1, structlog.processors.format_exc_info)
+    return processors
 
 
 async def run_cleanup_loop(

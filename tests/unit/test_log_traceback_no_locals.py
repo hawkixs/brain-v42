@@ -13,6 +13,7 @@ from __future__ import annotations
 import ast
 import importlib
 import io
+import json
 import logging
 import sys
 import uuid
@@ -23,6 +24,7 @@ from unittest.mock import MagicMock
 import pytest
 import structlog
 
+from brain_v42.config import get_settings
 from brain_v42.mcp import server as mcp_server
 from brain_v42.metrics.runtime import build_sidecar_structlog_processors
 
@@ -100,6 +102,44 @@ def test_mcp_logging_never_renders_frame_locals(monkeypatch: pytest.MonkeyPatch)
     _log_failure()
 
     _assert_traceback_without_locals(buffer.getvalue())
+
+
+@pytest.mark.parametrize("service", ["mcp", "metrics"])
+def test_json_exception_is_one_line_without_frame_locals(
+    monkeypatch: pytest.MonkeyPatch, service: str
+) -> None:
+    buffer = io.StringIO()
+    monkeypatch.setenv("BRAIN_LOG_FORMAT", "json")
+    monkeypatch.setenv("POSTGRES_URL", "postgresql+asyncpg://test@localhost/log_test")
+    get_settings.cache_clear()
+    try:
+        if service == "mcp":
+            monkeypatch.setattr(sys, "stderr", buffer)
+            monkeypatch.setattr(logging, "basicConfig", lambda **_: None)
+            mcp_server._configure_stdio_logging()
+        else:
+            structlog.configure(
+                processors=build_sidecar_structlog_processors(MagicMock(), log_format="json"),
+                logger_factory=structlog.PrintLoggerFactory(file=buffer),
+            )
+        buffer.seek(0)
+        buffer.truncate()
+
+        _log_failure()
+
+        rendered = buffer.getvalue()
+        assert len(rendered.splitlines()) == 1
+        payload = json.loads(rendered)
+        assert payload["event"] == "db.connect_failed"
+        assert "ConnectionRefusedError" in json.dumps(payload["exception"])
+        assert "postgres down" in json.dumps(payload["exception"])
+        assert _SECRET not in rendered, "frame local leaked into the rendered traceback"
+        assert "exc_info" not in payload
+        for exception in payload["exception"]:
+            for frame in exception["frames"]:
+                assert not frame.get("locals")
+    finally:
+        get_settings.cache_clear()
 
 
 def test_migration_script_never_renders_frame_locals(

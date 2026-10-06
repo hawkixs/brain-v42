@@ -234,6 +234,15 @@ class Settings(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", validation_alias=_brain_alias("LOG_LEVEL")
     )
+    brain_log_format: Literal["console", "json"] = "console"
+
+    @field_validator("brain_log_format", mode="before")
+    @classmethod
+    def _log_format_is_known(cls, value: object) -> object:
+        """Refuse typos instead of silently breaking the container log watcher."""
+        if value not in ("console", "json"):
+            raise ValueError("BRAIN_LOG_FORMAT must be 'console' or 'json'")
+        return value
 
     # --- Embedding ---
     # Default points at the local brain-host container (restore 2026-07-06,

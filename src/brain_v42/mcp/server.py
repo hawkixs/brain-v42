@@ -72,7 +72,7 @@ from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.repositories.pg_runbook import PgRunbookRepo
 from brain_v42.repositories.pg_snippet import PgSnippetRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
-from brain_v42.safe_logging import safe_console_renderer
+from brain_v42.safe_logging import build_logging_processors
 from brain_v42.services.adr_service import ADRService
 from brain_v42.services.agent_trace_net import AgentTraceNet, agent_trace_net_is_armed
 from brain_v42.services.auto_linker import AutoLinker
@@ -116,15 +116,15 @@ def _configure_stdio_logging() -> None:
     log is emitted, and only from the stdio entry point (not on import —
     pytest's caplog handlers must stay intact).
     """
+    log_format = get_settings().brain_log_format
     structlog.configure(
         logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-        processors=[
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.add_log_level,
-            safe_console_renderer(colors=False),
-        ],
+        processors=build_logging_processors(log_format, colors=False),
     )
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, force=True)
+    structlog.get_logger(__name__).info(
+        "logging.configured", renderer=log_format, service="brain-v42-mcp", pid=os.getpid()
+    )
 
 
 _PR_SET_PDEATHSIG = 1
@@ -1398,9 +1398,9 @@ def build_server() -> BuiltServer:
 
 
 if __name__ == "__main__":
+    _apply_http_server_arg()  # MUST precede logging's first get_settings() call.
     _configure_stdio_logging()
     _setup_parent_death_signal()
-    _apply_http_server_arg()  # MUST be before get_settings() -- sets env for lru_cache
     # The MCP server is the long-lived interactive process: bounded session budgets.
     # Here and not in build_server(): tests inject an engine and call build_server().
     use_engine_profile("interactive")
