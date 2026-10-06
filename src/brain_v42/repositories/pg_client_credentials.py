@@ -464,10 +464,10 @@ class PgClientCredentialRepo(BasePgRepository):
                 raise ClientCredentialError(
                     "session_not_open", f"session {session_id} is {owner.status}, not open"
                 )
-            if owner.nature is not None:
+            if owner.nature == "agent":
                 raise ClientCredentialError(
                     "session_not_operator",
-                    f"session {session_id} is a {owner.nature} trace, not an operator session",
+                    f"session {session_id} is an agent trace, not an operator session",
                 )
             # The grant is frozen on connections already linked to THIS session: one linked
             # afterwards, or to another session, never inherits admin.

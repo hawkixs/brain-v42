@@ -574,6 +574,18 @@ async def test_a_grant_that_excludes_nothing_records_no_exclusion(session: Async
     assert (granted.excluded_client_ids, granted.excluded_connection_count) == ([], 0)
 
 
+async def test_an_operator_nature_session_is_elevated_like_an_unnamed_one(
+    session: AsyncSession,
+) -> None:
+    # The attribution lock treats every nature but 'agent' as an operator session; the
+    # grant must agree, or a session the lock protects could never be elevated.
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session, nature="operator")
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    granted = await _grant(repo, session, operator, ["conn-a"], DEFAULT_ELEVATABLE_CLIENT_IDS)
+    assert granted.connection_client_ids == ["workstation-claude"]
+
+
 async def test_a_grant_whose_attributed_connections_are_all_foreign_is_refused(
     session: AsyncSession,
 ) -> None:
