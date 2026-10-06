@@ -36,6 +36,7 @@ ELEVATED_KEYS = {
     "expires_at",
     "ttl_seconds",
     "reason",
+    "author",
     "via",
     "client_id",
     "connection_count",
@@ -130,6 +131,7 @@ async def test_a_grant_writes_one_elevated_row_with_the_frozen_fields(
         "expires_at": "2026-10-06T13:30:00+00:00",
         "ttl_seconds": 5400,
         "reason": "rotate the registry",
+        "author": "operator",
         "via": "hook",
         "client_id": "workstation-elevate",
         "connection_count": 2,
@@ -188,15 +190,24 @@ async def test_ending_an_elevation_writes_one_unelevated_row_with_the_grants_fie
     await _link(session, operator, "conn-z", client_id="red-rail")
     granted = await _grant(session, operator, ["conn-a", "conn-z"])
 
-    await repo.end_elevation(granted.id, NOW + timedelta(minutes=5), session=session)
+    await repo.end_elevation(
+        granted.id, NOW + timedelta(minutes=5), author="ender", session=session
+    )
 
     elevated, unelevated = await _audit_rows(session)
     assert unelevated.event == "credentials.unelevated"
     assert unelevated.elevation_id == granted.id
     # The ending gesture is the CLI's: it names no credential, whatever the grant did.
-    assert unelevated.payload == {**elevated.payload, "via": "cli", "client_id": None}
+    assert unelevated.payload == {
+        **elevated.payload,
+        "via": "cli",
+        "client_id": None,
+        "author": "ender",
+    }
     with pytest.raises(ClientCredentialError):
-        await repo.end_elevation(granted.id, NOW + timedelta(minutes=6), session=session)
+        await repo.end_elevation(
+            granted.id, NOW + timedelta(minutes=6), author="ender", session=session
+        )
     assert len(await _audit_rows(session)) == 2
 
 
@@ -214,7 +225,7 @@ async def test_the_expiry_sweep_audits_each_expired_elevation_once(
     )
     still_running = await _grant(session, first, ["conn-1"], ttl=timedelta(hours=3))
     ended = await _grant(session, second, ["conn-2"], ttl=timedelta(minutes=10))
-    await repo.end_elevation(ended.id, NOW + timedelta(minutes=1), session=session)
+    await repo.end_elevation(ended.id, NOW + timedelta(minutes=1), author="ender", session=session)
     before = len(await _audit_rows(session))
 
     assert await repo.audit_expired_elevations(NOW + timedelta(minutes=5), session=session) == 0
@@ -252,7 +263,7 @@ async def test_claimed_rows_are_oldest_first_and_claimed_again_until_marked(
     operator = await _make_session(session)
     await _link(session, operator, "conn-a", client_id="workstation-claude")
     granted = await _grant(session, operator, ["conn-a"])
-    await repo.end_elevation(granted.id, NOW, session=session)
+    await repo.end_elevation(granted.id, NOW, author="ender", session=session)
     written = [row.id for row in await _audit_rows(session)]
     assert len(written) == 2
 
@@ -318,9 +329,9 @@ async def test_issue_and_revoke_write_their_events_in_their_transaction(
     issued = await repo.issue(
         "auto-discord", digest, ["read", "write"], [], "operator", session=session
     )
-    await repo.revoke(issued.id, "rotated", NOW, session=session)
+    await repo.revoke(issued.id, "rotated", NOW, author="revoker", session=session)
     with pytest.raises(ClientCredentialError):
-        await repo.revoke(issued.id, "again", NOW, session=session)
+        await repo.revoke(issued.id, "again", NOW, author="revoker", session=session)
     with pytest.raises(ClientCredentialError):
         await repo.issue("auto-discord", uuid4().bytes * 2, ["admin"], [], "op", session=session)
 
@@ -338,7 +349,53 @@ async def test_issue_and_revoke_write_their_events_in_their_transaction(
         "client_id": "auto-discord",
         "families": ["read", "write"],
         "reason": "rotated",
+        "author": "revoker",
     }
+
+
+async def test_a_blank_author_is_refused_before_any_row_or_audit_row(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    issued = await repo.issue(
+        "auto-discord", uuid4().bytes * 2, ["read"], [], "op", session=session
+    )
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    granted = await _grant(session, operator, ["conn-a"])
+    before = len(await _audit_rows(session))
+
+    for blank in ("", "  "):
+        refused = []
+        with pytest.raises(ClientCredentialError) as issue_refused:
+            await repo.issue(
+                "auto-discord", uuid4().bytes * 2, ["read"], [], blank, session=session
+            )
+        refused.append(issue_refused.value.code)
+        with pytest.raises(ClientCredentialError) as revoke_refused:
+            await repo.revoke(issued.id, "rotated", NOW, author=blank, session=session)
+        refused.append(revoke_refused.value.code)
+        with pytest.raises(ClientCredentialError) as end_refused:
+            await repo.end_elevation(granted.id, NOW, author=blank, session=session)
+        refused.append(end_refused.value.code)
+        with pytest.raises(ClientCredentialError) as grant_refused:
+            await repo.grant_elevation(
+                operator,
+                ["conn-a"],
+                NOW + timedelta(hours=1),
+                blank,
+                "maintenance",
+                NOW,
+                elevatable_client_ids=ALLOWED,
+                via="cli",
+                session=session,
+            )
+        refused.append(grant_refused.value.code)
+        assert refused == ["blank_author"] * 4
+
+    assert len(await _audit_rows(session)) == before
+    still_active = await repo.list_rows(session=session)
+    assert [row.revoked_at for row in still_active if row.id == issued.id] == [None]
 
 
 async def test_a_rolled_back_issue_writes_no_audit_row(session: AsyncSession) -> None:
@@ -361,11 +418,11 @@ async def test_no_audit_row_holds_a_digest_or_a_connection_id(session: AsyncSess
     issued = await repo.issue(
         "workstation-claude", digest, ["read"], [], "operator", session=session
     )
-    await repo.revoke(issued.id, "rotated", NOW, session=session)
+    await repo.revoke(issued.id, "rotated", NOW, author="revoker", session=session)
     operator = await _make_session(session)
     await _link(session, operator, connection_id, client_id="workstation-claude")
     granted = await _grant(session, operator, [connection_id], ttl=timedelta(minutes=1))
-    await repo.end_elevation(granted.id, NOW, session=session)
+    await repo.end_elevation(granted.id, NOW, author="ender", session=session)
     expiring = await _grant(session, operator, [connection_id], ttl=timedelta(minutes=1))
     await repo.audit_expired_elevations(NOW + timedelta(hours=1), session=session)
 

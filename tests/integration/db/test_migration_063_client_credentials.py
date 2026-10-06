@@ -415,7 +415,7 @@ async def test_a_last_used_stamp_does_not_notify_but_a_revocation_does(
             await asyncio.wait_for(received.get(), timeout=1)
 
         async with AsyncSession(engine) as owned, owned.begin():
-            await repo.revoke(row_id, "rotated", now, session=owned)
+            await repo.revoke(row_id, "rotated", now, author="operator", session=owned)
         assert await asyncio.wait_for(received.get(), timeout=5) == str(row_id)
         async with engine.begin() as connection:
             await connection.execute(

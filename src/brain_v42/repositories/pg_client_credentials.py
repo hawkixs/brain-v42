@@ -147,12 +147,24 @@ def _audit(row: RowMapping) -> AuditRow:
     return AuditRow(**{column.name: row[column.name] for column in _AUDIT_COLUMNS})
 
 
+def _require_author(author: str) -> None:
+    """Refuse a blank author: every audited gesture names who made it."""
+    if not author.strip():
+        raise ClientCredentialError("blank_author", "a gesture needs a non-blank author")
+
+
 def _elevation_event(
-    row: ElevationRow, session_label: str, *, via: str, client_id: str | None
+    row: ElevationRow,
+    session_label: str,
+    *,
+    via: str,
+    client_id: str | None,
+    author: str | None,
 ) -> dict[str, Any]:
     """The body of an elevation event: the grant's fields, never a connection id.
 
-    ``via`` and ``client_id`` are the GESTURE's (the grant's, or the ending one's), and
+    ``via``, ``client_id`` and ``author`` are the GESTURE's (the grant's, or the ending
+    one's); ``author`` is None for a natural expiry, which no one performs.
     ``session_label`` is the session's raw ``client_key``: the emitter sanitises it.
     """
     return {
@@ -162,6 +174,7 @@ def _elevation_event(
         "expires_at": row.expires_at.astimezone(UTC).isoformat(),
         "ttl_seconds": int((row.expires_at - row.granted_at).total_seconds()),
         "reason": row.reason,
+        "author": author,
         "via": via,
         "client_id": client_id,
         "connection_count": len(row.connection_ids),
@@ -201,6 +214,7 @@ class PgClientCredentialRepo(BasePgRepository):
         *,
         session: AsyncSession | None = None,
     ) -> CredentialRow:
+        _require_author(created_by)
         if "admin" in families:
             raise ClientCredentialError(
                 "admin_family_forbidden",
@@ -308,8 +322,11 @@ class PgClientCredentialRepo(BasePgRepository):
         reason: str,
         now: datetime,
         *,
+        author: str,
         session: AsyncSession | None = None,
     ) -> CredentialRow:
+        """Revoke a credential. ``author`` is audited only: the table has no ``revoked_by``."""
+        _require_author(author)
         if not reason.strip():
             raise ClientCredentialError("blank_reason", "a revocation needs a reason")
         credentials = brain_client_credentials
@@ -347,6 +364,7 @@ class PgClientCredentialRepo(BasePgRepository):
                     "client_id": row["client_id"],
                     "families": list(row["families"]),
                     "reason": row["revoked_reason"],
+                    "author": author,
                 },
             )
         return _credential(row)
@@ -399,6 +417,7 @@ class PgClientCredentialRepo(BasePgRepository):
         Several elevations may be active at once, on one session or on several: a grant is
         never refused because another is in force.
         """
+        _require_author(granted_by)
         connection_ids = list(dict.fromkeys(connection_ids))
         if not connection_ids:
             raise ClientCredentialError("no_connections", "an elevation needs a connection")
@@ -516,7 +535,11 @@ class PgClientCredentialRepo(BasePgRepository):
                 sess,
                 "credentials.elevated",
                 _elevation_event(
-                    granted, owner.client_key, via=via, client_id=requested_by_client_id
+                    granted,
+                    owner.client_key,
+                    via=via,
+                    client_id=requested_by_client_id,
+                    author=granted_by,
                 ),
                 granted.id,
             )
@@ -629,8 +652,15 @@ class PgClientCredentialRepo(BasePgRepository):
         return bool(found)
 
     async def end_elevation(
-        self, elevation_id: UUID, now: datetime, *, session: AsyncSession | None = None
+        self,
+        elevation_id: UUID,
+        now: datetime,
+        *,
+        author: str,
+        session: AsyncSession | None = None,
     ) -> ElevationRow:
+        """End an elevation. ``author`` is audited only: the table has no ``ended_by``."""
+        _require_author(author)
         elevations = brain_admin_elevations
         async with self._maybe_session(session, write=True) as sess:
             row = (
@@ -664,7 +694,9 @@ class PgClientCredentialRepo(BasePgRepository):
             await _write_audit(
                 sess,
                 "credentials.unelevated",
-                _elevation_event(ended, str(session_label), via="cli", client_id=None),
+                _elevation_event(
+                    ended, str(session_label), via="cli", client_id=None, author=author
+                ),
                 ended.id,
             )
         return ended
@@ -709,6 +741,7 @@ class PgClientCredentialRepo(BasePgRepository):
                         row["session_label"],
                         via=expired.via,
                         client_id=expired.requested_by_client_id,
+                        author=None,
                     ),
                     expired.id,
                 )

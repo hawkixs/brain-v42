@@ -142,7 +142,7 @@ async def test_expired_and_revoked_rows_are_not_active_but_are_listed(
     live = await _issue(repo, session)
     expired = await _issue(repo, session, expires_at=NOW - timedelta(seconds=1))
     revoked = await _issue(repo, session)
-    await repo.revoke(revoked.id, "leaked", NOW, session=session)
+    await repo.revoke(revoked.id, "leaked", NOW, author="operator", session=session)
 
     active = {row.id for row in await repo.active_rows(NOW, session=session)}
     assert live.id in active
@@ -160,10 +160,10 @@ async def test_disposition_by_digest_tells_revoked_from_expired_from_unknown(
     live = await _issue(repo, session, client_id="red-rail")
     expiring = await _issue(repo, session, client_id="auto-discord", expires_at=NOW)
     revoked = await _issue(repo, session, client_id="workstation-claude")
-    await repo.revoke(revoked.id, "leaked", NOW, session=session)
+    await repo.revoke(revoked.id, "leaked", NOW, author="operator", session=session)
     # Revoked, THEN past its expiry: the revocation is what the operator did, so it wins.
     both = await _issue(repo, session, client_id="red-watcher", expires_at=NOW - timedelta(hours=1))
-    await repo.revoke(both.id, "leaked", NOW, session=session)
+    await repo.revoke(both.id, "leaked", NOW, author="operator", session=session)
 
     async def disposition(digest: bytes, now: datetime = NOW) -> tuple[str | None, str]:
         return await repo.disposition_by_digest(digest, now, session=session)
@@ -184,13 +184,13 @@ async def test_revoke_stamps_the_row_and_a_second_revoke_is_refused(
 ) -> None:
     repo = PgClientCredentialRepo()
     issued = await _issue(repo, session)
-    revoked = await repo.revoke(issued.id, "rotated", NOW, session=session)
+    revoked = await repo.revoke(issued.id, "rotated", NOW, author="operator", session=session)
     assert (revoked.revoked_at, revoked.revoked_reason) == (NOW, "rotated")
     with pytest.raises(ClientCredentialError) as already:
-        await repo.revoke(issued.id, "again", NOW, session=session)
+        await repo.revoke(issued.id, "again", NOW, author="operator", session=session)
     assert already.value.code == "already_revoked"
     with pytest.raises(ClientCredentialError) as unknown:
-        await repo.revoke(uuid4(), "nobody", NOW, session=session)
+        await repo.revoke(uuid4(), "nobody", NOW, author="operator", session=session)
     assert unknown.value.code == "unknown_credential"
 
 
@@ -265,13 +265,15 @@ async def test_elevation_lifecycle_through_active_and_end(session: AsyncSession)
     assert granted.id in at_30_minutes
     assert expired.id not in at_30_minutes
 
-    ended = await repo.end_elevation(granted.id, NOW + timedelta(minutes=31), session=session)
+    ended = await repo.end_elevation(
+        granted.id, NOW + timedelta(minutes=31), author="operator", session=session
+    )
     assert ended.revoked_at == NOW + timedelta(minutes=31)
     assert granted.id not in {
         row.id for row in await repo.active_elevations(NOW + timedelta(minutes=32), session=session)
     }
     with pytest.raises(ClientCredentialError) as unknown:
-        await repo.end_elevation(uuid4(), NOW, session=session)
+        await repo.end_elevation(uuid4(), NOW, author="operator", session=session)
     assert unknown.value.code == "unknown_elevation"
 
 
@@ -420,7 +422,9 @@ async def test_the_pair_lookup_follows_expiry_revocation_and_the_session(
 
     assert await lookup(NOW + timedelta(minutes=59))
     assert not await lookup(NOW + timedelta(hours=1))
-    await repo.end_elevation(granted.id, NOW + timedelta(minutes=10), session=session)
+    await repo.end_elevation(
+        granted.id, NOW + timedelta(minutes=10), author="operator", session=session
+    )
     assert not await lookup(NOW + timedelta(minutes=11))
 
     other = await _make_session(session)
