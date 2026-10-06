@@ -338,7 +338,6 @@ def _build_legacy_resources(
         cluster_guard = ClusterGuard(
             session_factory,
             embedding_svc,
-            reranker,
             StatusEngine(),
             mutation_guard=lease.ensure_owned,
         )

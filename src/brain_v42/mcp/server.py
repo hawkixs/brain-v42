@@ -583,7 +583,7 @@ def build_services() -> dict[str, Any]:
         graph=graph_service,
     )
 
-    # Reranker client (HTTP, for ClusterGuard grey-zone scoring)
+    # Reranker client (HTTP, for hybrid search)
 
     reranker_client = build_reranker_client(settings)
 
@@ -598,7 +598,6 @@ def build_services() -> dict[str, Any]:
     cluster_guard = ClusterGuard(
         session_factory=session_factory,
         embedding_svc=embedding_svc,
-        reranker=reranker_client,
         status_engine=status_engine,
     )
 

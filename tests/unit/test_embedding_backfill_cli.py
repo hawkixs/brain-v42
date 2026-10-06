@@ -61,8 +61,6 @@ def test_parse_args_rejects_invalid_bounds(args: list[str]) -> None:
 
 def test_build_linkers_matches_canonical_service_wiring() -> None:
     settings = SimpleNamespace(
-        reranker_url="http://reranker",
-        reranker_timeout=3.0,
         neo4j_url="bolt://neo4j",
         neo4j_user="neo4j",
         neo4j_password="secret",
@@ -74,7 +72,6 @@ def test_build_linkers_matches_canonical_service_wiring() -> None:
     embedding_svc = MagicMock()
 
     with (
-        patch("brain_v42.maintenance.embedding_backfill.build_reranker_client") as reranker_cls,
         patch("brain_v42.maintenance.embedding_backfill.StatusEngine") as status_cls,
         patch("brain_v42.maintenance.embedding_backfill.ClusterGuard") as guard_cls,
         patch("brain_v42.maintenance.embedding_backfill.FeatureLinker") as feature_cls,
@@ -87,7 +84,6 @@ def test_build_linkers_matches_canonical_service_wiring() -> None:
     guard_cls.assert_called_once_with(
         session_factory=session_factory,
         embedding_svc=embedding_svc,
-        reranker=reranker_cls.return_value,
         status_engine=status_cls.return_value,
     )
     feature_cls.assert_called_once_with(
@@ -111,8 +107,6 @@ def test_build_linkers_matches_canonical_service_wiring() -> None:
 
 def test_build_linkers_routes_auto_linker_writes_through_durable_graph() -> None:
     settings = SimpleNamespace(
-        reranker_url="http://reranker",
-        reranker_timeout=3.0,
         neo4j_url="bolt://neo4j",
         neo4j_user="neo4j",
         neo4j_password="secret",
@@ -127,7 +121,6 @@ def test_build_linkers_routes_auto_linker_writes_through_durable_graph() -> None
     embedding_svc = MagicMock()
 
     with (
-        patch("brain_v42.maintenance.embedding_backfill.build_reranker_client"),
         patch("brain_v42.maintenance.embedding_backfill.StatusEngine"),
         patch("brain_v42.maintenance.embedding_backfill.ClusterGuard"),
         patch("brain_v42.maintenance.embedding_backfill.FeatureLinker"),
