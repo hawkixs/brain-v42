@@ -45,6 +45,7 @@ from uuid import UUID
 import structlog
 
 from brain_v42.config import get_settings
+from brain_v42.credentials.redact import short_id
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.provenance import (
     MAX_ACTOR_LENGTH,
@@ -214,7 +215,7 @@ class SessionAutoOpener:
 
         try:
             session_id = await self._opener(identity)
-        except Exception:
+        except Exception as exc:
             # A TOTAL, tightly scoped ``except``, the same posture as
             # ``_report``: this path runs on EVERY outermost tool call of a
             # shared process. A database hiccup cannot bring down the call it
@@ -227,8 +228,8 @@ class SessionAutoOpener:
             logger.warning(
                 "session_autoopen.failed",
                 project_key=identity.project_key,
-                connection_id=identity.connection_id,
-                exc_info=True,
+                connection_id=short_id(identity.connection_id),
+                error_type=type(exc).__name__,
             )
             return None
 
@@ -260,13 +261,13 @@ class SessionAutoOpener:
         """
         try:
             return await self._observer(session_id)
-        except Exception:
+        except Exception as exc:
             self.observe_failed += 1
             logger.warning(
                 "session_autoopen.observe_failed",
                 project_key=identity.project_key,
-                connection_id=identity.connection_id,
-                exc_info=True,
+                connection_id=short_id(identity.connection_id),
+                error_type=type(exc).__name__,
             )
             return None
 
@@ -287,12 +288,12 @@ class SessionAutoOpener:
             return
         try:
             closed = await self._closer(connection_id)
-        except Exception:
+        except Exception as exc:
             self.close_failed += 1
             logger.warning(
                 "session_autoopen.close_failed",
-                connection_id=connection_id,
-                exc_info=True,
+                connection_id=short_id(connection_id),
+                error_type=type(exc).__name__,
             )
             return
         self.closed += len(closed)

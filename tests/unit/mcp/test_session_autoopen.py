@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
+from structlog.testing import capture_logs
 
 from brain_v42.config import Settings
 from brain_v42.mcp.provenance_middleware import ProvenanceMiddleware
@@ -276,6 +277,44 @@ class TestSynchronousBeforeTheTool:
 
 
 class TestFailOpen:
+    @pytest.mark.parametrize("failure_path", ["opener", "observer", "closer"])
+    async def test_failure_logs_redact_connection_id_and_exception_message(
+        self, failure_path: str
+    ) -> None:
+        connection_id = "0123456789abcdef0123456789abcdef01234567"
+        error = RuntimeError(f"database failed for {connection_id}")
+        set_current_transport(connection_id)
+
+        class _RaisingCloser:
+            async def __call__(self, _connection_id: str) -> list[UUID]:
+                raise error
+
+        opener = _RecordingOpener(raises=error if failure_path == "opener" else None)
+        observer = _RecordingObserver(raises=error if failure_path == "observer" else None)
+        auto = SessionAutoOpener(
+            opener,
+            observer,
+            _RaisingCloser() if failure_path == "closer" else None,
+        )
+        with capture_logs() as logs:
+            if failure_path == "observer":
+                observer._raises = None
+                session_id = await auto.ensure_open()
+                assert session_id is not None
+                observer._raises = error
+                assert await auto.ensure_open() == session_id
+            elif failure_path == "closer":
+                await auto.close(connection_id)
+            else:
+                assert await auto.ensure_open() is None
+
+        assert len(logs) == 1
+        event = logs[0]
+        assert event["connection_id"] == connection_id[:8] + "…"
+        assert event["error_type"] == "RuntimeError"
+        assert all(connection_id not in repr(captured) for captured in logs)
+        assert all("exc_info" not in captured for captured in logs)
+
     async def test_open_failure_never_breaks_the_tool_call(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
