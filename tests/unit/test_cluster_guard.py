@@ -400,6 +400,86 @@ async def test_resolve_falls_back_to_cosine_when_rerank_raises(mock_deps):
     assert feature is None
 
 
+@pytest.mark.asyncio
+async def test_resolve_creates_not_merges_when_rerank_raises_in_merge_zone(mock_deps):
+    """A failing reranker must not turn cosines into reranker scores.
+
+    Grey-zone cosines are >= 0.50 by construction, so substituting them for
+    reranker scores would always reach RERANKER_MERGE. The failure must take
+    the same cosine-only path as an unavailable reranker: never merge.
+    """
+    feature_row = _make_feature_row(similarity=0.55, description="Original description")
+    result_set = MagicMock()
+    result_set.fetchall.return_value = [feature_row]
+    insert_result = MagicMock()
+    insert_result.fetchone.return_value = _make_feature_row(name="some signal")
+
+    # Spare results so a (wrong) merge path fails on the assertions below,
+    # not on an exhausted side_effect list.
+    mock_deps["session"].execute = AsyncMock(
+        side_effect=[result_set, insert_result, MagicMock(), MagicMock()]
+    )
+    mock_deps["reranker"].rerank = AsyncMock(side_effect=Exception("reranker crashed"))
+
+    guard = _build_guard(mock_deps)
+    _, action = await guard.resolve(
+        text="some signal",
+        embedding=[0.1] * 1536,
+        project_key="brain_v42",
+        signal_type="plan",
+    )
+
+    assert action == "created"
+    assert feature_row.description == "Original description"
+    # _merge_into re-embeds the enriched description: it must not have run.
+    mock_deps["embedding_svc"].embed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_links_via_fallback_threshold_when_rerank_raises(mock_deps):
+    """Rerank raises, cosine 0.66 >= FALLBACK_LINK 0.65 -> linked."""
+    feature_row = _make_feature_row(similarity=0.66)
+    result_set = MagicMock()
+    result_set.fetchall.return_value = [feature_row]
+
+    mock_deps["session"].execute = AsyncMock(return_value=result_set)
+    mock_deps["reranker"].rerank = AsyncMock(side_effect=Exception("reranker crashed"))
+
+    guard = _build_guard(mock_deps)
+    feature, action = await guard.resolve(
+        text="some signal",
+        embedding=[0.1] * 1536,
+        project_key="brain_v42",
+        signal_type="plan",
+    )
+
+    assert action == "linked"
+    assert feature.id == feature_row.id
+
+
+@pytest.mark.asyncio
+async def test_resolve_skips_knowledge_signal_when_rerank_raises(mock_deps):
+    """Rerank raises, cosine 0.55 < FALLBACK_LINK, knowledge signal -> skipped."""
+    feature_row = _make_feature_row(similarity=0.55, description="Original description")
+    result_set = MagicMock()
+    result_set.fetchall.return_value = [feature_row]
+
+    mock_deps["session"].execute = AsyncMock(return_value=result_set)
+    mock_deps["reranker"].rerank = AsyncMock(side_effect=Exception("reranker crashed"))
+
+    guard = _build_guard(mock_deps)
+    feature, action = await guard.resolve(
+        text="some signal",
+        embedding=[0.1] * 1536,
+        project_key="brain_v42",
+        signal_type="learning",
+    )
+
+    assert (feature, action) == (None, "skipped")
+    assert feature_row.description == "Original description"
+    mock_deps["embedding_svc"].embed.assert_not_awaited()
+
+
 # ── feature.name sanitization on create ─────────────────────────────────
 
 
@@ -613,6 +693,38 @@ async def test_resolve_stops_after_ownership_loss_during_reranking(mock_deps):
         )
 
     assert mock_deps["session"].execute.await_count == 1
+    mock_deps["session"].commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_stops_after_ownership_loss_during_failed_reranking(mock_deps):
+    """A failing rerank is still reranker I/O: lease loss during it must stop the
+    resolution, even on the knowledge-signal path that would only skip."""
+    gate = _MutableMutationGate()
+    candidate = _make_feature_row(similarity=0.55)
+    candidates = MagicMock()
+    candidates.fetchall.return_value = [candidate]
+    mock_deps["session"].execute = AsyncMock(return_value=candidates)
+
+    async def rerank_failing_after_losing_ownership(
+        _text: str,
+        _candidate_texts: list[str],
+    ) -> list[float]:
+        gate.owned = False
+        raise RuntimeError("reranker crashed")
+
+    mock_deps["reranker"].rerank = AsyncMock(side_effect=rerank_failing_after_losing_ownership)
+    guard = _build_guard(mock_deps)
+    guard._mutation_guard = gate.ensure_owned  # type: ignore[attr-defined]
+
+    with pytest.raises(OwnershipLostError, match="inside cluster resolution"):
+        await guard.resolve(
+            text="grey-zone knowledge signal",
+            embedding=[0.1] * 1536,
+            project_key="brain_v42",
+            signal_type="learning",
+        )
+
     mock_deps["session"].commit.assert_not_awaited()
 
 
