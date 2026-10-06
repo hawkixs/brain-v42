@@ -66,7 +66,8 @@ REGISTRY: tuple[ThresholdSpec, ...] = (
         calibration_script=None,
         corpus_dependency="reranker output distribution for ADR/runbook queries",
         notes="Different scale from 0.85 dedup — this is brain_search min_score, "
-        "agent-driven floor for the dedup query.",
+        "agent-driven floor for the dedup query. Its 0.80 is on the MiniLM scale "
+        "and must be re-validated before Dream PROMOTE is re-armed.",
     ),
     ThresholdSpec(
         name="ticket_extract_corpus_dedup_cosine",
@@ -148,7 +149,9 @@ REGISTRY: tuple[ThresholdSpec, ...] = (
         last_calibrated=None,
         calibration_script=None,
         corpus_dependency="reranker output distribution",
-        notes="Default brain_search floor. Decision d3cf29e9 (2026-03-30) shows "
+        notes="Per-backend brain_search floor: shim 0.2, voyageai/rerank-3-lite 0.50. "
+        "Calibration receipt: internal bench rerank-quality-2026-10-06, "
+        "calibrate_min_score.py, 762 gold queries. Decision d3cf29e9 (2026-03-30) shows "
         "this floor caused zero-result blackouts during reranker fallback.",
     ),
     ThresholdSpec(

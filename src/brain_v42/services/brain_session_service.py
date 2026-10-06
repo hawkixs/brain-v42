@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Collection, Sequence
 from typing import Any, Final, Protocol
 from uuid import UUID
 
 import structlog
 
 from brain_v42.config import get_settings
+from brain_v42.credentials.reasons import emit_refusal
 from brain_v42.models.brain_session import (
     MAX_CAPTURED_KNOWLEDGE_IDS,
     MAX_CHECKPOINT_TEXT,
@@ -22,6 +23,7 @@ from brain_v42.models.brain_session import (
     BrainSessionEndResult,
     BrainSessionError,
     BrainSessionFocusConflictError,
+    BrainSessionForeignClientAttachError,
     BrainSessionHeartbeatResult,
     BrainSessionIdentityConflictError,
     BrainSessionInputError,
@@ -41,6 +43,7 @@ from brain_v42.models.focus_slot import (
     FocusSlotError,
 )
 from brain_v42.models.project_key import canonicalize_project_key
+from brain_v42.provenance import get_current_peer, get_current_principal
 from brain_v42.services.focus_slot_service import slot_body
 
 __all__ = [
@@ -68,17 +71,33 @@ CLIENT_KEY_MAX_LENGTH: Final = 128
 class BrainSessionRepository(Protocol):
     """Persistence contract required by the lifecycle service."""
 
-    async def start(self, project_key: str, client_key: str) -> BrainSessionStartResult: ...
+    async def start(
+        self, project_key: str, client_key: str, *, client_id: str | None = None
+    ) -> BrainSessionStartResult: ...
 
     async def resume(
         self, session_id: UUID, expected_client_key: str
     ) -> BrainSessionResumeResult: ...
 
     async def bind(
-        self, session_id: UUID, expected_client_key: str, slot_id: UUID
+        self,
+        session_id: UUID,
+        expected_client_key: str,
+        slot_id: UUID,
+        *,
+        connection_id: str | None = None,
+        client_id: str | None = None,
+        elevatable_client_ids: Collection[str] = (),
     ) -> BrainSessionBindResult: ...
 
-    async def record_seen_connection(self, session_id: UUID, connection_id: str) -> bool: ...
+    async def record_seen_connection(
+        self,
+        session_id: UUID,
+        connection_id: str,
+        *,
+        client_id: str | None = None,
+        elevatable_client_ids: Collection[str] = (),
+    ) -> bool: ...
 
     async def relay(
         self,
@@ -94,6 +113,7 @@ class BrainSessionRepository(Protocol):
         initiator: str,
         knowledge_ids: list[UUID],
         nothing_to_capture_reason: str | None,
+        client_id: str | None = None,
     ) -> BrainSessionRelayResult: ...
 
     async def capture(
@@ -146,7 +166,13 @@ class BrainSessionRepository(Protocol):
     ) -> BrainSessionAbandonResult: ...
 
     async def absorb_derived_capture_outcome(
-        self, session_id: UUID, connection_id: str, expected_client_key: str
+        self,
+        session_id: UUID,
+        connection_id: str,
+        expected_client_key: str,
+        *,
+        client_id: str | None = None,
+        elevatable_client_ids: Collection[str] = (),
     ) -> Any: ...
 
     async def attributed_knowledge_ids(self, session_id: UUID) -> Sequence[UUID]: ...
@@ -197,20 +223,49 @@ class BrainSessionService:
     def __init__(self, repo: BrainSessionRepository) -> None:
         self.repo = repo
 
+    def _attribution_options(self) -> dict[str, Any]:
+        """Read verified identity only here; preserve the shared-token call contract."""
+        principal = get_current_principal()
+        if principal is None:
+            return {}
+        return {
+            "client_id": principal,
+            "elevatable_client_ids": get_settings().elevatable_client_ids,
+        }
+
+    async def _identity_call[ResultT](
+        self, session_id: UUID, operation: Awaitable[ResultT]
+    ) -> ResultT:
+        """Emit exactly once, after the repository has rolled back the refused write."""
+        try:
+            return await operation
+        except BrainSessionForeignClientAttachError as exc:
+            emit_refusal(
+                "foreign_client_attach",
+                status=403,
+                requesting_client_id=exc.requesting_client_id,
+                session_id=str(session_id),
+                owner_client_id=exc.owner_client_id,
+                peer=get_current_peer(),
+            )
+            raise
+
     def _absorption_connection(self) -> str | None:
         """The connection to absorb, or ``None`` — decided BEFORE touching the repo.
 
-        The flag and the connection are read here so that a closed flag costs
-        ZERO round trips, not one round trip that does nothing. A capability
-        shipped closed that still paid its price on every command would be a
-        regression nobody would see.
+        In shared-token mode a closed flag costs zero round trips. A verified
+        principal still records its connection and checks ownership with the
+        flag closed: disabling derived capture cannot disable attribution.
 
         ``None`` without a connection: stdio and stateless mode have no
         (project, connection) key. That is not a degraded case to compensate
         for, it is the auto-open contract.
         """
         try:
-            if not get_settings().brain_session_derived_capture_enabled:
+            if (
+                get_current_principal() is None
+                and not get_settings().brain_session_derived_capture_enabled
+            ):
                 return None
         except Exception:
             return None
@@ -226,7 +281,7 @@ class BrainSessionService:
 
         Does not raise for its own refusals: absorption accompanies an explicit
         command, it does not replace it and must not be able to make it fail.
-        **ONE exception passes through: the inconsistent identity pair**, and
+        **Identity refusals pass through: the identity pair or credential owner**, and
         that is not a refusal to absorb — it is a mistargeted command, which the
         repository will refuse just afterwards anyway, with the same error.
         Letting it surface from here is what guarantees no mutation precedes it.
@@ -245,8 +300,11 @@ class BrainSessionService:
             # `None`, never a `nothing` verdict: nothing was ATTEMPTED, and
             # saying "the rule found nothing" would be a different claim.
             return None
-        outcome = await self.repo.absorb_derived_capture_outcome(
-            session_id, connection_id, expected_client_key
+        outcome = await self._identity_call(
+            session_id,
+            self.repo.absorb_derived_capture_outcome(
+                session_id, connection_id, expected_client_key, **self._attribution_options()
+            ),
         )
         return _as_absorption(outcome)
 
@@ -268,7 +326,9 @@ class BrainSessionService:
         normalized_client_key = _normalize_required(
             client_key, field_name="client_key", max_length=CLIENT_KEY_MAX_LENGTH
         )
-        started = await self.repo.start(canonical_project, normalized_client_key)
+        principal = get_current_principal()
+        opener = {"client_id": principal} if principal is not None else {}
+        started = await self.repo.start(canonical_project, normalized_client_key, **opener)
         # BOTH branches, fresh and replay. The fresh one almost never absorbs
         # anything — ``started_at`` was just set, the window is empty — and
         # wiring the fresh one alone would look done while serving nothing.
@@ -294,8 +354,14 @@ class BrainSessionService:
         # budget refuses the field there — but it must not take a second route
         # to the same absorption: two views used side by side is how one of them
         # silently stops being the one production exercises.
-        await self.repo.absorb_derived_capture_outcome(
-            started.session.id, connection_id, normalized_client_key
+        await self._identity_call(
+            started.session.id,
+            self.repo.absorb_derived_capture_outcome(
+                started.session.id,
+                connection_id,
+                normalized_client_key,
+                **self._attribution_options(),
+            ),
         )
         attributed = await self.repo.attributed_knowledge_ids(started.session.id)
         return started.model_copy(
@@ -328,6 +394,17 @@ class BrainSessionService:
         every connection a session was seen on (03291fdc).
         """
         identity = _normalize_expected_client_key(expected_client_key)
+        if get_current_principal() is not None:
+            return await self._identity_call(
+                session_id,
+                self.repo.bind(
+                    session_id,
+                    identity,
+                    slot_id,
+                    connection_id=self._absorption_connection(),
+                    **self._attribution_options(),
+                ),
+            )
         bound = await self.repo.bind(session_id, identity, slot_id)
         connection_id = self._absorption_connection()
         if connection_id is not None:
@@ -414,6 +491,11 @@ class BrainSessionService:
             initiator=initiator,
             knowledge_ids=captured,
             nothing_to_capture_reason=reason,
+            **(
+                {"client_id": get_current_principal()}
+                if get_current_principal() is not None
+                else {}
+            ),
         )
         # The SUCCESSOR is the session that will need this connection: record it
         # the way `start` does, by absorbing (empty at birth) on it (03291fdc).

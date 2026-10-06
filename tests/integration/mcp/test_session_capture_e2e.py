@@ -360,7 +360,11 @@ async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
             budget=_LINK_BUDGET_SECONDS,
             what="la préparation des tools avant transport",
         )
-        plan = plan_http_transport(built.mcp, built.settings)
+        plan = plan_http_transport(
+            built.mcp,
+            built.settings,
+            credential_verifier=built.services.get("credential_verifier"),
+        )
         app = built.mcp.http_app(
             middleware=plan.middleware,
             json_response=plan.json_response,

@@ -111,6 +111,18 @@ def test_foreign_attach_requires_requesting_client() -> None:
     assert refusal_counts() == {}
 
 
+def test_foreign_attach_reports_a_null_owner_for_an_unknown_session() -> None:
+    with capture_logs() as logs:
+        emit_refusal(
+            "foreign_client_attach",
+            status=403,
+            requesting_client_id="requester",
+            session_id="session",
+        )
+    assert logs[0]["owner_client_id"] is None
+    assert refusal_counts() == {"foreign_client_attach": 1}
+
+
 def test_attacker_controlled_text_is_bounded() -> None:
     with capture_logs() as logs:
         emit_refusal(

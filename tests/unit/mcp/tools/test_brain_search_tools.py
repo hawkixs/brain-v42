@@ -31,6 +31,44 @@ from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+
+@pytest.mark.parametrize("grouped", [False, True])
+@pytest.mark.parametrize("override", [None, 0.3, 0.0])
+async def test_brain_search_forwards_backend_default_or_explicit_score(
+    grouped: bool, override: float | None
+) -> None:
+    mcp, mock_svc = _make_mcp_with_brain_svc()
+    mock_svc.search = AsyncMock(return_value=_make_search_response())
+    mock_svc.what_do_i_know_about = AsyncMock(return_value=_make_what_do_i_know_response())
+    fn = await _get_tool_fn(mcp, "brain_search")
+    kwargs = {} if override is None else {"min_score": override}
+    await fn(query="test", group_by_type=grouped, **kwargs)
+    method = mock_svc.what_do_i_know_about if grouped else mock_svc.search
+    assert method.call_args.kwargs["min_score"] == override
+
+
+@pytest.mark.parametrize("grouped", [False, True])
+async def test_brain_search_logs_resolved_backend_default(grouped: bool) -> None:
+    mcp, mock_svc = _make_mcp_with_brain_svc()
+    diagnostics = _make_diagnostics(
+        min_score_requested=0.50,
+        min_score_effective=0.50,
+        rerank_identity="cohere:voyageai/rerank-3-lite",
+    )
+    mock_svc.search = AsyncMock(return_value=_make_search_response(diagnostics=diagnostics))
+    mock_svc.what_do_i_know_about = AsyncMock(
+        return_value=_make_what_do_i_know_response(diagnostics=diagnostics)
+    )
+    fn = await _get_tool_fn(mcp, "brain_search")
+    with capture_logs() as logs:
+        await fn(query="test", group_by_type=grouped)
+
+    event_name = "mcp.brain_search.grouped" if grouped else "mcp.brain_search"
+    event = next(log for log in logs if log["event"] == event_name)
+    assert event["min_score"] == 0.50
+    assert event["rerank_identity"] == "cohere:voyageai/rerank-3-lite"
+
+
 _FAKE_ITEMS: dict[str, dict] = {
     "learning": {
         "id": str(uuid4()),

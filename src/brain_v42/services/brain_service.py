@@ -14,7 +14,7 @@ Design decisions:
 - asyncio.gather(return_exceptions=True) for concurrent fan-out — one failing
   service does NOT abort the entire search.
 - ProjectContextService is intentionally excluded (no embedding column per SCHEMA.md).
-- min_score=0.2 by default; results below threshold are filtered out.
+- min_score uses the configured backend's floor; results below it are filtered out.
 """
 
 from __future__ import annotations
@@ -102,7 +102,8 @@ class BrainService:
         runbook_svc:  RunbookService instance
         adr_svc:      ADRService instance
         embedding_svc: GPUEmbeddingService instance (provides embed())
-        min_score: Minimum cosine similarity threshold (default 0.2)
+        min_score: Instance score floor (default 0.2 for the shim).
+        rerank_identity: Backend identity reported alongside the applied score floor.
     """
 
     def __init__(
@@ -123,6 +124,7 @@ class BrainService:
         graph: Any | None = None,
         project_context_svc: Any | None = None,
         plan_search_svc: IndexedPlanSearchService | None = None,
+        rerank_identity: str | None = None,
     ) -> None:
         self._services: dict[KnowledgeType, Any] = {
             "decision": decision_svc,
@@ -135,6 +137,7 @@ class BrainService:
             self._services["plan"] = plan_search_svc
         self._embedding_svc = embedding_svc
         self._min_score = min_score
+        self._rerank_identity = rerank_identity
         self._collector = metrics_collector
         self._hybrid_searcher = hybrid_searcher
         self._decay_calculator = decay_calculator
@@ -674,6 +677,7 @@ class BrainService:
                     query=query,
                     types_searched=types_to_search,
                     diagnostics=SearchDiagnostics(
+                        rerank_identity=self._rerank_identity,
                         min_score_requested=threshold,
                         min_score_effective=threshold,
                         types_searched=types_to_search,
@@ -727,6 +731,7 @@ class BrainService:
             effective_min_score if effective_min_score is not None else self._min_score
         )
         diagnostics = SearchDiagnostics(
+            rerank_identity=self._rerank_identity,
             candidates_before_threshold=threshold_diagnostics.candidates_before_threshold,
             best_raw_score=threshold_diagnostics.best_raw_score,
             min_score_requested=min_score_requested,
@@ -890,6 +895,7 @@ class BrainService:
                     total=0,
                     types_searched=types_to_search,
                     diagnostics=SearchDiagnostics(
+                        rerank_identity=self._rerank_identity,
                         min_score_requested=min_score_requested,
                         min_score_effective=min_score_requested,
                         types_searched=types_to_search,
@@ -995,6 +1001,7 @@ class BrainService:
         dream_scope = get_dream_project_scope()
         project_key_effective = dream_scope.project_key if dream_scope is not None else project_key
         diagnostics = SearchDiagnostics(
+            rerank_identity=self._rerank_identity,
             candidates_before_threshold=candidates_before_threshold,
             best_raw_score=best_raw_score,
             min_score_requested=min_score_requested,

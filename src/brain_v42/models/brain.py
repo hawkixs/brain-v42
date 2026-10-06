@@ -86,6 +86,10 @@ class SearchDiagnostics(BaseModel):
         default=0.0,
         description="The min_score threshold actually applied (0.0 when fan-out is degraded).",
     )
+    rerank_identity: str | None = Field(
+        default=None,
+        description="Configured reranker backend identity, including when search is degraded.",
+    )
     tags_filtered_out: int = Field(
         default=0,
         description="Entities excluded by the post-filter tags overlap check (flat search only).",
