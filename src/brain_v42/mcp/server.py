@@ -331,6 +331,9 @@ async def app_lifecycle(
         # startup, and a probe error must not reach it (the loop swallows them).
         reranker_client = services.get("reranker_client")
         if reranker_client is not None:
+            # Nothing else closes it. Pushed BEFORE the probe task so that, LIFO,
+            # the probe is cancelled first and never meets a closed client.
+            cleanup.push_async_callback(reranker_client.close)
             rerank_probe_task = asyncio.create_task(
                 run_rerank_probe_loop(reranker_client, settings.rerank_probe_interval_seconds)
             )
