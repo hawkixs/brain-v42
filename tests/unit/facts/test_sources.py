@@ -53,6 +53,12 @@ _ROW: dict[str, object] = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _clear_release_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BRAIN_RELEASE_SHA", raising=False)
+    monkeypatch.delenv("BRAIN_RELEASE_VERSION", raising=False)
+
+
 @pytest.mark.asyncio
 async def test_a_unix_socket_connection_has_no_address_and_is_refused() -> None:
     """NULL inet_server_addr(): the declaration may not use a socket, so the read cannot vouch."""
@@ -81,6 +87,7 @@ async def test_identity_inside_the_transaction_is_the_four_measured_fields() -> 
 def test_running_release_sha_reads_the_release_segment(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("BRAIN_RELEASE_SHA", raising=False)
     fake = tmp_path / "releases" / ("a" * 40) / "venv" / "lib" / "brain_v42" / "__init__.py"
     fake.parent.mkdir(parents=True)
     fake.write_text("")
@@ -91,11 +98,41 @@ def test_running_release_sha_reads_the_release_segment(
 def test_running_release_sha_is_none_in_a_checkout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.delenv("BRAIN_RELEASE_SHA", raising=False)
     fake = tmp_path / "src" / "brain_v42" / "__init__.py"
     fake.parent.mkdir(parents=True)
     fake.write_text("")
     monkeypatch.setattr(brain_v42, "__file__", str(fake))
     assert running_release_sha() is None
+
+
+def test_image_release_sha_overrides_checkout_path(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "src" / "brain_v42" / "__init__.py"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("")
+    monkeypatch.setattr(brain_v42, "__file__", str(fake))
+    monkeypatch.setenv("BRAIN_RELEASE_SHA", "d" * 40)
+    assert running_release_sha() == "d" * 40
+
+
+def test_image_release_sha_empty_falls_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "releases" / ("a" * 40) / "brain_v42" / "__init__.py"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("")
+    monkeypatch.setattr(brain_v42, "__file__", str(fake))
+    monkeypatch.setenv("BRAIN_RELEASE_SHA", "")
+    assert running_release_sha() == "a" * 40
+
+
+@pytest.mark.parametrize("value", ["abc", "A" * 40, "a" * 39, "a" * 41, "a" * 40 + "\n"])
+def test_image_release_sha_malformed_refuses(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setenv("BRAIN_RELEASE_SHA", value)
+    with pytest.raises(IdentityUnreadableError):
+        running_release_sha()
 
 
 def test_running_release_identity_uses_the_imported_package_version(
@@ -107,6 +144,19 @@ def test_running_release_identity_uses_the_imported_package_version(
     monkeypatch.setattr(brain_v42, "__file__", str(fake))
     monkeypatch.setattr("brain_v42.release.package_version", lambda: "0.6.3")
     assert sources.running_release_identity() == ReleaseIdentity("a" * 40, "0.6.3")
+
+
+def test_running_release_identity_refuses_declared_version_mismatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fake = tmp_path / "releases" / ("a" * 40) / "brain_v42" / "__init__.py"
+    fake.parent.mkdir(parents=True)
+    fake.write_text("")
+    monkeypatch.setattr(brain_v42, "__file__", str(fake))
+    monkeypatch.setattr("brain_v42.release.package_version", lambda: "0.6.3")
+    monkeypatch.setenv("BRAIN_RELEASE_VERSION", "v" * 80)
+    with pytest.raises(IdentityUnreadableError, match="v" * 20):
+        sources.running_release_identity()
 
 
 def test_running_release_identity_is_none_in_a_checkout(
@@ -164,6 +214,19 @@ async def test_release_source_session_measures_the_injected_release_identity() -
         Path("/srv/releases/" + "a" * 40 + "/brain_v42/__init__.py"), lambda: "0.6.0"
     )
     assert await session.identity() == ReleaseIdentity("a" * 40, "0.6.0")
+
+
+@pytest.mark.asyncio
+async def test_release_source_session_uses_image_identity_and_checks_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BRAIN_RELEASE_SHA", "d" * 40)
+    monkeypatch.delenv("BRAIN_RELEASE_VERSION", raising=False)
+    session = ReleaseSourceSession(Path("/app/src/brain_v42/__init__.py"), lambda: "0.6.0")
+    assert await session.identity() == ReleaseIdentity("d" * 40, "0.6.0")
+    monkeypatch.setenv("BRAIN_RELEASE_VERSION", "9.9.9")
+    with pytest.raises(IdentityUnreadableError, match="9.9.9.*0.6.0|0.6.0.*9.9.9"):
+        await session.identity()
 
 
 @pytest.mark.asyncio

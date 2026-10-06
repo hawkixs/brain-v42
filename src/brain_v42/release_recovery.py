@@ -154,50 +154,11 @@ def _atomic_write(path: Path, text: str, *, mode: int) -> None:
         raise
 
 
-def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
-    """Copy the release's named recovery contract into `recovery/`, bound.
-
-    Returns `(binding_path, sha256)`. Raises `RecoveryBindingError` — never a bare
-    assertion — on a stale `schema_head` or any sha256 mismatch, before or after
-    the copy: a release that cannot prove its own recovery contract must not
-    produce one that looks published.
-    """
-    release_dir = Path(release_dir)
-    source_root = release_dir / SOURCE_TREE_DIRNAME
-    current_path = source_root / CURRENT_JSON_RELATIVE
-    if not current_path.is_file():
-        raise RecoveryBindingError(
-            f"release ships no recovery contract binding: {current_path} is missing"
-        )
-    current = _load_json_object(current_path)
-
-    try:
-        shipped_head = head_of_versions_strict(source_root / VERSIONS_RELATIVE)
-    except ValueError as exc:
-        raise RecoveryBindingError(
-            f"cannot determine the release's shipped schema head: {exc}"
-        ) from exc
-    if current.get("schema_head") != shipped_head:
-        raise RecoveryBindingError(
-            f"{current_path} declares schema_head {current.get('schema_head')!r}, but the "
-            f"release ships head {shipped_head!r}: mint the next recovery contract first"
-        )
-
-    manifest = _load_json_object(release_dir / MANIFEST_FILENAME)
-    release_sha = manifest.get("source_sha")
-    if not isinstance(release_sha, str) or not release_sha:
-        raise RecoveryBindingError(f"{release_dir / MANIFEST_FILENAME} carries no source_sha")
-
-    recovery_dir = release_dir / RECOVERY_DIRNAME
-    recovery_dir.mkdir(mode=0o700, exist_ok=True)
-    os.chmod(recovery_dir, 0o700)
-
-    binding: dict[str, object] = {
-        "contract_id": current.get("contract_id"),
-        "contract_version": current.get("contract_version"),
-        "schema_head": shipped_head,
-        "release_sha": release_sha,
-    }
+def _copy_verified_assets(
+    source_root: Path, dest_dir: Path, current: dict[str, object], current_path: Path
+) -> dict[str, object]:
+    """Copy declared recovery assets after verifying confinement and both hashes."""
+    copied: dict[str, object] = {}
     resolved_source_root = source_root.resolve()
     for asset_key in ASSET_KEYS:
         asset = current.get(asset_key)
@@ -217,13 +178,13 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
                 f"{asset_key}: sha256 mismatch before copy for {source_path} "
                 f"(current.json declares {declared}, measured {measured_before})"
             )
-        destination_name = source_path.name
-        if not is_safe_asset_filename(destination_name):
+        name = source_path.name
+        if not is_safe_asset_filename(name):
             raise RecoveryBindingError(
-                f"{asset_key}: destination file name {destination_name!r} is not safe to "
+                f"{asset_key}: destination file name {name!r} is not safe to "
                 "publish into recovery/ (red-backup would refuse it as binding=invalid)"
             )
-        destination = recovery_dir / destination_name
+        destination = dest_dir / name
         if destination.is_symlink():
             raise RecoveryBindingError(
                 f"{asset_key}: destination {destination} already exists as a symlink; "
@@ -238,15 +199,15 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
         # The temporary file is created by mkstemp (O_CREAT | O_EXCL, random
         # name) and written through its own descriptor: a symlink planted at
         # any name in recovery/ can never redirect the copy outside it.
-        fd, tmp_name = tempfile.mkstemp(prefix=f".{destination_name}.tmp-", dir=recovery_dir)
-        tmp_destination = Path(tmp_name)
+        fd, temporary = tempfile.mkstemp(prefix=f".{name}.tmp-", dir=dest_dir)
+        tmp_path = Path(temporary)
         try:
             with os.fdopen(fd, "wb") as sink, source_path.open("rb") as source:
                 shutil.copyfileobj(source, sink)
-            os.chmod(tmp_destination, 0o644)
-            os.replace(tmp_destination, destination)
+            os.chmod(tmp_path, 0o644)
+            os.replace(tmp_path, destination)
         except Exception:
-            tmp_destination.unlink(missing_ok=True)
+            tmp_path.unlink(missing_ok=True)
             raise
         measured_after = _sha256_of(destination)
         if measured_after != declared:
@@ -254,7 +215,63 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
                 f"{asset_key}: sha256 mismatch after copy for {destination} "
                 f"(expected {declared}, measured {measured_after})"
             )
-        binding[asset_key] = {"path": destination.name, "sha256": measured_after}
+        copied[asset_key] = {"path": name, "sha256": measured_after}
+    return copied
+
+
+def _load_verified_current(source_root: Path, label: str) -> tuple[dict[str, object], Path, str]:
+    current_path = source_root / CURRENT_JSON_RELATIVE
+    if not current_path.is_file():
+        message = (
+            f"release ships no recovery contract binding: {current_path} is missing"
+            if label == "release"
+            else f"image ships no recovery contract binding: {current_path}"
+        )
+        raise RecoveryBindingError(message)
+    current = _load_json_object(current_path)
+    try:
+        shipped_head = head_of_versions_strict(source_root / VERSIONS_RELATIVE)
+    except ValueError as exc:
+        raise RecoveryBindingError(
+            f"cannot determine the {label}'s shipped schema head: {exc}"
+        ) from exc
+    if current.get("schema_head") != shipped_head:
+        suffix = ": mint the next recovery contract first" if label == "release" else ""
+        raise RecoveryBindingError(
+            f"{current_path} declares schema_head {current.get('schema_head')!r}, but the "
+            f"{label} ships head {shipped_head!r}{suffix}"
+        )
+    return current, current_path, shipped_head
+
+
+def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
+    """Copy the release's named recovery contract into `recovery/`, bound.
+
+    Returns `(binding_path, sha256)`. Raises `RecoveryBindingError` — never a bare
+    assertion — on a stale `schema_head` or any sha256 mismatch, before or after
+    the copy: a release that cannot prove its own recovery contract must not
+    produce one that looks published.
+    """
+    release_dir = Path(release_dir)
+    source_root = release_dir / SOURCE_TREE_DIRNAME
+    current, current_path, shipped_head = _load_verified_current(source_root, "release")
+
+    manifest = _load_json_object(release_dir / MANIFEST_FILENAME)
+    release_sha = manifest.get("source_sha")
+    if not isinstance(release_sha, str) or not release_sha:
+        raise RecoveryBindingError(f"{release_dir / MANIFEST_FILENAME} carries no source_sha")
+
+    recovery_dir = release_dir / RECOVERY_DIRNAME
+    recovery_dir.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(recovery_dir, 0o700)
+
+    binding: dict[str, object] = {
+        "contract_id": current.get("contract_id"),
+        "contract_version": current.get("contract_version"),
+        "schema_head": shipped_head,
+        "release_sha": release_sha,
+    }
+    binding.update(_copy_verified_assets(source_root, recovery_dir, current, current_path))
 
     binding_path = recovery_dir / BINDING_FILENAME
     text = json.dumps(binding, indent=2, sort_keys=True) + "\n"
@@ -263,6 +280,37 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
         raise RecoveryBindingError(
             f"recovery binding is {size} bytes, over the {MAX_BINDING_BYTES}-byte limit "
             "red-backup enforces on recovery-binding.json"
+        )
+    _atomic_write(binding_path, text, mode=0o644)
+    return binding_path, _sha256_of(binding_path)
+
+
+def publish_image_recovery_binding(
+    source_root: Path, out_dir: Path, release_sha: str
+) -> tuple[Path, str]:
+    """Publish the source tree's verified recovery contract into an image directory."""
+    if _SHA_RE.fullmatch(release_sha) is None:
+        raise RecoveryBindingError("release_sha must be a lowercase 40-character SHA")
+    source_root = Path(source_root)
+    current, current_path, shipped_head = _load_verified_current(source_root, "image")
+
+    out_dir = Path(out_dir)
+    out_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
+    os.chmod(out_dir, 0o755)
+    binding: dict[str, object] = {
+        "contract_id": current.get("contract_id"),
+        "contract_version": current.get("contract_version"),
+        "schema_head": shipped_head,
+        "release_sha": release_sha,
+    }
+    binding.update(_copy_verified_assets(source_root, out_dir, current, current_path))
+
+    binding_path = out_dir / BINDING_FILENAME
+    text = json.dumps(binding, indent=2, sort_keys=True) + "\n"
+    size = len(text.encode("utf-8"))
+    if size > MAX_BINDING_BYTES:
+        raise RecoveryBindingError(
+            f"recovery binding is {size} bytes, over the {MAX_BINDING_BYTES}-byte limit"
         )
     _atomic_write(binding_path, text, mode=0o644)
     return binding_path, _sha256_of(binding_path)
@@ -359,6 +407,11 @@ def cli(argv: list[str] | None = None) -> int:
     publish_parser = subparsers.add_parser("publish")
     publish_parser.add_argument("release_dir", type=Path)
 
+    image_parser = subparsers.add_parser("publish-image")
+    image_parser.add_argument("source_root", type=Path)
+    image_parser.add_argument("out_dir", type=Path)
+    image_parser.add_argument("--release-sha", required=True)
+
     live_parser = subparsers.add_parser("live")
     live_parser.add_argument("releases_root", type=Path)
     live_parser.add_argument("sha")
@@ -371,6 +424,11 @@ def cli(argv: list[str] | None = None) -> int:
         if arguments.command == "publish":
             binding_path, digest = publish_recovery_binding(arguments.release_dir)
             record_binding_in_manifest(arguments.release_dir)
+            print(json.dumps({"binding": str(binding_path), "sha256": digest}, sort_keys=True))
+        elif arguments.command == "publish-image":
+            binding_path, digest = publish_image_recovery_binding(
+                arguments.source_root, arguments.out_dir, arguments.release_sha
+            )
             print(json.dumps({"binding": str(binding_path), "sha256": digest}, sort_keys=True))
         elif arguments.command == "live":
             live_path = switch_live(arguments.releases_root, arguments.sha)

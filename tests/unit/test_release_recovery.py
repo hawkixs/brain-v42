@@ -125,6 +125,110 @@ def test_publish_recovery_binding_declares_the_release_and_shipped_schema(tmp_pa
     assert data["contract_version"] == 1
 
 
+def test_publish_image_recovery_binding_copies_assets_and_writes_binding(tmp_path: Path) -> None:
+    release_dir = _build_release(tmp_path)
+    source_root = release_dir / "brain-v42"
+    out_dir = tmp_path / "image-recovery"
+
+    binding_path, digest = rr.publish_image_recovery_binding(source_root, out_dir, RELEASE_SHA)
+
+    binding = json.loads(binding_path.read_text())
+    release_binding_path, _ = rr.publish_recovery_binding(release_dir)
+    release_binding = json.loads(release_binding_path.read_text())
+    assert set(binding) == set(release_binding)
+    assert binding["release_sha"] == RELEASE_SHA
+    assert binding["contract_id"] == "brain-v42/postgresql-recovery/v1"
+    assert binding["contract_version"] == 1
+    assert binding["schema_head"] == SCHEMA_HEAD
+    assert binding_path == out_dir / "recovery-binding.json"
+    assert digest == _sha256(binding_path)
+    for key in rr.ASSET_KEYS:
+        asset = binding[key]
+        assert (out_dir / asset["path"]).is_file()
+        assert asset["sha256"] == _sha256(out_dir / asset["path"])
+
+
+@pytest.mark.parametrize("tamper", ["asset", "schema"])
+def test_publish_image_recovery_binding_refuses_invalid_source(tmp_path: Path, tamper: str) -> None:
+    release_dir = _build_release(tmp_path)
+    source_root = release_dir / "brain-v42"
+    current_path = source_root / "ops/recovery/current.json"
+    if tamper == "asset":
+        (source_root / "ops/recovery/brain-v42-v1.sql").write_text("tampered")
+    else:
+        current = json.loads(current_path.read_text())
+        current["schema_head"] = "stale"
+        current_path.write_text(json.dumps(current))
+    message = "sha256 mismatch" if tamper == "asset" else "schema_head"
+    with pytest.raises(rr.RecoveryBindingError, match=message):
+        rr.publish_image_recovery_binding(source_root, tmp_path / "out", RELEASE_SHA)
+
+
+@pytest.mark.parametrize("release_sha", ["", "A" * 40, "a" * 39, "a" * 41])
+def test_publish_image_recovery_binding_refuses_invalid_release_sha(
+    tmp_path: Path, release_sha: str
+) -> None:
+    release_dir = _build_release(tmp_path)
+    with pytest.raises(rr.RecoveryBindingError, match="release.sha"):
+        rr.publish_image_recovery_binding(release_dir / "brain-v42", tmp_path / "out", release_sha)
+
+
+def test_publish_image_recovery_binding_refuses_missing_current_json(tmp_path: Path) -> None:
+    source_root = tmp_path / "source"
+    source_root.mkdir()
+    with pytest.raises(rr.RecoveryBindingError, match="current.json"):
+        rr.publish_image_recovery_binding(source_root, tmp_path / "out", RELEASE_SHA)
+
+
+def test_publish_image_recovery_binding_refuses_unsafe_asset_name(tmp_path: Path) -> None:
+    release_dir = _build_release(tmp_path)
+    source_root = release_dir / "brain-v42"
+    current_path = source_root / "ops/recovery/current.json"
+    current = json.loads(current_path.read_text())
+    asset_path = source_root / "ops/recovery/brain-v42-v1.sql"
+    unsafe_path = asset_path.with_name("bad name.sql")
+    asset_path.rename(unsafe_path)
+    current["attestation_sql"]["path"] = "ops/recovery/bad name.sql"
+    current_path.write_text(json.dumps(current))
+    with pytest.raises(rr.RecoveryBindingError, match="not safe"):
+        rr.publish_image_recovery_binding(source_root, tmp_path / "out", RELEASE_SHA)
+
+
+def test_publish_image_recovery_binding_refuses_symlinked_asset(tmp_path: Path) -> None:
+    release_dir = _build_release(tmp_path)
+    source_root = release_dir / "brain-v42"
+    asset_path = source_root / "ops/recovery/brain-v42-v1.sql"
+    target = tmp_path / "outside.sql"
+    target.write_text(asset_path.read_text())
+    asset_path.unlink()
+    asset_path.symlink_to(target)
+    with pytest.raises(rr.RecoveryBindingError, match="outside the release"):
+        rr.publish_image_recovery_binding(source_root, tmp_path / "out", RELEASE_SHA)
+
+
+def test_publish_image_cli_requires_release_sha_and_emits_json(tmp_path: Path, capsys) -> None:
+    release_dir = _build_release(tmp_path)
+    source_root = release_dir / "brain-v42"
+    assert (
+        rr.cli(
+            ["publish-image", str(source_root), str(tmp_path / "out"), "--release-sha", RELEASE_SHA]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out)["sha256"]
+    with pytest.raises(SystemExit):
+        rr.cli(["publish-image", str(source_root), str(tmp_path / "bad")])
+    assert "--release-sha" in capsys.readouterr().err
+    (source_root / "ops/recovery/brain-v42-v1.sql").write_text("tampered")
+    assert (
+        rr.cli(
+            ["publish-image", str(source_root), str(tmp_path / "bad"), "--release-sha", RELEASE_SHA]
+        )
+        == 1
+    )
+    assert "sha256 mismatch" in capsys.readouterr().err
+
+
 def test_publish_recovery_binding_copies_the_three_files_with_mode_0644(tmp_path: Path) -> None:
     release_dir = _build_release(tmp_path)
 
