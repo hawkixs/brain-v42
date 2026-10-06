@@ -896,6 +896,8 @@ class TestBrainSearchTelemetry:
     """The mcp.brain_search[.grouped] structlog events must journal the shape of
     the parameters the tool RECEIVED (types requested, tags presence/count,
     min_score, group_by_type, include_archived) — never the raw query text.
+    An omitted min_score is journaled as the floor actually requested (the
+    active reranker's calibrated default), not as None.
 
     Zero-schema: no new table, no migration, no new event name. These are the
     two existing logger.info() calls in brain_search().
