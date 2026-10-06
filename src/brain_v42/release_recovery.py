@@ -285,6 +285,27 @@ def publish_recovery_binding(release_dir: Path) -> tuple[Path, str]:
     return binding_path, _sha256_of(binding_path)
 
 
+def _refuse_unlisted_entries(out_dir: Path, current: dict[str, object]) -> None:
+    """Refuse to publish into a directory that already holds anything the binding won't list.
+
+    red-backup reads the image's recovery directory strictly: only the binding and the
+    assets it lists, flat regular files. A stray entry left there would ship in the image
+    and make the binding invalid, so it stops the build instead.
+    """
+    if not out_dir.exists():
+        return
+    expected = {BINDING_FILENAME}
+    for asset_key in ASSET_KEYS:
+        asset = current.get(asset_key)
+        if isinstance(asset, dict) and isinstance(asset.get("path"), str):
+            expected.add(Path(asset["path"]).name)
+    unlisted = sorted(entry.name for entry in out_dir.iterdir() if entry.name not in expected)
+    if unlisted:
+        raise RecoveryBindingError(
+            f"{out_dir} holds entries the binding does not list: {', '.join(unlisted)}"
+        )
+
+
 def publish_image_recovery_binding(
     source_root: Path, out_dir: Path, release_sha: str
 ) -> tuple[Path, str]:
@@ -295,6 +316,7 @@ def publish_image_recovery_binding(
     current, current_path, shipped_head = _load_verified_current(source_root, "image")
 
     out_dir = Path(out_dir)
+    _refuse_unlisted_entries(out_dir, current)
     out_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
     os.chmod(out_dir, 0o755)  # nosec B103 - /app/recovery is a read-only image directory of public recovery-contract assets that the non-root app user and red-backup must read; no secret (audited 2026-10-06)
     binding: dict[str, object] = {
