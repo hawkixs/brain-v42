@@ -151,6 +151,10 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # inherited.
         "brain-v42-v20.sql",
         "brain-v42-v20-pgrestore.sql",
+        # Added on 2026-10-06 by the v21 mint (063): the client credential registry,
+        # elevations and audit outbox; its project-key predicate is inherited.
+        "brain-v42-v21.sql",
+        "brain-v42-v21-pgrestore.sql",
     }
 )
 
@@ -238,8 +242,8 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     """Non-vacuity guard: count the surfaces, so none escapes in silence.
 
-    FORTY guardians besides `_KEBAB` (1 metadata + 2 migrations + 37 assets) since
-    the v20 mint of 2026-10-05 — it was thirty-eight at the v19 mint, thirty-six at the v18 mint of 2026-10-03,
+    FORTY-TWO guardians besides `_KEBAB` (1 metadata + 2 migrations + 39 assets) since
+    the v21 mint of 2026-10-06 — it was forty at the v20 mint of 2026-10-05, thirty-eight at the v19 mint, thirty-six at the v18 mint of 2026-10-03,
     thirty-four at the v17 mint, thirty-three at the v16 mint of 2026-10-02,
     thirty at the v15 mint of 2026-09-30, eight when this anchor was written, fourteen at
     the v7 mint, eighteen at the v9 mint, twenty at the v10 mint, twenty-two at the v11
@@ -264,9 +268,9 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 37), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 39), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
-        f"attestation={recovery_sites} ; attendu 1/2/37). Recenser avant de corriger le "
+        f"attestation={recovery_sites} ; attendu 1/2/39). Recenser avant de corriger le "
         "compte : c'est ce recensement qui a été faux trois fois."
     )
