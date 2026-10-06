@@ -57,6 +57,7 @@ def test_identity_counters_latencies_and_labels(collector) -> None:
 def test_probe_state_age_and_no_operations(collector, monkeypatch) -> None:
     clock = [100.0]
     monkeypatch.setattr("brain_v42.metrics.collector.time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("brain_v42.metrics.collector.time.time", lambda: 1000.0)
     before = collector.get_metrics()["reranker"]
     assert before["last_probe_ok"] is None
     assert before["last_probe_age_s"] is None
@@ -68,7 +69,7 @@ def test_probe_state_age_and_no_operations(collector, monkeypatch) -> None:
     assert after["last_probe_age_s"] == 3
     assert after["by_identity"] == {}
     probe = collector.get_flush_data()["_process"]["reranker"]["last_probe"]["cohere:m"]
-    assert probe == {"ok": False, "reason": "http_401", "monotonic": 100.0}
+    assert probe == {"ok": False, "reason": "http_401", "monotonic": 100.0, "at": 1000.0}
     collector.record_rerank_probe("cohere:m", True, "ok")
     assert collector.get_metrics()["reranker"]["last_probe_ok"] is True
 
@@ -115,3 +116,30 @@ def test_flusher_retains_legacy_keys_and_flushes_operations_without_legacy_calls
 def test_flusher_does_not_create_reranker_row_without_operations() -> None:
     tools = MetricsFlusher._process_pseudo_tools({"reranker": {"by_identity": {}}})
     assert "_reranker" not in tools
+
+
+def test_flusher_persists_latest_probe_without_operations(
+    collector: MetricsCollector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = [1000.0]
+    monkeypatch.setattr("brain_v42.metrics.collector.time.time", lambda: clock[0])
+    collector.on_probe("shim", True, "ok")
+    clock[0] += 2
+    collector.on_probe("cohere:m", False, "http_401")
+    entry = collector.get_flush_data()["_process"]
+    assert entry["reranker"]["total_calls"] == 0
+    assert entry["reranker"]["by_identity"] == {}
+    assert MetricsFlusher._process_pseudo_tools(entry)["_reranker"] == {
+        "calls": 0,
+        "errors": 0,
+        "recent_errors": 0,
+        "total_latency": 0.0,
+        "total_candidates": 0,
+        "by_identity": {},
+        "last_probe": {
+            "ok": False,
+            "reason": "http_401",
+            "at": 1002.0,
+            "identity": "cohere:m",
+        },
+    }

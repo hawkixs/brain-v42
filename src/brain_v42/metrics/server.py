@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ipaddress
+import time
 from collections.abc import Callable
 from typing import Any, cast
 
@@ -498,12 +499,19 @@ class MetricsServer:
             # Extract _reranker pseudo-tool into top-level reranker section
             reranker_agg = agg_tools.pop("_reranker", None)
             if reranker_agg:
+                probe = reranker_agg.get("last_probe")
                 metrics["reranker"] = {
                     "total_calls": reranker_agg["calls"],
                     "total_errors": reranker_agg["errors"],
                     "recent_errors": reranker_agg["recent_errors"],
                     "total_candidates": reranker_agg.get("total_candidates", 0),
                     "avg_latency_ms": reranker_agg["avg_latency_ms"],
+                    "by_identity": reranker_agg.get("by_identity", {}),
+                    "last_probe_ok": probe["ok"] if probe else None,
+                    "last_probe_reason": probe["reason"] if probe else None,
+                    "last_probe_age_s": round(max(0.0, time.time() - probe["at"]), 1)
+                    if probe
+                    else None,
                 }
             # Extract _graph pseudo-tool into top-level graph section
             graph_agg = agg_tools.pop("_graph", None)

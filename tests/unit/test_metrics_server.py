@@ -131,6 +131,91 @@ async def test_metrics_endpoint_returns_json(
     assert data["database"]["graph_outbox"]["projector"]["healthy"] is True
 
 
+@pytest.mark.parametrize("now, expected_age", [(1005.26, 3.3), (1000.0, 0.0)])
+async def test_metrics_exposes_cross_process_rerank_observations(
+    collector: MetricsCollector,
+    mock_embedding_svc: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+    now: float,
+    expected_age: float,
+) -> None:
+    identities = {"cohere:m": {"operations": 6, "fallback_rate": 1 / 3}}
+    aggregate = collector.collect_process_metrics.return_value
+    aggregate.update(
+        active_processes=2,
+        decay={"stale_count": 0, "archived_count": 0, "access_log_size": 0},
+        tools={
+            "_reranker": {
+                "calls": 6,
+                "errors": 2,
+                "recent_errors": 1,
+                "total_candidates": 9,
+                "avg_latency_ms": 20.0,
+                "by_identity": identities,
+                "last_probe": {
+                    "ok": False,
+                    "reason": "http_401",
+                    "at": 1002.0,
+                    "identity": "cohere:m",
+                },
+            }
+        },
+    )
+    monkeypatch.setattr("time.time", lambda: now)
+    server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
+    data = json.loads((await server._handle_metrics(MagicMock())).body)
+    assert data["reranker"] == {
+        "total_calls": 6,
+        "total_errors": 2,
+        "recent_errors": 1,
+        "total_candidates": 9,
+        "avg_latency_ms": 20.0,
+        "by_identity": identities,
+        "last_probe_ok": False,
+        "last_probe_reason": "http_401",
+        "last_probe_age_s": expected_age,
+    }
+
+
+async def test_metrics_legacy_reranker_aggregate_has_empty_observations(
+    collector: MetricsCollector, mock_embedding_svc: MagicMock
+) -> None:
+    aggregate = collector.collect_process_metrics.return_value
+    aggregate.update(
+        active_processes=1,
+        decay={"stale_count": 0, "archived_count": 0, "access_log_size": 0},
+        tools={"_reranker": {"calls": 2, "errors": 1, "recent_errors": 1, "avg_latency_ms": 5.0}},
+    )
+    collector.record_rerank_probe("shim", True, "ok")
+    server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
+    data = json.loads((await server._handle_metrics(MagicMock())).body)
+    assert data["reranker"] == {
+        "total_calls": 2,
+        "total_errors": 1,
+        "recent_errors": 1,
+        "total_candidates": 0,
+        "avg_latency_ms": 5.0,
+        "by_identity": {},
+        "last_probe_ok": None,
+        "last_probe_reason": None,
+        "last_probe_age_s": None,
+    }
+
+
+async def test_metrics_keeps_in_process_reranker_without_aggregate(
+    collector: MetricsCollector,
+    mock_embedding_svc: MagicMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("brain_v42.metrics.collector.time.monotonic", lambda: 100.0)
+    collector.record_rerank_probe("shim", True, "ok")
+    collector.record_rerank_operation("shim", "ok", 5.0)
+    expected = collector.get_metrics()["reranker"]
+    server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
+    data = json.loads((await server._handle_metrics(MagicMock())).body)
+    assert data["reranker"] == expected
+
+
 async def test_metrics_endpoint_includes_embedding_status(
     aiohttp_client: Any, collector: MetricsCollector, mock_embedding_svc: MagicMock
 ) -> None:

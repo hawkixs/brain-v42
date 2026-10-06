@@ -89,8 +89,11 @@ class MetricsFlusher:
         """
         ptools: dict[str, Any] = {}
         rk = entry.get("reranker", {})
-        if rk.get("total_calls", 0) > 0 or any(
-            stats.get("operations", 0) > 0 for stats in rk.get("by_identity", {}).values()
+        probes = rk.get("last_probe", {})
+        if (
+            rk.get("total_calls", 0) > 0
+            or any(stats.get("operations", 0) > 0 for stats in rk.get("by_identity", {}).values())
+            or probes
         ):
             ptools["_reranker"] = {
                 "calls": rk.get("total_calls", 0),
@@ -101,6 +104,14 @@ class MetricsFlusher:
             }
             if "by_identity" in rk:
                 ptools["_reranker"]["by_identity"] = rk["by_identity"]
+            if probes:
+                identity, probe = max(probes.items(), key=lambda item: item[1]["at"])
+                ptools["_reranker"]["last_probe"] = {
+                    "ok": probe["ok"],
+                    "reason": probe["reason"],
+                    "at": probe["at"],
+                    "identity": identity,
+                }
         gr = entry.get("graph", {})
         if gr.get("total_queries", 0) > 0:
             ptools["_graph"] = {

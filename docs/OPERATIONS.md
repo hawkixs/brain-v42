@@ -375,19 +375,24 @@ errors fail immediately. The shim retains three busy retries on 503 **with**
 `Retry-After`, with each delay capped at two seconds and each request using its own
 HTTP timeout. It has no elapsed-time budget; a 503 without the header fails at once.
 
-With MCP metrics enabled, the sidecar's `reranker.by_identity` reports operations,
+With MCP metrics enabled, the sidecar's `/metrics` `reranker.by_identity` reports operations,
 `operations_by_outcome`, attempts, retries, `status_429`, `status_5xx` and
 `budget_exhausted`. Identities are `shim` or `cohere:<model>` and carry `backend` and
 `model` labels. `fallback_rate` is non-ok operations divided by operations (zero
-before any operation). `attempt_latency_ms` and `operation_latency_ms` include
-p50/p95/p99 over retained samples from the last 24 hours; operation duration includes
-backoff sleeps. Operation outcomes are `ok`, `budget_exhausted`, `http_error`,
-`transport_error` and `parse_error`. Every probe updates `last_probe_ok`,
-`last_probe_reason` and `last_probe_age_s` (null before the first probe). Flush data
-keeps per-identity probe state under `reranker.last_probe`, and the `_reranker`
-pseudo-tool persists `by_identity` even when legacy `total_calls` is zero. Existing
-legacy metrics retain their meanings; observer failures log once and never fail a
-search.
+before any operation), recomputed from counters summed across processes for each
+identity. `operations_by_outcome` is also summed per outcome. `attempt_latency_ms`
+and `operation_latency_ms` include p50/p95/p99 over each process's retained samples
+from the last 24 hours; the sidecar takes the maximum per percentile across processes
+as a conservative summary, not a percentile of pooled samples. Operation duration
+includes backoff sleeps. Operation outcomes are `ok`, `budget_exhausted`, `http_error`,
+`transport_error` and `parse_error`. The most recent probe across identities and
+processes sets `reranker.last_probe_ok`, `last_probe_reason` and `last_probe_age_s`
+(null before the first probe). The sidecar computes age from wall-clock `at`, clamps
+it to zero and rounds to 0.1 seconds. Flush data keeps per-identity probe state under
+`reranker.last_probe`; the `_reranker` pseudo-tool persists its latest probe as
+`{ok, reason, at, identity}` even without operations, along with `by_identity` when
+present. Existing legacy metrics retain their meanings; observer failures log once
+and never fail a search.
 
 ### Embedding shim static bearer
 

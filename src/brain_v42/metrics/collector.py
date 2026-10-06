@@ -421,6 +421,7 @@ class MetricsCollector(
             "ok": ok,
             "reason": reason,
             "monotonic": time.monotonic(),
+            "at": time.time(),
         }
 
     def on_attempt(self, identity: str, outcome: str, latency_ms: float) -> None:
