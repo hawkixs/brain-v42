@@ -296,7 +296,7 @@ def publish_image_recovery_binding(
 
     out_dir = Path(out_dir)
     out_dir.mkdir(mode=0o755, parents=True, exist_ok=True)
-    os.chmod(out_dir, 0o755)
+    os.chmod(out_dir, 0o755)  # nosec B103 - /app/recovery is a read-only image directory of public recovery-contract assets that the non-root app user and red-backup must read; no secret (audited 2026-10-06)
     binding: dict[str, object] = {
         "contract_id": current.get("contract_id"),
         "contract_version": current.get("contract_version"),
