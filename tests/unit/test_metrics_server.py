@@ -216,6 +216,16 @@ async def test_metrics_keeps_in_process_reranker_without_aggregate(
     assert data["reranker"] == expected
 
 
+@pytest.mark.parametrize("counts", [{}, {"family_denied": 2, "missing_token": 1}])
+async def test_metrics_always_exposes_mcp_refusals_from_the_emitting_process(
+    collector: MetricsCollector, mock_embedding_svc: MagicMock, counts: dict[str, int]
+) -> None:
+    collector.collect_process_metrics.return_value["mcp_auth_refused"] = counts
+    server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
+    response = await server._handle_metrics(MagicMock())
+    assert json.loads(response.body)["mcp_auth_refused"] == counts
+
+
 async def test_metrics_endpoint_includes_embedding_status(
     aiohttp_client: Any, collector: MetricsCollector, mock_embedding_svc: MagicMock
 ) -> None:

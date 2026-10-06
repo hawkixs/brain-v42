@@ -69,6 +69,7 @@ from brain_v42.mcp.http_security import (
 )
 from brain_v42.mcp.provenance_middleware import ProvenanceMiddleware
 from brain_v42.mcp.session_autoopen import close_connection_traces
+from brain_v42.mcp.tool_families import FamilyAuthorizationMiddleware, apply_tool_families
 from brain_v42.metrics.tool_instrumentation import instrument_registered_tools
 from brain_v42.release import package_version, shipped_alembic_head
 from brain_v42.repositories.pg_adr import PgADRRepo
@@ -873,6 +874,15 @@ def _configure_http_security(
         if credential_verifier is None:
             raise HttpAuthConfigurationError("credentials mode requires a registry verifier")
         mcp.auth = CredentialTokenVerifier(credential_verifier)
+
+        # HTTP planning is the mode boundary: shared-token and stdio keep their
+        # existing middleware. Provenance was installed first by the factory.
+        async def elevation_checker(connection_id: str, client_id: str) -> bool:
+            return await PgClientCredentialRepo(get_session_factory()).has_active_elevation(
+                connection_id, client_id, datetime.now(UTC)
+            )
+
+        mcp.add_middleware(FamilyAuthorizationMiddleware(elevation_checker=elevation_checker))
         _http_security_configured_servers.add(mcp)
         return [
             Middleware(HostOriginGuard),
@@ -1175,6 +1185,9 @@ async def prepare_tools_for_transport(mcp: FastMCP, metrics_collector: Any | Non
     it matters.  Guessing is how the e2e harness ended up serving uninstrumented
     tools while production served instrumented ones.
     """
+    # HTTP planning selects credential authorization before this async prelude.
+    if isinstance(mcp.auth, CredentialTokenVerifier):
+        await apply_tool_families(mcp)
     surfaced = await surface_business_errors(mcp)
     logger.info("brain_v42.server.business_errors_surfaced", tools=len(surfaced))
 
@@ -1259,8 +1272,7 @@ async def _run_mcp(
     pass through, so a tool added tomorrow is covered without anyone having to
     remember a decorator (ticket 40ab2ced).
     """
-    await prepare_tools_for_transport(mcp, metrics_collector)
-
+    plan = None
     if settings.brain_mcp_transport == "http":
         plan = (
             http_plan
@@ -1272,6 +1284,9 @@ async def _run_mcp(
                 credential_verifier=credential_verifier,
             )
         )
+    await prepare_tools_for_transport(mcp, metrics_collector)
+
+    if plan is not None:
         await mcp.run_http_async(
             transport="http",
             host=settings.mcp_http_host,

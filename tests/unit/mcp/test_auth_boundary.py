@@ -212,7 +212,7 @@ async def stateful_client(
     mcp.add_middleware(StaleSessionContext())
     mcp.add_middleware(ProvenanceMiddleware())
 
-    @mcp.tool
+    @mcp.tool(name="brain_search")
     async def identity() -> dict[str, str | None]:
         result = {"principal": get_current_principal(), "actor": get_current_actor()}
         seen.append(result)
@@ -263,7 +263,7 @@ async def call_identity(
             "jsonrpc": "2.0",
             "id": call_id,
             "method": "tools/call",
-            "params": {"name": "identity", "arguments": {}},
+            "params": {"name": "brain_search", "arguments": {}},
         },
     )
 
