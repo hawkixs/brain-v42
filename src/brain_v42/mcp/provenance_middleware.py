@@ -40,11 +40,15 @@ from brain_v42.provenance import (
     UNKNOWN_ACTOR,
     enter_call,
     exit_call,
+    get_current_actor,
+    get_current_principal,
     is_outermost_call,
     normalize_agent,
     normalize_session,
     normalize_transport,
     set_current_actor,
+    set_current_peer,
+    set_current_principal,
     set_current_session,
     set_current_transport,
 )
@@ -73,8 +77,24 @@ class ProvenanceMiddleware(Middleware):
     """Set the declared actor and session, and report the call exactly once."""
 
     async def on_call_tool(self, context: Any, call_next: Any) -> Any:
+        try:
+            request = get_http_request()
+        except RuntimeError:
+            request = None
+        state = {} if request is None else request.scope.get("state", {})
         headers = get_http_headers(include={_TRANSPORT_HEADER}) or {}
-        actor = normalize_agent(headers.get("x-brain-agent"))
+        previous_principal = get_current_principal()
+        previous_actor = get_current_actor()
+        # The SDK session task inherits initialize's context. Only the current
+        # request carries the identity verified for this particular bearer.
+        principal = state.get("brain_principal")
+        if not isinstance(principal, str):
+            principal = None
+        actor = (
+            state["brain_actor"]
+            if principal is not None
+            else normalize_agent(headers.get("x-brain-agent"))
+        )
         session = normalize_session(headers.get("x-brain-session"))
         # DO NOT replace with ``Context.session_id``: in stateless mode it
         # forges a ``uuid4()`` PER REQUEST (measured: three values for three
@@ -82,9 +102,12 @@ class ProvenanceMiddleware(Middleware):
         # We would get one panel row per tool call, all presented as distinct
         # sessions.
         transport = normalize_transport(headers.get(_TRANSPORT_HEADER))
+        set_current_principal(principal)
         set_current_actor(actor)
         set_current_session(session)
         set_current_transport(transport)
+        peer = getattr(getattr(request, "client", None), "host", None)
+        set_current_peer(peer)
 
         token = enter_call()
         try:
@@ -96,6 +119,8 @@ class ProvenanceMiddleware(Middleware):
             return await call_next(context)
         finally:
             exit_call(token)
+            set_current_principal(previous_principal)
+            set_current_actor(previous_actor)
 
     async def _auto_open_session(self) -> None:
         """Open this connection's tracer session, BEFORE the tool.

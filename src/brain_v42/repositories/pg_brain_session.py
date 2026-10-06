@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import builtins
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import UTC, datetime, timedelta
 from secrets import compare_digest
 from types import SimpleNamespace
@@ -56,6 +56,7 @@ from brain_v42.models.brain_session import (
     BrainSessionClientKeyConflictError,
     BrainSessionEndResult,
     BrainSessionFocusOutcome,
+    BrainSessionForeignClientAttachError,
     BrainSessionHeartbeatResult,
     BrainSessionIdentityConflictError,
     BrainSessionInputError,
@@ -76,6 +77,11 @@ from brain_v42.models.focus_slot import (
     FocusSlotError,
 )
 from brain_v42.repositories.pg_base import BasePgRepository
+from brain_v42.repositories.pg_client_credentials import (
+    DEFAULT_ELEVATABLE_CLIENT_IDS,
+    ForeignClientAttachError,
+    PgClientCredentialRepo,
+)
 
 Row = dict[str, Any]
 
@@ -112,7 +118,9 @@ class PgBrainSessionRepo(BasePgRepository):
     table = brain_sessions
     fts_columns: list[str] = []
 
-    async def start(self, project_key: str, client_key: str) -> BrainSessionStartResult:
+    async def start(
+        self, project_key: str, client_key: str, *, client_id: str | None = None
+    ) -> BrainSessionStartResult:
         """Create or replay a session idempotently for a project/client key."""
         normalized_client_key = client_key.strip()
         if not normalized_client_key:
@@ -128,6 +136,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 .values(
                     project_key=project_key,
                     client_key=normalized_client_key,
+                    opener_client_id=client_id,
                     started_focus=focus["current_focus"],
                     started_focus_revision=focus["focus_revision"],
                 )
@@ -275,6 +284,9 @@ class PgBrainSessionRepo(BasePgRepository):
         session_id: UUID | str,
         connection_id: str,
         expected_client_key: str,
+        *,
+        client_id: str | None = None,
+        elevatable_client_ids: Collection[str] = DEFAULT_ELEVATABLE_CLIENT_IDS,
     ) -> AbsorptionOutcome:
         """Have this session absorb the ledger of its connection's tracer.
 
@@ -361,9 +373,52 @@ class PgBrainSessionRepo(BasePgRepository):
                 project_key=row["project_key"],
                 started_at=row["started_at"],
             )
-            return await absorb_tracer_ledger(session, target, connection_id)
+            if client_id is None:
+                return await absorb_tracer_ledger(session, target, connection_id)
 
-    async def record_seen_connection(self, session_id: UUID | str, connection_id: str) -> bool:
+            async def check_owner() -> None:
+                if client_id is not None:
+                    await self._claim_connection_owner(
+                        session, UUID(str(session_id)), client_id, elevatable_client_ids
+                    )
+
+            return await absorb_tracer_ledger(
+                session,
+                target,
+                connection_id,
+                client_id=client_id,
+                check_owner=check_owner if client_id is not None else None,
+            )
+
+    async def _claim_connection_owner(
+        self,
+        session: AsyncSession,
+        session_id: UUID,
+        client_id: str,
+        elevatable_client_ids: Collection[str],
+    ) -> None:
+        """Compose the credential lock into the writer's transaction, never a separate commit."""
+        try:
+            await PgClientCredentialRepo(self._session_factory).claim_or_check_session_owner(
+                session_id,
+                client_id,
+                elevatable_client_ids=elevatable_client_ids,
+                session=session,
+            )
+        except ForeignClientAttachError as exc:
+            raise BrainSessionForeignClientAttachError(
+                exc.requesting_client_id, exc.owner_client_id
+            ) from None
+
+    async def record_seen_connection(
+        self,
+        session_id: UUID | str,
+        connection_id: str,
+        *,
+        client_id: str | None = None,
+        elevatable_client_ids: Collection[str] = DEFAULT_ELEVATABLE_CLIENT_IDS,
+        session: AsyncSession | None = None,
+    ) -> bool:
         """Record that an open operator session was seen on this connection.
 
         For the lifecycle calls that do not absorb (``bind``): the exact stage of
@@ -373,7 +428,9 @@ class PgBrainSessionRepo(BasePgRepository):
         from brain_v42.db.session_derived_capture import seen_connection  # noqa: PLC0415
 
         candidate = sa.select(
-            brain_sessions.c.id, sa.literal(seen_connection(connection_id))
+            brain_sessions.c.id,
+            sa.literal(seen_connection(connection_id)),
+            sa.literal(client_id, type_=sa.Text()),
         ).where(
             brain_sessions.c.id == session_id,
             brain_sessions.c.status == BrainSessionStatus.OPEN.value,
@@ -381,12 +438,16 @@ class PgBrainSessionRepo(BasePgRepository):
         )
         statement = (
             pg_insert(brain_session_connections)
-            .from_select(["session_id", "connection_id"], candidate)
+            .from_select(["session_id", "connection_id", "client_id"], candidate)
             .on_conflict_do_nothing()
             .returning(brain_session_connections.c.session_id)
         )
-        async with self.transaction() as session:
-            return (await session.execute(statement)).first() is not None
+        async with self._maybe_session(session, write=True) as sess:
+            if client_id is not None:
+                await self._claim_connection_owner(
+                    sess, UUID(str(session_id)), client_id, elevatable_client_ids
+                )
+            return (await sess.execute(statement)).first() is not None
 
     async def observe(self, session_id: UUID | str, *, now: datetime | None = None) -> bool:
         """Stamp the observation of an open `agent` tracer. Returns "still open".
@@ -610,6 +671,10 @@ class PgBrainSessionRepo(BasePgRepository):
         session_id: UUID | str,
         expected_client_key: str,
         slot_id: UUID,
+        *,
+        connection_id: str | None = None,
+        client_id: str | None = None,
+        elevatable_client_ids: Collection[str] = DEFAULT_ELEVATABLE_CLIENT_IDS,
     ) -> BrainSessionBindResult:
         """Bind an open operator session to one slot of its project, once (ADR D7).
 
@@ -634,6 +699,14 @@ class PgBrainSessionRepo(BasePgRepository):
             if model.nature == "agent":
                 raise FocusSlotError(
                     "session_is_agent_trace", f"session {model.id} is an agent trace"
+                )
+            if connection_id is not None:
+                await self.record_seen_connection(
+                    session_id,
+                    connection_id,
+                    client_id=client_id,
+                    elevatable_client_ids=elevatable_client_ids,
+                    session=session,
                 )
             bound_to = row.get("slot_id")
             if bound_to is not None and bound_to != slot_id:
@@ -1221,6 +1294,7 @@ class PgBrainSessionRepo(BasePgRepository):
         initiator: str,
         knowledge_ids: Sequence[UUID],
         nothing_to_capture_reason: str | None,
+        client_id: str | None = None,
     ) -> BrainSessionRelayResult:
         """End a session onto its slot or, unbound, onto the BASE, and start its successor.
 
@@ -1282,6 +1356,7 @@ class PgBrainSessionRepo(BasePgRepository):
                     initiator=initiator,
                     capture_ids=capture_ids,
                     nothing_to_capture_reason=nothing_to_capture_reason,
+                    client_id=client_id,
                 )
             if expected_slot_revision is None or expected_focus_revision is not None:
                 raise FocusSlotError(
@@ -1343,6 +1418,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 slot_id=slot_id,
                 started_focus=base["current_focus"],
                 started_focus_revision=base["focus_revision"],
+                client_id=client_id,
             )
             anchors = await load_anchors(session, [slot_id])
             return BrainSessionRelayResult(
@@ -1365,6 +1441,7 @@ class PgBrainSessionRepo(BasePgRepository):
         initiator: str,
         capture_ids: Sequence[UUID],
         nothing_to_capture_reason: str | None,
+        client_id: str | None = None,
     ) -> BrainSessionRelayResult:
         """Relay an unbound session onto the project BASE (ticket 64ebd73a, ADR #34).
 
@@ -1426,6 +1503,7 @@ class PgBrainSessionRepo(BasePgRepository):
             slot_id=None,
             started_focus=focus["current_focus"],
             started_focus_revision=focus["focus_revision"],
+            client_id=client_id,
         )
         return BrainSessionRelayResult(
             ended_session_id=model.id,
@@ -1465,6 +1543,7 @@ class PgBrainSessionRepo(BasePgRepository):
         slot_id: UUID | None,
         started_focus: str | None,
         started_focus_revision: int,
+        client_id: str | None = None,
     ) -> Row:
         """Insert the successor at the instant its predecessor ended; a taken key rolls back (S8).
 
@@ -1480,6 +1559,7 @@ class PgBrainSessionRepo(BasePgRepository):
                     .values(
                         project_key=model.project_key,
                         client_key=new_client_key,
+                        opener_client_id=client_id,
                         started_focus=started_focus,
                         started_focus_revision=started_focus_revision,
                         slot_id=slot_id,

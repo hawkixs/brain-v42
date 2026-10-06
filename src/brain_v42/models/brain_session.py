@@ -113,6 +113,17 @@ class BrainSessionIdentityConflictError(BrainSessionConflictError):
     """Raised when a session UUID and expected client identity do not match."""
 
 
+class BrainSessionForeignClientAttachError(BrainSessionIdentityConflictError):
+    """Surface credential ownership refusals through the lifecycle business-error path."""
+
+    code = "foreign_client_attach"
+
+    def __init__(self, requesting_client_id: str, owner_client_id: str | None) -> None:
+        super().__init__("foreign_client_attach: this operator session belongs to another client")
+        self.requesting_client_id = requesting_client_id
+        self.owner_client_id = owner_client_id
+
+
 class BrainSessionCheckpointConflictError(BrainSessionConflictError):
     """A `seq` already used by this session, with DIFFERENT content.
 

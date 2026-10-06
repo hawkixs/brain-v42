@@ -136,7 +136,8 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
       identity work: the server must mint an Mcp-Session-Id so concurrent
       clients of one binary stop collapsing into a single panel row)
     - json_response=True
-    - uvicorn_config={"timeout_graceful_shutdown": 10}
+    - uvicorn_config={"timeout_graceful_shutdown": 10, "proxy_headers": False,
+      "forwarded_allow_ips": ""} so the peer always comes from the socket
     - host and port from settings
     Also verifies run_async (stdio) is NOT called.
     """
@@ -173,9 +174,11 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
     assert captured.get("transport") == "http", f"transport not http: {captured}"
     assert captured.get("stateless_http") is False, f"stateless_http not False: {captured}"
     assert captured.get("json_response") is True, f"json_response not True: {captured}"
-    assert captured.get("uvicorn_config") == {"timeout_graceful_shutdown": 10}, (
-        f"uvicorn_config mismatch: {captured}"
-    )
+    assert captured.get("uvicorn_config") == {
+        "timeout_graceful_shutdown": 10,
+        "proxy_headers": False,
+        "forwarded_allow_ips": "",
+    }, f"uvicorn_config mismatch: {captured}"
     assert captured.get("host") == settings.mcp_http_host, f"host mismatch: {captured}"
     assert captured.get("port") == settings.mcp_http_port, f"port mismatch: {captured}"
     assert not stdio_called, "run_async(stdio) must NOT be called in http branch"

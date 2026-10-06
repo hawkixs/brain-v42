@@ -22,7 +22,7 @@ them from diverging in silence.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Final
@@ -423,6 +423,9 @@ async def absorb_tracer_ledger(
     session: AsyncSession,
     target: Any,
     connection_id: str,
+    *,
+    client_id: str | None = None,
+    check_owner: Callable[[], Awaitable[None]] | None = None,
 ) -> AbsorptionOutcome:
     """Give ``target`` what the tracers collected for it. TWO stages.
 
@@ -452,13 +455,20 @@ async def absorb_tracer_ledger(
     stages: crossing it would make ``brain_session_capture`` refusable for a
     reason the user did not cause.
     """
-    if not _enabled():
+    from brain_v42.models.brain_session import (  # noqa: PLC0415
+        BrainSessionIdentityConflictError,
+    )
+
+    enabled = _enabled()
+    if not enabled and client_id is None:
         return AbsorptionOutcome(reason="disabled")
     if not connection_id:
         # `stdio` and the stateless mode have no (project, connection) pair.
         # That is not the same "nothing" as a closed flag, and confusing the two
         # is exactly what kept this failure silent for ten days.
         return AbsorptionOutcome(reason="no_connection")
+    if client_id is not None and check_owner is None:
+        raise BrainSessionIdentityConflictError("attributed connections require an ownership check")
 
     moved_connection: list[UUID] = []
     moved_window: list[UUID] = []
@@ -469,11 +479,21 @@ async def absorb_tracer_ledger(
 
     try:
         async with session.begin_nested():
+            # The repository callback keeps DB -> repository imports out of this leaf.
+            # Claim and insert roll back together, including inside this savepoint.
+            if client_id is not None and check_owner is not None:
+                await check_owner()
             await session.execute(
                 pg_insert(brain_session_connections)
-                .values(session_id=target.id, connection_id=seen_connection(connection_id))
+                .values(
+                    session_id=target.id,
+                    connection_id=seen_connection(connection_id),
+                    client_id=client_id,
+                )
                 .on_conflict_do_nothing()
             )
+            if not enabled:
+                return AbsorptionOutcome(reason="disabled")
             tracers = (
                 (
                     await session.execute(
@@ -632,8 +652,11 @@ async def absorb_tracer_ledger(
                         .scalars()
                         .all()
                     )
-    except Exception:
-        logger.warning("session_derived_capture.absorb_failed", exc_info=True)
+    except BrainSessionIdentityConflictError:
+        raise
+    except Exception as exc:
+        # SQL exception text can include the complete connection bind parameter.
+        logger.warning("session_derived_capture.absorb_failed", error_type=type(exc).__name__)
         return AbsorptionOutcome(reason="failed")
 
     moved_ids = tuple(UUID(str(item)) for item in (*moved_connection, *moved_window))
@@ -659,12 +682,13 @@ async def absorb_tracer_ledger(
 
 
 def _log_absorption(target: Any, connection_id: str, outcome: AbsorptionOutcome) -> None:
-    """The production observable: BY WHICH KEY, and on WHICH artifacts.
+    """The production observable: which session received which artifacts.
 
     Without the UUIDs, a bad attribution is not undoable — one would know there
     had been one, never which. Without the rival count, a systematic refusal is
     indistinguishable from a dead path, which is the failure mode this batch
-    repairs.
+    repairs. Complete connection identifiers stay in the database, never in
+    this event: they identify transport capabilities.
     """
     if outcome.reason in {"disabled", "no_connection"}:
         return
@@ -673,7 +697,6 @@ def _log_absorption(target: Any, connection_id: str, outcome: AbsorptionOutcome)
         reason=outcome.reason,
         session_id=str(target.id),
         project_key=target.project_key,
-        connection_id=connection_id,
         moved_by_connection=outcome.moved_by_connection,
         moved_by_window=outcome.moved_by_window,
         rivals_blocked=outcome.rival_artifacts,
