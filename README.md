@@ -71,9 +71,11 @@ Run migrations and start the stdio server:
 
 ```bash
 export POSTGRES_URL="$(grep -E '^POSTGRES_URL=' .env | cut -d= -f2-)"
-alembic upgrade head
+BRAIN_ALEMBIC_ALLOW_PROD=1 alembic upgrade head
 python -m brain_v42.mcp.server
 ```
+
+The opt-in is required only when the database name is exactly `brain`; never export it persistently.
 
 Alembic reads its URL from the environment, not directly from `.env`. Production HTTP
 requires bearer authentication; an empty token is refused unless the explicit
@@ -85,7 +87,7 @@ claude mcp add brain-v42 -- python -m brain_v42.mcp.server
 
 ## MCP tools
 
-The `compact` profile is the default. It keeps the ten session lifecycle tools visible;
+The `compact` profile is the default. It keeps the nine session lifecycle tools visible;
 other tools are discovered through the catalog search gateway and invoked through the
 catalog call gateway.
 The `native` profile exposes the registered tools directly. Inputs are bounded and
@@ -188,12 +190,17 @@ BRAIN_DELIVERY_ENABLED=false
 LOG_LEVEL=INFO
 ```
 
+For a no-GPU setup, point the OpenAI-compatible backend at a local endpoint such as Ollama:
+set `BRAIN_EMBEDDING_BACKEND=openai`, `EMBEDDING_SERVICE_URL` to its URL,
+`BRAIN_EMBEDDING_MODEL` to a model it serves, and `EMBEDDING_DIMENSION=768`.
+
 HTTP transport binds to loopback by default and requires a non-empty `MCP_HTTP_TOKEN`.
 Never place `MCP_HTTP_TOKEN` or `MCP_HTTP_DREAM_TOKENS` in the shared `.env`; keep
 them in private, permission-restricted secret files such as `mcp-token.env`.
 `GRAPH_PROJECTOR_*`, provider API
-keys, and delivery observer credentials also require private configuration. Settings
-that predate the `BRAIN_` naming convention retain their unprefixed names. See
+keys, and delivery observer credentials also require private configuration. Set
+`EMBEDDING_DIMENSION` unprefixed: the ORM reads it from the environment directly.
+See
 [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for the complete variable and secret
 reference.
 
@@ -215,7 +222,9 @@ reorg) plus server-side ticket-extraction, roadmap-curation and session-sweep jo
 by per-phase settings and capability scopes. They ship disabled and dry by default;
 operators can arm or suspend them. Provider chains can be configured, and phase
 execution records which provider served it. See [Architecture](docs/ARCHITECTURE.md)
-and [Operations](docs/OPERATIONS.md).
+and [Operations](docs/OPERATIONS.md). Each phase writes
+`logs/dream/<date>_<project>_<phase>.chain.json`; read it, because a green night on
+the first provider proves nothing about fallthrough.
 
 ## Production state
 

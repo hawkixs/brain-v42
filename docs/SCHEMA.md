@@ -48,7 +48,7 @@ columns and 045 adds none — it widens an existing column — so the count held
 038 through 049; 050, 051 and 052 each add exactly ONE table, 053 adds eight and 054 one more, and that is what moves it. 057 adds no table either — a column on `search_log`, present since 004 — so the count stays at 47. 058 adds no table either — a CHECK on `knowledge_claims`. 059 adds no table either — a nullable column and CHECK, plus a partial index on `tickets`. 060 adds three — `focus_slots`, `focus_slot_anchors` and `focus_slot_history` — so the count moves to 50. 061 adds the connection set, bringing the count to 51. 062 adds no table: two partial indexes and an extension in schema `monitoring`.
 Measured on `brain` on 2026-09-03 at 11:20 CEST, right after the 051→052 upgrade: **35**
 `public` base tables. The earlier reading of 34, taken the same day after the 049→051 cutover,
-is what 052 moved. Contract v9 was replayed live at 11:27 and reads 30/30 (receipt
+is what 052 moved. Contract v9 was replayed live at 11:27 and reads 30/30.
 The count is read with
 `select count(*) from information_schema.tables where table_schema='public' and
 table_type='BASE TABLE'` — re-measure it rather than copying this line. Migration 036 also maintains

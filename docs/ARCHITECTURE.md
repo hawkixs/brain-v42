@@ -114,8 +114,6 @@ Activated by `BRAIN_MCP_TRANSPORT=stdio` (default) or omitting the env var. Used
 
 **Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to loopback; metrics and automation default to loopback. The versioned Compose target binds the embedding host publish to loopback and the live runtime matches it — measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and non-empty in the live server process, and `POST /mcp` answers `401` both without a bearer and with a wrong one. The dedicated Docker client network exists and carries the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. Repository-managed WAN isolation remains unproven — the repository manages no firewall rule at all. What would make this paragraph false again, and is watched by no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. `METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the decision, and under that opt-in the three POST receivers stay unregistered and say so on `/healthz`. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
 
-**Embedding topology**: the backend and model are selected by configuration. The shim and OpenAI-compatible backends share the embedding service interface; reranking uses the configured reranker endpoint.
-
 **Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
 
 **Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
@@ -258,6 +256,10 @@ and lifecycle changes into the ledger. A source entity in `archived` state remai
 projectable so lineage such as `MERGED_INTO` stays traversable; only `deleted` removes its
 Neo4j node. Project keys become immutable on `project_contexts`, and known aliases normalize
 at migration time and on later writes.
+
+Ledger proofs belong to one instance and do not authorize another. A fresh or otherwise
+unproved environment must keep `GRAPH_LEDGER_WRITE_ENABLED=false` until the graph ledger
+runbook's gates have been repeated there.
 
 When `graph_ledger_write_enabled=true`, the durable facade stages explicit relations and their
 outbox instructions in one PostgreSQL transaction. Registry triggers stage node changes. The
@@ -989,7 +991,7 @@ have its own credential with scoped read, write, delivery, or admin rights; admi
 access is intended to require time-boxed operator elevation. Delivery attestation
 issuers are planned to be proven against the credential in attestation API v1.1.
 After deployment work, planned priorities are search and embedding quality,
-disaster-recovery proof, and metrics. Dream is suspended and is planned to be
+disaster-recovery proof, and metrics. Dream can be suspended by the operator and
 re-armed later.
 
 ## References

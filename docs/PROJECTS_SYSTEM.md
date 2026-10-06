@@ -9,15 +9,21 @@ to the facts registry, not copied into project prose.
 The canonical key rule is implemented in `src/brain_v42/models/project_key.py`.
 Keys match `^[a-z0-9]+([:-][a-z0-9]+)*$`: lowercase letters and digits separated
 by single hyphens or colons. A colon is a naming convention, not a parent-child
-relationship. Project comparisons are exact except where an explicit project-group
-scope is used.
+relationship. Do not change this regex without an audit: copies exist across the
+code, SQL constraints, and recovery assets, and no test links `_KEBAB` to the SQL
+CHECK `projects_key_format_valid`. Project comparisons are exact except where an
+explicit project-group scope is used.
 
 The exact legacy aliases `brain` and `brain_v42` canonicalize to `brain-v42`.
 Writes use strict canonicalization and reject malformed keys; tolerant reads may
 pass a malformed key through and return no matches. `None` denotes unscoped,
 global knowledge where the tool supports it. The registry and database constraints
-also validate project keys. Project context keys are immutable after creation;
-renaming requires a migration.
+also validate project keys. The colon group-scope predicate is copied in
+`db/project_group_scope.py`, `services/project_group_ticket_service.py`,
+`services/proposal_service.py`, `repositories/pg_project_context.py`, and the
+`codex_*` views; audit every copy together. Knowledge tables have no foreign key
+to `projects`. Project context keys are immutable after creation; renaming requires
+a migration.
 
 ## Project records and focus
 
@@ -27,10 +33,13 @@ related projects, group scope, roadmap metadata, focus, and its revision. The
 operational project record. Archived contexts remain stored with their knowledge.
 
 Focus is shared by a project and guarded by a monotonically increasing revision.
+The project-context upsert's `ON CONFLICT` branch can wipe `current_focus` when it
+is omitted; include it deliberately on updates.
 `brain_update_project_focus` applies its focus, blockers, feature status changes,
 and pins as one validated batch under an expected-revision check. A conflict or
 invalid batch writes nothing. A successful batch advances the revision. The
-optional CLAUDE.md update happens after the database transaction.
+optional CLAUDE.md update happens after the database transaction. The same 70%
+shrink guard applies; a refusal writes nothing, including roadmap changes.
 
 Ending an unbound operator session can replace the project's base focus using
 compare-and-swap. The new focus must be at least 70% of the current focus length;

@@ -2,7 +2,7 @@
 
 **Repository target: 062.** The tool catalogue is registered by `build_server()` in `src/brain_v42/mcp/server.py`, through the `register_*_tools()` functions in `src/brain_v42/mcp/tools/`.
 **Repository registry:** 78 always-on + 2 graph-gated = 80 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
-**Profiles:** `compact` is the default presentation profile: the nine session lifecycle tools remain visible, while other tools are found with `brain_find_tool` and invoked with `brain_call_tool`. `native` exposes the registered catalogue. Dream capability principals receive only the phase allowlist and cannot use the catalog gateways. The `x-brain-tool-profile: native` request header selects native presentation when permitted. `brain_code_mode`, when enabled, installs its own profile.
+**Profiles:** `compact` is the default presentation profile: the nine session lifecycle tools remain visible, while other tools are found with `brain_find_tool` and invoked with `brain_call_tool`. `native` exposes the registered catalogue. Dream capability principals receive only the phase allowlist and cannot use the catalog gateways. The `x-brain-tool-profile: native` request header selects native presentation when permitted. `brain_code_mode`, when enabled, installs its own profile only while Dream capability enforcement is off; HTTP security rejects code mode at startup when enforcement is enabled.
 **Transports:** the server supports HTTP and stdio. Authentication and HTTP request limits are enforced at the HTTP transport boundary; they do not change tool signatures.
 
 ### Catalog gateways (`compact` profile)
@@ -1128,8 +1128,8 @@ passed as `false`. A name already present in the same project, after trim and ex
 case-insensitive comparison, is refused. Invalid validation, a missing project, a duplicate, or
 an embedding that is unavailable, non-numeric, non-finite, or of a dimension different from
 `EMBEDDING_DIMENSION` (1536 by default) raises a `ToolError` without creating a feature. The scope of
-uniqueness and the choice of the two writers are documented in the explicit creation decision
-(`docs/superpowers/specs/2026-07-23-explicit-roadmap-feature-creation-design.md` in the
+uniqueness and the choice of the two writers are documented in the explicit
+creation decision.
 
 **Example**: `brain_feature_create("Hybrid search", "Add FTS + vectors.", "brain-v42")`
 

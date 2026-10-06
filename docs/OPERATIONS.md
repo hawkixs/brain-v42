@@ -10,15 +10,16 @@ The systemd templates in `deploy/systemd/` set explicit `MemoryMax` bounds. The
 MCP HTTP service is limited to 4G; metrics and delivery observer to 1536M each;
 automation to 1536M; graph reconciliation to 2G; embedding backfill to 4G; the
 watchdog and log-retention service to 1G each; and Dream to 16G. These are unit
-limits, not measurements of current memory use. The HTTP unit also declares
-`OOMPolicy=kill` and restarts on failure. The separate watchdog timer probes the
-HTTP service and restarts it only when its health probe confirms failure.
+limits, not measurements of current memory use. The HTTP unit always restarts,
+with backoff from 2 s to 60 s. The separate watchdog timer probes the HTTP service
+and restarts it only when its health probe confirms failure.
 
 The connection reaper is a maintenance command, not the HTTP watchdog. Run
 `python -m brain_v42.maintenance.reap_stale_mcp --help` for its dry-run and explicit
-execution options. It targets stale MCP server processes only after ownership,
-command-line, and health checks; it refuses ambiguous or live targets. Review its
-report before enabling process termination.
+execution options. It uses an age heuristic: within each agent group the newest
+server is protected, except that the 48 h absolute cap reaps even that server.
+Only stdio children are eligible; `--http-server` processes are excluded. Dry-run
+is the default; `--execute` enables termination. Review its report before execution.
 Log retention is dormant by default: the installer preserves timer state, and an
 operator must explicitly enable the log-rotate timer to prune eligible files.
 
@@ -923,9 +924,10 @@ dual-run, lease proof and rollback are described in the
 
 ## Codex gateway
 
-The Codex gateway is an optional companion service. Its deployment and readiness
-requirements are outside this operations reference; consult its separately maintained
-operator documentation when that service is installed.
+The Codex gateway is an optional companion service. Activation is blocked while the
+PostgreSQL `codex_ro` and `brain` credentials use development defaults. Its `/ready`
+check validates the SQL contract, including `security_barrier` on views scoped to the
+red group; the gateway is not ready when that contract fails.
 
 ## Release: recovery binding
 
