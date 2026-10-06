@@ -359,6 +359,7 @@ class BrainService:
                 observed_rerank_modes.append(rerank_mode)
 
                 from brain_v42.services.search.hybrid import (  # noqa: PLC0415
+                    RERANK_MODE_DISABLED,
                     RERANK_MODE_RERANKED,
                     RERANK_MODE_RRF_FALLBACK,
                     RERANK_MODE_RRF_ONLY,
@@ -373,6 +374,7 @@ class BrainService:
                     # is not a calibrated similarity either (max ~0.033 for
                     # k=60), so it renders like a rank ordinal, not a score.
                     RERANK_MODE_RRF_ONLY: SCORE_KIND_RANK,
+                    RERANK_MODE_DISABLED: SCORE_KIND_RANK,
                 }[rerank_mode]
             else:
                 results[t] = result
@@ -401,9 +403,9 @@ class BrainService:
                 rerank_mode_observed = RERANK_MODE_RRF_FALLBACK
                 degraded = {"rerank_mode": RERANK_MODE_RRF_FALLBACK}
             else:
-                # Surface the mode (reranked / rrf_only) — None means healthy
+                # Intentional disabling is healthy; legacy rrf_only keeps its marker.
                 rerank_mode_observed = observed_rerank_modes[0]
-                if rerank_mode_observed not in (None, "reranked"):
+                if rerank_mode_observed not in (None, "reranked", "disabled"):
                     degraded = {"rerank_mode": rerank_mode_observed}
 
         return results, degraded, rerank_mode_observed, score_kind_by_type
@@ -679,7 +681,7 @@ class BrainService:
                     diagnostics=SearchDiagnostics(
                         rerank_identity=self._rerank_identity,
                         min_score_requested=threshold,
-                        min_score_effective=threshold,
+                        min_score_effective=0.0 if self._rerank_identity == "none" else threshold,
                         types_searched=types_to_search,
                         project_key_requested=project_key,
                         include_archived=include_archived,
@@ -710,7 +712,10 @@ class BrainService:
         # In degraded mode (rrf_fallback or fts_fallback): skip absolute min_score
         # filtering — rank-based scores are not comparable to sigmoid-normalised scores,
         # and applying min_score=0.2 would silently discard all results (incident d3cf29e9).
-        effective_min_score: float | None = min_score if fan_out_degraded is None else 0.0
+        # The intentional no-reranker state uses that same uncalibrated RRF scale.
+        effective_min_score: float | None = (
+            0.0 if fan_out_degraded is not None or self._rerank_identity == "none" else min_score
+        )
 
         search_results, threshold_diagnostics = self._build_search_results(
             results_by_type,
@@ -897,7 +902,9 @@ class BrainService:
                     diagnostics=SearchDiagnostics(
                         rerank_identity=self._rerank_identity,
                         min_score_requested=min_score_requested,
-                        min_score_effective=min_score_requested,
+                        min_score_effective=0.0
+                        if self._rerank_identity == "none"
+                        else min_score_requested,
                         types_searched=types_to_search,
                         project_key_requested=project_key,
                         include_archived=include_archived,
@@ -920,7 +927,7 @@ class BrainService:
             include_archived=include_archived,
         )
         # In degraded mode, use threshold=0 so rank-based scores are not filtered out.
-        if _wdika_degraded is not None:
+        if _wdika_degraded is not None or self._rerank_identity == "none":
             threshold = 0.0
 
         by_type = KnowledgeByType()
