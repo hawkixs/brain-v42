@@ -23,16 +23,21 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 from uuid import UUID
 
 from fastmcp import FastMCP
+from pydantic import WithJsonSchema
 
 from brain_v42.mcp.dream_project_authorization import DreamProjectAuthorizationError
 from brain_v42.mcp.facts_transport import _FactsRegistry
 from brain_v42.mcp.tools.claim_rendering import format_claim_history, format_claim_list
 from brain_v42.mcp.tools.tool_annotations import _READ_ANNOTATIONS, _WRITE_ANNOTATIONS
-from brain_v42.models.claim_verdict import ClaimVerificationError, validate_caller_string
+from brain_v42.models.claim_verdict import (
+    MAX_CALLER_STRING_LENGTH,
+    ClaimVerificationError,
+    validate_caller_string,
+)
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.provenance import UNEXPANDED_ACTOR, UNKNOWN_ACTOR, get_current_actor
 from brain_v42.services.claim_read_service import ClaimReadError
@@ -143,7 +148,12 @@ def register_claim_tools(
     claims = _FactsRegistry(mcp)
 
     @claims.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)
-    async def brain_claim_verify(claim_id: str, idempotency_key: str) -> dict[str, object]:
+    async def brain_claim_verify(
+        claim_id: str,
+        idempotency_key: Annotated[
+            str, WithJsonSchema({"type": "string", "maxLength": MAX_CALLER_STRING_LENGTH})
+        ],
+    ) -> dict[str, object]:
         """Measure one claim's fact now, on the server, and append the verdict.
 
         You name the claim; the server measures through the fact registry and compares
@@ -160,6 +170,7 @@ def register_claim_tools(
             idempotency_key: your retry key for this request, 1 to 200 characters.
         """
         checked_id = _canonical_claim_id(claim_id)
+        # Publish the bound without replacing the existing invalid_argument contract.
         key = validate_caller_string(idempotency_key)
         issuer = _issuer()
         scope = get_dream_project_scope()

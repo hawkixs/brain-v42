@@ -582,6 +582,47 @@ The count reached 18 by measurement on 2026-09-04, after saying 13 and then 16. 
 
 The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this message.
 
+## Input bounds
+
+Bounds count **characters**, never bytes, and refuse excess input without truncation.
+The same validation holds through `brain_call_tool`. Read models stay unbounded so
+previously stored rows remain readable; `brain_update(fields=...)` validates the
+corresponding `*Update` model.
+
+| Constant | Cap | Applies to |
+| --- | ---: | --- |
+| `KNOWLEDGE_TEXT_MAX_LENGTH` | 50,000 | Knowledge bodies, ticket bodies/messages, project description |
+| `SHORT_TEXT_MAX_LENGTH` | 2,000 | Short attributes and short-text list items |
+| `TAG_MAX_LENGTH` | 100 | Each tag |
+| `LIST_MAX_ITEMS` | 100 | Tags, short-text lists, runbook steps, ADR alternatives |
+| `RELATIONS_MAX_ITEMS` | 50 | Explicit `related_to` relations |
+| `SEARCH_QUERY_MAX_LENGTH` | 10,000 | Search query |
+| `MCP_HTTP_MAX_BODY_BYTES` | 2,097,152 bytes | Whole HTTP request; configurable from 65,536 to 67,108,864 |
+
+Existing title, focus, slot, summary, reason, checkpoint, feature-description and
+claim-count caps are unchanged. UUID/short-id arguments and canonical project keys
+retain their parsing contracts. Object properties are covered by the HTTP body cap.
+
+Refusal contracts:
+
+- Tool arguments raise Pydantic `ValidationError` before a service call. MCP returns
+  `CallToolResult(isError=true)` with `string_too_long` / “String should have at most
+  N characters”, or `too_long` for lists, even when error details are masked.
+- `brain_update(fields=...)` uses its existing business error:
+  `Invalid fields: ... Valid fields: ...`.
+- HTTP bodies over the cap return `413 {"detail": "Request body too large"}`.
+  Malformed or negative `Content-Length` returns
+  `400 {"detail": "Invalid Content-Length"}`.
+- An empty/blank HTTP bearer refuses startup with `HttpAuthConfigurationError` naming
+  `MCP_HTTP_TOKEN` and `MCP_HTTP_ALLOW_UNAUTHENTICATED`, without printing a secret.
+  The guard independently returns 401 with `WWW-Authenticate: Bearer` for every
+  non-`/health` request unless the development opt-out is set.
+
+List limits are clamped with a notice and the call proceeds: consolidation, backfill
+and clusters use [1, 100]; backfill `max_links` uses [1, 10]; cluster
+`max_members_per_cluster` uses [1, 200]. Negative offsets in `brain_list` and
+`brain_list_curation_proposals` become 0.
+
 ## Removed / deprecated (no longer exposed)
 
 | Old tool | Replacement |
@@ -1170,7 +1211,7 @@ Reset `freshness_status='fresh'`, stamp `last_accessed_at=now()`.
 ```
 brain_consolidation_candidates(entity_type=None, limit=20)
 ```
-List quasi-duplicate pairs detected by embedding similarity (`ConsolidationJob`). Filters out already-merged rows.
+List quasi-duplicate pairs detected by embedding similarity (`ConsolidationJob`). Filters out already-merged rows. `limit` is clamped to [1, 100] with a notice.
 
 ### brain_merge_entities
 ```
@@ -1191,6 +1232,8 @@ brain_backfill_links_batch(entity_type=None, limit=50,
 ```
 Find entities in Neo4j with zero `RELATED_TO` edges, fetch their PG embeddings, and call `AutoLinker` to create missing semantic links. Used by the CONNECT phase of the nightly dream orchestrator.
 
+`limit` is clamped to [1, 100] and `max_links` to [1, 10], with notices.
+
 **`max_links` contract** (operator decision 2026-08-18, ticket fb62624f): the cap bounds **successful** links (`created` + `matched`). Errors do not consume it; attempts are in fact bounded by the `2×max_links` selected candidates, so an entity whose writes all fail can report up to `2×max_links` errors. To estimate a number of faulty entities from `errors`, divide by `2×max_links`, never by `max_links`.
 
 ### brain_get_clusters
@@ -1200,7 +1243,7 @@ brain_get_clusters(min_size=2, limit=20,
 ```
 Run union-find over all `RELATED_TO` edges, return connected components sorted by size. Each cluster member is enriched with PG metadata (type + title).
 
-**Anti-token-bomb**: members per cluster are capped at `max_members_per_cluster` (default **30**). A trailing notice identifies the number of omitted members.
+**Anti-token-bomb**: `limit` is clamped to [1, 100] and `max_members_per_cluster` to [1, 200] (default **30**), with notices. A trailing notice identifies the number of omitted members.
 
 ### brain_list_orphans_for_classification
 ```

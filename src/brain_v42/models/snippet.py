@@ -7,6 +7,11 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from brain_v42.models.base import DecayMixin, TimestampMixin
+from brain_v42.models.input_bounds import (
+    KnowledgeText,
+    ShortTextList,
+    TagList,
+)
 from brain_v42.models.project_key import ProjectKeyCanonicalMixin
 
 SnippetLanguage = Annotated[str, Field(max_length=50)]
@@ -34,14 +39,14 @@ class SnippetUpdate(ProjectKeyCanonicalMixin):
     model_config = {"extra": "forbid"}
 
     title: str | None = Field(None, max_length=200)
-    intention: str | None = None
-    code: str | None = None
+    intention: KnowledgeText | None = None
+    code: KnowledgeText | None = None
     language: SnippetLanguage | None = None
-    dependencies: list[str] | None = None
-    usage_example: str | None = None
-    gotchas: str | None = None
+    dependencies: ShortTextList | None = None
+    usage_example: KnowledgeText | None = None
+    gotchas: KnowledgeText | None = None
     project_key: str | None = Field(None, max_length=50)
-    tags: list[str] | None = None
+    tags: TagList | None = None
     metadata: dict | None = None
     freshness_status: Literal["fresh", "stale", "archived"] | None = None
     #: Written by the SERVER alone — `brain_update` rejects a caller-supplied

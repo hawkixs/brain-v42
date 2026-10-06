@@ -103,9 +103,11 @@ The server binds only to `127.0.0.1` (validated by `Settings._loopback_only`).
 
 - **`HostOriginGuard`** — DNS-rebinding protection. Rejects any `Host` not in `{127.0.0.1, localhost, ::1}` (421) and any `Origin` whose host is non-loopback (403). Duplicate-Host protection comes from h11 (uvicorn's HTTP/1.1 parser) upstream.
 - **Dormant capability mode** — `BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false` keeps the
-  historical `BearerTokenGuard`. Direct dev HTTP can leave `MCP_HTTP_TOKEN=""`; the production
-  systemd unit instead requires the private, non-empty admin bearer. When present, every
-  non-`/health` request must carry it.
+  fail-closed `BearerTokenGuard`. Empty or blank `MCP_HTTP_TOKEN` refuses HTTP startup
+  unless `MCP_HTTP_ALLOW_UNAUTHENTICATED=true` explicitly opts out for development.
+  The opt-out is refused with a token or under capability enforcement and never belongs
+  in the production systemd unit, which requires the private, non-empty admin bearer.
+  Every non-`/health` request must carry the bearer when configured.
 - **Enabled capability mode** — FastMCP's token-verifier boundary authenticates the distinct
   admin bearer and phase-scoped Dream bearers. Application middleware then filters tool lists
   and authorizes calls. `HostOriginGuard` remains enforced; FastMCP authentication runs before
@@ -920,9 +922,13 @@ BRAIN_CODE_MODE=false                                                 # experime
 BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false                              # dormant by default
 ```
 
-`MCP_HTTP_TOKEN` and `MCP_HTTP_DREAM_TOKENS` never belong in the shared `.env`. Direct
-development HTTP transport may omit the bearer; the production systemd path requires a
+`MCP_HTTP_TOKEN` and `MCP_HTTP_DREAM_TOKENS` never belong in the shared `.env`.
+HTTP startup refuses an empty or blank token unless the development-only
+`MCP_HTTP_ALLOW_UNAUTHENTICATED=true` opt-out is set. The opt-out is refused with a
+non-empty token or under capability enforcement. The production systemd path requires a
 non-empty `MCP_HTTP_TOKEN` in `~/.config/brain-v42/mcp-token.env` in mode `0600`.
+`MCP_HTTP_MAX_BODY_BYTES` defaults to 2,097,152 bytes; middleware refuses oversized
+bodies before the MCP request handler. Tool input bounds count characters.
 
 The default `compact` profile always exposes `brain_session_start`,
 `brain_session_capture`, `brain_session_heartbeat`, `brain_session_end`,

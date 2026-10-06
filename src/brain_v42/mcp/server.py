@@ -55,7 +55,12 @@ from brain_v42.mcp.dream_project_authorization import (
     DreamProjectReferenceResolver,
     PostgresDreamProjectResolver,
 )
-from brain_v42.mcp.http_security import BearerTokenGuard, HostOriginGuard
+from brain_v42.mcp.http_security import (
+    BearerTokenGuard,
+    HostOriginGuard,
+    HttpAuthConfigurationError,
+    RequestBodyLimitGuard,
+)
 from brain_v42.mcp.provenance_middleware import ProvenanceMiddleware
 from brain_v42.mcp.session_autoopen import close_connection_traces
 from brain_v42.metrics.tool_instrumentation import instrument_registered_tools
@@ -353,6 +358,32 @@ def create_mcp_instance() -> FastMCP:
 mcp = create_mcp_instance()
 
 
+_health_probe: asyncio.Task[bool] | None = None
+
+
+async def _probe_database(engine: Any) -> bool:
+    """Bound the database round trip so a wedged pool reports degraded."""
+    try:
+        async with asyncio.timeout(2):
+            async with engine.connect() as conn:
+                await conn.execute(text("SELECT 1"))
+    except Exception:
+        return False
+    return True
+
+
+async def _coalesced_database_probe(engine: Any) -> bool:
+    """Share only in-flight work; cancellation of a caller leaves the probe alive."""
+    global _health_probe
+    if (
+        _health_probe is None
+        or _health_probe.done()
+        or _health_probe.get_loop() is not asyncio.get_running_loop()
+    ):
+        _health_probe = asyncio.create_task(_probe_database(engine))
+    return await asyncio.shield(_health_probe)
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request: Request) -> JSONResponse:
     """Liveness probe for systemd watchdog and red-monitor.
@@ -378,11 +409,7 @@ async def health_check(request: Request) -> JSONResponse:
 
     identity = {"version": package_version(), "alembic_head": shipped_alembic_head()}
     engine = get_engine()
-    try:
-        async with asyncio.timeout(2):
-            async with engine.connect() as conn:
-                await conn.execute(text("SELECT 1"))
-    except Exception:
+    if not await _coalesced_database_probe(engine):
         return JSONResponse({"status": "degraded", **identity}, status_code=503)
     pool = engine.pool
     return JSONResponse(
@@ -743,21 +770,43 @@ def _configure_http_security(
 ) -> list[Middleware]:
     """Configure one HTTP server's authentication boundary exactly once.
 
-    Disabled mode returns the historical ASGI bearer guard unchanged. Enabled
-    mode parses the secret registry before Uvicorn starts, installs FastMCP's
+    Ordinary mode refuses absent authentication unless development opts out.
+    Capability mode parses the secret registry before Uvicorn starts, installs FastMCP's
     public token-verifier boundary, and adds one phase authorization middleware.
     """
     if mcp in _http_security_configured_servers:
         raise RuntimeError("HTTP security is already configured for this server")
 
     if not settings.brain_dream_capability_enforcement:
+        has_token = bool(settings.mcp_http_token.strip())
+        opt_out = settings.mcp_http_allow_unauthenticated
+        if not has_token and not opt_out:
+            raise HttpAuthConfigurationError(
+                "MCP_HTTP_TOKEN is required unless MCP_HTTP_ALLOW_UNAUTHENTICATED=true"
+            )
+        raw_token_present = any(
+            os.environ.get(name) for name in ("MCP_HTTP_TOKEN", "BRAIN_MCP_HTTP_TOKEN")
+        )
+        if opt_out and (has_token or raw_token_present):
+            raise HttpAuthConfigurationError(
+                "MCP_HTTP_TOKEN and MCP_HTTP_ALLOW_UNAUTHENTICATED are contradictory"
+            )
+        bearer = Middleware(BearerTokenGuard, token=settings.mcp_http_token)
+        if opt_out:
+            bearer = Middleware(BearerTokenGuard, token="", allow_unauthenticated=True)
+            logger.warning("brain_v42.server.http_auth", auth="disabled_by_opt_in")
         middleware = [
             Middleware(HostOriginGuard),
-            Middleware(BearerTokenGuard, token=settings.mcp_http_token),
+            bearer,
+            Middleware(RequestBodyLimitGuard, max_body_bytes=settings.mcp_http_max_body_bytes),
         ]
         _http_security_configured_servers.add(mcp)
         return middleware
 
+    if settings.mcp_http_allow_unauthenticated:
+        raise DreamCapabilityConfigurationError(
+            "MCP_HTTP_ALLOW_UNAUTHENTICATED is incompatible with Dream capability enforcement"
+        )
     if settings.brain_code_mode:
         raise DreamCapabilityConfigurationError(
             "Dream capability enforcement is incompatible with Code Mode"
@@ -774,7 +823,10 @@ def _configure_http_security(
     mcp.auth = DreamCapabilityTokenVerifier(registry)
     mcp.add_middleware(DreamCapabilityMiddleware(project_resolver=project_resolver))
     _http_security_configured_servers.add(mcp)
-    return [Middleware(HostOriginGuard)]
+    return [
+        Middleware(HostOriginGuard),
+        Middleware(RequestBodyLimitGuard, max_body_bytes=settings.mcp_http_max_body_bytes),
+    ]
 
 
 class SessionIdleTimeoutUnavailableError(RuntimeError):
@@ -1063,10 +1115,12 @@ def plan_http_transport(
         settings,
         project_resolver=resolved_project_resolver,
     )
-    auth_enabled = bool(settings.mcp_http_token) or settings.brain_dream_capability_enforcement
+    auth_enabled = (
+        bool(settings.mcp_http_token.strip()) or settings.brain_dream_capability_enforcement
+    )
     logger.info(
         "brain_v42.server.http_auth",
-        auth="enabled" if auth_enabled else "disabled",
+        auth="enabled" if auth_enabled else "disabled_by_opt_in",
     )
     if not settings.mcp_http_stateless:
         _install_session_idle_timeout(settings.mcp_http_session_idle_seconds)
@@ -1084,11 +1138,13 @@ async def _run_mcp(
     *,
     project_resolver: DreamProjectReferenceResolver | None = None,
     metrics_collector: Any | None = None,
+    http_plan: HttpTransportPlan | None = None,
 ) -> None:
     """Dispatch to the correct MCP transport (http or stdio).
 
     Extracted from the run_server closure so it is importable and independently
-    testable. run_server() delegates here after wrapping with app_lifecycle.
+    testable. run_server() checks HTTP security before entering app_lifecycle
+    and passes its plan here so authentication is configured only once.
 
     Business-error surfacing is applied here, once, rather than at each
     ``register_*`` site: this is the single async choke point both transports
@@ -1098,7 +1154,11 @@ async def _run_mcp(
     await prepare_tools_for_transport(mcp, metrics_collector)
 
     if settings.brain_mcp_transport == "http":
-        plan = plan_http_transport(mcp, settings, project_resolver=project_resolver)
+        plan = (
+            http_plan
+            if http_plan is not None
+            else plan_http_transport(mcp, settings, project_resolver=project_resolver)
+        )
         await mcp.run_http_async(
             transport="http",
             host=settings.mcp_http_host,
@@ -1348,8 +1408,18 @@ if __name__ == "__main__":
     built = build_server()
 
     async def run_server() -> None:
+        plan = (
+            plan_http_transport(built.mcp, built.settings)
+            if built.settings.brain_mcp_transport == "http"
+            else None
+        )
         async with app_lifecycle(built.settings, built.services, built.metrics_collector):
-            await _run_mcp(built.mcp, built.settings, metrics_collector=built.metrics_collector)
+            await _run_mcp(
+                built.mcp,
+                built.settings,
+                metrics_collector=built.metrics_collector,
+                http_plan=plan,
+            )
 
     log_server_starting(built.settings)
     asyncio.run(run_server())

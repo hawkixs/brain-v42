@@ -312,13 +312,16 @@ class Settings(BaseSettings):
         default="127.0.0.1", validation_alias=_brain_alias("MCP_HTTP_HOST")
     )  # loopback-only
     mcp_http_port: int = Field(default=8765, validation_alias=_brain_alias("MCP_HTTP_PORT"))
+    mcp_http_allow_unauthenticated: bool = Field(
+        default=False, validation_alias=_brain_alias("MCP_HTTP_ALLOW_UNAUTHENTICATED")
+    )
+    """Development only; refused with a token or under capability enforcement."""
     mcp_http_token: str = Field(
         default="", repr=False, validation_alias=_brain_alias("MCP_HTTP_TOKEN")
     )
-    """Bearer token for HTTP transport auth (opt-in).
+    """Bearer token for HTTP transport authentication.
 
-    Empty string (default) = auth disabled — current fleet behaviour is preserved
-    without any changes to .mcp.json files.
+    Empty = refused at HTTP startup unless MCP_HTTP_ALLOW_UNAUTHENTICATED=true.
 
     Non-empty = BearerTokenGuard is activated; every non-/health HTTP request must
     carry ``Authorization: Bearer <token>``.
@@ -444,6 +447,12 @@ class Settings(BaseSettings):
     # operator session (03291fdc). The 900 s deadline produced ~480 evictions a
     # day; eight hours covers a working day's pauses and still releases a dead
     # client's state the same day.
+    mcp_http_max_body_bytes: int = Field(
+        default=2_097_152,
+        ge=65_536,
+        le=67_108_864,
+        validation_alias=_brain_alias("MCP_HTTP_MAX_BODY_BYTES"),
+    )
     mcp_http_session_idle_seconds: float = Field(
         default=8 * 3600.0, validation_alias=_brain_alias("MCP_HTTP_SESSION_IDLE_SECONDS")
     )

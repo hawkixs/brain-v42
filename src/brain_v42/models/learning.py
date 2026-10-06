@@ -7,6 +7,11 @@ from uuid import UUID, uuid4
 from pydantic import BaseModel, Field
 
 from brain_v42.models.base import DecayMixin, TimestampMixin
+from brain_v42.models.input_bounds import (
+    KnowledgeText,
+    ShortText,
+    TagList,
+)
 from brain_v42.models.project_key import ProjectKeyCanonicalMixin
 
 SourceType = Literal[
@@ -45,12 +50,12 @@ class LearningUpdate(ProjectKeyCanonicalMixin):
     model_config = {"extra": "forbid"}
 
     topic: str | None = Field(None, max_length=200)
-    insight: str | None = None
-    source: str | None = None
+    insight: KnowledgeText | None = None
+    source: ShortText | None = None
     source_type: SourceType | None = None
     confidence: Confidence | None = None
     project_key: str | None = Field(None, max_length=50)
-    tags: list[str] | None = None
+    tags: TagList | None = None
     metadata: dict | None = None
     freshness_status: Literal["fresh", "stale", "archived"] | None = None
     #: Written by the SERVER alone — `brain_update` rejects a caller-supplied

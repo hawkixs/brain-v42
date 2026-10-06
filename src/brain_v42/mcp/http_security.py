@@ -1,4 +1,4 @@
-"""Host/Origin ASGI middleware for DNS-rebinding protection and optional bearer auth.
+"""Host/Origin ASGI middleware for DNS-rebinding protection and fail-closed bearer auth.
 
 jlowin/fastmcp does not wire any Host/Origin guard, so a browser on the same
 machine could DNS-rebind 127.0.0.1:PORT and call every brain tool
@@ -8,8 +8,8 @@ unauthenticated.  This middleware blocks such attacks at the ASGI layer:
 - Any request that carries an Origin header whose host is non-loopback → 403
 - Requests with no Origin header are allowed (CLI / non-browser clients)
 
-BearerTokenGuard adds optional token authentication on top:
-- Active only when a non-empty token is configured (disabled by default)
+BearerTokenGuard adds fail-closed token authentication on top:
+- Empty tokens refuse requests unless MCP_HTTP_ALLOW_UNAUTHENTICATED is opted into
 - Exempts /health so systemd watchdog and red-monitor can probe without headers
 - Uses constant-time comparison (hmac.compare_digest) to prevent timing attacks
 
@@ -28,8 +28,8 @@ import hmac
 from urllib.parse import urlparse
 
 from starlette.datastructures import Headers
-from starlette.responses import PlainTextResponse
-from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.responses import JSONResponse, PlainTextResponse
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 _LOOPBACK_HOSTS: frozenset[str] = frozenset({"127.0.0.1", "localhost", "::1"})
 
@@ -111,14 +111,79 @@ class HostOriginGuard:
 _HEALTH_PATH = "/health"
 
 
+class RequestBodyLimitGuard:
+    """Buffer a bounded body before the SDK's exception-catching receive path."""
+
+    def __init__(self, app: ASGIApp, *, max_body_bytes: int) -> None:
+        self.app = app
+        self.max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        if scope.get("path") == _HEALTH_PATH:
+            if scope.get("method") in {"GET", "HEAD", "OPTIONS"}:
+                await self.app(scope, receive, send)
+            else:
+                await JSONResponse({"detail": "Method not allowed"}, status_code=405)(
+                    scope, receive, send
+                )
+            return
+        declared = Headers(scope=scope).get("content-length")
+        if declared is not None:
+            try:
+                if not (declared.isascii() and declared.isdigit()):
+                    raise ValueError
+                length = int(declared)
+            except ValueError:
+                await JSONResponse({"detail": "Invalid Content-Length"}, status_code=400)(
+                    scope, receive, send
+                )
+                return
+            if length > self.max_body_bytes:
+                await JSONResponse({"detail": "Request body too large"}, status_code=413)(
+                    scope, receive, send
+                )
+                return
+
+        buffered = bytearray()
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                return
+            chunk = message.get("body", b"")
+            if len(buffered) + len(chunk) > self.max_body_bytes:
+                await JSONResponse({"detail": "Request body too large"}, status_code=413)(
+                    scope, receive, send
+                )
+                return
+            buffered.extend(chunk)
+            if not message.get("more_body", False):
+                break
+
+        replayed = False
+
+        async def replay_receive() -> Message:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                return {"type": "http.request", "body": bytes(buffered), "more_body": False}
+            return await receive()
+
+        await self.app(scope, replay_receive, send)
+
+
+class HttpAuthConfigurationError(RuntimeError):
+    """The HTTP transport has no consistent authentication configuration."""
+
+
 class BearerTokenGuard:
-    """ASGI middleware that enforces optional bearer-token authentication.
+    """ASGI middleware that enforces fail-closed bearer-token authentication.
 
     Activation:
-        Active only when ``token`` is a non-empty string.  When empty (the
-        default), the middleware is transparent and all requests pass through
-        unchanged — preserving the existing fleet behaviour without requiring any
-        .mcp.json changes.
+        An empty or blank token refuses all requests except /health unless
+        ``allow_unauthenticated`` explicitly enables development access.
 
     Rules (when active):
         - ``/health`` is always exempt so systemd watchdog and red-monitor can
@@ -136,10 +201,11 @@ class BearerTokenGuard:
     updating the clients will break all MCP calls silently.
     """
 
-    def __init__(self, app: ASGIApp, *, token: str = "") -> None:
+    def __init__(self, app: ASGIApp, *, token: str, allow_unauthenticated: bool = False) -> None:
         self.app = app
         self._token = token
-        self._active = bool(token)
+        self._refuse_all = not token.strip() and not allow_unauthenticated
+        self._active = bool(token.strip()) or self._refuse_all
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and self._active:
@@ -157,7 +223,7 @@ class BearerTokenGuard:
                 # HTTP/1.1 field-value content and reaches us as non-ASCII
                 # str) — that would turn a wrong token into a 500 instead of
                 # a 401. surrogateescape keeps arbitrary client bytes safe.
-                if not hmac.compare_digest(
+                if self._refuse_all or not hmac.compare_digest(
                     presented.encode("utf-8", "surrogateescape"),
                     self._token.encode("utf-8"),
                 ):

@@ -22,6 +22,9 @@ from brain_v42.mcp.tools.tool_annotations import (
     _HEARTBEAT_ANNOTATIONS,
     _READ_ANNOTATIONS,
 )
+from brain_v42.models.input_bounds import (
+    KnowledgeText,
+)
 from brain_v42.models.ticket import (
     ExtractionStatus,
     LotShipping,
@@ -223,7 +226,7 @@ def register_ticket_tools(
         to_project: str,
         kind: str,
         title: str,
-        body: str,
+        body: KnowledgeText,
         extraction: str | None = None,
     ) -> str:
         """Open a cross-project ticket or a same-project note-to-self.
@@ -274,8 +277,8 @@ def register_ticket_tools(
     async def brain_ticket_reply(
         ticket_id: str,
         author_project: str,
-        body: str,
-        corrects_body: str | None = None,
+        body: KnowledgeText,
+        corrects_body: KnowledgeText | None = None,
     ) -> str:
         """Post a message in a ticket thread (any status, participants only).
 
@@ -308,7 +311,7 @@ def register_ticket_tools(
         ticket_id: str,
         author_project: str,
         action: TicketAction,
-        message: str | None = None,
+        message: KnowledgeText | None = None,
     ) -> str:
         """Change a ticket's status. Actions — executor (to_project): start,
         resolve, wontfix, ack (fyi). Requester (from_project): confirm,

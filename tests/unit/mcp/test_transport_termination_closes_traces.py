@@ -132,6 +132,7 @@ def test_the_stateful_http_plan_installs_the_hook_and_stateless_does_not(
     settings = Settings(
         postgres_url=_FAKE_PG_URL,
         brain_mcp_transport="http",
+        mcp_http_token="test-token",
         mcp_http_stateless=stateless,
     )
     server._http_security_configured_servers.discard(server.mcp)

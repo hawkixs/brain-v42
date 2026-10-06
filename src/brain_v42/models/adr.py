@@ -1,12 +1,17 @@
 """Pydantic models for ADR (Architecture Decision Record) entity."""
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
 from brain_v42.models.base import DecayMixin, TimestampMixin
+from brain_v42.models.input_bounds import (
+    LIST_MAX_ITEMS,
+    KnowledgeText,
+    TagList,
+)
 from brain_v42.models.project_key import ProjectKeyCanonicalMixin
 
 ADRStatus = Literal["proposed", "accepted", "deprecated", "superseded"]
@@ -41,11 +46,13 @@ class ADRUpdate(BaseModel):
     model_config = {"extra": "forbid"}
 
     title: str | None = Field(None, max_length=200)
-    context: str | None = None
-    decision: str | None = None
-    consequences: str | None = None
-    alternatives_considered: list[AlternativeConsidered] | None = None
-    tags: list[str] | None = None
+    context: KnowledgeText | None = None
+    decision: KnowledgeText | None = None
+    consequences: KnowledgeText | None = None
+    alternatives_considered: (
+        Annotated[list[AlternativeConsidered], Field(max_length=LIST_MAX_ITEMS)] | None
+    ) = None
+    tags: TagList | None = None
     status: ADRStatus | None = None
     decided_at: datetime | None = None
     superseded_by: int | None = None

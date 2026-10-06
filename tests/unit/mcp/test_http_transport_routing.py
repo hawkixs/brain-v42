@@ -150,6 +150,7 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
     settings = Settings(
         postgres_url=_FAKE_PG_URL,
         brain_mcp_transport="http",
+        mcp_http_token="test-token",
     )
 
     captured: dict[str, Any] = {}
@@ -260,6 +261,7 @@ def test_stateless_can_be_restored_by_settings(monkeypatch: Any) -> None:
     settings = Settings(
         postgres_url=_FAKE_PG_URL,
         brain_mcp_transport="http",
+        mcp_http_token="test-token",
         mcp_http_stateless=True,
     )
     captured: dict[str, Any] = {}

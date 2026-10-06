@@ -24,6 +24,11 @@ from brain_v42.mcp.tools.tool_annotations import (
     _READ_ANNOTATIONS,
     _WRITE_ANNOTATIONS,
 )
+from brain_v42.models.input_bounds import (
+    KnowledgeText,
+    ShortText,
+    ShortTextList,
+)
 from brain_v42.models.project_context import ProjectContextCreate
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.services.roadmap_service import (
@@ -149,18 +154,18 @@ def register_project_context_tools(
     async def brain_set_project_context(
         project_key: ProjectKeyArg,
         name: ProjectNameArg,
-        description: str,
-        languages: list[str] | None = None,
-        frameworks: list[str] | None = None,
-        databases: list[str] | None = None,
-        code_style: str | None = None,
-        git_workflow: str | None = None,
-        test_strategy: str | None = None,
-        current_phase: str | None = None,
+        description: KnowledgeText,
+        languages: ShortTextList | None = None,
+        frameworks: ShortTextList | None = None,
+        databases: ShortTextList | None = None,
+        code_style: ShortText | None = None,
+        git_workflow: ShortText | None = None,
+        test_strategy: ShortText | None = None,
+        current_phase: ShortText | None = None,
         current_focus: ProjectFocusArg | None = None,
-        blockers: list[str] | None = None,
-        related_projects: list[str] | None = None,
-        plan_scan_paths: list[str] | None = None,
+        blockers: ShortTextList | None = None,
+        related_projects: ShortTextList | None = None,
+        plan_scan_paths: ShortTextList | None = None,
         gitlab_project_path: GitlabProjectPathArg | None = None,
         project_group: ProjectGroupArg | None = None,
     ) -> str:
@@ -211,7 +216,7 @@ def register_project_context_tools(
         return format_confirmation("Project context set", "", project_key=project_key)
 
     @mcp.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)
-    async def brain_project_archive(project_key: str, reason: str) -> str:
+    async def brain_project_archive(project_key: str, reason: ShortText) -> str:
         """Take a project out of the default views without deleting anything.
 
         An archived project keeps every learning, decision, snippet, runbook,
@@ -285,9 +290,9 @@ def register_project_context_tools(
             ),
         ],
         expected_focus_revision: FocusRevisionArg,
-        blockers: list[str] | None = None,
+        blockers: ShortTextList | None = None,
         feature_status: dict[str, str] | None = None,
-        unpin: list[str] | None = None,
+        unpin: ShortTextList | None = None,
         allow_focus_shrink: Annotated[
             bool,
             Field(
