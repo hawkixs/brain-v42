@@ -96,6 +96,7 @@ class MetricsCollector(
             "total_candidates": 0,
         }
         self._rerank_by_identity: dict[str, dict[str, Any]] = {}
+        self._rerank_backend: str | None = None
         self._rerank_attempt_latencies: dict[str, deque[tuple[float, float]]] = {}
         self._rerank_operation_latencies: dict[str, deque[tuple[float, float]]] = {}
         self._rerank_last_probe: dict[str, dict[str, Any]] = {}
@@ -378,6 +379,10 @@ class MetricsCollector(
         if result_count == 0:
             self._search_stats["searches_with_zero_results"] += 1
 
+    def record_rerank_backend(self, backend: str) -> None:
+        """Expose configuration even when an intentional rollback makes no calls."""
+        self._rerank_backend = backend
+
     def _rerank_stats_for(self, identity: str) -> dict[str, Any]:
         if identity not in self._rerank_by_identity:
             self._rerank_by_identity[identity] = {
@@ -584,6 +589,7 @@ class MetricsCollector(
                 },
             },
             "reranker": {
+                "backend": self._rerank_backend,
                 "total_calls": self._reranker_stats["total_calls"],
                 "total_errors": self._reranker_stats["total_errors"],
                 "recent_errors": self._count_recent(self._reranker_error_times),
@@ -692,6 +698,7 @@ class MetricsCollector(
         # Reranker stats
         reranker_total = self._reranker_stats["total_calls"]
         reranker = {
+            "backend": self._rerank_backend,
             "total_calls": reranker_total,
             "total_errors": self._reranker_stats["total_errors"],
             "recent_errors": self._count_recent(self._reranker_error_times),
