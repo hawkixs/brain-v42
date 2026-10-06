@@ -176,6 +176,133 @@ async def test_health_is_available_without_a_bearer() -> None:
     assert (await transport_request(headers={}, path="/health")).status_code == 200
 
 
+@asynccontextmanager
+async def public_probe_client(
+    mode: str, *, credential_registry_ready: bool = False
+) -> AsyncIterator[httpx.AsyncClient]:
+    from tests.unit.mcp.test_credentials_http import verifier
+    from tests.unit.mcp.test_dream_capability_http import (
+        FakeProjectResolver,
+        _registry_json,
+        _settings,
+    )
+
+    mcp = server.create_mcp_instance()
+    config = (
+        settings()
+        if mode == "credentials"
+        else _settings(enforcement=mode == "dream", registry=_registry_json())
+    )
+    plan = server.plan_http_transport(
+        mcp,
+        config,
+        credential_verifier=await verifier(refresh=credential_registry_ready)
+        if mode == "credentials"
+        else None,
+        project_resolver=FakeProjectResolver() if mode == "dream" else None,
+    )
+    app = mcp.http_app(
+        middleware=plan.middleware,
+        stateless_http=plan.stateless_http,
+        json_response=plan.json_response,
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="http://localhost"
+    ) as client:
+        yield client
+
+
+@pytest.mark.parametrize("mode", ["credentials", "shared_token", "dream"])
+@pytest.mark.parametrize("path", ["/healthz", "/version"])
+@pytest.mark.parametrize("metadata_present", [False, True])
+@pytest.mark.parametrize("bearer_present", [False, True])
+async def test_public_probes_without_bearer_do_not_touch_db_or_registry(
+    mode: str,
+    path: str,
+    metadata_present: bool,
+    bearer_present: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, Mock
+
+    from brain_v42.mcp.dream_capabilities import DreamCapabilityTokenVerifier
+
+    git_sha = "a" * 40 if metadata_present else None
+    image_digest = "sha256:" + "b" * 64 if metadata_present else None
+    for name, value in (("BRAIN_GIT_SHA", git_sha), ("BRAIN_IMAGE_DIGEST", image_digest)):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+    database = Mock(side_effect=AssertionError("public probes must not open the database"))
+    credential_check = AsyncMock(side_effect=AssertionError("public probes must not verify tokens"))
+    dream_check = AsyncMock(
+        side_effect=AssertionError("public probes must not verify Dream tokens")
+    )
+    monkeypatch.setattr(server, "get_session_factory", database)
+    monkeypatch.setattr(server, "_probe_database", database)
+    monkeypatch.setattr(CredentialVerifier, "verify", credential_check)
+    monkeypatch.setattr(DreamCapabilityTokenVerifier, "verify_token", dream_check)
+    async with public_probe_client(mode) as client:
+        headers = {"X-Brain-Agent": "untrusted-probe-header"}
+        if bearer_present:
+            headers["Authorization"] = "Bearer invalid-probe-token"
+        response = await client.get(path, headers=headers)
+    assert response.status_code == 200
+    assert response.json() == (
+        {"status": "ok"}
+        if path == "/healthz"
+        else {
+            "project": "brain-v42",
+            "version": server.package_version(),
+            "git_sha": git_sha,
+            "image_digest": image_digest,
+        }
+    )
+    database.assert_not_called()
+    credential_check.assert_not_awaited()
+    dream_check.assert_not_awaited()
+
+
+@pytest.mark.parametrize("mode", ["credentials", "shared_token", "dream"])
+async def test_public_probes_leave_mcp_protected(mode: str) -> None:
+    async with public_probe_client(mode) as client:
+        response = await client.post("/mcp")
+    assert response.status_code == 401
+
+
+@pytest.mark.parametrize("mode", ["credentials", "shared_token", "dream"])
+@pytest.mark.parametrize("bearer", [None, "invalid-token"])
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/healthz/",
+        "/healthz/extra",
+        "/version/",
+        "/version/extra",
+        "/versions",
+        "/identity",
+        "/mcp",
+    ],
+)
+async def test_public_probe_exemptions_are_exact(
+    mode: str, path: str, bearer: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from brain_v42.mcp.dream_capabilities import DreamCapabilityTokenVerifier
+
+    dream_check = AsyncMock(return_value=None)
+    monkeypatch.setattr(DreamCapabilityTokenVerifier, "verify_token", dream_check)
+    async with public_probe_client(mode, credential_registry_ready=True) as client:
+        response = await client.get(
+            path, headers={"Authorization": "Bearer " + bearer} if bearer is not None else {}
+        )
+    assert response.status_code == 401
+    if mode == "dream" and bearer is not None:
+        dream_check.assert_awaited_with(bearer)
+
+
 class TwoClientRegistry(ReviewerRegistry):
     async def active_rows(self, now: datetime) -> list[CredentialRow]:
         rows = await super().active_rows(now)

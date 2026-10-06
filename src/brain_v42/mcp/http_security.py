@@ -4,13 +4,13 @@ jlowin/fastmcp does not wire any Host/Origin guard, so a browser on the same
 machine could DNS-rebind 127.0.0.1:PORT and call every brain tool
 unauthenticated.  This middleware blocks such attacks at the ASGI layer:
 
-- Any request whose Host header resolves to a non-loopback name → 421
-- Any request that carries an Origin header whose host is non-loopback → 403
+- Any request whose Host header is outside the operator allowlist → 421
+- Any request whose Origin authority is outside the operator allowlist → 403
 - Requests with no Origin header are allowed (CLI / non-browser clients)
 
 BearerTokenGuard adds fail-closed token authentication on top:
 - Empty tokens refuse requests unless MCP_HTTP_ALLOW_UNAUTHENTICATED is opted into
-- Exempts /health so systemd watchdog and red-monitor can probe without headers
+- Exempts /health, /healthz and /version so probes need no bearer
 - Uses constant-time comparison (hmac.compare_digest) to prevent timing attacks
 
 Intended use:
@@ -92,7 +92,12 @@ class HostOriginGuard:
             headers = Headers(scope=scope)
 
             host_raw = headers.get("host", "")
-            if _bare_host(host_raw) not in self.allowed_hosts:
+            # A listed port pins that authority; a bare host retains the existing
+            # any-port behaviour, including the default loopback authorities.
+            if (
+                host_raw not in self.allowed_hosts
+                and _bare_host(host_raw) not in self.allowed_hosts
+            ):
                 await PlainTextResponse("Invalid Host header", status_code=421)(
                     scope, receive, send
                 )
@@ -100,8 +105,11 @@ class HostOriginGuard:
 
             origin_raw = headers.get("origin", "")
             if origin_raw:
-                origin_host = _bare_host(urlparse(origin_raw).netloc)
-                if origin_host not in self.allowed_origin_hosts:
+                origin_authority = urlparse(origin_raw).netloc
+                if (
+                    origin_authority not in self.allowed_origin_hosts
+                    and _bare_host(origin_authority) not in self.allowed_origin_hosts
+                ):
                     await PlainTextResponse("Invalid Origin", status_code=403)(scope, receive, send)
                     return
 
@@ -109,6 +117,19 @@ class HostOriginGuard:
 
 
 _HEALTH_PATH = "/health"
+PUBLIC_HTTP_PATHS: frozenset[str] = frozenset({_HEALTH_PATH, "/healthz", "/version"})
+
+
+def public_probe_scope(scope: Scope) -> Scope:
+    """Prevent the SDK's global authentication from inspecting public probe tokens."""
+    return {
+        **scope,
+        "headers": [
+            (name, value)
+            for name, value in scope.get("headers", [])
+            if name.lower() != b"authorization"
+        ],
+    }
 
 
 class RequestBodyLimitGuard:
@@ -182,11 +203,11 @@ class BearerTokenGuard:
     """ASGI middleware that enforces fail-closed bearer-token authentication.
 
     Activation:
-        An empty or blank token refuses all requests except /health unless
+        An empty or blank token refuses all requests except public probe paths unless
         ``allow_unauthenticated`` explicitly enables development access.
 
     Rules (when active):
-        - ``/health`` is always exempt so systemd watchdog and red-monitor can
+        - ``/health``, ``/healthz`` and ``/version`` are exempt so monitors can
           probe liveness without carrying an Authorization header.
         - All other HTTP requests must carry ``Authorization: Bearer <token>``.
         - Missing or wrong token → **401 Unauthorized** +
@@ -210,7 +231,7 @@ class BearerTokenGuard:
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and self._active:
             path: str = scope.get("path", "")
-            if path != _HEALTH_PATH:
+            if path not in PUBLIC_HTTP_PATHS:
                 headers = Headers(scope=scope)
                 auth = headers.get("authorization", "")
                 # Normalise: "Bearer <token>" → "<token>"
