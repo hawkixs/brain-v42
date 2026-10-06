@@ -246,6 +246,37 @@ _EVERY_COSINE = [0.50, 0.55, 0.60, 0.64, 0.66, 0.69, 0.70, 0.9]
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("cosine", "signal_type", "expected_action"),
+    [(0.65, "snippet", "linked"), (0.6499, "plan", "created"), (0.6499, "learning", "skipped")],
+)
+async def test_resolve_pins_literal_fallback_boundary(
+    mock_deps: dict[str, Any], cosine: float, signal_type: str, expected_action: str
+) -> None:
+    feature_row = _make_feature_row(similarity=cosine)
+    result = MagicMock()
+    result.fetchall.return_value = [feature_row]
+    created_row = _make_feature_row(name="some signal")
+    result.fetchone.return_value = created_row
+    mock_deps["session"].execute = AsyncMock(return_value=result)
+
+    feature, action = await _build_guard(mock_deps).resolve(
+        text="some signal",
+        embedding=[0.1] * 1536,
+        project_key="brain_v42",
+        signal_type=signal_type,
+    )
+
+    assert action == expected_action
+    if expected_action == "linked":
+        assert feature.id == feature_row.id
+    elif expected_action == "created":
+        assert feature.id == created_row.id
+    else:
+        assert feature is None
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("cosine", _EVERY_COSINE)
 @pytest.mark.parametrize("signal_type", _EVERY_SIGNAL_TYPE)
 async def test_resolve_never_merges_and_never_enriches_a_description(
