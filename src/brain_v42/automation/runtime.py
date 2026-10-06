@@ -228,12 +228,7 @@ def build_automation_runtime(
         cluster_guard,
         mutation_guard=lease.ensure_owned,
     )
-    dedup_job = FeatureDedupJob(
-        session_factory,
-        reranker,
-        embedding_svc,
-        mutation_guard=lease.ensure_owned,
-    )
+    dedup_job = FeatureDedupJob(session_factory, reranker)
 
     async def resolve_project_key(gitlab_path: str) -> str | None:
         async with session_factory() as session:
