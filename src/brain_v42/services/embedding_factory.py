@@ -10,6 +10,7 @@ search-quality drift.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -131,6 +132,51 @@ def _resolve_shim_bearer(settings: Settings, api_key: str) -> str:
 
 
 _RERANK_KEY_MAX_LENGTH = 512
+_RERANK_KEY_NAME = "BRAIN_RERANK_API_KEY"
+_DOTENV_LINE = re.compile(r"(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=(.*)")
+
+
+def _is_single_token(value: str) -> bool:
+    """A bearer is one token: no whitespace, no ``=``, bounded length.
+
+    The bound is what stops an env fragment from being forwarded wholesale to a
+    third party as an ``Authorization`` header.
+    """
+    return (
+        0 < len(value) <= _RERANK_KEY_MAX_LENGTH
+        and "=" not in value
+        and not any(ch.isspace() for ch in value)
+    )
+
+
+def _rerank_key_from_dotenv(content: str, path: Path) -> str:
+    """Extract ``BRAIN_RERANK_API_KEY`` BY NAME from a dotenv-style file.
+
+    Every other line belongs to someone else and is never read into the bearer.
+    Errors name the path and the key name, never any content.
+    """
+    malformed = RerankKeyError(
+        f"rerank key file {path} must hold only the key value or {_RERANK_KEY_NAME}=<value>"
+    )
+    values: list[str] = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        match = _DOTENV_LINE.fullmatch(line)
+        if match is None:
+            raise malformed
+        if match.group(1) != _RERANK_KEY_NAME:
+            continue
+        value = match.group(2).strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        values.append(value)
+    if len(values) != 1:
+        raise RerankKeyError(f"rerank key file {path} must name {_RERANK_KEY_NAME} exactly once")
+    if not _is_single_token(values[0]):
+        raise malformed
+    return values[0]
 
 
 def _resolve_rerank_bearer(settings: Settings) -> str:
@@ -160,11 +206,9 @@ def _resolve_rerank_bearer(settings: Settings) -> str:
     key = raw.strip()
     if not key:
         raise RerankKeyError(f"rerank key file {path} is empty")
-    # The whole content becomes a bearer sent to a third party, so a file that is
-    # really an env fragment ("NAME=value" lines) must be refused, not forwarded.
-    if len(key) > _RERANK_KEY_MAX_LENGTH or "=" in key or any(ch.isspace() for ch in key):
-        raise RerankKeyError(f"rerank key file {path} must hold only the key value")
-    return key
+    if _is_single_token(key):
+        return key
+    return _rerank_key_from_dotenv(key, path)
 
 
 def settings_for_standalone_script(postgres_url: str) -> Settings:

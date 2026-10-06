@@ -336,8 +336,11 @@ them changes the shim deployment.
 | `BRAIN_RERANK_PROVIDER` | unset | Provider routing sent with every request, as JSON: `{"only": ["voyageai"]}`. Keys: `only`, `allow_fallbacks` (default `false`), `data_collection` (`deny` by default, or `allow`), `zdr`. Unknown keys are refused. |
 | `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
 
-The key file must be mode `0600` or stricter and hold only the key value (one token:
-no whitespace, no `=`, at most 512 characters, so an env fragment is never forwarded);
+The key file must be mode `0600` or stricter and have one of two shapes: the bare key value (one token: no whitespace, no `=`, at most
+512 characters), or a dotenv-style file with exactly one `BRAIN_RERANK_API_KEY=<value>`
+line (optional `export `, quotes, blank lines and `#` comments; every other line is
+ignored and never sent anywhere). Anything else is refused, so an env fragment is
+never forwarded;
 anything readable beyond its owner, malformed, empty, or unreadable stops the runtime at construction with a `RerankKeyError` that
 names the path, never the content. Create it the way the shim bearer is created, with
 a redirection under a tight `umask`. The cohere backend never reads

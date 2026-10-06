@@ -223,7 +223,6 @@ class TestKeyFileHoldsOnlyTheKey:
     @pytest.mark.parametrize(
         "content",
         [
-            f"BRAIN_RERANK_API_KEY={_RERANK_KEY}",
             f"{_RERANK_KEY}\nOTHER_SECRET=hunter2",
             f"{_RERANK_KEY} trailing words",
             "k" * 513,
@@ -247,3 +246,77 @@ class TestKeyFileHoldsOnlyTheKey:
             _hosted(rerank_api_key_file=_key_file(tmp_path, content="k" * 512))
         )
         assert client._get_client().headers["authorization"] == "Bearer " + "k" * 512
+
+
+class TestKeyFileMayBeADotenvFile:
+    """Ticket 1b9ba559: the key lives in a private file read BY NAME. Every other
+    line of such a file is somebody else's secret and goes nowhere."""
+
+    @staticmethod
+    def _bearer(tmp_path, content: str) -> str:
+        client = build_reranker_client(
+            _hosted(rerank_api_key_file=_key_file(tmp_path, content=content))
+        )
+        return client._get_client().headers["authorization"]
+
+    def test_a_value_only_file_still_works(self, tmp_path) -> None:
+        assert self._bearer(tmp_path, _RERANK_KEY) == f"Bearer {_RERANK_KEY}"
+
+    def test_only_the_named_line_is_used(self, tmp_path) -> None:
+        from structlog.testing import capture_logs
+
+        content = f"# private\nOTHER_SECRET=sentinel-other\n\nBRAIN_RERANK_API_KEY={_RERANK_KEY}\n"
+        with capture_logs() as records:
+            header = self._bearer(tmp_path, content)
+        assert header == f"Bearer {_RERANK_KEY}"
+        assert "sentinel-other" not in header
+        assert "sentinel-other" not in repr(records)
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            f'BRAIN_RERANK_API_KEY="{_RERANK_KEY}"',
+            f"BRAIN_RERANK_API_KEY='{_RERANK_KEY}'",
+            f"export BRAIN_RERANK_API_KEY={_RERANK_KEY}",
+        ],
+    )
+    def test_quotes_and_export_prefix_are_accepted(self, tmp_path, line: str) -> None:
+        assert self._bearer(tmp_path, f"OTHER=x\n{line}") == f"Bearer {_RERANK_KEY}"
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "OTHER_SECRET=sentinel-other",
+            f"BRAIN_RERANK_API_KEY={_RERANK_KEY}\nBRAIN_RERANK_API_KEY=second-sentinel",
+        ],
+    )
+    def test_zero_or_two_named_lines_are_refused(self, tmp_path, content: str) -> None:
+        from brain_v42.services.embedding_factory import RerankKeyError
+
+        path = _key_file(tmp_path, content=content)
+        with pytest.raises(RerankKeyError) as excinfo:
+            build_reranker_client(_hosted(rerank_api_key_file=path))
+        message = str(excinfo.value)
+        assert str(path) in message
+        assert "BRAIN_RERANK_API_KEY" in message
+        for leaked in (_RERANK_KEY, "sentinel-other", "second-sentinel"):
+            assert leaked not in message
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            f"BRAIN_RERANK_API_KEY={_RERANK_KEY} extra words",
+            "BRAIN_RERANK_API_KEY=",
+            "BRAIN_RERANK_API_KEY=a=b\nOTHER=sentinel-other",
+            f"BRAIN_RERANK_API_KEY={_RERANK_KEY}\nbare words sentinel-other",
+        ],
+    )
+    def test_a_malformed_file_is_refused_without_leaking(self, tmp_path, content: str) -> None:
+        from brain_v42.services.embedding_factory import RerankKeyError
+
+        with pytest.raises(RerankKeyError) as excinfo:
+            build_reranker_client(_hosted(rerank_api_key_file=_key_file(tmp_path, content=content)))
+        message = str(excinfo.value)
+        assert "BRAIN_RERANK_API_KEY=<value>" in message or "key value" in message
+        for leaked in (_RERANK_KEY, "sentinel-other"):
+            assert leaked not in message
