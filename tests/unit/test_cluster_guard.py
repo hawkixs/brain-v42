@@ -400,6 +400,86 @@ async def test_resolve_falls_back_to_cosine_when_rerank_raises(mock_deps):
     assert feature is None
 
 
+@pytest.mark.asyncio
+async def test_resolve_creates_not_merges_when_rerank_raises_in_merge_zone(mock_deps):
+    """A failing reranker must not turn cosines into reranker scores.
+
+    Grey-zone cosines are >= 0.50 by construction, so substituting them for
+    reranker scores would always reach RERANKER_MERGE. The failure must take
+    the same cosine-only path as an unavailable reranker: never merge.
+    """
+    feature_row = _make_feature_row(similarity=0.55, description="Original description")
+    result_set = MagicMock()
+    result_set.fetchall.return_value = [feature_row]
+    insert_result = MagicMock()
+    insert_result.fetchone.return_value = _make_feature_row(name="some signal")
+
+    # Spare results so a (wrong) merge path fails on the assertions below,
+    # not on an exhausted side_effect list.
+    mock_deps["session"].execute = AsyncMock(
+        side_effect=[result_set, insert_result, MagicMock(), MagicMock()]
+    )
+    mock_deps["reranker"].rerank = AsyncMock(side_effect=Exception("reranker crashed"))
+
+    guard = _build_guard(mock_deps)
+    _, action = await guard.resolve(
+        text="some signal",
+        embedding=[0.1] * 1536,
+        project_key="brain_v42",
+        signal_type="plan",
+    )
+
+    assert action == "created"
+    assert feature_row.description == "Original description"
+    # _merge_into re-embeds the enriched description: it must not have run.
+    mock_deps["embedding_svc"].embed.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resolve_links_via_fallback_threshold_when_rerank_raises(mock_deps):
+    """Rerank raises, cosine 0.66 >= FALLBACK_LINK 0.65 -> linked."""
+    feature_row = _make_feature_row(similarity=0.66)
+    result_set = MagicMock()
+    result_set.fetchall.return_value = [feature_row]
+
+    mock_deps["session"].execute = AsyncMock(return_value=result_set)
+    mock_deps["reranker"].rerank = AsyncMock(side_effect=Exception("reranker crashed"))
+
+    guard = _build_guard(mock_deps)
+    feature, action = await guard.resolve(
+        text="some signal",
+        embedding=[0.1] * 1536,
+        project_key="brain_v42",
+        signal_type="plan",
+    )
+
+    assert action == "linked"
+    assert feature.id == feature_row.id
+
+
+@pytest.mark.asyncio
+async def test_resolve_skips_knowledge_signal_when_rerank_raises(mock_deps):
+    """Rerank raises, cosine 0.55 < FALLBACK_LINK, knowledge signal -> skipped."""
+    feature_row = _make_feature_row(similarity=0.55, description="Original description")
+    result_set = MagicMock()
+    result_set.fetchall.return_value = [feature_row]
+
+    mock_deps["session"].execute = AsyncMock(return_value=result_set)
+    mock_deps["reranker"].rerank = AsyncMock(side_effect=Exception("reranker crashed"))
+
+    guard = _build_guard(mock_deps)
+    feature, action = await guard.resolve(
+        text="some signal",
+        embedding=[0.1] * 1536,
+        project_key="brain_v42",
+        signal_type="learning",
+    )
+
+    assert (feature, action) == (None, "skipped")
+    assert feature_row.description == "Original description"
+    mock_deps["embedding_svc"].embed.assert_not_awaited()
+
+
 # ── feature.name sanitization on create ─────────────────────────────────
 
 
