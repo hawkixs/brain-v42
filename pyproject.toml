@@ -61,6 +61,7 @@ Homepage = "https://github.com/hawkixs/brain-v42"
 Repository = "https://github.com/hawkixs/brain-v42"
 
 [project.scripts]
+brain-credentials = "brain_v42.scripts.credentials_cli:main"
 # Console entry points for the maintenance CLIs that already expose a
 # synchronous `main(argv: list[str] | None = None) -> int`. The async-main
 # scripts under src/brain_v42/scripts/ (roadmap_curate, ticket_extract,

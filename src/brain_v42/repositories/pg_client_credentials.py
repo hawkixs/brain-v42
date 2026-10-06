@@ -212,6 +212,7 @@ class PgClientCredentialRepo(BasePgRepository):
         transition: bool = False,
         expires_at: datetime | None = None,
         *,
+        reason: str | None = None,
         session: AsyncSession | None = None,
     ) -> CredentialRow:
         _require_author(created_by)
@@ -248,6 +249,7 @@ class PgClientCredentialRepo(BasePgRepository):
                     "client_id": row["client_id"],
                     "families": list(row["families"]),
                     "author": row["created_by"],
+                    **({"reason": reason} if reason is not None else {}),
                 },
             )
         return _credential(row)
@@ -659,6 +661,7 @@ class PgClientCredentialRepo(BasePgRepository):
         now: datetime,
         *,
         author: str,
+        reason: str | None = None,
         session: AsyncSession | None = None,
     ) -> ElevationRow:
         """End an elevation. ``author`` is audited only: the table has no ``ended_by``."""
@@ -696,9 +699,14 @@ class PgClientCredentialRepo(BasePgRepository):
             await _write_audit(
                 sess,
                 "credentials.unelevated",
-                _elevation_event(
-                    ended, str(session_label), via="cli", client_id=None, author=author
-                ),
+                {
+                    **_elevation_event(
+                        ended, str(session_label), via="cli", client_id=None, author=author
+                    ),
+                    # The watcher contract keeps the grant's reason; retain the ending
+                    # gesture's reason in the durable payload without expanding it.
+                    **({"ending_reason": reason} if reason is not None else {}),
+                },
                 ended.id,
             )
         return ended

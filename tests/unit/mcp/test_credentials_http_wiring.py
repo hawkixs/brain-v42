@@ -81,10 +81,16 @@ async def test_run_mcp_passes_the_injected_registry_to_the_shared_plan(
     from tests.unit.mcp.test_credentials_http import verifier
 
     mcp = FastMCP("credential-run")
+
+    @mcp.tool
+    async def brain_search() -> str:
+        return "read"
+
     run_http = AsyncMock()
     monkeypatch.setattr(mcp, "run_http_async", run_http)
     registry = await verifier()
     await server._run_mcp(mcp, settings(), credential_verifier=registry)
+    assert (await mcp._list_tools())[0].tags == {"family:read"}
     run_http.assert_awaited_once()
     assert run_http.call_args.kwargs["uvicorn_config"]["proxy_headers"] is False
     assert run_http.call_args.kwargs["uvicorn_config"]["forwarded_allow_ips"] == ""
@@ -181,7 +187,7 @@ async def test_stateful_http_tool_receives_verified_identity() -> None:
     mcp = FastMCP("verified-identity")
     mcp.add_middleware(ProvenanceMiddleware())
 
-    @mcp.tool
+    @mcp.tool(name="brain_search")
     async def identity() -> dict[str, object]:
         access = get_access_token()
         assert access is not None
@@ -233,7 +239,7 @@ async def test_stateful_http_tool_receives_verified_identity() -> None:
                 "jsonrpc": "2.0",
                 "id": 2,
                 "method": "tools/call",
-                "params": {"name": "identity", "arguments": {}},
+                "params": {"name": "brain_search", "arguments": {}},
             },
         )
     assert response.status_code == 200

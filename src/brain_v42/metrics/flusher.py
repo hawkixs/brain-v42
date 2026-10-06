@@ -19,6 +19,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from brain_v42.credentials.reasons import refusal_counts
 from brain_v42.metrics.collector import MetricsCollector, _get_rss_bytes
 from brain_v42.metrics.retention import PROCESS_METRICS_STALE_SQL
 
@@ -88,6 +89,9 @@ class MetricsFlusher:
         the ``_process`` ROW only (never per real agent — the ×N over-count guard).
         """
         ptools: dict[str, Any] = {}
+        # The sidecar runs in another process: persist cumulative MCP refusals
+        # exactly once on _process, even before the first event or tool call.
+        ptools["_mcp_auth_refused"] = refusal_counts()
         rk = entry.get("reranker", {})
         probes = rk.get("last_probe", {})
         if (

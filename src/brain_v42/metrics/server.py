@@ -491,6 +491,9 @@ class MetricsServer:
 
         # Cross-process aggregated tool/embedding stats
         process_agg = await self._collector.collect_process_metrics()
+        # Read MCP's persisted snapshot, never this sidecar's in-memory counter.
+        # Structural zero stays present before the first event/flush and on DB failure.
+        metrics["mcp_auth_refused"] = process_agg.pop("mcp_auth_refused", {})
 
         # Override per-process tools/embedding/reranker with cross-process aggregation
         # when multiple processes are active

@@ -57,6 +57,9 @@ def render_event(row: AuditRow) -> dict[str, Any]:
         fields["excluded_client_ids"] = sorted(set(row.payload.get("excluded_client_ids", [])))
     elif row.event == "credentials.issued":
         fields = {key: row.payload[key] for key in _ISSUED_KEYS}
+        # Rows issued before the operator CLI did not carry a reason.
+        if "reason" in row.payload:
+            fields["reason"] = _sanitize_reason(row.payload["reason"])
     elif row.event == "credentials.revoked":
         fields = {key: row.payload[key] for key in _REVOKED_KEYS}
         fields["reason"] = _sanitize_reason(fields["reason"])
