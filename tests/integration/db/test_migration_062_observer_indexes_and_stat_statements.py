@@ -174,6 +174,8 @@ async def test_downgrade_refuses_foreign_objects_in_monitoring(
 ) -> None:
     """RESTRICT makes an operator's own object in `monitoring` stop the downgrade, loudly."""
     migration_downgrade_fence(downgraded_to="061")
+    # Later revisions sit above 062: step down to it first, this test is about 062's refusal.
+    assert _run_alembic("downgrade", "062").returncode == 0
     async with engine.begin() as connection:
         await connection.execute(sa.text("CREATE TABLE monitoring.operator_probe (x int)"))
     try:
@@ -186,6 +188,7 @@ async def test_downgrade_refuses_foreign_objects_in_monitoring(
     finally:
         async with engine.begin() as connection:
             await connection.execute(sa.text("DROP TABLE IF EXISTS monitoring.operator_probe"))
+        assert _run_alembic("upgrade", "head").returncode == 0
 
 
 async def _private_run(url: str, *statements: str) -> None:
@@ -272,6 +275,8 @@ async def test_downgrade_gives_up_on_a_held_lock_and_stays_at_062(
     from tests.integration.disposable_db import asyncpg_dsn
 
     url = _private_module_head
+    # Later revisions sit above 062: step down to it first, this test is about 062's lock.
+    assert _alembic_on(url, "downgrade", "062").returncode == 0
     holder = await asyncpg.connect(asyncpg_dsn(url))
     try:
         transaction = holder.transaction()
