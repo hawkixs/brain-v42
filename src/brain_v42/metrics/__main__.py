@@ -16,6 +16,7 @@ from brain_v42.metrics.runtime import (
     build_sidecar_structlog_processors,
     run_cleanup_loop,
 )
+from brain_v42.safe_logging import configure_json_logging
 
 # Temporary rollback facades for internal imports kept stable during ARC1 lot 1.
 _dedup_loop = run_dedup_loop
@@ -23,14 +24,18 @@ _cleanup_loop = run_cleanup_loop
 
 
 def _configure_logging(collector: MetricsCollector) -> None:
-    """Keep sidecar logs on stdout while exposing the selected format to watchers."""
+    """Expose JSON on stderr for watchers, preserving the console's stdout stream."""
     log_format = get_settings().brain_log_format
-    structlog.configure(
-        processors=build_sidecar_structlog_processors(collector, log_format=log_format),
-        wrapper_class=structlog.make_filtering_bound_logger(0),
-        logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=True,
-    )
+    processors = build_sidecar_structlog_processors(collector, log_format=log_format)
+    if log_format == "json":
+        configure_json_logging(processors)
+    else:
+        structlog.configure(
+            processors=processors,
+            wrapper_class=structlog.make_filtering_bound_logger(0),
+            logger_factory=structlog.PrintLoggerFactory(),
+            cache_logger_on_first_use=True,
+        )
     structlog.get_logger(__name__).info(
         "logging.configured", renderer=log_format, service="brain-v42-metrics", pid=os.getpid()
     )

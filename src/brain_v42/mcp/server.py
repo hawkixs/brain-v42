@@ -53,6 +53,7 @@ from brain_v42.mcp.business_errors import surface_business_errors
 from brain_v42.mcp.credentials_http import CredentialGuard, CredentialTokenVerifier
 from brain_v42.mcp.dream_capabilities import (
     DreamCapabilityConfigurationError,
+    DreamCapabilityHttpGuard,
     DreamCapabilityMiddleware,
     DreamCapabilityTokenVerifier,
     parse_dream_capability_registry,
@@ -62,6 +63,7 @@ from brain_v42.mcp.dream_project_authorization import (
     PostgresDreamProjectResolver,
 )
 from brain_v42.mcp.http_security import (
+    _LOOPBACK_HOSTS,
     BearerTokenGuard,
     HostOriginGuard,
     HttpAuthConfigurationError,
@@ -79,7 +81,7 @@ from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.repositories.pg_runbook import PgRunbookRepo
 from brain_v42.repositories.pg_snippet import PgSnippetRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
-from brain_v42.safe_logging import build_logging_processors
+from brain_v42.safe_logging import build_logging_processors, configure_json_logging
 from brain_v42.services.adr_service import ADRService
 from brain_v42.services.agent_trace_net import AgentTraceNet, agent_trace_net_is_armed
 from brain_v42.services.auto_linker import AutoLinker
@@ -125,11 +127,15 @@ def _configure_stdio_logging() -> None:
     pytest's caplog handlers must stay intact).
     """
     log_format = get_settings().brain_log_format
-    structlog.configure(
-        logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-        processors=build_logging_processors(log_format, colors=False),
-    )
-    logging.basicConfig(stream=sys.stderr, level=logging.INFO, force=True)
+    processors = build_logging_processors(log_format, colors=False)
+    if log_format == "json":
+        configure_json_logging(processors)
+    else:
+        structlog.configure(
+            logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+            processors=processors,
+        )
+        logging.basicConfig(stream=sys.stderr, level=logging.INFO, force=True)
     structlog.get_logger(__name__).info(
         "logging.configured", renderer=log_format, service="brain-v42-mcp", pid=os.getpid()
     )
@@ -390,6 +396,23 @@ async def app_lifecycle(
         yield
 
 
+async def healthz_check(request: Request) -> JSONResponse:
+    """Expose process liveness even when database readiness is unavailable."""
+    return JSONResponse({"status": "ok"})
+
+
+async def version_check(request: Request) -> JSONResponse:
+    """Identify the answering build without accessing services or request headers."""
+    return JSONResponse(
+        {
+            "project": "brain-v42",
+            "version": package_version(),
+            "git_sha": os.environ.get("BRAIN_GIT_SHA"),
+            "image_digest": os.environ.get("BRAIN_IMAGE_DIGEST"),
+        }
+    )
+
+
 def create_mcp_instance() -> FastMCP:
     """Build a FastMCP instance with its service-independent wiring.
 
@@ -403,6 +426,8 @@ def create_mcp_instance() -> FastMCP:
     ``build_server`` has already settled that a double is worse than no test.
     """
     instance = FastMCP("brain", mask_error_details=True)
+    instance.custom_route("/healthz", methods=["GET"])(healthz_check)
+    instance.custom_route("/version", methods=["GET"])(version_check)
     # Provenance: installed here and not in register_tools, so it is independent
     # of whether metrics are enabled and of the tool registration order.
     # `apply_tool_catalog_profile` and `maybe_apply_code_mode` return the SAME
@@ -862,6 +887,13 @@ def _configure_http_security(
     if mcp in _http_security_configured_servers:
         raise RuntimeError("HTTP security is already configured for this server")
 
+    allowed_hosts = set(_LOOPBACK_HOSTS | settings.mcp_http_allowed_hosts)
+    host_guard = Middleware(
+        HostOriginGuard,
+        allowed_hosts=allowed_hosts,
+        allowed_origin_hosts=allowed_hosts,
+    )
+
     if settings.brain_mcp_auth_mode == "credentials":
         if (
             settings.brain_dream_capability_enforcement
@@ -875,7 +907,7 @@ def _configure_http_security(
         mcp.auth = CredentialTokenVerifier(credential_verifier)
         _http_security_configured_servers.add(mcp)
         return [
-            Middleware(HostOriginGuard),
+            host_guard,
             Middleware(CredentialGuard, verifier=credential_verifier),
             Middleware(RequestBodyLimitGuard, max_body_bytes=settings.mcp_http_max_body_bytes),
         ]
@@ -899,7 +931,7 @@ def _configure_http_security(
             bearer = Middleware(BearerTokenGuard, token="", allow_unauthenticated=True)
             logger.warning("brain_v42.server.http_auth", auth="disabled_by_opt_in")
         middleware = [
-            Middleware(HostOriginGuard),
+            host_guard,
             bearer,
             Middleware(RequestBodyLimitGuard, max_body_bytes=settings.mcp_http_max_body_bytes),
         ]
@@ -927,8 +959,9 @@ def _configure_http_security(
     mcp.add_middleware(DreamCapabilityMiddleware(project_resolver=project_resolver))
     _http_security_configured_servers.add(mcp)
     return [
-        Middleware(HostOriginGuard),
+        host_guard,
         Middleware(RequestBodyLimitGuard, max_body_bytes=settings.mcp_http_max_body_bytes),
+        Middleware(DreamCapabilityHttpGuard, verifier=mcp.auth),
     ]
 
 
@@ -1260,6 +1293,9 @@ async def _run_mcp(
     remember a decorator (ticket 40ab2ced).
     """
     await prepare_tools_for_transport(mcp, metrics_collector)
+    banner_options: dict[str, Any] = (
+        {"show_banner": False} if settings.brain_log_format == "json" else {}
+    )
 
     if settings.brain_mcp_transport == "http":
         plan = (
@@ -1282,14 +1318,21 @@ async def _run_mcp(
                 "timeout_graceful_shutdown": 10,
                 "proxy_headers": False,
                 "forwarded_allow_ips": "",
+                **({"log_config": None} if settings.brain_log_format == "json" else {}),
             },
             middleware=plan.middleware,
+            **banner_options,
         )
     else:
         loop = asyncio.get_running_loop()
         shutdown_event = asyncio.Event()
         _install_signal_handlers(loop, shutdown_event)  # stdio only
-        mcp_task = asyncio.create_task(mcp.run_async(transport="stdio"))
+        mcp_task = asyncio.create_task(
+            mcp.run_async(
+                transport="stdio",
+                **banner_options,
+            )
+        )
         shutdown_task = asyncio.create_task(shutdown_event.wait())
         done, pending = await asyncio.wait(
             {mcp_task, shutdown_task},
