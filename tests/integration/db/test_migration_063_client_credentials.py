@@ -92,15 +92,33 @@ async def _credential(connection: AsyncConnection, **overrides: object) -> None:
 
 
 async def _elevation(
-    connection: AsyncConnection, session_id: UUID, *, hours: int, connection_ids: list[str]
+    connection: AsyncConnection,
+    session_id: UUID,
+    *,
+    hours: int,
+    connection_ids: list[str],
+    client_ids: list[str | None] | None = None,
+    via: str = "cli",
+    requested_by: str | None = None,
+    reason: str = "maintenance window",
 ) -> None:
+    paired = client_ids if client_ids is not None else ["auto-discord"] * len(connection_ids)
     await connection.execute(
         sa.text(
-            "INSERT INTO brain_admin_elevations (session_id, connection_ids, granted_at, "
-            "expires_at, granted_by, reason) VALUES (:session_id, :connection_ids, now(), "
-            "now() + make_interval(hours => :hours), 'operator', 'maintenance window')"
+            "INSERT INTO brain_admin_elevations (session_id, connection_ids, "
+            "connection_client_ids, granted_at, expires_at, granted_by, reason, via, "
+            "requested_by_client_id) VALUES (:session_id, :connection_ids, :client_ids, now(), "
+            "now() + make_interval(hours => :hours), 'operator', :reason, :via, :requested_by)"
         ),
-        {"session_id": session_id, "connection_ids": connection_ids, "hours": hours},
+        {
+            "session_id": session_id,
+            "connection_ids": connection_ids,
+            "client_ids": paired,
+            "hours": hours,
+            "reason": reason,
+            "via": via,
+            "requested_by": requested_by,
+        },
     )
 
 
@@ -133,6 +151,8 @@ async def test_upgrade_creates_the_three_tables_and_the_trigger(engine: AsyncEng
         ({"families": ["read", "admin"]}, "brain_client_credentials_families_valid"),
         ({"families": ["admin"]}, "brain_client_credentials_families_valid"),
         ({"families": []}, "brain_client_credentials_families_valid"),
+        ({"families": ["elevate", "read"]}, "brain_client_credentials_elevate_exclusive"),
+        ({"families": ["telemetry", "elevate"]}, "brain_client_credentials_elevate_exclusive"),
         ({"client_id": "Bad_Id"}, "brain_client_credentials_client_id_format"),
         ({"client_id": "-leading"}, "brain_client_credentials_client_id_format"),
         ({"client_id": "a" * 65}, "brain_client_credentials_client_id_format"),
@@ -153,6 +173,14 @@ async def test_credential_checks_refuse_their_bad_row(
     with pytest.raises(IntegrityError, match=constraint):
         async with connection.begin_nested():
             await _credential(connection, **overrides)
+
+
+@pytest.mark.parametrize("families", [["elevate"], ["telemetry"], ["read", "telemetry"]])
+async def test_elevate_and_telemetry_are_storable_families(
+    operator: tuple[AsyncConnection, UUID], families: list[str]
+) -> None:
+    connection, _ = operator
+    await _credential(connection, families=families)
 
 
 async def test_a_transition_credential_with_an_expiry_and_a_full_revocation_are_stored(
@@ -194,6 +222,79 @@ async def test_elevation_checks_refuse_their_bad_row(
             await _elevation(connection, session_id, hours=hours, connection_ids=connection_ids)
 
 
+@pytest.mark.parametrize(
+    ("overrides", "constraint"),
+    [
+        (
+            {"connection_ids": ["c1", "c2"], "client_ids": ["auto-discord"]},
+            "brain_admin_elevations_connection_pairs",
+        ),
+        (
+            {"connection_ids": ["c1"], "client_ids": ["a", "b"]},
+            "brain_admin_elevations_connection_pairs",
+        ),
+        (
+            {"connection_ids": ["c1"], "client_ids": [None]},
+            "brain_admin_elevations_connection_pairs",
+        ),
+        ({"via": "api"}, "brain_admin_elevations_via_valid"),
+        ({"via": "hook"}, "brain_admin_elevations_hook_requester"),
+        ({"reason": "x" * 201}, "brain_admin_elevations_reason_length"),
+    ],
+)
+async def test_elevation_attribution_checks_refuse_their_bad_row(
+    operator: tuple[AsyncConnection, UUID], overrides: dict[str, object], constraint: str
+) -> None:
+    connection, session_id = operator
+    params: dict[str, object] = {"hours": 1, "connection_ids": ["c1"]}
+    params.update(overrides)
+    with pytest.raises(IntegrityError, match=constraint):
+        async with connection.begin_nested():
+            await _elevation(connection, session_id, **params)  # type: ignore[arg-type]
+
+
+async def test_a_hook_elevation_with_its_requester_and_a_200_char_reason_is_stored(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, session_id = operator
+    await _elevation(
+        connection,
+        session_id,
+        hours=1,
+        connection_ids=["c1", "c2"],
+        client_ids=["workstation-claude", "red-rail"],
+        via="hook",
+        requested_by="workstation-elevate",
+        reason="x" * 200,
+    )
+    audited = await connection.scalar(
+        sa.text("SELECT expiry_audited_at FROM brain_admin_elevations WHERE session_id = :id"),
+        {"id": session_id},
+    )
+    assert audited is None
+
+
+async def test_the_connection_client_id_is_nullable_and_format_checked(
+    operator: tuple[AsyncConnection, UUID],
+) -> None:
+    connection, session_id = operator
+    insert = sa.text(
+        "INSERT INTO brain_session_connections (session_id, connection_id, client_id) "
+        "VALUES (:session_id, :connection_id, :client_id)"
+    )
+    for connection_id, client_id in (("historical", None), ("attributed", "workstation-claude")):
+        await connection.execute(
+            insert,
+            {"session_id": session_id, "connection_id": connection_id, "client_id": client_id},
+        )
+    with pytest.raises(IntegrityError, match="brain_session_connections_client_id_format"):
+        async with connection.begin_nested():
+            await connection.execute(
+                insert,
+                {"session_id": session_id, "connection_id": "bad", "client_id": "Bad_Id"},
+            )
+
+
 async def test_a_four_hour_elevation_is_the_longest_stored(
     operator: tuple[AsyncConnection, UUID],
 ) -> None:
@@ -210,8 +311,9 @@ async def test_a_blank_elevation_reason_is_refused(
             await connection.execute(
                 sa.text(
                     "INSERT INTO brain_admin_elevations (session_id, connection_ids, "
-                    "expires_at, granted_by, reason) "
-                    "VALUES (:session_id, ARRAY['c'], now() + interval '1 hour', 'op', '  ')"
+                    "connection_client_ids, expires_at, granted_by, reason) "
+                    "VALUES (:session_id, ARRAY['c'], ARRAY['auto-discord'], "
+                    "now() + interval '1 hour', 'op', '  ')"
                 ),
                 {"session_id": session_id},
             )
@@ -303,6 +405,17 @@ async def test_a_last_used_stamp_does_not_notify_but_a_revocation_does(
         await listener.close()
 
 
+async def _has_connection_client_id(connection: AsyncConnection) -> bool:
+    return bool(
+        await connection.scalar(
+            sa.text(
+                "SELECT count(*) FROM information_schema.columns WHERE table_schema = 'public' "
+                "AND table_name = 'brain_session_connections' AND column_name = 'client_id'"
+            )
+        )
+    )
+
+
 async def test_downgrade_drops_the_tables_and_function_then_reupgrade_restores_them(
     engine: AsyncEngine, migration_downgrade_fence: Callable[..., None]
 ) -> None:
@@ -312,6 +425,7 @@ async def test_downgrade_drops_the_tables_and_function_then_reupgrade_restores_t
     async with engine.connect() as connection:
         for table in TABLES:
             assert await connection.scalar(sa.text(f"SELECT to_regclass('public.{table}')")) is None
+        assert await _has_connection_client_id(connection) is False
         assert (
             await connection.scalar(
                 sa.text(
@@ -327,3 +441,4 @@ async def test_downgrade_drops_the_tables_and_function_then_reupgrade_restores_t
             assert (
                 await connection.scalar(sa.text(f"SELECT to_regclass('public.{table}')")) == table
             )
+        assert await _has_connection_client_id(connection) is True

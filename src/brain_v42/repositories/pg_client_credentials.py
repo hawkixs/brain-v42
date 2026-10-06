@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Literal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -36,6 +37,9 @@ LAST_USED_RESOLUTION = timedelta(minutes=1)
 
 #: The longest elevation. The table's CHECK states the same bound.
 MAX_ELEVATION = timedelta(hours=4)
+
+#: The longest elevation reason, in characters. The table's CHECK states the same bound.
+MAX_REASON_LENGTH = 200
 
 
 class ClientCredentialError(ValueError):
@@ -69,11 +73,15 @@ class ElevationRow:
     id: UUID
     session_id: UUID
     connection_ids: list[str]
+    connection_client_ids: list[str]
     granted_at: datetime
     expires_at: datetime
     granted_by: str
     reason: str
+    via: str
+    requested_by_client_id: str | None
     revoked_at: datetime | None
+    expiry_audited_at: datetime | None
 
 
 _CREDENTIAL_COLUMNS = list(brain_client_credentials.c)
@@ -244,13 +252,28 @@ class PgClientCredentialRepo(BasePgRepository):
         reason: str,
         now: datetime,
         *,
+        via: Literal["hook", "cli"] = "cli",
+        requested_by_client_id: str | None = None,
         session: AsyncSession | None = None,
     ) -> ElevationRow:
+        """Freeze the ATTRIBUTED (connection, client) pairs of ``connection_ids``.
+
+        Several elevations may be active at once, on one session or on several: a grant is
+        never refused because another is in force.
+        """
         connection_ids = list(dict.fromkeys(connection_ids))
         if not connection_ids:
             raise ClientCredentialError("no_connections", "an elevation needs a connection")
         if not reason.strip():
             raise ClientCredentialError("blank_reason", "an elevation needs a reason")
+        if len(reason) > MAX_REASON_LENGTH:
+            raise ClientCredentialError(
+                "reason_too_long", f"an elevation reason has at most {MAX_REASON_LENGTH} characters"
+            )
+        if via == "hook" and requested_by_client_id is None:
+            raise ClientCredentialError(
+                "requester_required", "a hook elevation names the credential that asked for it"
+            )
         if not now < expires_at <= now + MAX_ELEVATION:
             raise ClientCredentialError(
                 "invalid_window", "an elevation lasts at most 4 hours and must end after it starts"
@@ -277,15 +300,18 @@ class PgClientCredentialRepo(BasePgRepository):
                 )
             # The grant is frozen on connections already linked to THIS session: one linked
             # afterwards, or to another session, never inherits admin.
-            linked = set(
+            links = brain_session_connections
+            linked = dict(
                 (
-                    await sess.scalars(
-                        sa.select(brain_session_connections.c.connection_id).where(
-                            brain_session_connections.c.session_id == session_id,
-                            brain_session_connections.c.connection_id.in_(connection_ids),
+                    await sess.execute(
+                        sa.select(links.c.connection_id, links.c.client_id).where(
+                            links.c.session_id == session_id,
+                            links.c.connection_id.in_(connection_ids),
                         )
                     )
-                ).all()
+                )
+                .tuples()
+                .all()
             )
             unlinked = [conn for conn in connection_ids if conn not in linked]
             if unlinked:
@@ -294,17 +320,27 @@ class PgClientCredentialRepo(BasePgRepository):
                     "connection_not_linked",
                     f"connection(s) {shown} not linked to session {session_id}",
                 )
+            # A historical connection has no attributed credential, and no pair to freeze.
+            frozen = [(conn, linked[conn]) for conn in connection_ids if linked[conn] is not None]
+            if not frozen:
+                raise ClientCredentialError(
+                    "no_attributed_connection",
+                    f"session {session_id} has no connection attributed to a credential",
+                )
             row = (
                 (
                     await sess.execute(
                         sa.insert(brain_admin_elevations)
                         .values(
                             session_id=session_id,
-                            connection_ids=connection_ids,
+                            connection_ids=[conn for conn, _ in frozen],
+                            connection_client_ids=[client for _, client in frozen],
                             granted_at=now,
                             expires_at=expires_at,
                             granted_by=granted_by,
                             reason=reason,
+                            via=via,
+                            requested_by_client_id=requested_by_client_id,
                         )
                         .returning(*_ELEVATION_COLUMNS)
                     )
@@ -337,6 +373,45 @@ class PgClientCredentialRepo(BasePgRepository):
                 .all()
             )
         return [_elevation(row) for row in rows]
+
+    async def has_active_elevation(
+        self,
+        connection_id: str,
+        client_id: str,
+        now: datetime,
+        *,
+        session: AsyncSession | None = None,
+    ) -> bool:
+        """Whether an elevation in force froze exactly this (connection, client) pair.
+
+        Compares the frozen arrays, never ``brain_session_connections``: a connection
+        linked, or re-attributed, after the grant is not elevated.
+        """
+        elevations = brain_admin_elevations
+        frozen_pairs = (
+            sa.func.unnest(elevations.c.connection_ids, elevations.c.connection_client_ids)
+            .table_valued("connection_id", "client_id")
+            .render_derived()
+        )
+        async with self._maybe_session(session, write=False) as sess:
+            found = await sess.scalar(
+                sa.select(
+                    sa.exists(
+                        sa.select(sa.literal(1))
+                        .select_from(elevations)
+                        .join(brain_sessions, brain_sessions.c.id == elevations.c.session_id)
+                        .join(frozen_pairs, sa.true())
+                        .where(
+                            elevations.c.revoked_at.is_(None),
+                            elevations.c.expires_at > now,
+                            brain_sessions.c.status == "open",
+                            frozen_pairs.c.connection_id == connection_id,
+                            frozen_pairs.c.client_id == client_id,
+                        )
+                    )
+                )
+            )
+        return bool(found)
 
     async def end_elevation(
         self, elevation_id: UUID, now: datetime, *, session: AsyncSession | None = None

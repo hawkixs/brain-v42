@@ -38,14 +38,19 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
                 await transaction.rollback()
 
 
-async def _link(session: AsyncSession, session_id: UUID, *connection_ids: str) -> None:
+async def _link(
+    session: AsyncSession,
+    session_id: UUID,
+    *connection_ids: str,
+    client_id: str | None = "auto-discord",
+) -> None:
     for connection_id in connection_ids:
         await session.execute(
             sa.text(
-                "INSERT INTO brain_session_connections (session_id, connection_id) "
-                "VALUES (:session_id, :connection_id)"
+                "INSERT INTO brain_session_connections (session_id, connection_id, client_id) "
+                "VALUES (:session_id, :connection_id, :client_id)"
             ),
-            {"session_id": session_id, "connection_id": connection_id},
+            {"session_id": session_id, "connection_id": connection_id, "client_id": client_id},
         )
 
 
@@ -294,3 +299,147 @@ async def test_a_credential_row_never_shows_its_digest_in_repr(session: AsyncSes
     assert "token_sha256" not in shown
     assert digest.hex() not in shown
     assert repr(digest) not in shown
+
+
+async def test_grant_elevation_freezes_only_attributed_connections_as_pairs(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-historical", client_id=None)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    await _link(session, operator, "conn-b", client_id="red-rail")
+
+    granted = await _grant(repo, session, operator, ["conn-historical", "conn-b", "conn-a"])
+
+    assert granted.connection_ids == ["conn-b", "conn-a"]
+    assert granted.connection_client_ids == ["red-rail", "workstation-claude"]
+
+
+async def test_grant_elevation_without_an_attributed_connection_is_refused(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-historical", client_id=None)
+    with pytest.raises(ClientCredentialError) as refused:
+        await _grant(repo, session, operator, ["conn-historical"])
+    assert refused.value.code == "no_attributed_connection"
+    assert await session.scalar(sa.text("SELECT count(*) FROM brain_admin_elevations")) == 0
+
+
+async def test_an_elevation_matches_only_its_frozen_pair(session: AsyncSession) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    await _link(session, operator, "conn-b", client_id="red-rail")
+    await _grant(repo, session, operator, ["conn-a", "conn-b"])
+    at = NOW + timedelta(minutes=1)
+
+    assert await repo.has_active_elevation("conn-a", "workstation-claude", at, session=session)
+    assert await repo.has_active_elevation("conn-b", "red-rail", at, session=session)
+    # Same connection under another credential, and the crossed pair: both refused.
+    assert not await repo.has_active_elevation("conn-a", "red-rail", at, session=session)
+    assert not await repo.has_active_elevation("conn-b", "workstation-claude", at, session=session)
+    assert not await repo.has_active_elevation("conn-z", "workstation-claude", at, session=session)
+
+
+async def test_a_connection_linked_after_the_grant_is_not_elevated(session: AsyncSession) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    await _grant(repo, session, operator, ["conn-a"])
+    await _link(session, operator, "conn-late", client_id="workstation-claude")
+    at = NOW + timedelta(minutes=1)
+
+    assert not await repo.has_active_elevation(
+        "conn-late", "workstation-claude", at, session=session
+    )
+
+
+async def test_the_pair_lookup_follows_expiry_revocation_and_the_session(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-a", client_id="workstation-claude")
+    granted = await _grant(repo, session, operator, ["conn-a"])
+
+    async def lookup(at: datetime) -> bool:
+        return await repo.has_active_elevation("conn-a", "workstation-claude", at, session=session)
+
+    assert await lookup(NOW + timedelta(minutes=59))
+    assert not await lookup(NOW + timedelta(hours=1))
+    await repo.end_elevation(granted.id, NOW + timedelta(minutes=10), session=session)
+    assert not await lookup(NOW + timedelta(minutes=11))
+
+    other = await _make_session(session)
+    await _link(session, other, "conn-a", client_id="workstation-claude")
+    await _grant(repo, session, other, ["conn-a"])
+    assert await lookup(NOW + timedelta(minutes=11))
+    await session.execute(
+        sa.text(
+            "UPDATE brain_sessions SET status = 'abandoned', ended_at = now(), "
+            "abandonment_reason = 'test' WHERE id = :id"
+        ),
+        {"id": other},
+    )
+    assert not await lookup(NOW + timedelta(minutes=11))
+
+
+async def test_parallel_elevations_on_one_session_and_on_two_sessions_are_all_active(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    first = await _make_session(session)
+    second = await _make_session(session)
+    await _link(session, first, "conn-1", "conn-2")
+    await _link(session, second, "conn-3")
+
+    grants = [
+        await _grant(repo, session, first, ["conn-1"]),
+        await _grant(repo, session, first, ["conn-2"]),
+        await _grant(repo, session, second, ["conn-3"]),
+    ]
+
+    active = {row.id for row in await repo.active_elevations(NOW, session=session)}
+    assert {grant.id for grant in grants} <= active
+
+
+async def test_a_hook_elevation_records_its_requester_and_a_cli_one_does_not(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-1")
+    by_cli = await _grant(repo, session, operator, ["conn-1"])
+    by_hook = await repo.grant_elevation(
+        operator,
+        ["conn-1"],
+        NOW + timedelta(hours=1),
+        "workstation-elevate",
+        "maintenance",
+        NOW,
+        via="hook",
+        requested_by_client_id="workstation-elevate",
+        session=session,
+    )
+    assert (by_cli.via, by_cli.requested_by_client_id) == ("cli", None)
+    assert (by_hook.via, by_hook.requested_by_client_id) == ("hook", "workstation-elevate")
+    assert by_hook.expiry_audited_at is None
+
+
+async def test_grant_elevation_refuses_a_hook_without_requester_and_a_long_reason(
+    session: AsyncSession,
+) -> None:
+    repo = PgClientCredentialRepo()
+    operator = await _make_session(session)
+    await _link(session, operator, "conn-1")
+    window = (operator, ["conn-1"], NOW + timedelta(hours=1), "operator")
+    with pytest.raises(ClientCredentialError) as no_requester:
+        await repo.grant_elevation(*window, "why", NOW, via="hook", session=session)
+    assert no_requester.value.code == "requester_required"
+    with pytest.raises(ClientCredentialError) as too_long:
+        await repo.grant_elevation(*window, "x" * 201, NOW, session=session)
+    assert too_long.value.code == "reason_too_long"
+    assert await session.scalar(sa.text("SELECT count(*) FROM brain_admin_elevations")) == 0

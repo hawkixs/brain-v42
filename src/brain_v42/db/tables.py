@@ -1043,6 +1043,11 @@ brain_session_connections = Table(
         "COALESCE(btrim(connection_id) <> '', false)",
         name="brain_session_connections_connection_nonblank",
     ),
+    Column("client_id", Text, nullable=True),
+    sa.CheckConstraint(
+        "client_id IS NULL OR client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="brain_session_connections_client_id_format",
+    ),
 )
 
 # ─── client credential registry (migration 063) ─────────────────────────────
@@ -1080,8 +1085,12 @@ brain_client_credentials = Table(
     ),
     sa.CheckConstraint(
         "cardinality(families) >= 1 "
-        "AND families <@ ARRAY['read','write','delivery','telemetry']::text[]",
+        "AND families <@ ARRAY['read','write','delivery','telemetry','elevate']::text[]",
         name="brain_client_credentials_families_valid",
+    ),
+    sa.CheckConstraint(
+        "NOT ('elevate' = ANY (families)) OR cardinality(families) = 1",
+        name="brain_client_credentials_elevate_exclusive",
     ),
     sa.CheckConstraint(
         "length(btrim(created_by)) > 0", name="brain_client_credentials_created_by_nonblank"
@@ -1113,14 +1122,31 @@ brain_admin_elevations = Table(
         nullable=False,
     ),
     Column("connection_ids", ARRAY(Text), nullable=False),
+    Column("connection_client_ids", ARRAY(Text), nullable=False),
     Column("granted_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
     Column("expires_at", DateTime(timezone=True), nullable=False),
     Column("granted_by", Text, nullable=False),
     Column("reason", Text, nullable=False),
+    Column("via", Text, nullable=False, server_default=sa.text("'cli'")),
+    Column("requested_by_client_id", Text, nullable=True),
     Column("revoked_at", DateTime(timezone=True), nullable=True),
+    Column("expiry_audited_at", DateTime(timezone=True), nullable=True),
     sa.CheckConstraint(
         "cardinality(connection_ids) >= 1",
         name="brain_admin_elevations_connection_ids_nonempty",
+    ),
+    sa.CheckConstraint(
+        "cardinality(connection_client_ids) = cardinality(connection_ids) "
+        "AND array_position(connection_client_ids, NULL) IS NULL",
+        name="brain_admin_elevations_connection_pairs",
+    ),
+    sa.CheckConstraint("via IN ('hook', 'cli')", name="brain_admin_elevations_via_valid"),
+    sa.CheckConstraint(
+        "via <> 'hook' OR requested_by_client_id IS NOT NULL",
+        name="brain_admin_elevations_hook_requester",
+    ),
+    sa.CheckConstraint(
+        "char_length(reason) BETWEEN 1 AND 200", name="brain_admin_elevations_reason_length"
     ),
     sa.CheckConstraint(
         "expires_at > granted_at AND expires_at <= granted_at + interval '4 hours'",
