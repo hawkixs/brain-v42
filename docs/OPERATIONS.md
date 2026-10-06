@@ -1,10 +1,34 @@
 # Operations
 
-Deep operational reference for running brain-v42 in production: the full session
-lifecycle contract, the detailed network trust boundary, migration history, the graph
-ledger cutover evidence, and the private secret files an operator manages outside the
-shared `.env`. [`README.md`](../README.md) covers the short version of most of this;
-this document exists so the short version doesn't have to carry everything.
+Deep operational reference for the repository's deployment units, session lifecycle,
+network boundary, migrations, graph projection, measured facts, and delivery observer.
+[`README.md`](../README.md) gives the short operator overview.
+
+## Service units and resource limits
+
+The systemd templates in `deploy/systemd/` set explicit `MemoryMax` bounds. The
+MCP HTTP service is limited to 4G; metrics and delivery observer to 1536M each;
+automation to 1536M; graph reconciliation to 2G; embedding backfill to 4G; the
+watchdog and log-retention service to 1G each; and Dream to 16G. These are unit
+limits, not measurements of current memory use. The HTTP unit always restarts,
+with backoff from 2 s to 60 s. The separate watchdog timer probes the HTTP service
+and restarts it only when its health probe confirms failure.
+
+The connection reaper is a maintenance command, not the HTTP watchdog. Run
+`python -m brain_v42.maintenance.reap_stale_mcp --help` for its dry-run and explicit
+execution options. It uses an age heuristic: within each agent group the newest
+server is protected, except that the 48 h absolute cap reaps even that server.
+Only stdio children are eligible; `--http-server` processes are excluded. Dry-run
+is the default; `--execute` enables termination. Review its report before execution.
+Log retention is dormant by default: the installer preserves timer state, and an
+operator must explicitly enable the log-rotate timer to prune eligible files.
+
+## Measured facts
+
+Use `brain_fact_list` to discover registered facts and `brain_fact_get` to read a
+specific measured value. A fact definition names its source identity and the
+measurement is taken from that source. Do not copy live schema heads, release
+identities, Dream arming state, or projection lag into this document.
 
 ## Session lifecycle (full v4 contract)
 
@@ -486,8 +510,15 @@ on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text)
 
 ## Migration history
 
-The repository migration target is 046. No page in this repository proves a live
+The repository migration target is 062. No page in this repository proves a live
 schema head — measure it, never read it here.
+
+Recovery contract v20 is the recovery asset for the schema through 062. It includes
+the session connection ledger from 061 and the 062 monitoring extension inventory
+(`pg_stat_statements`, `plpgsql`, and `vector`), along with the expected database
+objects and ACL shape. Before applying migrations to a production database, follow
+the migration and restore gates in the recovery procedure; the migration number
+alone is not proof that a usable restore exists.
 
 Migration 038 adds the terminal audit trail for Dream EXTRACT attempts. Migration 039
 isolates the `project_contexts` timestamp trigger. Migration 040 adds
@@ -564,10 +595,9 @@ migration, repair, restart-last gates).
 Migration 033 adds the relational ledger and outbox. Migration 034 adds projector
 fencing v2 with PostgreSQL generations and claims plus Neo4j fence and cursor checks.
 Migration 035 adds a crash-safe, resumable interlock for offline projection recovery.
-The canonical path has been active in production since 22 July 2026 with
-`GRAPH_LEDGER_WRITE_ENABLED=true`; fresh or unproved environments stay fail-closed at
-`false`. The [graph ledger runbook](GRAPH_LEDGER_RUNBOOK.md) carries the live
-evidence.
+Configuration controls whether the canonical ledger path is enabled in an
+environment. The [graph ledger runbook](GRAPH_LEDGER_RUNBOOK.md) describes the
+required evidence and recovery procedure.
 
 Migrations 033-035 deliver the canonical ledger, normal-runtime fencing and the
 projection recovery interlock. A stale worker cannot mutate Neo4j or acknowledge its
@@ -894,13 +924,10 @@ dual-run, lease proof and rollback are described in the
 
 ## Codex gateway
 
-The `red-codex` administration gateway deploys only on the private Docker network,
-with no host port and no systemd unit; follow the Codex gateway runbook
-(`deploy/CODEX_GATEWAY.md` in the private brain-v42-internal repository — it couples
-this service to private sibling infrastructure). Its live activation stays
-blocked while the PostgreSQL `codex_ro` and `brain` credentials use their development
-defaults, or while `/ready` doesn't validate the SQL contract, including the
-`security_barrier` of the seven views scoped to the `red` group.
+The Codex gateway is an optional companion service. Activation is blocked while the
+PostgreSQL `codex_ro` and `brain` credentials use development defaults. Its `/ready`
+check validates the SQL contract, including `security_barrier` on views scoped to the
+red group; the gateway is not ready when that contract fails.
 
 ## Release: recovery binding
 
