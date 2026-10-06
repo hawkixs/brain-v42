@@ -26,9 +26,11 @@ import logging
 import os
 import signal
 import sys
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Any, NamedTuple
 from weakref import WeakSet
 
@@ -40,11 +42,15 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from brain_v42.config import Settings, get_settings
+from brain_v42.credentials.audit import AuditDrainer
+from brain_v42.credentials.listener import CredentialListener
+from brain_v42.credentials.verifier import CredentialVerifier
 from brain_v42.db.engine import dispose_engine, get_session_factory, use_engine_profile
 from brain_v42.db.neo4j import close_neo4j_driver, create_neo4j_driver
 from brain_v42.facts.definitions_startup import register_fact_definitions
 from brain_v42.mcp.activity_reporter import close_activity_reporter
 from brain_v42.mcp.business_errors import surface_business_errors
+from brain_v42.mcp.credentials_http import CredentialGuard, CredentialTokenVerifier
 from brain_v42.mcp.dream_capabilities import (
     DreamCapabilityConfigurationError,
     DreamCapabilityMiddleware,
@@ -66,6 +72,7 @@ from brain_v42.mcp.session_autoopen import close_connection_traces
 from brain_v42.metrics.tool_instrumentation import instrument_registered_tools
 from brain_v42.release import package_version, shipped_alembic_head
 from brain_v42.repositories.pg_adr import PgADRRepo
+from brain_v42.repositories.pg_client_credentials import PgClientCredentialRepo
 from brain_v42.repositories.pg_decision import PgDecisionRepo
 from brain_v42.repositories.pg_learning import PgLearningRepo
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
@@ -241,6 +248,41 @@ async def app_lifecycle(
         # died at shutdown without being counted. LIFO: it runs before
         # dispose_engine, while the loop is still serving.
         cleanup.push_async_callback(close_activity_reporter)
+
+        credential_verifier = services.get("credential_verifier")
+        if (
+            credential_verifier is not None
+            and settings.brain_mcp_transport == "http"
+            and settings.brain_mcp_auth_mode == "credentials"
+        ):
+            # A failed refresh leaves HTTP available for health and explicit 503s.
+            await credential_verifier.refresh()
+            refresh_task = asyncio.create_task(credential_verifier.run_refresh_loop())
+            cleanup.push_async_callback(_cancel_task, refresh_task)
+            audit_drainer = AuditDrainer(
+                PgClientCredentialRepo(get_session_factory()), clock=lambda: datetime.now(UTC)
+            )
+            audit_stop = asyncio.Event()
+            audit_task = asyncio.create_task(audit_drainer.run(audit_stop))
+            cleanup.push_async_callback(_cancel_task, audit_task)
+            cleanup.callback(audit_stop.set)
+            listeners = (
+                CredentialListener(
+                    settings.postgres_url,
+                    "brain_client_credentials",
+                    on_notification=credential_verifier.notify,
+                    on_connect=credential_verifier.run_listener_reconnected,
+                ),
+                CredentialListener(
+                    settings.postgres_url,
+                    "brain_credential_audit",
+                    on_notification=audit_drainer.wake,
+                    on_connect=audit_drainer.wake,
+                ),
+            )
+            for listener in listeners:
+                listener_task = asyncio.create_task(listener.run())
+                cleanup.push_async_callback(_cancel_task, listener_task)
 
         if tracing_armed:
             # `shutdown_on_exit=False` disarmed the SDK's atexit so an
@@ -479,6 +521,17 @@ def _neo4j_connection_settings(settings: Settings) -> tuple[str | None, str, str
             settings.graph_projector_neo4j_password.get_secret_value(),
         )
     return settings.neo4j_url, settings.neo4j_user, settings.neo4j_password
+
+
+def build_credential_verifier(settings: Settings) -> CredentialVerifier | None:
+    """Leave shared-token and stdio deployments independent of the registry."""
+    if settings.brain_mcp_transport != "http" or settings.brain_mcp_auth_mode != "credentials":
+        return None
+    return CredentialVerifier(
+        PgClientCredentialRepo(get_session_factory()),
+        clock=lambda: datetime.now(UTC),
+        monotonic=time.monotonic,
+    )
 
 
 def build_services() -> dict[str, Any]:
@@ -729,7 +782,7 @@ def build_services() -> dict[str, Any]:
 
     logger.info("brain_v42.server.services_initialized")
 
-    return {
+    services = {
         "decision_svc": decision_svc,
         "learning_svc": learning_svc,
         "snippet_svc": snippet_svc,
@@ -760,6 +813,10 @@ def build_services() -> dict[str, Any]:
         "delivery_svc": delivery_svc,
         "fact_registry": fact_registry,
     }
+    credential_verifier = build_credential_verifier(settings)
+    if credential_verifier is not None:
+        services["credential_verifier"] = credential_verifier
+    return services
 
 
 def _configure_http_security(
@@ -767,6 +824,7 @@ def _configure_http_security(
     settings: Settings,
     *,
     project_resolver: DreamProjectReferenceResolver | None = None,
+    credential_verifier: CredentialVerifier | None = None,
 ) -> list[Middleware]:
     """Configure one HTTP server's authentication boundary exactly once.
 
@@ -776,6 +834,24 @@ def _configure_http_security(
     """
     if mcp in _http_security_configured_servers:
         raise RuntimeError("HTTP security is already configured for this server")
+
+    if settings.brain_mcp_auth_mode == "credentials":
+        if (
+            settings.brain_dream_capability_enforcement
+            or settings.mcp_http_allow_unauthenticated
+            or settings.mcp_http_token
+            or settings.mcp_http_stateless
+        ):
+            raise HttpAuthConfigurationError("credentials mode requires exclusive stateful auth")
+        if credential_verifier is None:
+            raise HttpAuthConfigurationError("credentials mode requires a registry verifier")
+        mcp.auth = CredentialTokenVerifier(credential_verifier)
+        _http_security_configured_servers.add(mcp)
+        return [
+            Middleware(HostOriginGuard),
+            Middleware(CredentialGuard, verifier=credential_verifier),
+            Middleware(RequestBodyLimitGuard, max_body_bytes=settings.mcp_http_max_body_bytes),
+        ]
 
     if not settings.brain_dream_capability_enforcement:
         has_token = bool(settings.mcp_http_token.strip())
@@ -1093,6 +1169,7 @@ def plan_http_transport(
     settings: Settings,
     *,
     project_resolver: DreamProjectReferenceResolver | None = None,
+    credential_verifier: CredentialVerifier | None = None,
 ) -> HttpTransportPlan:
     """Decide the HTTP boundary, and return it instead of serving it.
 
@@ -1114,9 +1191,12 @@ def plan_http_transport(
         mcp,
         settings,
         project_resolver=resolved_project_resolver,
+        credential_verifier=credential_verifier,
     )
     auth_enabled = (
-        bool(settings.mcp_http_token.strip()) or settings.brain_dream_capability_enforcement
+        bool(settings.mcp_http_token.strip())
+        or settings.brain_dream_capability_enforcement
+        or settings.brain_mcp_auth_mode == "credentials"
     )
     logger.info(
         "brain_v42.server.http_auth",
@@ -1139,6 +1219,7 @@ async def _run_mcp(
     project_resolver: DreamProjectReferenceResolver | None = None,
     metrics_collector: Any | None = None,
     http_plan: HttpTransportPlan | None = None,
+    credential_verifier: CredentialVerifier | None = None,
 ) -> None:
     """Dispatch to the correct MCP transport (http or stdio).
 
@@ -1157,7 +1238,12 @@ async def _run_mcp(
         plan = (
             http_plan
             if http_plan is not None
-            else plan_http_transport(mcp, settings, project_resolver=project_resolver)
+            else plan_http_transport(
+                mcp,
+                settings,
+                project_resolver=project_resolver,
+                credential_verifier=credential_verifier,
+            )
         )
         await mcp.run_http_async(
             transport="http",
@@ -1165,7 +1251,11 @@ async def _run_mcp(
             port=settings.mcp_http_port,
             stateless_http=plan.stateless_http,
             json_response=plan.json_response,
-            uvicorn_config={"timeout_graceful_shutdown": 10},
+            uvicorn_config={
+                "timeout_graceful_shutdown": 10,
+                "proxy_headers": False,
+                "forwarded_allow_ips": "",
+            },
             middleware=plan.middleware,
         )
     else:
@@ -1409,7 +1499,13 @@ if __name__ == "__main__":
 
     async def run_server() -> None:
         plan = (
-            plan_http_transport(built.mcp, built.settings)
+            plan_http_transport(
+                built.mcp,
+                built.settings,
+                credential_verifier=built.services["credential_verifier"]
+                if built.settings.brain_mcp_auth_mode == "credentials"
+                else None,
+            )
             if built.settings.brain_mcp_transport == "http"
             else None
         )

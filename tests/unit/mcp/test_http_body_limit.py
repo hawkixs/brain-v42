@@ -200,4 +200,8 @@ async def test_uvicorn_configuration_has_no_unsupported_body_limit(
         _env_file=None,
     )
     await server._run_mcp(mcp, settings)
-    assert captured["uvicorn_config"] == {"timeout_graceful_shutdown": 10}
+    assert captured["uvicorn_config"] == {
+        "timeout_graceful_shutdown": 10,
+        "proxy_headers": False,
+        "forwarded_allow_ips": "",
+    }

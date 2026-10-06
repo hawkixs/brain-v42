@@ -335,6 +335,7 @@ class Settings(BaseSettings):
 
     # --- MCP transport ---
     brain_mcp_transport: Literal["stdio", "http"] = "stdio"  # env BRAIN_MCP_TRANSPORT
+    brain_mcp_auth_mode: Literal["shared_token", "credentials"] = "shared_token"
     mcp_http_host: str = Field(
         default="127.0.0.1", validation_alias=_brain_alias("MCP_HTTP_HOST")
     )  # loopback-only
@@ -366,6 +367,20 @@ class Settings(BaseSettings):
         default=SecretStr(""), validation_alias=_brain_alias("MCP_HTTP_DREAM_TOKENS")
     )
     """Secret JSON registry for phase-scoped Dream HTTP bearer tokens."""
+
+    @model_validator(mode="after")
+    def _credentials_require_attributed_http(self) -> Self:
+        """Keep the credential boundary stateful and free of competing identities."""
+        if self.brain_mcp_auth_mode == "credentials":
+            if self.brain_dream_capability_enforcement:
+                raise ValueError("credentials mode is incompatible with Dream capabilities")
+            if self.mcp_http_allow_unauthenticated:
+                raise ValueError("credentials mode requires authentication")
+            if self.mcp_http_stateless:
+                raise ValueError("credentials mode requires stateful HTTP")
+            if self.mcp_http_token:
+                raise ValueError("MCP_HTTP_TOKEN must be absent in credentials mode")
+        return self
 
     @field_validator("metrics_host")
     @classmethod

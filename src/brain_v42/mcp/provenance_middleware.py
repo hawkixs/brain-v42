@@ -40,6 +40,8 @@ from brain_v42.provenance import (
     UNKNOWN_ACTOR,
     enter_call,
     exit_call,
+    get_current_actor,
+    get_current_principal,
     is_outermost_call,
     normalize_agent,
     normalize_session,
@@ -75,7 +77,11 @@ class ProvenanceMiddleware(Middleware):
 
     async def on_call_tool(self, context: Any, call_next: Any) -> Any:
         headers = get_http_headers(include={_TRANSPORT_HEADER}) or {}
-        actor = normalize_agent(headers.get("x-brain-agent"))
+        actor = (
+            get_current_actor()
+            if get_current_principal() is not None
+            else normalize_agent(headers.get("x-brain-agent"))
+        )
         session = normalize_session(headers.get("x-brain-session"))
         # DO NOT replace with ``Context.session_id``: in stateless mode it
         # forges a ``uuid4()`` PER REQUEST (measured: three values for three
