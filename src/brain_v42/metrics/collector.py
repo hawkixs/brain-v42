@@ -95,6 +95,10 @@ class MetricsCollector(
             "total_latency": 0.0,
             "total_candidates": 0,
         }
+        self._rerank_by_identity: dict[str, dict[str, Any]] = {}
+        self._rerank_attempt_latencies: dict[str, deque[tuple[float, float]]] = {}
+        self._rerank_operation_latencies: dict[str, deque[tuple[float, float]]] = {}
+        self._rerank_last_probe: dict[str, dict[str, Any]] = {}
         self._tool_error_times: dict[str, deque[float]] = {}
         self._embedding_error_times: deque[float] = deque(maxlen=10000)
         self._reranker_error_times: deque[float] = deque(maxlen=10000)
@@ -374,6 +378,98 @@ class MetricsCollector(
         if result_count == 0:
             self._search_stats["searches_with_zero_results"] += 1
 
+    def _rerank_stats_for(self, identity: str) -> dict[str, Any]:
+        if identity not in self._rerank_by_identity:
+            self._rerank_by_identity[identity] = {
+                "operations": 0,
+                "operations_by_outcome": {},
+                "attempts": 0,
+                "retries": 0,
+                "status_429": 0,
+                "status_5xx": 0,
+                "budget_exhausted": 0,
+            }
+            self._rerank_attempt_latencies[identity] = deque(maxlen=10000)
+            self._rerank_operation_latencies[identity] = deque(maxlen=10000)
+        return self._rerank_by_identity[identity]
+
+    def record_rerank_attempt(self, identity: str, outcome: str, latency_ms: float) -> None:
+        """Count failed responses even when the operation has no retry left."""
+        stats = self._rerank_stats_for(identity)
+        stats["attempts"] += 1
+        if outcome == "http_429":
+            stats["status_429"] += 1
+        elif outcome.startswith("http_5"):
+            stats["status_5xx"] += 1
+        self._rerank_attempt_latencies[identity].append((time.time(), latency_ms))
+
+    def record_rerank_retry(self, identity: str, reason: str) -> None:
+        self._rerank_stats_for(identity)["retries"] += 1
+
+    def record_rerank_operation(self, identity: str, outcome: str, total_ms: float) -> None:
+        """Measure fallback per operation, independently of the number of attempts."""
+        stats = self._rerank_stats_for(identity)
+        stats["operations"] += 1
+        outcomes = stats["operations_by_outcome"]
+        outcomes[outcome] = outcomes.get(outcome, 0) + 1
+        if outcome == "budget_exhausted":
+            stats["budget_exhausted"] += 1
+        self._rerank_operation_latencies[identity].append((time.time(), total_ms))
+
+    def record_rerank_probe(self, identity: str, ok: bool, reason: str) -> None:
+        self._rerank_last_probe[identity] = {
+            "ok": ok,
+            "reason": reason,
+            "monotonic": time.monotonic(),
+        }
+
+    def on_attempt(self, identity: str, outcome: str, latency_ms: float) -> None:
+        self.record_rerank_attempt(identity, outcome, latency_ms)
+
+    def on_retry(self, identity: str, reason: str) -> None:
+        self.record_rerank_retry(identity, reason)
+
+    def on_operation(self, identity: str, outcome: str, total_ms: float) -> None:
+        self.record_rerank_operation(identity, outcome, total_ms)
+
+    def on_probe(self, identity: str, ok: bool, reason: str) -> None:
+        self.record_rerank_probe(identity, ok, reason)
+
+    def _rerank_identity_snapshot(self) -> dict[str, Any]:
+        snapshot = {}
+        for identity, stats in self._rerank_by_identity.items():
+            backend, _, model = identity.partition(":")
+            operations = stats["operations"]
+            snapshot[identity] = {
+                **stats,
+                "operations_by_outcome": dict(stats["operations_by_outcome"]),
+                "backend": backend,
+                "model": model,
+                "fallback_rate": (operations - stats["operations_by_outcome"].get("ok", 0))
+                / operations
+                if operations
+                else 0.0,
+                "attempt_latency_ms": self._percentiles(
+                    self._rerank_attempt_latencies[identity], 86400.0
+                ),
+                "operation_latency_ms": self._percentiles(
+                    self._rerank_operation_latencies[identity], 86400.0
+                ),
+            }
+        return snapshot
+
+    def _rerank_probe_snapshot(self) -> dict[str, Any]:
+        latest = max(
+            self._rerank_last_probe.values(), key=lambda probe: probe["monotonic"], default=None
+        )
+        return {
+            "last_probe_ok": latest["ok"] if latest else None,
+            "last_probe_reason": latest["reason"] if latest else None,
+            "last_probe_age_s": max(0.0, time.monotonic() - latest["monotonic"])
+            if latest
+            else None,
+        }
+
     def record_reranker_call(
         self, latency_ms: float, candidate_count: int, error: bool = False
     ) -> None:
@@ -492,6 +588,8 @@ class MetricsCollector(
                 "recent_errors": self._count_recent(self._reranker_error_times),
                 "total_candidates": self._reranker_stats["total_candidates"],
                 "total_latency": self._reranker_stats["total_latency"],
+                "by_identity": self._rerank_identity_snapshot(),
+                "last_probe": {key: dict(probe) for key, probe in self._rerank_last_probe.items()},
             },
             "graph": {
                 "total_queries": self._graph_stats["total_queries"],
@@ -600,6 +698,8 @@ class MetricsCollector(
             "avg_latency_ms": round(self._reranker_stats["total_latency"] / reranker_total, 1)
             if reranker_total
             else 0.0,
+            "by_identity": self._rerank_identity_snapshot(),
+            **self._rerank_probe_snapshot(),
         }
 
         # Graph stats

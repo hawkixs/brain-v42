@@ -89,14 +89,18 @@ class MetricsFlusher:
         """
         ptools: dict[str, Any] = {}
         rk = entry.get("reranker", {})
-        if rk.get("total_calls", 0) > 0:
+        if rk.get("total_calls", 0) > 0 or any(
+            stats.get("operations", 0) > 0 for stats in rk.get("by_identity", {}).values()
+        ):
             ptools["_reranker"] = {
-                "calls": rk["total_calls"],
-                "errors": rk["total_errors"],
-                "recent_errors": rk["recent_errors"],
-                "total_latency": rk["total_latency"],
+                "calls": rk.get("total_calls", 0),
+                "errors": rk.get("total_errors", 0),
+                "recent_errors": rk.get("recent_errors", 0),
+                "total_latency": rk.get("total_latency", 0.0),
                 "total_candidates": rk.get("total_candidates", 0),
             }
+            if "by_identity" in rk:
+                ptools["_reranker"]["by_identity"] = rk["by_identity"]
         gr = entry.get("graph", {})
         if gr.get("total_queries", 0) > 0:
             ptools["_graph"] = {

@@ -21,7 +21,7 @@ from brain_v42.config import Settings, get_settings
 from brain_v42.services.embedding_wire import EmbeddingWire, OpenAIWire, ShimWire
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
-from brain_v42.services.reranker_client import RerankerClient
+from brain_v42.services.reranker_client import RerankerClient, RerankObserver
 
 logger = structlog.get_logger(__name__)
 
@@ -281,7 +281,9 @@ def build_rerank_wire(settings: Settings) -> RerankWire:
     return ShimRerankWire()
 
 
-def build_reranker_client(settings: Settings) -> RerankerClient:
+def build_reranker_client(
+    settings: Settings, *, observer: RerankObserver | None = None
+) -> RerankerClient:
     """Build the reranker client configured for this deployment.
 
     Reranking stays best-effort: an unavailable or misconfigured reranker
@@ -292,4 +294,6 @@ def build_reranker_client(settings: Settings) -> RerankerClient:
         timeout=settings.reranker_timeout,
         wire=build_rerank_wire(settings),
         api_key=_resolve_rerank_bearer(settings),
+        budget_seconds=settings.rerank_budget_seconds,
+        observer=observer,
     )

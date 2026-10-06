@@ -20,8 +20,13 @@ Both downstream consumers constrain what a wire may return:
 from __future__ import annotations
 
 import math
+import random
+import time
 from collections.abc import Mapping
+from email.utils import parsedate_to_datetime
 from typing import Any, Protocol
+
+import httpx
 
 # logit(p) is infinite at the extremes. Clamping at this epsilon keeps a
 # saturated provider score finite (about ±16 in logit space) so sorting and
@@ -47,6 +52,10 @@ class RerankWire(Protocol):
         """Parse a response into one score per candidate, in input order."""
         ...
 
+    def retry_delay(self, response: httpx.Response, attempt: int) -> float | None:
+        """Advertised or backoff delay; None means this response must not retry."""
+        ...
+
 
 class ShimRerankWire:
     """The private contract: POST /rerank -> {"scores": [...]}.
@@ -66,6 +75,21 @@ class ShimRerankWire:
 
     def parse(self, payload: Any, expected: int) -> list[float]:
         return payload["scores"]  # type: ignore[no-any-return]
+
+    def retry_delay(
+        self, response: httpx.Response, attempt: int, *, cap: float = 2.0
+    ) -> float | None:
+        """A busy slot is recoverable; an outage without Retry-After is not."""
+        if response.status_code != 503:
+            return None
+        retry_after = response.headers.get("Retry-After")
+        if retry_after is None:
+            return None
+        try:
+            advertised = float(retry_after)
+        except ValueError:
+            advertised = cap
+        return min(max(advertised, 0.0), cap)
 
 
 class CohereRerankWire:
@@ -96,6 +120,22 @@ class CohereRerankWire:
     @property
     def identity(self) -> str:
         return f"cohere:{self._model}"
+
+    def retry_delay(self, response: httpx.Response, attempt: int) -> float | None:
+        """Never shorten a provider's requested cooldown to fit a caller's budget."""
+        if response.status_code not in {429, 500, 502, 503, 504}:
+            return None
+        retry_after = response.headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                try:
+                    return max(0.0, parsedate_to_datetime(retry_after).timestamp() - time.time())
+                except (ValueError, TypeError, OverflowError):
+                    # A malformed header cannot provide a usable cooldown.
+                    pass
+        return random.uniform(0, 0.1 * 2**attempt)
 
     def request(self, query: str, candidates: list[str]) -> tuple[str, dict[str, Any]]:
         body: dict[str, Any] = {

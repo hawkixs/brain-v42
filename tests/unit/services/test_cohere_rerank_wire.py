@@ -18,10 +18,63 @@ Two constraints come from downstream code, not from taste:
 from __future__ import annotations
 
 import math
+from datetime import UTC, datetime
+from email.utils import format_datetime
 
+import httpx
 import pytest
 
 from brain_v42.services.rerank_wire import CohereRerankWire, ShimRerankWire
+
+
+@pytest.mark.parametrize("status", [429, 500, 502, 503, 504])
+def test_hosted_retry_delay_honours_uncapped_seconds(status: int) -> None:
+    response = httpx.Response(status, headers={"Retry-After": "120"})
+    assert CohereRerankWire("m").retry_delay(response, 0) == 120.0
+
+
+@pytest.mark.parametrize("status", [200, 400, 401, 501])
+def test_hosted_other_statuses_are_not_retryable(status: int) -> None:
+    assert CohereRerankWire("m").retry_delay(httpx.Response(status), 0) is None
+
+
+@pytest.mark.parametrize("offset,expected", [(120, 120.0), (-120, 0.0)])
+def test_hosted_retry_delay_honours_http_dates(monkeypatch, offset, expected) -> None:
+    now = 1_800_000_000.0
+    monkeypatch.setattr("time.time", lambda: now)
+    date = format_datetime(datetime.fromtimestamp(now + offset, UTC), usegmt=True)
+    response = httpx.Response(429, headers={"Retry-After": date})
+    assert CohereRerankWire("m").retry_delay(response, 0) == expected
+
+
+@pytest.mark.parametrize("attempt", [0, 1, 2])
+def test_hosted_retry_delay_uses_full_exponential_jitter(monkeypatch, attempt) -> None:
+    calls = []
+
+    def jitter(low, high):
+        calls.append((low, high))
+        return high / 2
+
+    monkeypatch.setattr("random.uniform", jitter)
+    delay = CohereRerankWire("m").retry_delay(httpx.Response(503), attempt)
+    assert calls == [(0, 0.1 * 2**attempt)]
+    assert 0 <= delay <= 0.1 * 2**attempt
+
+
+@pytest.mark.parametrize(
+    "status,header,expected",
+    [
+        (503, None, None),
+        (500, "1", None),
+        (503, "1", 1.0),
+        (503, "120", 2.0),
+        (503, "invalid", 2.0),
+        (503, "-1", 0.0),
+    ],
+)
+def test_shim_retry_delay_preserves_busy_policy(status, header, expected) -> None:
+    headers = {} if header is None else {"Retry-After": header}
+    assert ShimRerankWire().retry_delay(httpx.Response(status, headers=headers), 0) == expected
 
 
 class TestShimRerankWireIsTodaysContract:
