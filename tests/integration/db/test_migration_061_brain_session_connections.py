@@ -85,8 +85,11 @@ async def test_columns_are_nonnullable_with_a_server_clock(engine: AsyncEngine) 
             .all()
         )
     columns = {row["column_name"]: row for row in rows}
-    assert set(columns) == {"session_id", "connection_id", "first_seen_at"}
-    assert all(row["is_nullable"] == "NO" for row in rows)
+    # 063 adds a nullable client_id above this revision; its own test pins that column.
+    # The set stays closed: any other column appearing here is still a failure.
+    later = {"client_id"}
+    assert set(columns) - later == {"session_id", "connection_id", "first_seen_at"}
+    assert all(row["is_nullable"] == "NO" for name, row in columns.items() if name not in later)
     assert columns["session_id"]["data_type"] == "uuid"
     assert columns["connection_id"]["data_type"] == "character varying"
     assert columns["connection_id"]["character_maximum_length"] == 64

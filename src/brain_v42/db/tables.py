@@ -854,6 +854,13 @@ brain_sessions = Table(
     Column("intent", String(500), nullable=True),
     Column("nature", String(16), nullable=True),
     Column("connection_id", String(64), nullable=True),
+    # Migration 063: the credential client that owns an OPERATOR session (the attribution
+    # lock). Nullable, no backfill; never public on `BrainSession`, like the 060 columns.
+    Column("opener_client_id", Text, nullable=True),
+    sa.CheckConstraint(
+        "opener_client_id IS NULL OR opener_client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="brain_sessions_opener_client_id_format",
+    ),
     # Migration 060 (ADR #34): the slot a session is bound to, and the session a
     # relay ended. Nullable, no backfill. Never public on `BrainSession`: the
     # lifecycle output-schema budget has 35 bytes left (S12).
@@ -1042,6 +1049,174 @@ brain_session_connections = Table(
     sa.CheckConstraint(
         "COALESCE(btrim(connection_id) <> '', false)",
         name="brain_session_connections_connection_nonblank",
+    ),
+    Column("client_id", Text, nullable=True),
+    sa.CheckConstraint(
+        "client_id IS NULL OR client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="brain_session_connections_client_id_format",
+    ),
+)
+
+# ─── client credential registry (migration 063) ─────────────────────────────
+#
+# Only the SHA-256 digest of a bearer token is stored. `admin` is not a storable
+# family: administrative power comes from `brain_admin_elevations` alone.
+
+brain_client_credentials = Table(
+    "brain_client_credentials",
+    METADATA,
+    Column(
+        "id",
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=sa.text("gen_random_uuid()"),
+    ),
+    Column("client_id", Text, nullable=False),
+    Column("token_sha256", sa.LargeBinary, nullable=False),
+    Column("families", ARRAY(Text), nullable=False),
+    Column("issuers", ARRAY(Text), nullable=False, server_default=sa.text("'{}'")),
+    Column("transition", Boolean, nullable=False, server_default=sa.text("false")),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("created_by", Text, nullable=False),
+    Column("expires_at", DateTime(timezone=True), nullable=True),
+    Column("revoked_at", DateTime(timezone=True), nullable=True),
+    Column("revoked_reason", Text, nullable=True),
+    Column("last_used_at", DateTime(timezone=True), nullable=True),
+    UniqueConstraint("token_sha256", name="brain_client_credentials_token_sha256_key"),
+    sa.CheckConstraint(
+        "client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="brain_client_credentials_client_id_format",
+    ),
+    sa.CheckConstraint(
+        "octet_length(token_sha256) = 32", name="brain_client_credentials_token_sha256_length"
+    ),
+    sa.CheckConstraint(
+        "cardinality(families) >= 1 "
+        "AND families <@ ARRAY['read','write','delivery','telemetry','elevate']::text[]",
+        name="brain_client_credentials_families_valid",
+    ),
+    sa.CheckConstraint(
+        "NOT ('elevate' = ANY (families)) OR cardinality(families) = 1",
+        name="brain_client_credentials_elevate_exclusive",
+    ),
+    sa.CheckConstraint(
+        "length(btrim(created_by)) > 0", name="brain_client_credentials_created_by_nonblank"
+    ),
+    sa.CheckConstraint(
+        "NOT transition OR expires_at IS NOT NULL",
+        name="brain_client_credentials_transition_expires",
+    ),
+    sa.CheckConstraint(
+        "(revoked_at IS NULL) = (revoked_reason IS NULL)",
+        name="brain_client_credentials_revocation_pair",
+    ),
+    Index("idx_brain_client_credentials_client_id", "client_id"),
+)
+
+brain_admin_elevations = Table(
+    "brain_admin_elevations",
+    METADATA,
+    Column(
+        "id",
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=sa.text("gen_random_uuid()"),
+    ),
+    Column(
+        "session_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey("brain_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("connection_ids", ARRAY(Text), nullable=False),
+    Column("connection_client_ids", ARRAY(Text), nullable=False),
+    Column("granted_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("expires_at", DateTime(timezone=True), nullable=False),
+    Column("granted_by", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("via", Text, nullable=False, server_default=sa.text("'cli'")),
+    Column("requested_by_client_id", Text, nullable=True),
+    Column("excluded_client_ids", ARRAY(Text), nullable=False, server_default=sa.text("'{}'")),
+    Column("excluded_connection_count", Integer, nullable=False, server_default=sa.text("0")),
+    Column("revoked_at", DateTime(timezone=True), nullable=True),
+    Column("expiry_audited_at", DateTime(timezone=True), nullable=True),
+    sa.CheckConstraint(
+        "cardinality(connection_ids) >= 1",
+        name="brain_admin_elevations_connection_ids_nonempty",
+    ),
+    sa.CheckConstraint(
+        "cardinality(connection_client_ids) = cardinality(connection_ids) "
+        "AND array_position(connection_client_ids, NULL) IS NULL",
+        name="brain_admin_elevations_connection_pairs",
+    ),
+    sa.CheckConstraint("via IN ('hook', 'cli')", name="brain_admin_elevations_via_valid"),
+    sa.CheckConstraint(
+        "via <> 'hook' OR requested_by_client_id IS NOT NULL",
+        name="brain_admin_elevations_hook_requester",
+    ),
+    sa.CheckConstraint(
+        "via <> 'cli' OR requested_by_client_id IS NULL",
+        name="brain_admin_elevations_cli_no_requester",
+    ),
+    sa.CheckConstraint(
+        "excluded_connection_count >= 0", name="brain_admin_elevations_excluded_count"
+    ),
+    sa.CheckConstraint(
+        "char_length(reason) BETWEEN 1 AND 200", name="brain_admin_elevations_reason_length"
+    ),
+    sa.CheckConstraint(
+        "expires_at > granted_at AND expires_at <= granted_at + interval '4 hours'",
+        name="brain_admin_elevations_window",
+    ),
+    sa.CheckConstraint("length(btrim(reason)) > 0", name="brain_admin_elevations_reason_nonblank"),
+    Index("idx_brain_admin_elevations_session_id", "session_id"),
+)
+
+brain_schema_compat = Table(
+    "brain_schema_compat",
+    METADATA,
+    Column("schema_head", Text, primary_key=True),
+    Column("oldest_compatible_code_head", Text, nullable=False),
+    Column("recorded_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("recorded_by_version", Text, nullable=False),
+)
+
+# Outbox of the credential gestures (063). A gesture inserts its row in its own
+# transaction; the server's drainer emits it and stamps `emitted_at` (at-least-once).
+# `elevation_id` has no foreign key: the row outlives its elevation.
+brain_credential_audit = Table(
+    "brain_credential_audit",
+    METADATA,
+    Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    Column("event", Text, nullable=False),
+    Column("elevation_id", UUID(as_uuid=True), nullable=True),
+    Column("payload", JSONB, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("emitted_at", DateTime(timezone=True), nullable=True),
+    sa.CheckConstraint(
+        "event IN ('credentials.issued', 'credentials.revoked', 'credentials.elevated', "
+        "'credentials.unelevated', 'credentials.elevation_expired')",
+        name="brain_credential_audit_event_valid",
+    ),
+    sa.CheckConstraint(
+        "(event IN ('credentials.elevated', 'credentials.unelevated', "
+        "'credentials.elevation_expired')) = (elevation_id IS NOT NULL)",
+        name="brain_credential_audit_elevation_pair",
+    ),
+    sa.CheckConstraint(
+        "jsonb_typeof(payload) = 'object'", name="brain_credential_audit_payload_object"
+    ),
+    Index(
+        "uq_brain_credential_audit_event_elevation",
+        "event",
+        "elevation_id",
+        unique=True,
+        postgresql_where=sa.text("elevation_id IS NOT NULL"),
+    ),
+    Index(
+        "idx_brain_credential_audit_unemitted",
+        "id",
+        postgresql_where=sa.text("emitted_at IS NULL"),
     ),
 )
 
