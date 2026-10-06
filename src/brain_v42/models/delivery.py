@@ -1291,6 +1291,109 @@ class DeliveryRefreshResult(_StrictModel):
     view: DeliveryView
 
 
+class DeliveryBlockerRef(_StrictModel):
+    """Stable blocker identity without its potentially large explanation."""
+
+    code: str = Field(min_length=1, max_length=100)
+    deliverable_key: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+class DeliveryBindingSummary(_StrictModel):
+    """Binding identity and health without provider evidence."""
+
+    deliverable_key: str = Field(min_length=1, max_length=64)
+    repository_id: StrictInt = Field(gt=0)
+    pr_number: StrictInt = Field(gt=0)
+    state: Literal["proposed", "observed"]
+    head_sha: str | None = Field(default=None, min_length=40, max_length=64)
+    last_success_at: datetime | None = None
+    last_attempt_outcome: Literal["success", "error", "never"]
+
+
+class DeliverySummary(_StrictModel):
+    """Claim inputs and bounded current state; complete proofs require explicit detail."""
+
+    ticket_id: UUIDValue
+    contract_revision: StrictInt = Field(gt=0)
+    author_project: str = Field(min_length=1, max_length=50)
+    assessment_id: str = Field(min_length=64, max_length=64)
+    assessment_version: StrictInt = Field(gt=0)
+    assessed_at: datetime
+    observed_at: datetime | None = None
+    fresh_until: datetime | None = None
+    coordination_status: str
+    delivery_stage: Literal["awaiting_artifact", "proposed", "verified", "integrated"]
+    observation_health: Literal["never_observed", "fresh", "stale", "error", "disabled"]
+    acceptance_state: Literal["not_required", "pending", "accepted", "superseded"]
+    requirements_satisfied: StrictBool
+    integration_receipt_eligible: StrictBool
+    completion_eligible_now: StrictBool
+    contract_fulfilled: StrictBool
+    delivery_digest: str = Field(min_length=64, max_length=64)
+    blockers: Annotated[tuple[DeliveryBlockerRef, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=32
+    )
+    blockers_omitted: StrictInt = Field(default=0, ge=0)
+    eligible_work: Annotated[tuple[EligibleWork, ...], BeforeValidator(_lists_to_tuples)]
+    bindings: Annotated[tuple[DeliveryBindingSummary, ...], BeforeValidator(_lists_to_tuples)] = (
+        Field(default_factory=tuple, max_length=20)
+    )
+    context_count: StrictInt = Field(ge=0)
+    contexts_available: StrictInt = Field(ge=0)
+    integration_receipt_id: UUIDValue | None = None
+    fulfillment_receipt_id: UUIDValue | None = None
+    view: DeliveryView | None = None
+
+    _valid_ids = field_validator("assessment_id", "delivery_digest")(_validate_digest)
+
+
+class DeliveryListPage(_StrictModel):
+    """Object-shaped MCP page with compact summaries and optional full views."""
+
+    items: Annotated[tuple[DeliverySummary, ...], BeforeValidator(_lists_to_tuples)] = Field(
+        default_factory=tuple, max_length=100
+    )
+    next_cursor: str | None = Field(default=None, min_length=1, max_length=1000)
+    omitted_count: StrictInt = Field(default=0, ge=0)
+
+
+def summarize_view(view: DeliveryView, *, include_view: bool) -> DeliverySummary:
+    """Project an existing assessment without re-evaluating or changing claim identity."""
+    core = {
+        name: getattr(view.assessment, name)
+        for name in DeliveryAssessment.model_fields
+        if name not in {"blockers", "deliverables"}
+    }
+    return DeliverySummary(
+        **core,
+        ticket_id=view.contract.ticket_id,
+        contract_revision=view.contract.contract_revision,
+        author_project=view.contract.author_project,
+        blockers=tuple(
+            DeliveryBlockerRef(code=item.code, deliverable_key=item.deliverable_key)
+            for item in view.assessment.blockers[:32]
+        ),
+        blockers_omitted=max(len(view.assessment.blockers) - 32, 0),
+        bindings=tuple(
+            DeliveryBindingSummary(
+                deliverable_key=item.binding.deliverable_key,
+                repository_id=item.binding.repository_id,
+                pr_number=item.binding.pr_number,
+                state=item.binding.state,
+                head_sha=item.binding.head_sha,
+                last_success_at=item.last_success_at,
+                last_attempt_outcome=item.last_attempt_outcome,
+            )
+            for item in view.bindings
+        ),
+        context_count=len(view.contexts),
+        contexts_available=sum(item.status == "available" for item in view.contexts),
+        integration_receipt_id=view.integration_receipt.id if view.integration_receipt else None,
+        fulfillment_receipt_id=view.fulfillment_receipt.id if view.fulfillment_receipt else None,
+        view=view if include_view else None,
+    )
+
+
 class DeliveryPage(_StrictModel):
     """Concrete stable page of delivery views."""
 

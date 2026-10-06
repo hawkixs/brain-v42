@@ -67,6 +67,8 @@ _TYPE_META: dict[str, tuple[sa.Table, str]] = {
 # Clusters larger than this threshold get a truncation notice so the caller
 # is aware that content was bounded, not silently dropped.
 _CLUSTER_MEMBERS_PER_CLUSTER_MAX = 30
+_CLUSTER_MEMBERS_PER_CLUSTER_CEILING = 200
+_BACKFILL_MAX_LINKS_CEILING = 10
 
 
 def _proposal_service_factory(session_factory: Any) -> Any:
@@ -120,6 +122,15 @@ def register_dream_tools(
                 "Neo4j graph not configured — enable graph_enabled=true in settings"
             )
 
+        limit, limit_notice = clamp_list_limit(limit)
+        capped_links = max(1, min(_BACKFILL_MAX_LINKS_CEILING, max_links))
+        links_notice = (
+            f"\nmax_links {max_links} clamped to {capped_links}."
+            if capped_links != max_links
+            else ""
+        )
+        max_links = capped_links
+        notices = limit_notice + links_notice
         scope = get_dream_project_scope()
         if scope is None:
             unlinked_ids = await graph_service.find_unlinked_nodes(
@@ -133,7 +144,9 @@ def register_dream_tools(
             )
 
         if not unlinked_ids:
-            return f"Backfill complete: entities_processed=0 {LinkJobResult().as_summary()}"
+            return (
+                f"Backfill complete: entities_processed=0 {LinkJobResult().as_summary()}" + notices
+            )
 
         if scope is not None:
             scoped_ids = [
@@ -167,7 +180,9 @@ def register_dream_tools(
                 logger.warning("dream_backfill.invalid_uuid", raw_id=raw_id)
 
         if not unlinked_uuid_set:
-            return f"Backfill complete: entities_processed=0 {LinkJobResult().as_summary()}"
+            return (
+                f"Backfill complete: entities_processed=0 {LinkJobResult().as_summary()}" + notices
+            )
 
         async with session_factory() as session:
             for etype, table in tables_to_query.items():
@@ -264,7 +279,9 @@ def register_dream_tools(
                 for k in ("created", "matched", "skipped", "errors")
             },
         )
-        return f"Backfill complete: entities_processed={processed} {aggregate.as_summary()}"
+        return (
+            f"Backfill complete: entities_processed={processed} {aggregate.as_summary()}" + notices
+        )
 
     @mcp.tool(version="1.2", annotations=_READ_ANNOTATIONS)
     async def brain_get_clusters(
@@ -298,6 +315,15 @@ def register_dream_tools(
                 "Neo4j graph not configured — enable graph_enabled=true in settings"
             )
 
+        limit, limit_notice = clamp_list_limit(limit)
+        capped_members = max(1, min(_CLUSTER_MEMBERS_PER_CLUSTER_CEILING, max_members_per_cluster))
+        members_notice = (
+            f"\nmax_members_per_cluster {max_members_per_cluster} clamped to {capped_members}."
+            if capped_members != max_members_per_cluster
+            else ""
+        )
+        max_members_per_cluster = capped_members
+        notices = limit_notice + members_notice
         scope = get_dream_project_scope()
         if scope is None:
             edges: list[tuple[str, str]] = await graph_service.get_all_related_edges()
@@ -348,7 +374,7 @@ def register_dream_tools(
         total = len(clusters)
 
         if total == 0:
-            return "## Knowledge Clusters\n\n0 clusters found."
+            return "## Knowledge Clusters\n\n0 clusters found." + notices
 
         if summary_only:
             lines = [
@@ -360,7 +386,7 @@ def register_dream_tools(
             for i, members in enumerate(clusters, 1):
                 lines.append(f"- Cluster {i}: {len(members)} members")
             logger.info("dream_get_clusters.complete", clusters=total, summary_only=True)
-            return "\n".join(lines)
+            return "\n".join(lines) + notices
 
         # --- Enrich with PG metadata ---
         # Collect all node IDs that appear in the retained clusters
@@ -405,7 +431,7 @@ def register_dream_tools(
                 )
 
         logger.info("dream_get_clusters.complete", clusters=total)
-        return "\n".join(lines)
+        return "\n".join(lines) + notices
 
     @mcp.tool(version="1.0", annotations=_READ_ANNOTATIONS)
     async def brain_list_orphans_for_classification(limit: int = 20) -> str:
@@ -612,6 +638,7 @@ def register_dream_tools(
             return format_error(
                 f"Invalid status '{status}' (valid: {', '.join(sorted(_CURATION_STATUSES))})"
             )
+        offset = max(0, offset)
         capped, limit_notice = clamp_list_limit(limit)
 
         async with session_factory() as session:

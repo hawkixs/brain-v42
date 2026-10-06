@@ -1,12 +1,19 @@
 """Pydantic models for Runbook entity."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
 from brain_v42.models.base import DecayMixin, TimestampMixin
+from brain_v42.models.input_bounds import (
+    LIST_MAX_ITEMS,
+    KnowledgeText,
+    ShortText,
+    ShortTextList,
+    TagList,
+)
 from brain_v42.models.project_key import ProjectKeyCanonicalMixin
 
 ExecutionStatus = Literal["success", "failed", "partial", "skipped"]
@@ -70,13 +77,13 @@ class RunbookUpdate(BaseModel):
     model_config = {"extra": "forbid"}
 
     title: str | None = Field(None, max_length=200)
-    description: str | None = None
-    trigger: str | None = None
-    prerequisites: list[str] | None = None
-    steps: list[RunbookStep] | None = None
-    rollback_steps: list[RunbookStep] | None = None
+    description: KnowledgeText | None = None
+    trigger: ShortText | None = None
+    prerequisites: ShortTextList | None = None
+    steps: Annotated[list[RunbookStep], Field(max_length=LIST_MAX_ITEMS)] | None = None
+    rollback_steps: Annotated[list[RunbookStep], Field(max_length=LIST_MAX_ITEMS)] | None = None
     estimated_duration: str | None = Field(None, max_length=50)
-    tags: list[str] | None = None
+    tags: TagList | None = None
     metadata: dict | None = None
     freshness_status: Literal["fresh", "stale", "archived"] | None = None
     #: Written by the SERVER alone — `brain_update` rejects a caller-supplied

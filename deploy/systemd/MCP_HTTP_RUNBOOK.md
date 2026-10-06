@@ -252,6 +252,14 @@ User linger is a separate prerequisite for surviving a disconnection. Check it
 with `loginctl show-user "$(id -u)" -p Linger`; any linger change requires host
 administrator rights and is not performed by the installer.
 
+The unit must never carry `MCP_HTTP_ALLOW_UNAUTHENTICATED`: HTTP startup requires a
+non-empty bearer, and a token plus that development opt-out is contradictory. To verify
+413 enforcement, generate a temporary payload larger than `MCP_HTTP_MAX_BODY_BYTES`
+(default 2,097,152 bytes), then POST it with `curl --data-binary @payload-file` and
+`--header @header-file`. Populate the mode-0600 header file from the client secret
+manager with `Authorization: Bearer <token>`; never put the bearer in argv. Expect
+413 and `{"detail": "Request body too large"}`, then remove both temporary files.
+
 ## Validation
 
 ```bash

@@ -89,6 +89,13 @@ def test_every_machine_reaching_tool_is_denied() -> None:
         assert decision.get("reason"), f"un refus sans raison est illisible au matin ({name})"
 
 
+def test_hostile_tool_name_still_produces_valid_deny_json() -> None:
+    hostile = 'bad"\\name\nnext\t\x01'
+    decision = _decide(_tool_call(hostile))
+    assert decision["decision"] == "deny"
+    assert decision["reason"]
+
+
 def test_an_unknown_tool_is_denied_by_default() -> None:
     """The whole point of the design: agy exposes 56 tools and will gain more.
 

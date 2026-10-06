@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from typing import Annotated
 
 from fastmcp import FastMCP
+from pydantic import WithJsonSchema
 
 from brain_v42.facts.model import Measurement, measurement_to_json
 from brain_v42.facts.registry import FactRegistry, UnknownFactError
@@ -13,6 +15,8 @@ from brain_v42.mcp.facts_transport import _FactsRegistry
 from brain_v42.mcp.tools.tool_annotations import _READ_ANNOTATIONS
 
 __all__ = ["FactToolError", "register_fact_tools"]
+
+_FACT_NAME_MAX_LENGTH = 200
 
 
 def _last_measurement(measurement: Measurement | None) -> dict[str, object] | None:
@@ -54,12 +58,20 @@ def register_fact_tools(mcp: FastMCP, registry: FactRegistry) -> None:
         return descriptors
 
     @facts.tool(version="1.0", annotations=_READ_ANNOTATIONS)
-    async def brain_fact_get(name: str, max_age_seconds: int | None = None) -> dict[str, object]:
+    async def brain_fact_get(
+        name: Annotated[
+            str, WithJsonSchema({"type": "string", "maxLength": _FACT_NAME_MAX_LENGTH})
+        ],
+        max_age_seconds: int | None = None,
+    ) -> dict[str, object]:
         """Read one fact through its probe budget and never bypass its timeout boundary."""
         if max_age_seconds is not None and max_age_seconds < 0:
             raise FactToolError("invalid_argument", "max_age_seconds must be >= 0")
         max_age = None if max_age_seconds is None else timedelta(seconds=max_age_seconds)
         try:
+            # Refuse before probing while keeping the closed-catalogue error contract.
+            if len(name) > _FACT_NAME_MAX_LENGTH:
+                raise UnknownFactError(name)
             measurement = await registry.measure(name, max_age=max_age)
         except UnknownFactError:
             catalogue = ", ".join(registry.names())

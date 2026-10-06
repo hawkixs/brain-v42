@@ -1,4 +1,4 @@
-"""Unit tests for BearerTokenGuard ASGI middleware (optional bearer auth).
+"""Unit tests for BearerTokenGuard ASGI middleware (fail-closed bearer auth).
 
 Tests run entirely in-process via httpx.ASGITransport against a trivial dummy
 inner ASGI app — no real socket, no FastMCP instance needed.
@@ -13,6 +13,30 @@ import pytest
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from brain_v42.mcp.http_security import BearerTokenGuard
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("authorization", [None, "Bearer "])
+async def test_empty_token_without_opt_in_refuses(
+    authorization: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def forbidden_comparison(*args: object) -> bool:
+        raise AssertionError("empty tokens must never be compared")
+
+    monkeypatch.setattr("brain_v42.mcp.http_security.hmac.compare_digest", forbidden_comparison)
+    async with _client("") as client:
+        response = await client.get(
+            "/mcp", headers={} if authorization is None else {"Authorization": authorization}
+        )
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
+
+@pytest.mark.asyncio
+async def test_empty_token_without_opt_in_still_exempts_health() -> None:
+    async with _client("") as client:
+        assert (await client.get("/health")).status_code == 200
+
 
 # ---------------------------------------------------------------------------
 # Dummy inner ASGI app
@@ -37,9 +61,13 @@ async def _ok_app(scope: Scope, receive: Receive, send: Send) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _client(token: str, inner: ASGIApp = _ok_app) -> httpx.AsyncClient:
+def _client(
+    token: str, inner: ASGIApp = _ok_app, *, allow_unauthenticated: bool = False
+) -> httpx.AsyncClient:
     """Build an httpx async client that drives inner via BearerTokenGuard."""
-    guarded: ASGIApp = BearerTokenGuard(inner, token=token)
+    guarded: ASGIApp = BearerTokenGuard(
+        inner, token=token, allow_unauthenticated=allow_unauthenticated
+    )
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=guarded),
         base_url="http://testserver",
@@ -114,22 +142,22 @@ async def test_bearer_health_also_passes_with_token() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Token NOT configured — guard is transparent (fleet non-regression)
+# Token NOT configured — explicit development opt-in is required
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_no_token_configured_passes_without_auth() -> None:
-    """Empty token = disabled mode: any request passes through unchanged."""
-    async with _client("") as c:
+async def test_explicit_opt_in_without_token_passes() -> None:
+    """The explicit development opt-in permits a request without authentication."""
+    async with _client("", allow_unauthenticated=True) as c:
         resp = await c.get("/", headers={"Host": "127.0.0.1"})
     assert resp.status_code == 200
 
 
 @pytest.mark.asyncio
-async def test_no_token_configured_passes_with_any_bearer() -> None:
-    """Empty token = disabled mode: even a gibberish bearer passes through."""
-    async with _client("") as c:
+async def test_explicit_opt_in_without_token_passes_with_any_bearer() -> None:
+    """The development opt-in permits requests regardless of Authorization."""
+    async with _client("", allow_unauthenticated=True) as c:
         resp = await c.get("/", headers={"Host": "127.0.0.1", "Authorization": "Bearer anything"})
     assert resp.status_code == 200
 

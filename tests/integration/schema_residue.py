@@ -68,12 +68,16 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     "tests/integration/db/test_migration_058_claim_provenance.py",
     "tests/integration/db/test_migration_059_ticket_target_release.py",
     "tests/integration/db/test_migration_061_brain_session_connections.py",
+    "tests/integration/db/test_migration_062_observer_indexes_and_stat_statements.py",
 )
 
 # Files that contain the word downgrade but only ever run it on a PRIVATE database: slot
 # rows can never be deleted, so a 060 downgrade on the shared head would be refused.
 # They declare themselves so the tree census still sees them, and they need no fence.
 PRIVATE_HEAD_DOWNGRADING_FILES: tuple[str, ...] = (
+    # Downgrades its own module-private database to prove alembic/env.py ignores a
+    # 1 ms database statement_timeout; the shared head is never touched.
+    "tests/integration/db/test_alembic_env_overrides_database_timeouts.py",
     "tests/integration/db/test_migration_060_focus_slots.py",
 )
 

@@ -147,7 +147,7 @@ resume, or relay's `slot.revision`), never `started_focus_revision`. An unbound 
 relays onto the project base: it sends the BASE revision as `expected_focus_revision` (a
 successor sends relay's `focus_revision`), and a stale one refuses `focus_revision_conflict`
 and leaves the session open, where `end` would close it anyway. The handover REPLACES the
-whole base focus, so a handover under 70% of it is refused `base_focus_shrink`; a base relay's successor is linked by client_key and start boundary, not by relayed_from_session_id (the 060 CHECK keeps that column slot-only).
+whole base focus, so a handover under 70% of it is refused `base_focus_shrink`. An unbound `end` and `brain_update_project_focus` write that same whole base focus and meet the same refusal, before any write and with the session left open, and the same `allow_focus_shrink` override, an operator gesture only (a stale revision is still reported first, as a `conflict`); a base relay's successor is linked by client_key and start boundary, not by relayed_from_session_id (the 060 CHECK keeps that column slot-only).
 
 The capture ledger is **exclusive**: an artifact belongs to one session only. The server
 requires the same project and a creation later than the session start. Provenance is
@@ -306,7 +306,7 @@ MCP over HTTP loopback in production, stdio in dev/fallback → PostgreSQL 16 + 
 - **GPU embedding** — Qodo-Embed-1-1.5B GGUF Q8_0 via llama.cpp + a Starlette shim on
   `localhost:8003`, 1536 dims; PyTorch rollback: `docker compose --profile legacy up -d embedding`
 - **Reranker** — unified embedding endpoint `:8003/rerank` (ONNX cross-encoder on CPU)
-- **Schema** managed by Alembic; the **repository** carries migration 061. The **live**
+- **Schema** managed by Alembic; the **repository** carries migration 062. The **live**
   head is measured, it is not read here.
 - **Ledger/outbox** PostgreSQL → Neo4j, active in production
 - **Network model**: personal agents on a trusted LAN; MCP, PostgreSQL, Neo4j and the

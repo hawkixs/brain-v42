@@ -42,7 +42,9 @@ payload=$(cat 2>/dev/null || true)
 # with every release: an allowlist goes stale in the right direction (a new tool
 # is refused), a denylist in the wrong one (a new tool gets through).
 _allow() { printf '{"decision":"allow"}'; }
-_deny()  { printf '{"decision":"deny","reason":"%s"}' "$1"; }
+_deny()  {
+  python3 -c 'import json,sys; print(json.dumps({"decision":"deny","reason":sys.argv[1]}, separators=(",", ":")))' "$1"
+}
 
 tool_name=$(
   printf '%s' "$payload" | python3 -c '

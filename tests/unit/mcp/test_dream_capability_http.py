@@ -33,7 +33,7 @@ from brain_v42.mcp.dream_capabilities import (
     DreamCapabilityTokenVerifier,
 )
 from brain_v42.mcp.dream_project_authorization import DreamObjectReference
-from brain_v42.mcp.http_security import BearerTokenGuard, HostOriginGuard
+from brain_v42.mcp.http_security import BearerTokenGuard, HostOriginGuard, RequestBodyLimitGuard
 from brain_v42.mcp.tool_catalog import apply_tool_catalog_profile
 
 _POSTGRES_URL = "postgresql+asyncpg://unused:unused@127.0.0.1:1/unreachable_sec1b"
@@ -104,7 +104,11 @@ def test_http_security_wiring_preserves_disabled_bearer_contract() -> None:
 
     assert mcp.auth is None
     assert not any(isinstance(entry, DreamCapabilityMiddleware) for entry in mcp.middleware)
-    assert _middleware_classes(middleware) == [HostOriginGuard, BearerTokenGuard]
+    assert _middleware_classes(middleware) == [
+        HostOriginGuard,
+        BearerTokenGuard,
+        RequestBodyLimitGuard,
+    ]
     assert middleware[1].kwargs == {"token": "admin-token"}
 
 
@@ -126,7 +130,7 @@ def test_http_security_wiring_enables_verifier_and_exactly_one_firewall() -> Non
         entry for entry in mcp.middleware if isinstance(entry, DreamCapabilityMiddleware)
     )
     assert installed._project_resolver is resolver
-    assert _middleware_classes(middleware) == [HostOriginGuard]
+    assert _middleware_classes(middleware) == [HostOriginGuard, RequestBodyLimitGuard]
     with pytest.raises(RuntimeError, match="already configured"):
         configure(mcp, settings, project_resolver=resolver)
     assert sum(isinstance(entry, DreamCapabilityMiddleware) for entry in mcp.middleware) == 1
@@ -218,7 +222,7 @@ async def test_run_mcp_wires_enabled_http_before_invoking_uvicorn(
 
     assert isinstance(mcp.auth, DreamCapabilityTokenVerifier)
     assert sum(isinstance(entry, DreamCapabilityMiddleware) for entry in mcp.middleware) == 1
-    assert _middleware_classes(captured["middleware"]) == [HostOriginGuard]
+    assert _middleware_classes(captured["middleware"]) == [HostOriginGuard, RequestBodyLimitGuard]
     # Stateful mode is the default since the transport identity work: the server
     # mints an Mcp-Session-Id, the only way to separate two connections of the
     # same binary without the client's cooperation.

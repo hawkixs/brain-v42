@@ -5,6 +5,9 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+MemoryHigh=1G
+MemoryMax=1536M
+# Bound the long-running automation process with headroom above its measured peak.
 WorkingDirectory=__REPO_ROOT__
 EnvironmentFile=__REPO_ROOT__/.env
 ExecStartPre=__REPO_ROOT__/.venv/bin/python __REPO_ROOT__/scripts/wait_for_postgres.py --url-env BRAIN_POSTGRES_URL --url-env POSTGRES_URL --timeout 90

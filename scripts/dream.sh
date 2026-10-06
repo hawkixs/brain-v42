@@ -463,7 +463,24 @@ retire_dead_link() {
 # re-trigger during an active run). File descriptor 9 is held for the
 # full lifetime of this process; flock -n returns immediately if another
 # process already owns it.
-LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/brain-v42-dream.lock"
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+  LOCK_DIR="$XDG_RUNTIME_DIR"
+  LOCK_FILE="$LOCK_DIR/brain-v42-dream.lock"
+  PRIVATE_LOCK_DIR=false
+else
+  LOCK_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/brain-v42"
+  LOCK_FILE="$LOCK_DIR/dream.lock"
+  PRIVATE_LOCK_DIR=true
+fi
+if [[ -L "$LOCK_DIR" ]]; then
+  log "refusing symlink lock directory: $LOCK_DIR"
+  exit 2
+fi
+mkdir -p "$LOCK_DIR"
+if [[ "$PRIVATE_LOCK_DIR" == true ]]; then
+  chmod 700 "$LOCK_DIR"
+fi
+[[ -O "$LOCK_DIR" ]] || { log "lock directory is not owned by current user: $LOCK_DIR"; exit 2; }
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
   log "dream cycle already running (lock=$LOCK_FILE), skipping"

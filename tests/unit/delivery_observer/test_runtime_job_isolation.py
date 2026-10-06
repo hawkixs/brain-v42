@@ -276,6 +276,7 @@ def _row(contract):
         "previous": None,
         "last_success_at": None,
         "captured_at": now,
+        "failure_count": 0,
     }
 
 
@@ -298,6 +299,41 @@ async def test_queue_skips_an_undecodable_row_and_names_it(monkeypatch):
 
     assert [j.subject_id for j in jobs] == [good["subject_id"]]
     assert reported == [(f"repository_context:{bad['subject_id']}", "ValueError")]
+
+
+@pytest.mark.parametrize(
+    ("failure_fields", "error_type"),
+    [
+        ({"failure_count": None}, "TypeError"),
+        ({"failure_count": "x"}, "ValueError"),
+        ({}, "KeyError"),
+    ],
+    ids=["null", "non_integer", "missing"],
+)
+async def test_queue_skips_an_invalid_failure_count_and_names_it(
+    monkeypatch, failure_fields, error_type
+):
+    from brain_v42.repositories import pg_delivery_queue
+
+    monkeypatch.setattr(
+        pg_delivery_queue,
+        "_contract_from_json",
+        lambda payload: SimpleNamespace(contract_revision=1),
+    )
+    bad, good = _row("fine"), _row("fine")
+    del bad["failure_count"]
+    bad.update(failure_fields)
+    good["failure_count"] = 3
+    reported = []
+
+    jobs = await pg_delivery_queue.PgDeliveryQueue().due(
+        _Session([bad, good]),
+        on_undecodable=lambda identity, error_type: reported.append((identity, error_type)),
+    )
+
+    assert [j.subject_id for j in jobs] == [good["subject_id"]]
+    assert jobs[0].failure_count == 3
+    assert reported == [(f"repository_context:{bad['subject_id']}", error_type)]
 
 
 async def test_queue_without_a_listener_still_raises_on_an_undecodable_row(monkeypatch):

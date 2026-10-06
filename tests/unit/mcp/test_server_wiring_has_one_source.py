@@ -43,12 +43,16 @@ ENTRYPOINT_CALLS = frozenset(
         "_configure_stdio_logging",
         "_setup_parent_death_signal",
         "_apply_http_server_arg",
+        # A process-level choice (session budgets of a long-lived server), not wiring:
+        # the e2e harness must not inherit it.
+        "use_engine_profile",
         "build_server",
         "app_lifecycle",
         "_run_mcp",
         "log_server_starting",
         "run",  # asyncio.run
         "run_server",
+        "plan_http_transport",
     }
 )
 

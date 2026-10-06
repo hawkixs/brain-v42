@@ -14,6 +14,7 @@ import structlog
 from sqlalchemy import text
 
 from brain_v42.db.focus_history import record_focus_history
+from brain_v42.db.focus_shrink import focus_shrink_refusal
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import features, project_contexts
 from brain_v42.models.feature import VALID_FEATURE_STATUSES, RoadmapFeature, RoadmapProject
@@ -70,6 +71,10 @@ class ProjectFocusConflictError(ProjectFocusError):
         )
 
 
+class ProjectFocusShrinkError(ProjectFocusError):
+    """Raised when the new focus would destructively shrink the stored one (91faa1a8)."""
+
+
 class ProjectFocusValidationError(ProjectFocusError, ValueError):
     """Raised before any write when a composite mutation is invalid."""
 
@@ -99,8 +104,16 @@ class RoadmapService:
         blockers: list[str] | None = None,
         feature_status: dict[str, str] | None = None,
         unpin: list[str] | None = None,
+        allow_focus_shrink: bool = False,
     ) -> ProjectFocusUpdateResult:
-        """Atomically compare-and-swap focus plus optional roadmap mutations."""
+        """Atomically compare-and-swap focus plus optional roadmap mutations.
+
+        The new focus REPLACES the stored one whole, so a text under 70% of the stored
+        length is refused (`ProjectFocusShrinkError`) unless the operator passes
+        `allow_focus_shrink`: the same rule as a base relay and an unbound session end.
+        It runs after the revision check, as in the relay (a stale caller is told to
+        re-read first) and before any feature mutation, so a refusal writes nothing.
+        """
         normalized_focus = current_focus.strip()
         if not normalized_focus:
             raise ProjectFocusValidationError("current_focus must not be blank")
@@ -158,6 +171,12 @@ class RoadmapService:
                         current_focus=context_row["current_focus"],
                         current_revision=int(context_row["focus_revision"]),
                     )
+                if not allow_focus_shrink:
+                    refusal = focus_shrink_refusal(
+                        context_row["current_focus"], normalized_focus, subject="the new focus"
+                    )
+                    if refusal is not None:
+                        raise ProjectFocusShrinkError(refusal)
 
                 feature_rows = await self._lock_requested_features(
                     session,

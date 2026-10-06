@@ -24,11 +24,17 @@ from brain_v42.mcp.tools.tool_annotations import (
     _READ_ANNOTATIONS,
     _WRITE_ANNOTATIONS,
 )
+from brain_v42.models.input_bounds import (
+    KnowledgeText,
+    ShortText,
+    ShortTextList,
+)
 from brain_v42.models.project_context import ProjectContextCreate
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.services.roadmap_service import (
     ProjectFocusConflictError,
     ProjectFocusNotFoundError,
+    ProjectFocusShrinkError,
     ProjectFocusValidationError,
 )
 
@@ -148,18 +154,18 @@ def register_project_context_tools(
     async def brain_set_project_context(
         project_key: ProjectKeyArg,
         name: ProjectNameArg,
-        description: str,
-        languages: list[str] | None = None,
-        frameworks: list[str] | None = None,
-        databases: list[str] | None = None,
-        code_style: str | None = None,
-        git_workflow: str | None = None,
-        test_strategy: str | None = None,
-        current_phase: str | None = None,
+        description: KnowledgeText,
+        languages: ShortTextList | None = None,
+        frameworks: ShortTextList | None = None,
+        databases: ShortTextList | None = None,
+        code_style: ShortText | None = None,
+        git_workflow: ShortText | None = None,
+        test_strategy: ShortText | None = None,
+        current_phase: ShortText | None = None,
         current_focus: ProjectFocusArg | None = None,
-        blockers: list[str] | None = None,
-        related_projects: list[str] | None = None,
-        plan_scan_paths: list[str] | None = None,
+        blockers: ShortTextList | None = None,
+        related_projects: ShortTextList | None = None,
+        plan_scan_paths: ShortTextList | None = None,
         gitlab_project_path: GitlabProjectPathArg | None = None,
         project_group: ProjectGroupArg | None = None,
     ) -> str:
@@ -210,7 +216,7 @@ def register_project_context_tools(
         return format_confirmation("Project context set", "", project_key=project_key)
 
     @mcp.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)
-    async def brain_project_archive(project_key: str, reason: str) -> str:
+    async def brain_project_archive(project_key: str, reason: ShortText) -> str:
         """Take a project out of the default views without deleting anything.
 
         An archived project keeps every learning, decision, snippet, runbook,
@@ -273,13 +279,38 @@ def register_project_context_tools(
     @mcp.tool(version="2.0", annotations=_DESTRUCTIVE_ANNOTATIONS)
     async def brain_update_project_focus(
         project_key: str,
-        current_focus: ProjectFocusArg,
+        current_focus: Annotated[
+            ProjectFocusArg,
+            Field(
+                description=(
+                    "New current focus. It REPLACES the whole project focus, and a text "
+                    "under 70% of the current length is refused (`base_focus_shrink`) "
+                    "unless `allow_focus_shrink` is true (operator only)."
+                )
+            ),
+        ],
         expected_focus_revision: FocusRevisionArg,
-        blockers: list[str] | None = None,
+        blockers: ShortTextList | None = None,
         feature_status: dict[str, str] | None = None,
-        unpin: list[str] | None = None,
+        unpin: ShortTextList | None = None,
+        allow_focus_shrink: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Operator only. True lets a `current_focus` under 70% of the current "
+                    "focus length through; otherwise it is refused (`base_focus_shrink`, "
+                    "both sizes in the message) and nothing is written, roadmap changes "
+                    "included."
+                )
+            ),
+        ] = False,
     ) -> str:
         """Atomically update project focus and optional roadmap state with CAS.
+
+        `current_focus` REPLACES the project's whole focus. SHRINK GUARD: a replacement
+        under 70% of the current length is refused as `base_focus_shrink`, the same
+        rule as an unbound `brain_session_end` and a base `brain_session_relay`; carry
+        the durable content over, or have the operator pass `allow_focus_shrink`.
 
         Args:
             project_key: The project key to update.
@@ -290,6 +321,7 @@ def register_project_context_tools(
                 Example: {"Core Monitoring": "deployed", "GPU Collector": "building"}
                 Features in this dict are automatically pinned.
             unpin: Optional list of feature names to unpin (set pinned=false).
+            allow_focus_shrink: Operator only: let a shrinking focus through.
         """
         project_key = canonicalize_project_key(project_key, strict=False)
         logger.debug("mcp.brain_update_project_focus", project_key=project_key)
@@ -303,7 +335,10 @@ def register_project_context_tools(
                 blockers=blockers,
                 feature_status=feature_status,
                 unpin=unpin,
+                allow_focus_shrink=allow_focus_shrink,
             )
+        except ProjectFocusShrinkError as exc:
+            return format_error(f"base_focus_shrink: {exc}")
         except ProjectFocusConflictError as exc:
             return format_error(
                 f"Focus conflict: current revision {exc.current_revision}, "

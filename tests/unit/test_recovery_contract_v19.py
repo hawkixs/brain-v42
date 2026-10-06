@@ -138,17 +138,3 @@ def test_v19_ships_no_acl_asset_because_061_grants_nothing() -> None:
     for suffix in ("-acl.sql", "-acl.json", "-acl-pgrestore.sql", "-acl-pgrestore.json"):
         assert not (RECOVERY / f"brain-v42-v19{suffix}").exists()
         assert (RECOVERY / f"brain-v42-v11{suffix}").is_file()
-
-
-def test_current_binding_names_v19() -> None:
-    current = json.loads((RECOVERY / "current.json").read_text())
-    assert current["contract_id"] == "brain-v42/postgresql-recovery/v19"
-    assert current["contract_version"] == 19
-    assert current["schema_head"] == "061"
-    for key, name in (
-        ("attestation_sql", "brain-v42-v19.sql"),
-        ("restored_attestation_sql", "brain-v42-v19-pgrestore.sql"),
-        ("manifest", "brain-v42-v19.json"),
-    ):
-        assert current[key]["path"] == f"ops/recovery/{name}"
-        assert current[key]["sha256"] == _sha256(name)

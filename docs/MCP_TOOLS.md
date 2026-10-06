@@ -7,7 +7,7 @@
 
 Most tools return formatted markdown strings. The v4 session lifecycle tools return structured Pydantic results. Through the `brain_call_tool` gateway the two shapes stay different: a tool with a structured output schema (`brain_session_relay`, `brain_fact_get`, the lifecycle tools) comes back as the bare object, while a string-result tool comes back wrapped as `{"result": "<markdown>"}`. That is FastMCP's `x-fastmcp-wrap-result` behaviour, not a defect: a client that goes through the gateway must parse each tool by its own shape. Their repository contract is documented below. Lifecycle v4 has run in production since 24 July 2026, after revision 036, explicit schema proof and a restart-last MCP cutover with authenticated E2E canaries.
 
-Migration 061 is the repository target: `brain_session_connections` retains the connections seen by operator lifecycle calls for exact absorption across transport changes. Migration 060: focus slots (ADR #34), three tables and two nullable `brain_sessions` columns, plus the 16314b31 CHECK fix; downgrade refuses to destroy slots without `-x allow_focus_slots_downgrade=yes`. Migration 059: `tickets.target_release`, nullable with no default or backfill, validated as `major.minor.patch` and indexed for planned tickets; downgrade refuses to erase plans without `-x allow_target_release_downgrade=yes`. Migration 058: the `knowledge_claims` provenance CHECK also accepts `extracted` (claims the server derives from knowledge prose, decision f99ca46f); its downgrade refuses while such rows exist. Migration 057 before it: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
+Migration 062 is the repository target: two partial error indexes on `delivery_confirmations` and `pg_stat_statements` in schema `monitoring`, no new table and no MCP surface. Migration 061: `brain_session_connections` retains the connections seen by operator lifecycle calls for exact absorption across transport changes. Migration 060: focus slots (ADR #34), three tables and two nullable `brain_sessions` columns, plus the 16314b31 CHECK fix; downgrade refuses to destroy slots without `-x allow_focus_slots_downgrade=yes`. Migration 059: `tickets.target_release`, nullable with no default or backfill, validated as `major.minor.patch` and indexed for planned tickets; downgrade refuses to erase plans without `-x allow_target_release_downgrade=yes`. Migration 058: the `knowledge_claims` provenance CHECK also accepts `extracted` (claims the server derives from knowledge prose, decision f99ca46f); its downgrade refuses while such rows exist. Migration 057 before it: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
 so a reader can tell a PROVEN attribution (`derived_connection`, same connection) from a DEDUCED
 one (`derived_window`, sole covering session at the instant of creation) — and undo the second
 kind. Migration 047 removes the closing XOR, so a session whose ledger
@@ -411,7 +411,7 @@ catalog gateways.
 | `brain_delivery_contract_set` | `ticket_id`, `contract`, `expected_revision` (0 for create), `idempotency_key`, required `reason` | `ContractRevision` |
 | `brain_delivery_bind_pr` | `ticket_id`, `deliverable_key`, `repository_id`, `pr_number`, `expected_revision`, `expected_workflow_version`, `idempotency_key` | `ArtifactBinding` |
 | `brain_delivery_get` | `ticket_id`, `history_limit=20`, `history_cursor=None` | `DeliveryView` |
-| `brain_delivery_list` | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None` | `DeliveryPage` |
+| `brain_delivery_list` (v2.0) | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None`, `detail="summary"` (`"full"` opt-in) | `DeliveryListPage` |
 | `brain_delivery_refresh` | `ticket_id` | `{status: "queued", view: DeliveryView}` |
 | `brain_delivery_claim` | `ticket_id`, `owner_key`, `work_kind`, `expected_workflow_version`, `expected_assessment_id`, `ttl_seconds=900` | `ClaimResult` |
 | `brain_delivery_claim_renew` | `ticket_id`, `owner_key`, `claim_token`, `epoch`, `ttl_seconds=900` | `ClaimState` |
@@ -419,6 +419,11 @@ catalog gateways.
 | `brain_delivery_accept` | `ticket_id`, `rationale`, `expected_revision`, `expected_attempt`, `expected_delivery_digest` | `MilestoneReceipt` |
 | `brain_delivery_attest` | `ticket_id`, `kind`, `payload`, `idempotency_key`, `emitted_at`, `contract_revision=None` | `DeliveryAttestation` |
 | `brain_delivery_attestation_list` | `ticket_id=None`, `issuer_project=None`, `kind=None`, `since=None`, `until=None`, `limit=20`, `cursor=None` | `DeliveryAttestationPage` |
+
+`brain_delivery_list` summaries omit blocker details, proofs and context snapshots.
+Each summary keeps at most 32 blocker references; `blockers_omitted` counts the
+remaining blockers. With `detail="full"`, the full view is nested under
+`items[i].view`, whose `attestations` is `null`.
 
 The requester sets/amends contracts and accepts deliveries. The executor binds
 PRs and claims executor work; either ticket participant can read or refresh.
@@ -474,8 +479,9 @@ no filter, so the caller keeps the same filters across pages; `omitted_count` co
 the rows matching the same filters beyond the page. The read stays available while
 `BRAIN_DELIVERY_ENABLED=false` pauses the mutation. `brain_delivery_get` carries the
 newest `history_limit` attestations with their digest in `view.attestations`, so a
-consumer can spot a local receipt without its attestation; `brain_delivery_list`
-leaves that field `null`.
+consumer can spot a local receipt without its attestation. `brain_delivery_list`
+returns summaries; with `detail="full"` the full view is nested under `items[i].view`
+and `items[i].view.attestations` is `null`.
 
 `expected_workflow_version` is `view.assessment.assessment_version` and the claim
 comparison uses `view.assessment.assessment_id`. That version is the workflow's
@@ -575,6 +581,47 @@ There is no `✗` in this path. The glyph appears nowhere in `src/`, and in `scr
 The count reached 18 by measurement on 2026-09-04, after saying 13 and then 16. Each correction counted the tools reachable through the mechanisms it already knew about, and each guard inherited that scope, so the guard below derives the set from the emitted TEXT and treats the three mechanisms as explanation rather than as the source of the number.
 
 The v4 session tools declare UUID parameters in their FastMCP schemas and therefore use MCP input validation instead of this message.
+
+## Input bounds
+
+Bounds count **characters**, never bytes, and refuse excess input without truncation.
+The same validation holds through `brain_call_tool`. Read models stay unbounded so
+previously stored rows remain readable; `brain_update(fields=...)` validates the
+corresponding `*Update` model.
+
+| Constant | Cap | Applies to |
+| --- | ---: | --- |
+| `KNOWLEDGE_TEXT_MAX_LENGTH` | 50,000 | Knowledge bodies, ticket bodies/messages, project description |
+| `SHORT_TEXT_MAX_LENGTH` | 2,000 | Short attributes and short-text list items |
+| `TAG_MAX_LENGTH` | 100 | Each tag |
+| `LIST_MAX_ITEMS` | 100 | Tags, short-text lists, runbook steps, ADR alternatives |
+| `RELATIONS_MAX_ITEMS` | 50 | Explicit `related_to` relations |
+| `SEARCH_QUERY_MAX_LENGTH` | 10,000 | Search query |
+| `MCP_HTTP_MAX_BODY_BYTES` | 2,097,152 bytes | Whole HTTP request; configurable from 65,536 to 67,108,864 |
+
+Existing title, focus, slot, summary, reason, checkpoint, feature-description and
+claim-count caps are unchanged. UUID/short-id arguments and canonical project keys
+retain their parsing contracts. Object properties are covered by the HTTP body cap.
+
+Refusal contracts:
+
+- Tool arguments raise Pydantic `ValidationError` before a service call. MCP returns
+  `CallToolResult(isError=true)` with `string_too_long` / “String should have at most
+  N characters”, or `too_long` for lists, even when error details are masked.
+- `brain_update(fields=...)` uses its existing business error:
+  `Invalid fields: ... Valid fields: ...`.
+- HTTP bodies over the cap return `413 {"detail": "Request body too large"}`.
+  Malformed or negative `Content-Length` returns
+  `400 {"detail": "Invalid Content-Length"}`.
+- An empty/blank HTTP bearer refuses startup with `HttpAuthConfigurationError` naming
+  `MCP_HTTP_TOKEN` and `MCP_HTTP_ALLOW_UNAUTHENTICATED`, without printing a secret.
+  The guard independently returns 401 with `WWW-Authenticate: Bearer` for every
+  non-`/health` request unless the development opt-out is set.
+
+List limits are clamped with a notice and the call proceeds: consolidation, backfill
+and clusters use [1, 100]; backfill `max_links` uses [1, 10]; cluster
+`max_members_per_cluster` uses [1, 200]. Negative offsets in `brain_list` and
+`brain_list_curation_proposals` become 0.
 
 ## Removed / deprecated (no longer exposed)
 
@@ -877,7 +924,7 @@ brain_session_checkpoint(session_id, expected_client_key, seq, progress, next_st
 ```
 Publish one semantic checkpoint of an `open` session, in a single call, into the append-only `brain_session_checkpoints` table (migration 052). It records JUDGMENT — where the work stands, what blocks it, what comes next — published together so a reader can tell a complete snapshot from a partial one.
 
-The repository migration target is migration 061; this does not enable delivery operations in MCP.
+The repository migration target is migration 062; this does not enable delivery operations in MCP.
 
 It is **not** a lifecycle command and **not** a presence signal: it writes no `last_heartbeat_at`, touches no focus or `focus_revision`, attributes no artifact, and neither opens nor closes a session. Liveness already comes from the observation stamped by every tool call, which is why the checkpoint carries no heartbeat effect at all — on a real checkpoint or on a replay.
 
@@ -898,7 +945,7 @@ An open session becomes `is_stale=true` when its last heartbeat is at least 24 h
 ```
 brain_session_end(session_id, expected_client_key, summary, next_focus,
                   expected_focus_revision,
-                  nothing_to_capture_reason=None)
+                  nothing_to_capture_reason=None, allow_focus_shrink=False)
 -> {session, replayed, remaining_open_session_count,
     current_focus, current_focus_revision, focus_outcome,
     focus_at_end, focus_revision_at_end}
@@ -913,6 +960,8 @@ The capture outcome is an exclusive choice:
 Invalid or missing capture evidence rolls back the transaction and leaves the session open. A focus revision mismatch is instead a normal terminal outcome: focus remains unchanged, the session still becomes `ended`, and `focus_outcome="conflict"` is persisted with the observed `focus_at_end` and `focus_revision_at_end`. A matching revision applies `next_focus`, increments the revision even when the text is unchanged, and persists `focus_outcome="applied"` with the resulting focus snapshot.
 
 For a session bound to a focus slot (`brain_session_bind`), `expected_focus_revision` is the slot revision and `next_focus` becomes the slot body (at most 4,000 characters, else `slot_body_too_long` before any write); the project base is not written. A stale revision or a closed slot closes the session with `conflict` and leaves the slot untouched, except a closed slot at exactly `expected_focus_revision`, which refuses `slot_closed` and leaves the session open: end with `expected_focus_revision` minus 1 (the pre-close slot revision; a close bumps the revision by exactly 1) to record a conflict, or abandon it.
+
+For an unbound session, `next_focus` REPLACES the project's whole base focus, so the relay's shrink guard applies: a `next_focus` shorter than 70% of the current base focus is refused `base_focus_shrink` before any write, and the message gives the proposed length, the current length and the floor. The refusal is fail-closed like the identity and capture errors: the session stays `open`, so the caller carries the durable content over and ends again. `allow_focus_shrink=true` lifts the guard; `end` is only ever an operator command, so the flag is an operator gesture (the guard mod may relay but never end, and the relay's own override stays operator-only). An empty current focus is never guarded. The guard only runs where the base would be written: a stale `expected_focus_revision` is still recorded as a `conflict` (nothing is destroyed; `next_focus` stays on the session row), a bound session writes its slot and never meets the base guard, and a replay of an already ended session is not re-evaluated.
 
 Replaying the exact terminal payload returns `replayed=true` and the original persisted focus outcome/snapshot; a different payload conflicts. `current_focus` and `current_focus_revision` report the project state at response time (for a bound session, the slot body and revision) and may therefore differ from the persisted end snapshot on a later replay.
 
@@ -996,9 +1045,10 @@ Upsert by `project_key`. `plan_scan_paths` drive `PlanIndexer`; `gitlab_project_
 ### brain_update_project_focus (`project_context_tools.py`)
 ```
 brain_update_project_focus(project_key, current_focus, expected_focus_revision,
-                           blockers=None, feature_status=None, unpin=None)
+                           blockers=None, feature_status=None, unpin=None,
+                           allow_focus_shrink=False)
 ```
-Compare `expected_focus_revision` to the current project revision, then apply focus, blockers, feature statuses, and pins in one PostgreSQL transaction. `feature_status` uses exact feature names and the canonical statuses `planned | research | design | building | deployed | done | archived`. An invalid status, missing or ambiguous feature, merged-feature reactivation, overlap with `unpin`, or revision conflict rolls back the complete batch. Every successful composite mutation consumes the revision, even when the focus text is unchanged. The project's dynamic CLAUDE.md section is updated afterward on a best-effort basis and is not part of the transaction.
+Compare `expected_focus_revision` to the current project revision, then apply focus, blockers, feature statuses, and pins in one PostgreSQL transaction. `current_focus` REPLACES the whole project focus, so the same shrink guard as an unbound `brain_session_end` and a base `brain_session_relay` applies: after the revision check and before any write, a `current_focus` shorter than 70% of the current focus is refused `base_focus_shrink` (both lengths and the floor in the message) and the whole batch, roadmap changes included, is left unwritten. `allow_focus_shrink=true` is the operator's override. `feature_status` uses exact feature names and the canonical statuses `planned | research | design | building | deployed | done | archived`. An invalid status, missing or ambiguous feature, merged-feature reactivation, overlap with `unpin`, or revision conflict rolls back the complete batch. Every successful composite mutation consumes the revision, even when the focus text is unchanged. The project's dynamic CLAUDE.md section is updated afterward on a best-effort basis and is not part of the transaction.
 
 ### brain_list_projects (`project_context_tools.py`)
 ```
@@ -1161,7 +1211,7 @@ Reset `freshness_status='fresh'`, stamp `last_accessed_at=now()`.
 ```
 brain_consolidation_candidates(entity_type=None, limit=20)
 ```
-List quasi-duplicate pairs detected by embedding similarity (`ConsolidationJob`). Filters out already-merged rows.
+List quasi-duplicate pairs detected by embedding similarity (`ConsolidationJob`). Filters out already-merged rows. `limit` is clamped to [1, 100] with a notice.
 
 ### brain_merge_entities
 ```
@@ -1182,6 +1232,8 @@ brain_backfill_links_batch(entity_type=None, limit=50,
 ```
 Find entities in Neo4j with zero `RELATED_TO` edges, fetch their PG embeddings, and call `AutoLinker` to create missing semantic links. Used by the CONNECT phase of the nightly dream orchestrator.
 
+`limit` is clamped to [1, 100] and `max_links` to [1, 10], with notices.
+
 **`max_links` contract** (operator decision 2026-08-18, ticket fb62624f): the cap bounds **successful** links (`created` + `matched`). Errors do not consume it; attempts are in fact bounded by the `2×max_links` selected candidates, so an entity whose writes all fail can report up to `2×max_links` errors. To estimate a number of faulty entities from `errors`, divide by `2×max_links`, never by `max_links`.
 
 ### brain_get_clusters
@@ -1191,7 +1243,7 @@ brain_get_clusters(min_size=2, limit=20,
 ```
 Run union-find over all `RELATED_TO` edges, return connected components sorted by size. Each cluster member is enriched with PG metadata (type + title).
 
-**Anti-token-bomb**: members per cluster are capped at `max_members_per_cluster` (default **30**). A trailing notice identifies the number of omitted members.
+**Anti-token-bomb**: `limit` is clamped to [1, 100] and `max_members_per_cluster` to [1, 200] (default **30**), with notices. A trailing notice identifies the number of omitted members.
 
 ### brain_list_orphans_for_classification
 ```

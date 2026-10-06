@@ -462,3 +462,32 @@ def test_legacy_builder_wires_one_lease_guard_through_webhook_mutations() -> Non
     assert cluster_guard_callback == lease.ensure_owned
     assert getattr(ingestor_guard, "__self__", None) is lease
     assert getattr(cluster_guard_callback, "__self__", None) is lease
+
+
+def test_metrics_runtime_engine_uses_the_scrape_path_timeout_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import brain_v42.metrics.runtime as runtime_module
+    from brain_v42.config import Settings
+
+    captured: dict = {}
+
+    def fake_create(url, **kwargs):
+        captured.update(kwargs)
+        return MagicMock(name="engine")
+
+    monkeypatch.setattr(runtime_module, "create_async_engine", fake_create)
+    runtime_module.build_metrics_runtime(
+        settings=Settings(
+            postgres_url="postgresql+asyncpg://u:p@localhost:5433/brain_test",
+            graph_enabled=False,
+            _env_file=None,  # type: ignore[call-arg]
+        ),
+    )
+
+    assert captured["connect_args"]["server_settings"] == {
+        "statement_timeout": "10000",
+        "lock_timeout": "5000",
+        "idle_in_transaction_session_timeout": "60000",
+        "application_name": "brain-v42-metrics",
+    }

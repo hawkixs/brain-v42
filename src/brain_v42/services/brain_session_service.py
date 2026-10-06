@@ -129,6 +129,7 @@ class BrainSessionRepository(Protocol):
         expected_focus_revision: int,
         *,
         nothing_to_capture_reason: str | None,
+        allow_focus_shrink: bool,
     ) -> BrainSessionEndResult: ...
 
     async def list(
@@ -496,8 +497,15 @@ class BrainSessionService:
         expected_focus_revision: int,
         *,
         nothing_to_capture_reason: str | None = None,
+        allow_focus_shrink: bool = False,
     ) -> BrainSessionEndResult:
-        """Validate and atomically persist a fail-closed session end."""
+        """Validate and atomically persist a fail-closed session end.
+
+        `allow_focus_shrink` lifts the destructive-shrink guard of an UNBOUND end, which
+        writes `next_focus` as the project's whole base focus. `end` has no initiator:
+        it is only ever an operator command, so the flag is an operator gesture and the
+        guard mod, which may relay but never end, cannot reach it.
+        """
         normalized_summary = _normalize_required(summary, field_name="summary")
         normalized_focus = _normalize_required(next_focus, field_name="next_focus")
         identity = _normalize_expected_client_key(expected_client_key)
@@ -515,6 +523,7 @@ class BrainSessionService:
             normalized_focus,
             expected_focus_revision,
             nothing_to_capture_reason=reason,
+            allow_focus_shrink=allow_focus_shrink,
         )
 
     async def list(

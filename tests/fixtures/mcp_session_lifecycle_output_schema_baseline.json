@@ -154,7 +154,7 @@
             "type": "string"
           },
           "next_focus": {
-            "description": "Jugement et engagements pour la session suivante — ce qui n'est pas dérivable automatiquement (ex : ne pas publier ce brouillon et pourquoi, une échéance et sa raison, une décision opérateur à respecter). N'y recopie pas l'état mesurable (révision de schéma, HEAD git, arbre propre, résultat de suite de tests) : il est déjà recalculé à chaque briefing depuis la source réelle, et une copie manuelle se périme en silence.",
+            "description": "Jugement et engagements pour la session suivante — ce qui n'est pas dérivable automatiquement (ex : ne pas publier ce brouillon et pourquoi, une échéance et sa raison, une décision opérateur à respecter). N'y recopie pas l'état mesurable (révision de schéma, HEAD git, arbre propre, résultat de suite de tests) : il est déjà recalculé à chaque briefing depuis la source réelle, et une copie manuelle se périme en silence. Pour une session non liée à un slot, ce texte REMPLACE tout le focus du projet : sous 70 % de sa longueur actuelle, il est refusé (`base_focus_shrink`) sauf `allow_focus_shrink=true` (opérateur uniquement).",
             "maxLength": 10000,
             "minLength": 1,
             "type": "string"
@@ -175,6 +175,11 @@
               }
             ],
             "default": null
+          },
+          "allow_focus_shrink": {
+            "default": false,
+            "description": "Operator only. An UNBOUND session's `next_focus` REPLACES the whole project focus, and one under 70% of the current length is refused (`base_focus_shrink`, both sizes in the message, session left open); true lets that shrink through. `end` is only ever an operator command, so this flag is an operator gesture; a bound session never meets the guard.",
+            "type": "boolean"
           }
         },
         "required": [

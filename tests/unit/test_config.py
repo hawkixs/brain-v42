@@ -119,6 +119,54 @@ def test_plan_index_refresh_interval_must_be_strictly_positive(interval: int) ->
         )
 
 
+_PG_TIMEOUT_DEFAULTS_MS = {
+    "pg_statement_timeout_ms": 120_000,
+    "pg_lock_timeout_ms": 30_000,
+    "pg_idle_in_transaction_session_timeout_ms": 300_000,
+    "pg_maintenance_statement_timeout_ms": 1_800_000,
+    "pg_maintenance_lock_timeout_ms": 300_000,
+    "pg_maintenance_idle_in_transaction_session_timeout_ms": 0,
+    "metrics_pg_statement_timeout_ms": 10_000,
+}
+
+
+def test_pg_timeout_defaults() -> None:
+    """Interactive, maintenance and metrics budgets ship bounded, in milliseconds."""
+    from brain_v42.config import Settings
+
+    s = Settings(
+        postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+        _env_file=None,  # type: ignore[call-arg]
+    )
+    assert {name: getattr(s, name) for name in _PG_TIMEOUT_DEFAULTS_MS} == _PG_TIMEOUT_DEFAULTS_MS
+
+
+def test_pg_timeouts_reachable_under_brain_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An operator retunes a unit through BRAIN_PG_*_MS without a release."""
+    from brain_v42.config import Settings
+
+    monkeypatch.setenv("BRAIN_PG_STATEMENT_TIMEOUT_MS", "5000")
+    monkeypatch.setenv("BRAIN_METRICS_PG_STATEMENT_TIMEOUT_MS", "2000")
+    s = Settings(
+        postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+        _env_file=None,  # type: ignore[call-arg]
+    )
+    assert s.pg_statement_timeout_ms == 5000
+    assert s.metrics_pg_statement_timeout_ms == 2000
+
+
+@pytest.mark.parametrize("field", sorted(_PG_TIMEOUT_DEFAULTS_MS))
+def test_negative_timeout_refused(field: str) -> None:
+    from brain_v42.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(
+            postgres_url="postgresql+asyncpg://brain:brain@localhost:5433/brain",
+            _env_file=None,  # type: ignore[call-arg]
+            **{field: -1},
+        )
+
+
 def test_invalid_postgres_scheme_does_not_render_credentials() -> None:
     """Startup validation must not echo a malformed secret-bearing DSN."""
     from brain_v42.config import Settings
@@ -870,6 +918,19 @@ _ALIASED_FIELDS: list[tuple[str, str]] = [
     ("promote_dedup_block_adr", "PROMOTE_DEDUP_BLOCK_ADR"),
     ("promote_dedup_borderline_low_runbook", "PROMOTE_DEDUP_BORDERLINE_LOW_RUNBOOK"),
     ("promote_dedup_block_runbook", "PROMOTE_DEDUP_BLOCK_RUNBOOK"),
+    ("pg_statement_timeout_ms", "PG_STATEMENT_TIMEOUT_MS"),
+    ("pg_lock_timeout_ms", "PG_LOCK_TIMEOUT_MS"),
+    (
+        "pg_idle_in_transaction_session_timeout_ms",
+        "PG_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS",
+    ),
+    ("pg_maintenance_statement_timeout_ms", "PG_MAINTENANCE_STATEMENT_TIMEOUT_MS"),
+    ("pg_maintenance_lock_timeout_ms", "PG_MAINTENANCE_LOCK_TIMEOUT_MS"),
+    (
+        "pg_maintenance_idle_in_transaction_session_timeout_ms",
+        "PG_MAINTENANCE_IDLE_IN_TRANSACTION_SESSION_TIMEOUT_MS",
+    ),
+    ("metrics_pg_statement_timeout_ms", "METRICS_PG_STATEMENT_TIMEOUT_MS"),
 ]
 
 
