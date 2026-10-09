@@ -1,15 +1,15 @@
 # Operator prerequisites (all paths are absolute; never put secrets in the rail .env):
-# The rail runs `docker compose` over ssh as its deploy user (ubuntu, uid 1000 on
-# red-base), so the compose CLI reads env_files as the rail deploy user, not as root:
-# each env_file is owned by uid 1000, mode 0600. Their contents participate in the
-# recreate hash.
-# /etc/brain-v42/postgres-owner.env: uid 1000, mode 0600 (POSTGRES_URL, owner brain)
-# /etc/brain-v42/postgres-app.env: uid 1000, mode 0600 (POSTGRES_URL, runtime brain_app)
+# The rail runs `docker compose` over ssh as red-rail (uid 1001 on red-base, in the
+# docker group), so the compose CLI reads env_files as the rail deploy user, not as
+# root: each env_file is owned by uid 1001, mode 0600. Their contents participate
+# in the recreate hash.
+# /etc/brain-v42/postgres-owner.env: uid 1001, mode 0600 (POSTGRES_URL, owner brain)
+# /etc/brain-v42/postgres-app.env: uid 1001, mode 0600 (POSTGRES_URL, runtime brain_app)
 # Both DSNs target postgres:5432/brain; never include BRAIN_POSTGRES_URL overrides.
-# /etc/brain-v42/graph-projector.env: uid 1000, mode 0600 (GRAPH_PROJECTOR_NEO4J_PASSWORD)
-# /etc/brain-v42/facts-identity.env: uid 1000, mode 0600 (empty initially; operator fills
+# /etc/brain-v42/graph-projector.env: uid 1001, mode 0600 (GRAPH_PROJECTOR_NEO4J_PASSWORD)
+# /etc/brain-v42/facts-identity.env: uid 1001, mode 0600 (empty initially; operator fills
 # BRAIN_FACTS_PRODUCTION_IDENTITY after measuring the first deployed cluster)
-# /etc/brain-v42/delivery-mcp.env: uid 1000, mode 0600 (MCP delivery settings)
+# /etc/brain-v42/delivery-mcp.env: uid 1001, mode 0600 (MCP delivery settings)
 # MCP_HTTP_TOKEN must be absent: credentials mode refuses the shared bearer.
 # Compose file secrets preserve HOST ownership/mode; uid/mode remapping is unsupported.
 # /etc/brain-v42/postgres-password: uid 999, mode 0600 (matches owner DSN password)

@@ -239,9 +239,10 @@ def test_absolute_secret_sources_have_one_reader_uid_and_operator_instructions(
         for path in service.get("env_file", []):
             assert path.startswith("/etc/brain-v42/") and path.endswith(".env")
             assert "${" not in path
-            # The rail runs `docker compose` over ssh as the deploy user (ubuntu,
-            # uid 1000 on red-base): the compose CLI, not the daemon, reads env_files.
-            assert f"{path}: uid 1000, mode 0600" in header
+            # The rail runs `docker compose` over ssh as its dedicated deploy user
+            # (red-rail, uid 1001 on red-base): the compose CLI, not the daemon,
+            # reads env_files.
+            assert f"{path}: uid 1001, mode 0600" in header
         for secret in service.get("secrets", []):
             source = compose["secrets"][secret]["file"]
             assert source.startswith("/etc/brain-v42/") and "${" not in source
