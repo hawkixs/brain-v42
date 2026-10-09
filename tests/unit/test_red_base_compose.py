@@ -142,6 +142,30 @@ def test_external_binds_are_explicit_and_parseable(
     assert not settings.mcp_http_stateless
 
 
+def test_workstation_runtime_arming_is_parseable_and_mcp_only(
+    compose: dict[str, Any], clean_settings_env: pytest.MonkeyPatch
+) -> None:
+    """Decision 10cfe7ae keeps the workstation's arming in the MCP process."""
+    fields = {
+        "METRICS_ENABLED": "metrics_enabled",
+        "BRAIN_SESSION_AUTO_OPEN_ENABLED": "brain_session_auto_open_enabled",
+        "BRAIN_SESSION_DERIVED_CAPTURE_ENABLED": "brain_session_derived_capture_enabled",
+        "BRAIN_SESSION_INACTIVE_SWEEP_ENABLED": "brain_session_inactive_sweep_enabled",
+        "BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED": "brain_session_relay_guard_mod_enabled",
+        "BRAIN_DECAY_HUMAN_SIGNAL_ENABLED": "decay_human_signal_enabled",
+    }
+    environment = compose["services"]["mcp"]["environment"]
+    assert {key: environment.get(key) for key in fields} == dict.fromkeys(fields, "true")
+    for name, service in compose["services"].items():
+        if name != "mcp":
+            assert fields.keys().isdisjoint(service.get("environment", {})), name
+    for key in fields:
+        clean_settings_env.setenv(key, environment[key])
+    settings = Settings(_env_file=None)
+    for field in fields.values():
+        assert getattr(settings, field) is True, field
+
+
 def test_memory_budgets_have_headroom(compose: dict[str, Any]) -> None:
     limits = {
         "postgres": "512m",

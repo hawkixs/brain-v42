@@ -206,6 +206,18 @@ services:
       MCP_HTTP_PORT: "8765"
       MCP_HTTP_ALLOW_NON_LOOPBACK: "true"
       MCP_HTTP_ALLOWED_HOSTS: "${BIND_ADDRESS}:8765"
+      # METRICS_ENABLED starts the MCP's metrics flusher; without it no tool or
+      # refusal counter reaches the metrics sidecar. The five flags carry the
+      # workstation's arming to red-base by operator decision 10cfe7ae.
+      # Red-base declares this arming here: changes require a Compose pull request
+      # followed by a rail deploy; live values are still measured from the running
+      # container's environment.
+      METRICS_ENABLED: "true"
+      BRAIN_SESSION_AUTO_OPEN_ENABLED: "true"
+      BRAIN_SESSION_DERIVED_CAPTURE_ENABLED: "true"
+      BRAIN_SESSION_INACTIVE_SWEEP_ENABLED: "true"
+      BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED: "true"
+      BRAIN_DECAY_HUMAN_SIGNAL_ENABLED: "true"
       BRAIN_FACTS_LIVE_RELEASE_IDENTITY: '{"release_sha":"${GIT_SHA}","package_version":"${VERSION}"}'
       BRAIN_CLIENT_ACTIVITY_TOKEN_FILE: /etc/brain-v42/activity/token
       BRAIN_CLIENT_ACTIVITY_REPORTING_ENABLED: "true"
