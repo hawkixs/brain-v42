@@ -1,0 +1,45 @@
+{
+  "digest": "sha256:fe0f2ecbda6f417d35991fe10d6f337157c7640edc7a85193aabff2feb37d4f1",
+  "idempotency_key": "review_verdict:bf3774f2391e8cab4b0dc74846f2a1b5c3ce5239:113883359629",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 113883359629,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The PR description states '0.6.9 in pyproject.toml, uv.lock and the README', but uv.lock is not modified in the diff. Check whether uv.lock reflects version 0.6.9 so that 'uv sync --locked' succeeds.",
+          "file": "uv.lock",
+          "id": "F-330-1",
+          "line": null,
+          "severity": "important",
+          "status": "still_open",
+          "title": "uv.lock update omitted from diff"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "pr": 330,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "bf3774f2391e8cab4b0dc74846f2a1b5c3ce5239",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-09T15:12:45.298686Z",
+  "schema_version": 1
+}
