@@ -16,3 +16,9 @@ f4b83c76368288356ab817d64d6782a3e3069738:docs/superpowers/plans/2026-07-03-domai
 7e1646e92cc1bafd361ba1e30cb55a5341f7a076:tests/unit/test_metrics_receiver_access_log.py:generic-api-key:219
 a9cfbfff92ab98cfd88fa168d3e6a26717292dc0:tests/unit/services/test_embedding_bearer_from_file.py:generic-api-key:30
 6cd5d2eac1c004d5f7f08c9f75ccc8c1009c981a:tests/unit/headless_agents/test_provider_openai_compat.py:generic-api-key:32
+
+# 2026-10-09, same triage: two historical findings in the migration-063 integration
+# test, a fixture session client_key literal (15 characters, not a credential) in a
+# test INSERT. The working-tree scan at this commit finds nothing.
+f8d6b307bf17b76d9f8ca66dcdc1cb869de482e8:tests/integration/db/test_migration_063_client_credentials.py:generic-api-key:506
+1431b2544905a961f893bfa6307fee1957146ae6:tests/integration/db/test_migration_063_client_credentials.py:generic-api-key:509
