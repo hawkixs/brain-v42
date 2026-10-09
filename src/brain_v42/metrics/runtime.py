@@ -6,6 +6,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Literal, Protocol, cast
 
 import sqlalchemy as sa
@@ -29,11 +30,14 @@ from brain_v42.automation.ownership import (
     ProjectKeyResolver,
 )
 from brain_v42.config import Settings, get_settings
+from brain_v42.credentials.listener import CredentialListener
+from brain_v42.credentials.verifier import CredentialVerifier
 from brain_v42.db.engine import pg_connect_args
 from brain_v42.db.neo4j import create_neo4j_driver
 from brain_v42.db.tables import project_contexts
 from brain_v42.metrics.brain_graph_server import BrainGraphMetricsServer
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.metrics.credential_registry import ReadOnlyCredentialRegistry
 from brain_v42.metrics.recent_log import RecentLogProcessor
 from brain_v42.metrics.retention import PROCESS_METRICS_STALE_SQL
 from brain_v42.metrics.server import MetricsServer
@@ -397,6 +401,20 @@ def build_metrics_runtime(
         expire_on_commit=False,
     )
     collector = MetricsCollector(engine=runtime_engine, session_factory=session_factory)
+    credential_verifier: CredentialVerifier | None = None
+    credential_listener: CredentialListener | None = None
+    if effective_settings.metrics_receiver_auth == "credentials":
+        credential_verifier = CredentialVerifier(
+            ReadOnlyCredentialRegistry(session_factory),
+            clock=lambda: datetime.now(UTC),
+            monotonic=time.monotonic,
+        )
+        credential_listener = CredentialListener(
+            effective_settings.postgres_url,
+            "brain_client_credentials",
+            on_notification=credential_verifier.notify,
+            on_connect=credential_verifier.run_listener_reconnected,
+        )
     embedding_svc = build_embedding_service(effective_settings)
     neo4j_driver = create_neo4j_driver(
         url=effective_settings.neo4j_url,
@@ -427,6 +445,9 @@ def build_metrics_runtime(
             fail_on_bind_error=True,
             nonloopback_posture=effective_settings.metrics_nonloopback_posture,
             allow_non_loopback=effective_settings.metrics_allow_non_loopback,
+            receiver_auth="credentials" if credential_verifier is not None else "none",
+            credential_verifier=credential_verifier,
+            credential_listener=credential_listener,
             slow_block_cache_ttl_seconds=effective_settings.metrics_slow_block_cache_ttl_seconds,
             slow_block_cache_error_ttl_seconds=(
                 effective_settings.metrics_slow_block_cache_error_ttl_seconds

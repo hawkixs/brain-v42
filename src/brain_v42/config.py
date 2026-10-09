@@ -583,6 +583,9 @@ class Settings(BaseSettings):
     # --- Metrics sidecar ---
     metrics_enabled: bool = Field(default=False, validation_alias=_brain_alias("METRICS_ENABLED"))
     metrics_port: int = Field(default=9200, validation_alias=_brain_alias("METRICS_PORT"))
+    metrics_receiver_auth: Literal["none", "credentials"] = Field(
+        default="none", validation_alias=_brain_alias("METRICS_RECEIVER_AUTH")
+    )
     # Loopback by default (2026-07-04, supersedes the 0.0.0.0 of b68356c2): the
     # real consumers (red-monitor) are local; the GitLab webhook that justified
     # the LAN bind is off. Overridable through METRICS_HOST on revival (docker
@@ -599,8 +602,8 @@ class Settings(BaseSettings):
     upstream of anything that could log it.
 
     Closed by default, reopened by NAME. It governs the BIND and never the
-    receivers: with the opt-in the process starts, the receivers stay absent, and
-    both `/healthz` and one startup line say so. It COMPOSES with
+    receivers: with the opt-in the process starts; receivers require credentials
+    on a non-loopback bind, otherwise they stay absent. It COMPOSES with
     `metrics_nonloopback_posture` rather than replacing it -- this is the outer
     gate, the posture is what happens once through it."""
     # DECLARED BEFORE `metrics_host`: its validator reads this through `info.data`,
@@ -684,6 +687,11 @@ class Settings(BaseSettings):
     client_activity_url: str = Field(
         default="http://127.0.0.1:9200/v1/client-activity",
         validation_alias=_brain_alias("CLIENT_ACTIVITY_URL"),
+    )
+    client_activity_token_file: str = Field(
+        default="/etc/brain-v42/activity/token",
+        validation_alias=_brain_alias("CLIENT_ACTIVITY_TOKEN_FILE"),
+        min_length=1,
     )
 
     # The identity the facts registry requires of the `production` target

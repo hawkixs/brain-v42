@@ -10,6 +10,10 @@ import pytest
 import structlog
 
 from brain_v42.credentials.audit import render_event
+from brain_v42.credentials.elevation_refusals import (
+    emit_elevation_refusal,
+    reset_elevation_refusal_counts,
+)
 from brain_v42.credentials.reasons import emit_refusal, reset_refusal_counts
 from brain_v42.repositories.pg_client_credentials import AuditRow
 from brain_v42.safe_logging import build_logging_processors
@@ -78,6 +82,7 @@ def test_rendered_auth_and_audit_lines_match_the_native_json_contract(
     previous = structlog.get_config().copy()
     output = StringIO()
     reset_refusal_counts()
+    reset_elevation_refusal_counts()
     try:
         structlog.configure(
             processors=build_logging_processors(settings.brain_log_format),
@@ -106,11 +111,19 @@ def test_rendered_auth_and_audit_lines_match_the_native_json_contract(
         for row in representative_rows():
             fields = render_event(row)
             structlog.get_logger().warning(fields.pop("event"), **fields)
+        emit_elevation_refusal(
+            "session_not_open",
+            status=409,
+            session_id=SESSION_ID,
+            requesting_client_id="operator-hook",
+            peer="127.0.0.1",
+        )
     finally:
         structlog.configure(**previous)
         reset_refusal_counts()
+        reset_elevation_refusal_counts()
     lines = [json.loads(line) for line in output.getvalue().splitlines()]
-    assert len(lines) == 9
+    assert len(lines) == 10
     for line in lines:
         assert line["level"] == "warning"
         assert line["timestamp"].endswith("Z")
@@ -132,7 +145,7 @@ def test_rendered_auth_and_audit_lines_match_the_native_json_contract(
     assert lines[4].keys() == ENVELOPE | credential_keys
     assert lines[5].keys() == ENVELOPE | credential_keys | {"reason"}
     assert lines[4]["families"] == lines[5]["families"] == ["read"]
-    for line in lines[6:]:
+    for line in lines[6:9]:
         assert line.keys() == ENVELOPE | ELEVATION_KEYS
         assert line["excluded_client_ids"] == ["auto-discord", "red-rail"]
         assert line["session_label"] is None
@@ -144,6 +157,15 @@ def test_rendered_auth_and_audit_lines_match_the_native_json_contract(
                 "ttl_seconds",
             )
         )
+    assert lines[9].keys() == ENVELOPE | {
+        "reason",
+        "status",
+        "session_id",
+        "requesting_client_id",
+        "peer",
+    }
+    assert lines[9]["event"] == "elevation.refused"
+    assert type(lines[9]["status"]) is int
     expected = [json.loads(line) for line in GOLDEN.read_text().splitlines()]
     # Every field except the wall-clock timestamp must match, including key sets.
     assert [{k: v for k, v in line.items() if k != "timestamp"} for line in lines] == [

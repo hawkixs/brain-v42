@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import ipaddress
 import time
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any, cast
 
 import structlog
@@ -17,6 +17,10 @@ from brain_v42.automation.webhook import (
     GitLabWebhookEndpoint,
     ProjectKeyResolver,
 )
+from brain_v42.credentials.bucket import TokenBucket
+from brain_v42.credentials.listener import CredentialListener
+from brain_v42.credentials.reasons import REFUSAL_STATUSES
+from brain_v42.credentials.verifier import CredentialRefused, CredentialVerifier
 from brain_v42.metrics.client_activity import ClientActivityRegistry
 from brain_v42.metrics.client_observation import (
     MAX_OBSERVATION_BYTES,
@@ -243,7 +247,20 @@ class MetricsServer:
         slow_block_cache_error_ttl_seconds: float = 5.0,
         slow_block_cache: SlowBlockCache | None = None,
         fail_on_bind_error: bool = False,
+        receiver_auth: str = "none",
+        credential_verifier: CredentialVerifier | None = None,
+        credential_listener: CredentialListener | None = None,
+        receiver_bucket: TokenBucket | None = None,
     ) -> None:
+        if receiver_auth not in {"none", "credentials"}:
+            raise ValueError("METRICS_RECEIVER_AUTH must be none or credentials")
+        if receiver_auth == "credentials" and credential_verifier is None:
+            raise ValueError("credentials receivers require a credential verifier")
+        self._receiver_auth = receiver_auth
+        self._credential_verifier = credential_verifier
+        self._credential_listener = credential_listener
+        self._receiver_bucket = receiver_bucket or TokenBucket(10, 20, monotonic=time.monotonic)
+        self._receiver_refused: dict[str, int] = {}
         self._collector = collector
         self._embedding_svc = embedding_svc
         self._port = port
@@ -274,6 +291,8 @@ class MetricsServer:
 
     def _build_app(self) -> web.Application:
         app = web.Application()
+        if self._receiver_auth == "credentials":
+            app.cleanup_ctx.append(self._credential_registry_lifecycle)
         app.router.add_get("/metrics", self._handle_metrics)
         app.router.add_get("/api/cockpit", self._handle_cockpit)
         # Always registered, including on a bind that has no receivers: it is the
@@ -281,7 +300,15 @@ class MetricsServer:
         # below says it once, to whoever reads a boot; nobody greps a log to build
         # an alert.
         app.router.add_get("/healthz", self._handle_healthz)
-        if _is_loopback_bind(self._host):
+        if (
+            self._receiver_auth == "credentials"
+            and not _is_loopback_bind(self._host)
+            and not self._allow_non_loopback
+        ):
+            raise NonLoopbackReceiversError(
+                "credentials receivers on a non-loopback bind require METRICS_ALLOW_NON_LOOPBACK"
+            )
+        if _is_loopback_bind(self._host) or self._receiver_auth == "credentials":
             app.router.add_post("/v1/logs", self._handle_codex_logs)
             app.router.add_post("/v1/logs/claude", self._handle_claude_logs)
             app.router.add_post("/v1/client-activity", self._handle_client_activity)
@@ -326,6 +353,50 @@ class MetricsServer:
             app.router.add_post("/gitlab/webhook", self._handle_webhook)
         return app
 
+    async def _credential_registry_lifecycle(self, _app: web.Application) -> AsyncIterator[None]:
+        """Own refresh and LISTEN tasks so neither survives a failed bind or shutdown."""
+        verifier = self._credential_verifier
+        assert verifier is not None
+        await verifier.refresh()
+        tasks = [asyncio.create_task(verifier.run_refresh_loop())]
+        try:
+            if self._credential_listener is not None:
+                tasks.append(asyncio.create_task(self._credential_listener.run()))
+            yield
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    def _receiver_error(
+        self, status: int, *, receiver: str, reason: str | None = None
+    ) -> web.Response:
+        """Observe each served refusal using only static labels, never request material."""
+        if reason is None:
+            reason = {
+                400: "invalid_payload",
+                403: "loopback_required",
+                408: "body_read_timeout",
+                413: "payload_too_large",
+                415: "unsupported_representation",
+                503: "receiver_busy",
+            }[status]
+            response = _otlp_error(status, receiver=receiver, counters=self._rejection_counters)
+        else:
+            # Credential refusals belong only to receiver_refused; legacy causes
+            # continue counting in receiver_rejections through _otlp_error above.
+            response = web.json_response(
+                {"reason": reason},
+                status=status,
+                headers={"Retry-After": "1"} if status in {429, 503} else None,
+            )
+        self._receiver_refused[reason] = self._receiver_refused.get(reason, 0) + 1
+        with contextlib.suppress(Exception):
+            logger.warning(
+                "metrics_receiver.refused", receiver=receiver, reason=reason, status=status
+            )
+        return response
+
     async def _handle_healthz(self, _request: web.Request) -> web.Response:
         """Whether the three POST receivers are being served, in one field.
 
@@ -340,7 +411,11 @@ class MetricsServer:
         return web.json_response(
             {
                 "status": "ok",
-                "ingest_receivers": ("enabled" if _is_loopback_bind(self._host) else "disabled"),
+                "ingest_receivers": (
+                    "enabled"
+                    if _is_loopback_bind(self._host) or self._receiver_auth == "credentials"
+                    else "disabled"
+                ),
             }
         )
 
@@ -352,26 +427,47 @@ class MetricsServer:
         max_bytes: int,
         apply: Callable[[bytes], None],
     ) -> web.Response:
-        """Run the loopback receiver hardening, then apply a validated body.
+        """Authenticate the sender, then apply a bounded and validated body.
 
         Shared by every local push receiver so a new route cannot quietly ship
-        with a weaker posture than ``/v1/logs``: loopback peer only, single
+        with a weaker posture than ``/v1/logs``: credential or loopback admission, single
         identity representation, bounded body, capped in-flight requests, and a
         fail-closed ``apply`` that validates the whole batch before mutating
         anything. ``max_bytes`` is per route — the brain-side wire format is far
         smaller than an OTLP envelope and is bounded for itself.
         """
-        if not _has_loopback_tcp_peer(request):
-            return _otlp_error(403, receiver=receiver, counters=self._rejection_counters)
+        if self._receiver_auth == "credentials":
+            verifier = self._credential_verifier
+            assert verifier is not None
+            values = request.headers.getall("Authorization", ())
+            token = None
+            if len(values) == 1:
+                scheme, separator, value = values[0].partition(" ")
+                if separator and scheme.casefold() == "bearer":
+                    token = value
+            try:
+                principal = await verifier.verify(token)
+            except CredentialRefused as exc:
+                return self._receiver_error(
+                    REFUSAL_STATUSES[exc.reason], receiver=receiver, reason=exc.reason
+                )
+            if "telemetry" not in principal.families:
+                return self._receiver_error(403, receiver=receiver, reason="family_denied")
+            if receiver == RECEIVER_CLIENT_ACTIVITY and principal.client_id != "brain-v42-mcp":
+                return self._receiver_error(403, receiver=receiver, reason="client_not_allowed")
+            if not self._receiver_bucket.allow(principal.client_id):
+                return self._receiver_error(429, receiver=receiver, reason="rate_limited")
+        elif not _has_loopback_tcp_peer(request):
+            return self._receiver_error(403, receiver=receiver)
 
         if not _accepts_identity_encoding(request):
-            return _otlp_error(415, receiver=receiver, counters=self._rejection_counters)
+            return self._receiver_error(415, receiver=receiver)
         if not _accepts_otlp_json(request):
-            return _otlp_error(415, receiver=receiver, counters=self._rejection_counters)
+            return self._receiver_error(415, receiver=receiver)
         if request.content_length is not None and request.content_length > max_bytes:
-            return _otlp_error(413, receiver=receiver, counters=self._rejection_counters)
+            return self._receiver_error(413, receiver=receiver)
         if self._codex_request_slots.locked():
-            return _otlp_error(503, receiver=receiver, counters=self._rejection_counters)
+            return self._receiver_error(503, receiver=receiver)
 
         await self._codex_request_slots.acquire()
         try:
@@ -382,11 +478,11 @@ class MetricsServer:
                 # The slot is returned by the `finally` below: that is what
                 # stops four frozen bodies from killing the three receivers for
                 # good.
-                return _otlp_error(408, receiver=receiver, counters=self._rejection_counters)
+                return self._receiver_error(408, receiver=receiver)
             except CodexTelemetryLimitError:
-                return _otlp_error(413, receiver=receiver, counters=self._rejection_counters)
+                return self._receiver_error(413, receiver=receiver)
             except CodexTelemetryMalformedError:
-                return _otlp_error(400, receiver=receiver, counters=self._rejection_counters)
+                return self._receiver_error(400, receiver=receiver)
         finally:
             self._codex_request_slots.release()
         return web.json_response({})
@@ -475,6 +571,7 @@ class MetricsServer:
         # present, three receivers, so that its zero means something (d5e4bd73:
         # a zero on a source that counts nothing says nothing).
         metrics["receiver_rejections"] = self._rejection_counters.snapshot()
+        metrics["receiver_refused"] = dict(self._receiver_refused)
 
         # What the activity registry threw away, by cause, plus its occupancy —
         # the reopening condition of 863ff2ca reads BOTH: occupancy above 48 of
@@ -494,6 +591,7 @@ class MetricsServer:
         # Read MCP's persisted snapshot, never this sidecar's in-memory counter.
         # Structural zero stays present before the first event/flush and on DB failure.
         metrics["mcp_auth_refused"] = process_agg.pop("mcp_auth_refused", {})
+        metrics["elevation_refused"] = process_agg.pop("elevation_refused", {})
 
         # Override per-process tools/embedding/reranker with cross-process aggregation
         # when multiple processes are active
