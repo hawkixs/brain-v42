@@ -83,6 +83,7 @@ images:
     resolved_at: "2026-09-03"
     resolution: docker manifest inspect pgvector/pgvector@digest (read-only, no pull)
     consumers:
+      - deploy/compose.yaml
       - docker-compose.yml
 
   llama-server-cuda:
@@ -153,6 +154,7 @@ images:
     resolved_at: "2026-07-23"
     resolution: docker buildx imagetools inspect --raw tag@digest
     consumers:
+      - deploy/compose.yaml
       - docker-compose.yml
 
   gitleaks-8-30-1:

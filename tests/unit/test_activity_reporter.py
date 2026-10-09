@@ -149,6 +149,42 @@ def test_lazy_reporter_receives_token_path_from_settings(
     assert reporter._token_file == tmp_path / "token"
 
 
+async def test_lazy_reporter_posts_to_the_named_peer_with_its_file_credential(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from brain_v42.config import Settings
+    from brain_v42.mcp import activity_reporter
+
+    token_file = tmp_path / "token"
+    token_file.write_text("test-only-peer-telemetry", encoding="utf-8")
+    token_file.chmod(0o600)
+    settings = Settings(
+        postgres_url="postgresql+asyncpg://brain_app@postgres:5432/brain_test",
+        _env_file=None,
+        client_activity_reporting_enabled=True,
+        client_activity_allowed_host="metrics",
+        client_activity_url="http://metrics:9200/v1/client-activity",
+        client_activity_token_file=str(token_file),
+    )
+    monkeypatch.setattr(activity_reporter, "_reporter", None)
+    monkeypatch.setattr(activity_reporter, "get_settings", lambda: settings)
+    reporter = activity_reporter.get_activity_reporter()
+    assert reporter is not None
+    client = AsyncMock()
+    client.post.return_value = httpx.Response(200)
+    try:
+        with patch.object(reporter, "_client", client):
+            reporter.report("codex", None, "http")
+            await reporter.drain()
+        client.post.assert_awaited_once()
+        assert client.post.await_args.args[0] == settings.client_activity_url
+        assert client.post.await_args.kwargs["headers"]["Authorization"] == (
+            "Bearer test-only-peer-telemetry"
+        )
+    finally:
+        await reporter.close()
+
+
 FAKE_UUID = "12345678-1234-4abc-8def-1234567890ab"
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
