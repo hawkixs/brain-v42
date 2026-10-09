@@ -50,7 +50,6 @@ x-brain-env: &brain-env
 x-brain-service: &brain-service
   image: ${IMAGE_REFERENCE}
   user: "1000:1000"
-  environment: *brain-env
   labels:
     org.opencontainers.image.revision: ${GIT_SHA}
     org.opencontainers.image.version: ${VERSION}
@@ -132,6 +131,7 @@ services:
     restart: "no"
     mem_limit: 512m
     command: [brain-v42-restore, --dump, /restore/brain.dump]
+    environment: *brain-env
     env_file:
       - /etc/brain-v42/postgres-owner.env
     volumes:
@@ -244,6 +244,7 @@ services:
     container_name: brain-v42-delivery-observer
     mem_limit: 256m
     command: [python, -m, brain_v42.delivery_observer, --env-file, /run/secrets/observer_config]
+    environment: *brain-env
     secrets:
       - github_app_key
       - observer_config
