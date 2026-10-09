@@ -160,6 +160,9 @@ GITHUB_WORKFLOW_SHELLS = {"bash", "sh"}
 # rail reserves it to the single job that builds and pushes the same image.
 GITHUB_SMOKE_JOB = "build-docker"
 OPERATIONAL_DIRECTORIES = {"deploy", "ops", "scripts", "services"}
+# red-rail's private-compose target substitutes a digest-pinned reference it validates.
+RED_RAIL_COMPOSE_SOURCE = "deploy/compose.yaml"
+RED_RAIL_IMAGE_REFERENCE = "${IMAGE_REFERENCE}"
 DISCOVERY_EXCLUDED_PARTS = {".claude", ".git", "bench", "docs", "tests"}
 DOCKER_SDK_IMAGE_OPERATIONS = {
     "api.build",
@@ -1400,6 +1403,12 @@ def _scan_compose_file(
         if build_error and not is_local_image:
             errors.append(f"{source}:services.{service_name}.build: {build_error}")
         if "image" not in service:
+            continue
+        if (
+            source == RED_RAIL_COMPOSE_SOURCE
+            and image_value == RED_RAIL_IMAGE_REFERENCE
+            and not has_build
+        ):
             continue
         _add_use(
             uses,

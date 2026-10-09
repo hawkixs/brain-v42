@@ -305,6 +305,15 @@ def test_repository_consumers_match_catalog(
     assert errors == [], "\n".join(errors)
 
 
+@pytest.mark.parametrize("identifier", ["pgvector-0-8-4-pg16", "neo4j-5-26-21"])
+def test_red_base_third_party_images_declare_the_compose_consumer(
+    checker: ModuleType | _MissingChecker, identifier: str
+) -> None:
+    entry = checker.load_catalog(LOCK_PATH).images[identifier]
+
+    assert "deploy/compose.yaml" in entry.consumers
+
+
 def test_discovers_every_supported_operational_consumer(
     checker: ModuleType | _MissingChecker, tmp_path: Path
 ) -> None:
@@ -429,6 +438,124 @@ def test_rejects_variable_image_references(
     assert any(
         "variable" in error and relative_path in error for error in _errors(checker, tmp_path)
     )
+
+
+def test_red_base_accepts_rail_image_without_recording_a_catalog_use(
+    checker: ModuleType | _MissingChecker, tmp_path: Path
+) -> None:
+    _write_valid_repo(tmp_path)
+    _write_yaml(
+        tmp_path / "deploy/compose.yaml",
+        {
+            "services": {
+                "mcp": {"image": "${IMAGE_REFERENCE}"},
+                "migrate": {"image": "${IMAGE_REFERENCE}"},
+            }
+        },
+    )
+
+    assert _errors(checker, tmp_path) == []
+    assert all(use.source != "deploy/compose.yaml" for use in checker.discover_images(tmp_path))
+
+
+@pytest.mark.parametrize(
+    "reference",
+    [
+        "${IMAGE_REFERENCE}:latest",
+        "x${IMAGE_REFERENCE}",
+        "$IMAGE_REFERENCE",
+        "${IMAGE_REFERENCE:-foo}",
+        "${OTHER}",
+        " ${IMAGE_REFERENCE}",
+        "${IMAGE_REFERENCE} ",
+    ],
+)
+def test_red_base_rejects_every_other_variable_image_reference(
+    checker: ModuleType | _MissingChecker, tmp_path: Path, reference: str
+) -> None:
+    _write_valid_repo(tmp_path)
+    _write_yaml(tmp_path / "deploy/compose.yaml", {"services": {"mcp": {"image": reference}}})
+
+    assert any(
+        "deploy/compose.yaml:services.mcp.image: variable image reference is forbidden" in error
+        for error in _errors(checker, tmp_path)
+    )
+
+
+@pytest.mark.parametrize(
+    ("relative_path", "content"),
+    [
+        ("docker-compose.yml", {"services": {"mcp": {"image": "${IMAGE_REFERENCE}"}}}),
+        ("deploy/compose.yml", {"services": {"mcp": {"image": "${IMAGE_REFERENCE}"}}}),
+        ("deploy/edge/compose.yaml", {"services": {"mcp": {"image": "${IMAGE_REFERENCE}"}}}),
+        (".gitlab-ci.yml", {"job": {"image": "${IMAGE_REFERENCE}"}}),
+        (
+            ".github/workflows/runtime.yml",
+            {"jobs": {"runtime": {"container": {"image": "${IMAGE_REFERENCE}"}}}},
+        ),
+    ],
+)
+def test_rail_image_variable_is_forbidden_outside_the_named_compose_file(
+    checker: ModuleType | _MissingChecker,
+    tmp_path: Path,
+    relative_path: str,
+    content: dict[str, object],
+) -> None:
+    _write_valid_repo(tmp_path)
+    _write_yaml(tmp_path / relative_path, content)
+
+    assert any(
+        relative_path in error and "variable image reference is forbidden" in error
+        for error in _errors(checker, tmp_path)
+    )
+
+
+@pytest.mark.parametrize("build", ["..", {"context": ".."}, None, False])
+def test_red_base_rejects_the_rail_image_when_a_build_key_is_present(
+    checker: ModuleType | _MissingChecker, tmp_path: Path, build: object
+) -> None:
+    _write_valid_repo(tmp_path)
+    _write_yaml(
+        tmp_path / "deploy/compose.yaml",
+        {"services": {"mcp": {"image": "${IMAGE_REFERENCE}", "build": build}}},
+    )
+
+    assert any(
+        "deploy/compose.yaml:services.mcp.image: variable image reference is forbidden" in error
+        for error in _errors(checker, tmp_path)
+    )
+
+
+@pytest.mark.parametrize("tag", ["pgvector/pgvector:0.8.4-pg16", "neo4j:5.26.21"])
+@pytest.mark.parametrize("wrong_digest", [False, True], ids=["catalog-digest", "wrong-digest"])
+def test_red_base_third_party_images_still_require_the_catalog_digest(
+    checker: ModuleType | _MissingChecker, tmp_path: Path, tag: str, wrong_digest: bool
+) -> None:
+    sources = _write_valid_repo(tmp_path)
+    reference = f"{tag}@{EXPECTED_LOCKED_REFERENCES[tag]}"
+    lock = _catalog(sources)
+    lock["images"]["red-base-database"] = _catalog(["deploy/compose.yaml"], reference=reference)[
+        "images"
+    ]["python-3-12-slim"]
+    _write_yaml(tmp_path / "config/container-images.lock.yml", lock)
+    _write_yaml(
+        tmp_path / "deploy/compose.yaml",
+        {
+            "services": {
+                "mcp": {"image": "${IMAGE_REFERENCE}"},
+                "database": {"image": f"{tag}@{OTHER_DIGEST}" if wrong_digest else reference},
+            }
+        },
+    )
+
+    errors = _errors(checker, tmp_path)
+    if wrong_digest:
+        assert errors == [
+            f"deploy/compose.yaml:services.database.image: divergent digest for {tag}; "
+            f"expected {EXPECTED_LOCKED_REFERENCES[tag]}, got {OTHER_DIGEST}"
+        ]
+    else:
+        assert errors == []
 
 
 @pytest.mark.parametrize(
@@ -11673,9 +11800,9 @@ def test_the_production_postgres_entry_names_the_version_it_pins() -> None:
     # asserted the dotted form and failed, which is how the constraint surfaced.
     assert "0-8-4" in _PROD_POSTGRES_ENTRY
     assert entry["tag"] == "pgvector/pgvector:0.8.4-pg16"
-    assert entry["consumers"] == ["docker-compose.yml"], (
-        "this entry exists for the production compose ALONE — CI and the test benches "
-        "stay on the current image, and widening its consumers would drag them back"
+    assert entry["consumers"] == ["deploy/compose.yaml", "docker-compose.yml"], (
+        "this entry serves only the two production compose files — CI and the test benches "
+        "stay on the current image, and adding other consumers would drag them back"
     )
 
 

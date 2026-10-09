@@ -684,6 +684,15 @@ class Settings(BaseSettings):
     client_activity_reporting_enabled: bool = Field(
         default=False, validation_alias=_brain_alias("CLIENT_ACTIVITY_REPORTING_ENABLED")
     )
+    client_activity_allowed_host: _UnstrippedStr = Field(
+        default="", validation_alias=_brain_alias("CLIENT_ACTIVITY_ALLOWED_HOST")
+    )
+    """Name one Compose peer on the same host for activity egress beyond loopback.
+
+    The separate metrics container authenticates the reporter with its telemetry
+    credential (D11). Empty keeps the loopback-only boundary; naming a peer never
+    authorizes arbitrary hosts. Whitespace is refused rather than stripped.
+    """
     client_activity_url: str = Field(
         default="http://127.0.0.1:9200/v1/client-activity",
         validation_alias=_brain_alias("CLIENT_ACTIVITY_URL"),
@@ -774,17 +783,39 @@ class Settings(BaseSettings):
     # immediately without touching already stored claims.
     brain_claim_extraction_enabled: bool = Field(default=False)
 
+    @field_validator("client_activity_allowed_host")
+    @classmethod
+    def _client_activity_allowed_host_is_bare(cls, value: str) -> str:
+        """Refuse URL syntax and host lists so the opt-in names exactly one peer."""
+        if (
+            value
+            and (
+                len(value) > 253
+                or any(
+                    re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) is None
+                    for label in value.split(".")
+                )
+                # A last label that does not start with a letter can be an IP
+                # literal (decimal, octal or hex, as inet_aton reads them), not a
+                # peer name.
+                or not value.rsplit(".", 1)[-1][:1].isalpha()
+            )
+        ):
+            raise ValueError("client_activity_allowed_host must be a bare host name")
+        return value.lower()
+
     @field_validator("client_activity_url")
     @classmethod
-    def _client_activity_loopback_only(cls, v: str) -> str:
-        """The same guard as the binds, applied to an OUTPUT.
+    def _client_activity_loopback_only(cls, v: str, info: ValidationInfo) -> str:
+        """Guard activity egress with loopback or one explicitly named Compose peer.
 
         ``mcp_http_host`` and ``automation_host`` constrain what the machine
         listens on; this URL decides what it emits, one record per tool call, in
         fire-and-forget. A LAN ``CLIENT_ACTIVITY_URL`` placed in
         ``brain-mcp-http.service``'s shared ``.env`` would therefore silently
         leave the machine. Fail-closed: what is not readable is refused, not
-        ignored.
+        ignored. The named peer opt-in allows the authenticated metrics container
+        on the same host without opening the boundary to other destinations.
         """
         try:
             parsed = urlsplit(v)
@@ -794,7 +825,9 @@ class Settings(BaseSettings):
         if parsed.scheme not in {"http", "https"}:
             raise ValueError(f"client_activity_url must be http(s) (got scheme {parsed.scheme!r})")
         host = parsed.hostname
-        if not _is_loopback_host(host):
+        if not _is_loopback_host(host) and (
+            not host or host != info.data.get("client_activity_allowed_host")
+        ):
             # Only the host is copied over: a URL can carry credentials.
             raise ValueError(
                 f"client_activity_url must be loopback (got {host!r}); off-host egress is forbidden"
