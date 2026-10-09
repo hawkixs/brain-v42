@@ -1,0 +1,297 @@
+# Operator prerequisites (all paths are absolute; never put secrets in the rail .env):
+# Docker reads env_files as root; their contents participate in the recreate hash.
+# /etc/brain-v42/postgres-owner.env: uid 0, mode 0600 (POSTGRES_URL, owner brain)
+# /etc/brain-v42/postgres-app.env: uid 0, mode 0600 (POSTGRES_URL, runtime brain_app)
+# Both DSNs target postgres:5432/brain; never include BRAIN_POSTGRES_URL overrides.
+# /etc/brain-v42/graph-projector.env: uid 0, mode 0600 (GRAPH_PROJECTOR_NEO4J_PASSWORD)
+# /etc/brain-v42/facts-identity.env: uid 0, mode 0600 (empty initially; operator fills
+# BRAIN_FACTS_PRODUCTION_IDENTITY after measuring the first deployed cluster)
+# /etc/brain-v42/delivery-mcp.env: uid 0, mode 0600 (MCP delivery settings)
+# MCP_HTTP_TOKEN must be absent: credentials mode refuses the shared bearer.
+# Compose file secrets preserve HOST ownership/mode; uid/mode remapping is unsupported.
+# /etc/brain-v42/postgres-password: uid 999, mode 0600 (matches owner DSN password)
+# /etc/brain-v42/neo4j-auth: uid 7474, mode 0600 (neo4j/password; _FILE pattern)
+# /etc/brain-v42/brain-app-password: uid 1000, mode 0600 (matches runtime DSN password)
+# /etc/brain-v42/embedding-token: uid 1000, mode 0600 (hosted embedding API key)
+# /etc/brain-v42/github-app-key.pem: uid 1000, mode 0600 (GitHub App private key)
+# /etc/brain-v42/delivery-observer.env: uid 1000, mode 0600 (the real observer config,
+# read via --env-file; BRAIN_DELIVERY_ENABLED=true, BRAIN_DELIVERY_POSTGRES_URL for brain_app,
+# BRAIN_DELIVERY_GITHUB_APP_ID, BRAIN_DELIVERY_GITHUB_INSTALLATION_ID and
+# BRAIN_DELIVERY_GITHUB_PRIVATE_KEY_PATH=/run/secrets/github_app_key).
+# Changing the observer config needs an explicit recreate; it is a mounted secret,
+# not a Compose env_file whose contents participate in the config hash.
+# /etc/brain-v42/activity/token: uid 1000, mode 0600 (may be created after deployment)
+# This credential must carry telemetry rights and client_id brain-v42-mcp.
+# BRAIN_CLIENT_ACTIVITY_ALLOWED_HOST=metrics names the same-host Compose peer;
+# no other non-loopback activity destination is authorized.
+# Create /etc/brain-v42/activity first; mount the directory to see a later token file.
+# Runtime readers need directory traversal permission to their mounted secret paths.
+# Rotating startup file secrets requires an explicit recreate; file contents are not
+# in Compose's config hash. The activity token is read lazily instead.
+# Restore input directory /srv/brain-v42/restore: root:1000, mode 0750.
+# /srv/brain-v42/restore/brain.dump: root:1000, mode 0640.
+# /srv/brain-v42/restore/brain.dump.sha256: root:1000, mode 0640.
+# A marked database needs neither file on subsequent deployments.
+# Persistent volumes: brain-v42-postgres-data and brain-v42-neo4j-data.
+# Empty-volume retry: stop writers, remove these two volumes only after operator
+# approval, then replay the verified restore -> migrate -> graph-bootstrap chain.
+# Memory headroom above measured RSS: postgres 238 MiB -> 512m, MCP 224 MiB -> 512m,
+# metrics 191 MiB -> 384m, delivery-observer 124 MiB -> 256m. One-shots get 512m;
+# weekly graph inventory gets 256m. Neo4j has 1G heap + 1G page cache within 2.5g.
+
+name: brain-v42
+
+x-brain-env: &brain-env
+  BRAIN_LOG_FORMAT: "json"
+
+x-brain-service: &brain-service
+  image: ${IMAGE_REFERENCE}
+  user: "1000:1000"
+  environment: *brain-env
+  labels:
+    org.opencontainers.image.revision: ${GIT_SHA}
+    org.opencontainers.image.version: ${VERSION}
+    io.brain-v42.image.digest: ${IMAGE_DIGEST}
+
+x-graph-env: &graph-env
+  <<: *brain-env
+  GRAPH_ENABLED: "true"
+  GRAPH_LEDGER_WRITE_ENABLED: "true"
+  GRAPH_PROJECTOR_ENABLED: "true"
+  GRAPH_PROJECTOR_NEO4J_URL: bolt://neo4j:7687
+  GRAPH_PROJECTOR_NEO4J_USER: neo4j
+
+x-embedding-env: &embedding-env
+  EMBEDDING_BACKEND: openai
+  EMBEDDING_SERVICE_URL: https://api.mistral.ai
+  EMBEDDING_MODEL: codestral-embed-2505
+  EMBEDDING_DIMENSION: "1536"
+  BRAIN_EMBEDDING_TOKEN_FILE: /run/secrets/embedding_token
+
+# lot 0.6.10 replaces this block with the hosted rerank settings
+x-rerank-env: &rerank-env
+  BRAIN_RERANK_BACKEND: "none"
+
+x-server: &server
+  restart: unless-stopped
+  depends_on:
+    graph-bootstrap:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: pgvector/pgvector:0.8.4-pg16@sha256:ad2e18408bf447f62092a8a5259e7df10505c5a0360bd1a1853ac8b8b0763da2
+    container_name: brain-v42-postgres
+    restart: unless-stopped
+    mem_limit: 512m
+    environment:
+      POSTGRES_USER: brain
+      POSTGRES_DB: brain
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command: [postgres, -c, shared_preload_libraries=pg_stat_statements, -c, pg_stat_statements.track=all]
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD, pg_isready, -U, brain, -d, brain]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  neo4j:
+    image: neo4j:5.26.21@sha256:409728716bc239f9fa046368ac6ce6ef280f9e5f0bcb7cdd75031a4465cc192d
+    container_name: brain-v42-neo4j
+    restart: unless-stopped
+    mem_limit: 2.5g
+    environment:
+      NEO4J_AUTH_FILE: /run/secrets/neo4j_auth
+      NEO4J_PLUGINS: '[]'
+      NEO4J_server_memory_heap_initial__size: "1G"
+      NEO4J_server_memory_heap_max__size: "1G"
+      NEO4J_server_memory_pagecache_size: "1G"
+    secrets:
+      - neo4j_auth
+    volumes:
+      - neo4j-data:/data
+    healthcheck:
+      test: [CMD, wget, -q, --spider, "http://127.0.0.1:7474/"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  restore:
+    <<: *brain-service
+    container_name: brain-v42-restore
+    restart: "no"
+    mem_limit: 512m
+    command: [brain-v42-restore, --dump, /restore/brain.dump]
+    env_file:
+      - /etc/brain-v42/postgres-owner.env
+    volumes:
+      - /srv/brain-v42/restore:/restore:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  migrate:
+    <<: *brain-service
+    container_name: brain-v42-migrate
+    restart: "no"
+    mem_limit: 512m
+    command: [brain-v42-migrate]
+    env_file:
+      - /etc/brain-v42/postgres-owner.env
+    environment:
+      <<: *brain-env
+      BRAIN_ALEMBIC_ALLOW_PROD: "true"
+      BRAIN_APP_PASSWORD_FILE: /run/secrets/brain_app_password
+    secrets:
+      - brain_app_password
+    depends_on:
+      postgres:
+        condition: service_healthy
+      restore:
+        condition: service_completed_successfully
+
+  graph-bootstrap:
+    <<: *brain-service
+    container_name: brain-v42-graph-bootstrap
+    restart: "no"
+    mem_limit: 512m
+    command: [brain-v42-graph-bootstrap]
+    env_file:
+      - /etc/brain-v42/postgres-app.env
+      - /etc/brain-v42/graph-projector.env
+    environment: *graph-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      neo4j:
+        condition: service_healthy
+
+  mcp:
+    <<: [*brain-service, *server]
+    container_name: brain-v42-mcp
+    mem_limit: 512m
+    command: [python, -m, brain_v42.mcp.server]
+    ports:
+      - "${BIND_ADDRESS}:8765:8765"
+    env_file:
+      - /etc/brain-v42/postgres-app.env
+      - /etc/brain-v42/graph-projector.env
+      - /etc/brain-v42/facts-identity.env
+      - /etc/brain-v42/delivery-mcp.env
+    environment:
+      <<: [*graph-env, *embedding-env, *rerank-env]
+      BRAIN_MCP_TRANSPORT: http
+      BRAIN_MCP_AUTH_MODE: credentials
+      MCP_HTTP_HOST: "0.0.0.0"
+      MCP_HTTP_PORT: "8765"
+      MCP_HTTP_ALLOW_NON_LOOPBACK: "true"
+      MCP_HTTP_ALLOWED_HOSTS: "${BIND_ADDRESS}:8765"
+      BRAIN_FACTS_LIVE_RELEASE_IDENTITY: '{"release_sha":"${GIT_SHA}","package_version":"${VERSION}"}'
+      BRAIN_CLIENT_ACTIVITY_TOKEN_FILE: /etc/brain-v42/activity/token
+      BRAIN_CLIENT_ACTIVITY_REPORTING_ENABLED: "true"
+      BRAIN_CLIENT_ACTIVITY_URL: http://metrics:9200/v1/client-activity
+      BRAIN_CLIENT_ACTIVITY_ALLOWED_HOST: "metrics"
+    secrets:
+      - embedding_token
+    volumes:
+      - /etc/brain-v42/activity:/etc/brain-v42/activity:ro
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  metrics:
+    <<: [*brain-service, *server]
+    container_name: brain-v42-metrics
+    mem_limit: 384m
+    command: [python, -m, brain_v42.metrics]
+    ports:
+      - "${BIND_ADDRESS}:9200:9200"
+    env_file:
+      - /etc/brain-v42/postgres-app.env
+    environment:
+      <<: [*brain-env, *embedding-env]
+      METRICS_HOST: "0.0.0.0"
+      METRICS_PORT: "9200"
+      METRICS_ALLOW_NON_LOOPBACK: "yes"
+      METRICS_RECEIVER_AUTH: credentials
+      # This runtime refuses the projector role and exposes no facts registry.
+      GRAPH_PROJECTOR_ENABLED: "false"
+      METRICS_LEGACY_AUTOMATION_ENABLED: "false"
+    secrets:
+      - embedding_token
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9200/healthz', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  delivery-observer:
+    <<: [*brain-service, *server]
+    container_name: brain-v42-delivery-observer
+    mem_limit: 256m
+    command: [python, -m, brain_v42.delivery_observer, --env-file, /run/secrets/observer_config]
+    secrets:
+      - github_app_key
+      - observer_config
+    healthcheck:
+      # No HTTP readiness endpoint exists; this checks process liveness only.
+      test: [CMD, python, -c, "from pathlib import Path; assert b'brain_v42.delivery_observer' in Path('/proc/1/cmdline').read_bytes()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  graph-recon:
+    <<: [*brain-service, *server]
+    container_name: brain-v42-graph-recon
+    mem_limit: 256m
+    # Runs the same weekly inventory module as the workstation's brain-v42-graph-recon unit.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        while sleep 604800; do
+          python -m brain_v42.scripts.rebuild_graph_projection || exit 1;
+        done
+    env_file:
+      - /etc/brain-v42/postgres-app.env
+      - /etc/brain-v42/graph-projector.env
+    environment: *graph-env
+    healthcheck:
+      # The first inventory is a week away; health means the scheduler is alive.
+      test: [CMD, python, -c, "from pathlib import Path; assert b'while sleep 604800' in Path('/proc/1/cmdline').read_bytes()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+secrets:
+  postgres_password:
+    file: /etc/brain-v42/postgres-password
+  neo4j_auth:
+    file: /etc/brain-v42/neo4j-auth
+  brain_app_password:
+    file: /etc/brain-v42/brain-app-password
+  embedding_token:
+    file: /etc/brain-v42/embedding-token
+  github_app_key:
+    file: /etc/brain-v42/github-app-key.pem
+  observer_config:
+    file: /etc/brain-v42/delivery-observer.env
+
+volumes:
+  postgres-data:
+    name: brain-v42-postgres-data
+  neo4j-data:
+    name: brain-v42-neo4j-data
