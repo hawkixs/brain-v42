@@ -1,9 +1,13 @@
 rail: 1
 project: brain-v42
 brain_key: brain-v42
-tier: dev
+tier: prod
 stack: python
 ledger: file
+deploy:
+  target: private-compose
+  site: red-base
+  healthcheck: "http://${BIND_ADDRESS}:8765/healthz"
 gates:
   docs.root:
     value: internal/docs/superpowers
@@ -11,3 +15,9 @@ gates:
   hygiene.docs_layout:
     value: false
     reason: "ADRs live in Brain (brain_propose_adr), not in a docs/adr folder: operator decision 2026-10-03; specs/ and plans/ are still read by the design and plan gates"
+  deploy.ssh_host:
+    value: red-base-deploy
+    reason: "SSH alias on the rail host: the dedicated red-rail deploy user on red-base, whose key is accepted from the rail host only"
+  observe.monitor_agent:
+    value: red-base
+    reason: "brain-v42 runs on red-base, so observe.visible must query the red-monitor agent of that machine; the default (vps) is the edge"
