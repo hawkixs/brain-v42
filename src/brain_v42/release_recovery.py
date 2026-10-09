@@ -51,6 +51,10 @@ MANIFEST_FILENAME = "delivery-release.json"
 LIVE_LINK_NAME = "live"
 #: The three files `current.json` (and the binding it produces) name.
 ASSET_KEYS = ("manifest", "attestation_sql", "restored_attestation_sql")
+#: Restore and migrate must agree on which databases came from pg_restore.
+RESTORE_MARKER = re.compile(
+    r"brain-v42-restore sha256=[0-9a-f]{64} at=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
+)
 #: `recovery-binding.json` itself stays well under a normal filesystem block; a
 #: much bigger one is a sign that `current.json` was tampered with (a huge
 #: `contract_id`, say) rather than a real recovery contract, and every consumer

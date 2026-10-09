@@ -30,6 +30,7 @@ from brain_v42.release_recovery import (
     ASSET_KEYS,
     BINDING_FILENAME,
     MAX_BINDING_BYTES,
+    RESTORE_MARKER,
     is_safe_asset_filename,
 )
 
@@ -53,6 +54,7 @@ class RecoveryContract:
     version: int
     check_ids: frozenset[str]
     live_sql: str
+    restored_sql: str
 
 
 def _alembic_config() -> Config:
@@ -130,7 +132,7 @@ def _check_ids(checks: Any) -> frozenset[str]:
 
 
 def _load_contract(directory: Path, code_head: str) -> RecoveryContract:
-    """Verify the baked binding and every copied asset before executing its live SQL."""
+    """Verify the baked binding and every copied asset before executing attestation SQL."""
     binding_path = directory / BINDING_FILENAME
     if directory.is_symlink() or binding_path.is_symlink() or not binding_path.is_file():
         raise MigrationRefused("recovery_binding_missing")
@@ -162,7 +164,11 @@ def _load_contract(directory: Path, code_head: str) -> RecoveryContract:
     if manifest.get("contract_id") != contract_id or manifest.get("schema_version") != version:
         raise MigrationRefused("recovery_contract_identity_mismatch")
     return RecoveryContract(
-        contract_id, version, _check_ids(manifest.get("checks")), assets["attestation_sql"]
+        contract_id,
+        version,
+        _check_ids(manifest.get("checks")),
+        assets["attestation_sql"],
+        assets["restored_attestation_sql"],
     )
 
 
@@ -224,6 +230,24 @@ async def _provision_role(connection: AsyncConnection, settings: Settings, verif
         )
 
 
+def _receipt_checks(
+    raw: Any, contract: RecoveryContract, code_head: str
+) -> dict[str, dict[str, Any]]:
+    """Require a complete receipt before selecting which checks it must prove."""
+    try:
+        receipt = _json_object(str(raw))
+        if (
+            receipt.get("contract_id") != contract.contract_id
+            or type(receipt.get("schema_version")) is not int
+            or receipt.get("schema_version") != contract.version
+            or _check_ids(receipt.get("checks")) != contract.check_ids
+        ):
+            raise MigrationRefused("recovery_contract_not_proven")
+    except (ValueError, MigrationRefused):
+        raise MigrationRefused("recovery_contract_not_proven", code_head=code_head) from None
+    return {check["id"]: check for check in receipt["checks"]}
+
+
 async def _finish(
     settings: Settings,
     verifier: str,
@@ -259,18 +283,44 @@ async def _finish(
         # not be able to repair the very schema it is supposed to prove.
         async with engine.begin() as connection:
             await connection.execute(text("SET TRANSACTION READ ONLY"))
-            raw = await connection.scalar(text(contract.live_sql))
-            receipt = _json_object(str(raw))
-            if (
-                receipt.get("contract_id") != contract.contract_id
-                or type(receipt.get("schema_version")) is not int
-                or receipt.get("schema_version") != contract.version
-                or _check_ids(receipt.get("checks")) != contract.check_ids
-                or any(check.get("status") != "pass" for check in receipt["checks"])
-            ):
+            marker = await connection.scalar(
+                text(
+                    "SELECT pg_catalog.shobj_description(d.oid, 'pg_database') "
+                    "FROM pg_catalog.pg_database d WHERE d.datname = current_database()"
+                )
+            )
+            # pg_restore changes deparsed fingerprints, so marked databases need
+            # the restored variant plus LIVE proof of the sandbox's skipped checks.
+            # The marker persists: every later migrate on this host takes this path;
+            # databases built by migrations without a marker keep the LIVE path.
+            restored = isinstance(marker, str) and RESTORE_MARKER.fullmatch(marker) is not None
+            attestation = "restored" if restored else "live"
+            checks = _receipt_checks(
+                await connection.scalar(
+                    text(contract.restored_sql if restored else contract.live_sql)
+                ),
+                contract,
+                code_head,
+            )
+            if any(check.get("status") != "pass" for check in checks.values()):
                 raise MigrationRefused("recovery_contract_not_proven", code_head=code_head)
+            if restored:
+                live_checks = _receipt_checks(
+                    await connection.scalar(text(contract.live_sql)), contract, code_head
+                )
+                required = {
+                    check_id
+                    for check_id, check in checks.items()
+                    if isinstance(check.get("observed"), str)
+                    and check["observed"].startswith("not_applicable")
+                }
+                if any(live_checks[check_id].get("status") != "pass" for check_id in required):
+                    raise MigrationRefused("recovery_contract_not_proven", code_head=code_head)
         logger.info(
-            "migration_contract_proven", code_head=code_head, contract_id=contract.contract_id
+            "migration_contract_proven",
+            code_head=code_head,
+            contract_id=contract.contract_id,
+            attestation=attestation,
         )
     finally:
         await engine.dispose()
