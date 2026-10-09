@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make ci)",
+      "Bash(make lint)",
+      "Bash(make format-check)",
+      "Bash(make typecheck)",
+      "Bash(make layering)",
+      "Bash(make pins)",
+      "Bash(make test-unit)",
+      "Bash(uv sync:*)",
+      "Bash(uv run pytest:*)",
+      "Bash(uv run ruff:*)",
+      "Bash(uv run mypy:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)"
+    ]
+  }
+}

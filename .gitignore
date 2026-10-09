@@ -59,8 +59,10 @@ results/
 # Worktrees
 .worktrees/
 
-# Claude Code (machine-local settings, skills, worktrees)
-.claude/
+# Claude Code: machine-local settings, skills and worktrees stay untracked; the
+# shared project permissions (.claude/settings.json) are tracked for the rail.
+.claude/*
+!.claude/settings.json
 
 # OS
 .DS_Store
