@@ -4,8 +4,8 @@ This runbook covers the shared service `brain-mcp-http.service` and its watchdog
 installation path generates and validates the units without changing their state. Starting
 them, enabling them at boot, and stopping them remain operator decisions.
 
-The production systemd contract is fixed to `127.0.0.1:8765`, like the versioned `.mcp.json`
-client.
+The production systemd contract is fixed to `127.0.0.1:8765`, like the operator's user-scope
+Claude Code client (the repository's `.mcp.json` declares no server).
 An override of `Settings.mcp_http_port` remains possible for development outside this path,
 but the installer and the production service refuse any other value so that server,
 clients, healthchecks, and watchdog cannot diverge.
@@ -171,7 +171,7 @@ file, not a symlink, owned by the service user, in mode `0600`, with exactly the
 `GRAPH_PROJECTOR_*` keys and a non-placeholder password.
 
 Before the canary, the client process must receive the same bearer via its secrets
-manager: `.mcp.json` expands `${MCP_HTTP_TOKEN}` in the `Authorization` header. Do not
+manager: the operator's user-scope Claude Code entry sends it in the `Authorization` header. Do not
 reintroduce this secret into `.env` and do not `source` the systemd file from Bash: the two
 grammars differ. From the private environment that will launch or relaunch the client, verify
 the match without printing the value:

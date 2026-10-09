@@ -17,7 +17,7 @@ document the other side rejects — the very drift this ticket describes,
 reproduced inside its own fix.
 
 Everything that CAN be derived IS derived, at call time: the Alembic head, the
-port from `Settings`, the transport URL from `.mcp.json`, the FastMCP major from
+port from `Settings`, the transport URL from the `Settings` MCP HTTP defaults, the FastMCP major from
 `uv.lock`. A retyped number goes stale exactly like the document it guards. What
 stays literal is prose that has no machine-readable source — the three
 operator-facing paragraphs — and it lives here rather than in a test so the
