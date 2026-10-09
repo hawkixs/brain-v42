@@ -90,6 +90,13 @@ def _client_id(value: str) -> str:
     return value
 
 
+def _issuer(value: str) -> str:
+    """Limit delegated actors to exact labels, prefixes or existing projects."""
+    if value != "@project" and not re.fullmatch(r"[a-z0-9][a-z0-9.:-]{0,63}\*?", value):
+        raise argparse.ArgumentTypeError("issuer must be @project, a label or a trailing-* prefix")
+    return value
+
+
 def _identifier(value: str) -> UUID:
     try:
         return UUID(value)
@@ -109,6 +116,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     issue = commands.add_parser("issue", help="Issue a bearer, printed once after commit")
     issue.add_argument("--client-id", type=_client_id, required=True)
     issue.add_argument("--families", type=_families, required=True)
+    issue.add_argument("--issuer", type=_issuer, action="append", default=[])
     issue.add_argument("--expires", type=_expires)
     for command in ("revoke", "unelevate"):
         commands.add_parser(command).add_argument("id", type=_identifier)
@@ -269,7 +277,7 @@ async def _execute(args: argparse.Namespace, repo: PgClientCredentialRepo) -> tu
                 client_id=args.client_id,
                 token_sha256=hashlib.sha256(token.encode()).digest(),
                 families=args.families,
-                issuers=[],
+                issuers=sorted(set(args.issuer)),
                 created_by=author,
                 expires_at=expires_at,
                 reason=args.reason,
