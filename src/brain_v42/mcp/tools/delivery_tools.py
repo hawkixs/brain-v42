@@ -6,9 +6,13 @@ from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastmcp import FastMCP
+from fastmcp.exceptions import AuthorizationError, ToolError
+from fastmcp.server.dependencies import get_access_token
 from pydantic import Field, SecretStr
 
+from brain_v42.credentials.reasons import emit_refusal
 from brain_v42.db.focus_slots import OBSERVER_IDENTITY
+from brain_v42.mcp.client_principal import resolve_client_principal
 from brain_v42.mcp.delivery_transport import _DeliveryRegistry
 from brain_v42.mcp.tools.tool_annotations import (
     _HEARTBEAT_ANNOTATIONS,
@@ -31,7 +35,13 @@ from brain_v42.models.delivery import (
     MilestoneReceipt,
     summarize_view,
 )
-from brain_v42.provenance import UNEXPANDED_ACTOR, UNKNOWN_ACTOR, get_current_actor
+from brain_v42.provenance import (
+    UNEXPANDED_ACTOR,
+    UNKNOWN_ACTOR,
+    get_current_actor,
+    get_current_peer,
+    get_current_principal,
+)
 from brain_v42.services.delivery_service import DeliveryService
 
 TicketId = Annotated[
@@ -60,8 +70,59 @@ TTL = Annotated[int, Field(strict=True, ge=60, le=3600)]
 Digest = Annotated[str, Field(strict=True, pattern=r"^[0-9a-f]{64}$")]
 Cursor = Annotated[str, Field(strict=True, min_length=1, max_length=1000)]
 ClaimToken = Annotated[SecretStr, Field(min_length=1, max_length=1000)]
+Issuer = Annotated[
+    str,
+    Field(strict=True, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_][A-Za-z0-9._:-]{0,63}$"),
+]
 Work = Literal["implement", "repair", "review", "integrate", "accept"]
 Stage = Literal["awaiting_artifact", "proposed", "verified", "integrated"]
+
+
+class _IssuerAuthorizationError(AuthorizationError, ToolError):
+    """Preserve authorization refusals through delivery's ToolError redaction boundary."""
+
+
+def _checked_issuer(issuer: str | None, *, tool: str) -> str:
+    """Authorize the stored issuer independently of the declared provenance actor."""
+    actor = get_current_actor()
+    caller = actor if issuer is None else issuer
+    client_id = get_current_principal()
+    if client_id is None:
+        # Shared-token mode has no registry that could prove another issuer's rights.
+        allowed = caller == actor
+    else:
+        principal = resolve_client_principal(get_access_token())
+        allowed = (
+            principal is not None
+            and principal.client_id == client_id
+            and (
+                (issuer is None and caller == principal.client_id)
+                or any(
+                    pattern != "@project"
+                    and (
+                        pattern == caller
+                        or (
+                            len(pattern) > 1
+                            and pattern.endswith("*")
+                            and pattern.count("*") == 1
+                            and caller.startswith(pattern[:-1])
+                        )
+                    )
+                    for pattern in principal.issuers
+                )
+            )
+        )
+    if not allowed:
+        emit_refusal(
+            "issuer_not_allowed",
+            status=403,
+            client_id=client_id,
+            declared_agent=actor,
+            peer=get_current_peer(),
+            tool=tool,
+        )
+        raise _IssuerAuthorizationError("issuer_not_allowed")
+    return caller
 
 
 def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None:
@@ -242,15 +303,18 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         expected_revision: Positive,
         expected_attempt: Positive,
         expected_delivery_digest: Digest,
+        issuer: Issuer | None = None,
     ) -> MilestoneReceipt:
         """Record the requester's acceptance of exact current integration evidence.
 
-        The caller label comes from X-Brain-Agent under the existing admin trust
-        boundary. An unknown caller cannot approve a delivery.
+        The issuer defaults to X-Brain-Agent. Credentials authorize an explicit
+        issuer through their issuer patterns; shared-token callers keep their actor.
+        An unknown caller cannot approve a delivery.
         """
-        caller = get_current_actor()
+        caller = get_current_actor() if issuer is None else issuer
         if not caller.strip() or caller in {UNKNOWN_ACTOR, UNEXPANDED_ACTOR}:
             raise DeliveryError("invalid_acceptance", "a declared requester caller is required")
+        caller = _checked_issuer(issuer, tool="brain_delivery_accept")
         return await delivery_svc.accept(
             UUID(ticket_id),
             actor_project=actor_project,
@@ -270,12 +334,14 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         idempotency_key: Key,
         emitted_at: Instant,
         contract_revision: Revision32 | None = None,
+        issuer: Issuer | None = None,
     ) -> DeliveryAttestation:
         """Record one issuer-declared delivery fact; Brain stores its shape and never judges its kind.
 
         `actor_project` is the ticket participant on whose behalf the fact is declared.
-        The issuer identity is the X-Brain-Agent caller label (declared provenance within
-        the admin boundary, as for brain_delivery_accept); an unknown caller is refused, and
+        The issuer defaults to X-Brain-Agent; an explicit issuer must match a credential
+        issuer pattern, or equal the actor in shared-token mode. It stays outside the
+        digested payload. An unknown caller is refused, and
         so is the delivery observer's own identity (`issuer_identity_reserved`): a declared
         label can never stand in for the observer, which writes through the repository.
         Form violations carry stable codes: `invalid_kind`, `invalid_payload` (a float, a
@@ -283,7 +349,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         (a naive instant). Replaying the same idempotency_key with identical content
         returns the stored row; different content is refused with `idempotency_key_reused`.
         """
-        caller = get_current_actor()
+        caller = get_current_actor() if issuer is None else issuer
         if not caller.strip() or caller in {UNKNOWN_ACTOR, UNEXPANDED_ACTOR}:
             raise DeliveryError("invalid_issuer", "a declared issuer caller is required")
         if caller == OBSERVER_IDENTITY:
@@ -291,6 +357,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
                 "issuer_identity_reserved",
                 "this issuer identity belongs to the delivery observer and cannot be declared",
             )
+        caller = _checked_issuer(issuer, tool="brain_delivery_attest")
         return await delivery_svc.attest(
             UUID(ticket_id),
             actor_project=actor_project,

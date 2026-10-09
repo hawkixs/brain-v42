@@ -422,8 +422,8 @@ catalog gateways.
 | `brain_delivery_claim` | `ticket_id`, `owner_key`, `work_kind`, `expected_workflow_version`, `expected_assessment_id`, `ttl_seconds=900` | `ClaimResult` |
 | `brain_delivery_claim_renew` | `ticket_id`, `owner_key`, `claim_token`, `epoch`, `ttl_seconds=900` | `ClaimState` |
 | `brain_delivery_claim_release` | `ticket_id`, `owner_key`, `claim_token`, `epoch` | `ClaimState` |
-| `brain_delivery_accept` | `ticket_id`, `rationale`, `expected_revision`, `expected_attempt`, `expected_delivery_digest` | `MilestoneReceipt` |
-| `brain_delivery_attest` | `ticket_id`, `kind`, `payload`, `idempotency_key`, `emitted_at`, `contract_revision=None` | `DeliveryAttestation` |
+| `brain_delivery_accept` | `ticket_id`, `rationale`, `expected_revision`, `expected_attempt`, `expected_delivery_digest`, `issuer=None` | `MilestoneReceipt` |
+| `brain_delivery_attest` | `ticket_id`, `kind`, `payload`, `idempotency_key`, `emitted_at`, `contract_revision=None`, `issuer=None` | `DeliveryAttestation` |
 | `brain_delivery_attestation_list` | `ticket_id=None`, `issuer_project=None`, `kind=None`, `since=None`, `until=None`, `limit=20`, `cursor=None` | `DeliveryAttestationPage` |
 
 `brain_delivery_list` summaries omit blocker details, proofs and context snapshots.
