@@ -2,7 +2,7 @@
 
 Persistent, typed project memory exposed through the Model Context Protocol (MCP). It stores decisions, learnings, snippets, runbooks, architecture decision records (ADRs), project focus, tickets, claims, and delivery evidence. PostgreSQL is the source of truth; PostgreSQL full-text search and pgvector provide retrieval, with an optional cross-encoder reranker. Neo4j is an optional relationship projection.
 
-brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.6.9 ships migrations 063 and 064 and recovery contract v22. See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
+brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.6.10 adds per-client issuer patterns and the delivery attestation API v1.1 on top of migrations 063 and 064 and recovery contract v22 (no new migration). See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
 
 ## Architecture
 
@@ -339,7 +339,7 @@ disaster-recovery proof, and metrics. Operators can suspend Dream and re-arm it 
 
 ## Versioning
 
-- The shipped version is **0.6.9**, and it stays `0.x` on purpose: a `1.0.0` would promise
+- The shipped version is **0.6.10**, and it stays `0.x` on purpose: a `1.0.0` would promise
   a stable interface and a way back, and this project has neither yet.
 - **No lossless downgrade is promised, at any version.** Several migrations protect stored
   history: **037** refuses when a session capture would be lost, **039** requires an explicit
