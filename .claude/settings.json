@@ -8,6 +8,8 @@
       "Bash(make layering)",
       "Bash(make pins)",
       "Bash(make test-unit)",
+      "Bash(make bandit)",
+      "Bash(make audit)",
       "Bash(git status)"
     ]
   }
