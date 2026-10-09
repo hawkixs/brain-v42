@@ -16,13 +16,11 @@ import structlog
 from sqlalchemy.engine import make_url
 
 from brain_v42.config import Settings
+from brain_v42.release_recovery import RESTORE_MARKER
 
 logger = structlog.get_logger(__name__)
 _ROLES = frozenset({"brain", "brain_app", "codex_ro", "pg_database_owner"})
 _BOOTSTRAP_ROLES = frozenset({"brain_app", "codex_ro"})
-_MARKER = re.compile(
-    r"brain-v42-restore sha256=[0-9a-f]{64} at=(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)"
-)
 _STATE_SQL = """
 SELECT json_build_object(
     'relations', COALESCE((
@@ -129,7 +127,7 @@ def _state(connection: list[str], env: dict[str, str]) -> str:
     if not relations:
         return "empty"
     marker = state.get("marker")
-    match = _MARKER.fullmatch(marker) if isinstance(marker, str) else None
+    match = RESTORE_MARKER.fullmatch(marker) if isinstance(marker, str) else None
     if ["alembic_version", "r"] in relations and match:
         try:
             datetime.strptime(match[1], "%Y-%m-%dT%H:%M:%SZ")

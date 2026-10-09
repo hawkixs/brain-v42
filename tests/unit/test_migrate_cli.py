@@ -14,15 +14,17 @@ from unittest.mock import Mock
 
 import pytest
 
+from brain_v42 import release_recovery
 from brain_v42.config import Settings
 from brain_v42.db import engine as db_engine
 from brain_v42.db import scram
 from brain_v42.db.engine import pg_server_settings
-from brain_v42.scripts import migrate_cli
+from brain_v42.scripts import migrate_cli, restore_cli
 
 ROOT = Path(__file__).parents[2]
 PASSWORD = "unit-only-password-'\\-never-log"
 OWNER_URL = "postgresql+asyncpg://owner:unit-only-owner-password@localhost:5432/test"
+RESTORE_COMMENT = "brain-v42-restore sha256=" + "a" * 64 + " at=2026-10-09T12:00:00Z"
 
 
 @dataclass
@@ -38,10 +40,15 @@ class Database:
     )
     fail_sql: str | None = None
     role_exists: bool = True
+    database_comment: Any = None
+    receipts: dict[str, Any] = field(default_factory=dict)
+    transactions: dict[int, list[str]] = field(default_factory=dict)
+    transaction: int = 0
 
     async def execute(self, statement: Any, parameters: dict[str, Any] | None = None) -> None:
         sql = str(statement)
         self.calls.append((sql, parameters or {}))
+        self.transactions.setdefault(self.transaction, []).append(sql)
         # Exercise SQLAlchemy's parameter discovery too: SCRAM's colon-separated
         # keys must not accidentally become bind parameters inside a quoted literal.
         if "PASSWORD" in sql:
@@ -52,11 +59,13 @@ class Database:
     async def exec_driver_sql(self, statement: str) -> None:
         await self.execute(statement)
 
-    async def scalar(self, statement: Any) -> str | bool:
+    async def scalar(self, statement: Any) -> Any:
         await self.execute(statement)
         if "pg_catalog.pg_roles" in str(statement):
             return self.role_exists
-        return json.dumps(self.receipt)
+        if "pg_catalog.shobj_description" in str(statement):
+            return self.database_comment
+        return json.dumps(self.receipts.get(str(statement), self.receipt))
 
     async def run_sync(self, callback: Any) -> tuple[str, ...]:
         return self.heads
@@ -67,6 +76,7 @@ class Database:
 
     @asynccontextmanager
     async def begin(self):
+        self.transaction += 1
         yield self
 
     async def dispose(self) -> None:
@@ -130,6 +140,203 @@ def test_equal_head_proves_live_contract_without_upgrade_or_compat_write(runtime
     assert "SELECT 'fixture-receipt'" in sql
     assert "SELECT 'restored-receipt'" not in sql
     assert sql.index("SET TRANSACTION READ ONLY") < sql.index("SELECT 'fixture-receipt'")
+
+
+def test_restore_and_migrate_share_the_restore_marker_pattern() -> None:
+    assert restore_cli.RESTORE_MARKER is release_recovery.RESTORE_MARKER
+    marker = "brain-v42-restore sha256=" + "a" * 64 + " at=2026-10-09T12:00:00Z"
+    match = release_recovery.RESTORE_MARKER.fullmatch(marker)
+    assert match is not None and match[1] == "2026-10-09T12:00:00Z"
+    assert release_recovery.RESTORE_MARKER.fullmatch(marker + " suffix") is None
+
+
+def test_loaded_contract_carries_the_verified_restored_sql(runtime) -> None:
+    _, _, _, directory = runtime
+    contract = migrate_cli._load_contract(directory, "064")
+    assert contract.restored_sql == (directory / "restored.sql").read_text()
+
+
+@pytest.fixture
+def restored_runtime(runtime):
+    database, _, _, directory = runtime
+    database.database_comment = RESTORE_COMMENT
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["checks"].append({"id": "sandbox_gap"})
+    manifest_path.write_text(json.dumps(manifest))
+    binding_path = directory / "recovery-binding.json"
+    binding = json.loads(binding_path.read_text())
+    binding["manifest"]["sha256"] = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    binding_path.write_text(json.dumps(binding))
+    database.receipts = {
+        "SELECT 'restored-receipt'": {
+            "contract_id": "unit/recovery/v1",
+            "schema_version": 1,
+            "checks": [
+                {"id": "shape", "status": "pass", "observed": {"fingerprint": "restored"}},
+                {
+                    "id": "sandbox_gap",
+                    "status": "pass",
+                    "observed": "not_applicable: sandbox cannot prove this",
+                },
+            ],
+        },
+        "SELECT 'fixture-receipt'": {
+            "contract_id": "unit/recovery/v1",
+            "schema_version": 1,
+            # Order must not matter when matching the sandbox gaps by ID.
+            "checks": [
+                {"id": "sandbox_gap", "status": "pass"},
+                {"id": "shape", "status": "pass"},
+            ],
+        },
+    }
+    return runtime
+
+
+def assert_restored_proof(database: Database, *, live: bool = True) -> None:
+    proof = next(
+        statements
+        for statements in database.transactions.values()
+        if "SET TRANSACTION READ ONLY" in statements
+    )
+    assert proof[0] == "SET TRANSACTION READ ONLY"
+    marker_queries = [sql for sql in proof if "pg_catalog.shobj_description" in sql]
+    assert len(marker_queries) == 1
+    assert "pg_catalog.pg_database" in marker_queries[0]
+    assert "current_database()" in marker_queries[0]
+    assert proof.index(marker_queries[0]) < proof.index("SELECT 'restored-receipt'")
+    if live:
+        assert proof.index("SELECT 'restored-receipt'") < proof.index("SELECT 'fixture-receipt'")
+    else:
+        assert "SELECT 'fixture-receipt'" not in proof
+
+
+def test_marked_database_proves_restored_then_live_sandbox_gaps(
+    restored_runtime, monkeypatch
+) -> None:
+    database, arguments, _, _ = restored_runtime
+    database.receipts["SELECT 'fixture-receipt'"]["checks"][1]["status"] = "fail"
+    log = Mock()
+    monkeypatch.setattr(migrate_cli, "logger", log)
+    assert migrate_cli.main(arguments) == 0
+    assert_restored_proof(database)
+    log.info.assert_called_once_with(
+        "migration_contract_proven",
+        code_head="064",
+        contract_id="unit/recovery/v1",
+        attestation="restored",
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "failed",
+        "empty",
+        "wrong_identity",
+        "wrong_version",
+        "boolean_version",
+        "duplicate",
+        "missing",
+    ],
+)
+def test_marked_database_refuses_an_incomplete_or_failing_restored_receipt(
+    restored_runtime, mutation, capsys
+) -> None:
+    database, arguments, _, _ = restored_runtime
+    receipt = database.receipts["SELECT 'restored-receipt'"]
+    if mutation == "failed":
+        receipt["checks"][0]["status"] = "fail"
+    elif mutation == "empty":
+        receipt["checks"] = []
+    elif mutation == "wrong_identity":
+        receipt["contract_id"] = "another/contract"
+    elif mutation == "wrong_version":
+        receipt["schema_version"] = 2
+    elif mutation == "boolean_version":
+        receipt["schema_version"] = True
+    elif mutation == "duplicate":
+        receipt["checks"] *= 2
+    else:
+        receipt["checks"].pop()
+    assert migrate_cli.main(arguments) == 1
+    output = capsys.readouterr()
+    assert "recovery_contract_not_proven" in output.out + output.err
+    assert_restored_proof(database, live=False)
+
+
+def test_marked_database_refuses_a_live_sandbox_gap_failure(restored_runtime, capsys) -> None:
+    database, arguments, _, _ = restored_runtime
+    database.receipts["SELECT 'fixture-receipt'"]["checks"][0]["status"] = "fail"
+    assert migrate_cli.main(arguments) == 1
+    output = capsys.readouterr()
+    assert "recovery_contract_not_proven" in output.out + output.err
+    assert_restored_proof(database)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["check_ids", "contract_id", "schema_version", "boolean_version", "duplicate", "empty"],
+)
+def test_marked_database_refuses_a_live_receipt_with_different_identity_or_checks(
+    restored_runtime, mutation, capsys
+) -> None:
+    database, arguments, _, _ = restored_runtime
+    receipt = database.receipts["SELECT 'fixture-receipt'"]
+    if mutation == "check_ids":
+        receipt["checks"][1]["id"] = "unexpected"
+    elif mutation == "contract_id":
+        receipt["contract_id"] = "another/contract"
+    elif mutation == "schema_version":
+        receipt["schema_version"] = 2
+    elif mutation == "boolean_version":
+        receipt["schema_version"] = True
+    elif mutation == "duplicate":
+        receipt["checks"] *= 2
+    else:
+        receipt["checks"] = []
+    assert migrate_cli.main(arguments) == 1
+    output = capsys.readouterr()
+    assert "recovery_contract_not_proven" in output.out + output.err
+    assert_restored_proof(database)
+
+
+@pytest.mark.parametrize(
+    "comment",
+    [
+        None,
+        42,
+        "",
+        RESTORE_COMMENT.replace("a" * 64, "a" * 63),
+        RESTORE_COMMENT + " suffix",
+        RESTORE_COMMENT + "\n",
+    ],
+)
+def test_comments_without_a_full_restore_marker_use_only_live_proof(
+    runtime, comment, monkeypatch
+) -> None:
+    database, arguments, _, _ = runtime
+    database.database_comment = comment
+    log = Mock()
+    monkeypatch.setattr(migrate_cli, "logger", log)
+    assert migrate_cli.main(arguments) == 0
+    proof = next(
+        statements
+        for statements in database.transactions.values()
+        if "SET TRANSACTION READ ONLY" in statements
+    )
+    marker_queries = [sql for sql in proof if "pg_catalog.shobj_description" in sql]
+    assert len(marker_queries) == 1
+    assert proof.index("SET TRANSACTION READ ONLY") < proof.index(marker_queries[0])
+    assert proof.index(marker_queries[0]) < proof.index("SELECT 'fixture-receipt'")
+    assert "SELECT 'restored-receipt'" not in [sql for sql, _ in database.calls]
+    log.info.assert_called_once_with(
+        "migration_contract_proven",
+        code_head="064",
+        contract_id="unit/recovery/v1",
+        attestation="live",
+    )
 
 
 def test_ancestor_upgrades_then_records_head_pinned_compat_before_proving(runtime) -> None:
