@@ -787,11 +787,18 @@ class Settings(BaseSettings):
     @classmethod
     def _client_activity_allowed_host_is_bare(cls, value: str) -> str:
         """Refuse URL syntax and host lists so the opt-in names exactly one peer."""
-        if value and (
-            len(value) > 253
-            or any(
-                re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) is None
-                for label in value.split(".")
+        if (
+            value
+            and (
+                len(value) > 253
+                or any(
+                    re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) is None
+                    for label in value.split(".")
+                )
+                # A last label that does not start with a letter can be an IP
+                # literal (decimal, octal or hex, as inet_aton reads them), not a
+                # peer name.
+                or not value.rsplit(".", 1)[-1][:1].isalpha()
             )
         ):
             raise ValueError("client_activity_allowed_host must be a bare host name")

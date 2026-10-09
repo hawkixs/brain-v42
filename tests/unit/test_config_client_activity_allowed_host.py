@@ -80,3 +80,33 @@ def test_named_peer_preserves_loopback_targets(host: str) -> None:
         ).client_activity_url
         == url
     )
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "10.0.0.5",
+        "127.0.0.1",
+        "0",
+        "8.8.8.8",
+        "metrics.123",
+        "0xAABBCCDD",
+        "0x7f.1",
+        "017700000001",
+    ],
+)
+def test_allowed_host_refuses_ip_literals_and_numeric_top_labels(host: str) -> None:
+    # A name is the contract: an IP literal would bypass the Compose service
+    # name and could point anywhere on the network.
+    with pytest.raises(
+        ValidationError, match="client_activity_allowed_host must be a bare host name"
+    ):
+        Settings(_env_file=None, client_activity_allowed_host=host)
+
+
+@pytest.mark.parametrize("host", ["metrics", "brain-v42-metrics", "metrics2", "metrics.internal"])
+def test_allowed_host_accepts_compose_service_names(host: str) -> None:
+    assert (
+        Settings(_env_file=None, client_activity_allowed_host=host).client_activity_allowed_host
+        == host
+    )
