@@ -155,6 +155,9 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # elevations and audit outbox; its project-key predicate is inherited.
         "brain-v42-v21.sql",
         "brain-v42-v21-pgrestore.sql",
+        # v22 preserves every v21 schema predicate and adds only the 064 ACL delta.
+        "brain-v42-v22.sql",
+        "brain-v42-v22-pgrestore.sql",
     }
 )
 
@@ -242,8 +245,9 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     """Non-vacuity guard: count the surfaces, so none escapes in silence.
 
-    FORTY-TWO guardians besides `_KEBAB` (1 metadata + 2 migrations + 39 assets) since
-    the v21 mint of 2026-10-06 — it was forty at the v20 mint of 2026-10-05, thirty-eight at the v19 mint, thirty-six at the v18 mint of 2026-10-03,
+    FORTY-FOUR guardians besides `_KEBAB` (1 metadata + 2 migrations + 41 assets) since
+    the v22 mint — it was forty-two at the v21 mint of 2026-10-06, forty at the v20
+    mint of 2026-10-05, thirty-eight at the v19 mint, thirty-six at the v18 mint of 2026-10-03,
     thirty-four at the v17 mint, thirty-three at the v16 mint of 2026-10-02,
     thirty at the v15 mint of 2026-09-30, eight when this anchor was written, fourteen at
     the v7 mint, eighteen at the v9 mint, twenty at the v10 mint, twenty-two at the v11
@@ -268,9 +272,9 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 39), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 41), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
-        f"attestation={recovery_sites} ; attendu 1/2/39). Recenser avant de corriger le "
+        f"attestation={recovery_sites} ; attendu 1/2/41). Recenser avant de corriger le "
         "compte : c'est ce recensement qui a été faux trois fois."
     )

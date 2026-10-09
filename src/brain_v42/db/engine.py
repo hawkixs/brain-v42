@@ -27,6 +27,10 @@ logger = structlog.get_logger(__name__)
 
 EngineProfile = Literal["interactive", "maintenance", "metrics"]
 
+# Shared by the engine and the migrate CLI's runtime connection budget.
+PG_POOL_SIZE = 20
+PG_MAX_OVERFLOW = 10
+
 # The metrics scrape path runs about fifteen cheap queries per poll: a lock wait
 # or an idle transaction there is a bug, so these two are constants, not knobs.
 _METRICS_LOCK_TIMEOUT_MS = 5_000
@@ -116,8 +120,8 @@ def get_engine() -> AsyncEngine:
         settings = get_settings()
         _engine = create_async_engine(
             settings.postgres_url,
-            pool_size=20,
-            max_overflow=10,
+            pool_size=PG_POOL_SIZE,
+            max_overflow=PG_MAX_OVERFLOW,
             pool_timeout=10,
             pool_recycle=1800,
             pool_pre_ping=True,

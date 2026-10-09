@@ -10,6 +10,7 @@ The logic under test is pure, so none of this needs a database.
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 from pathlib import Path
@@ -197,6 +198,35 @@ def test_every_downgrading_file_requests_the_fence() -> None:
 # ---------------------------------------------------------------------------
 # The fence: restore what the test left behind, and never do it silently
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "tests/integration/db/test_migrate_cli_db.py",
+        "tests/integration/db/test_migration_064_runtime_role.py",
+    ],
+)
+def test_runtime_role_downgrading_tests_request_the_fence(path: str) -> None:
+    """Each runtime-role downgrade must request the guard, even on a private head."""
+    tree = ast.parse((_REPO_ROOT / path).read_text())
+    downgrading_tests = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name.startswith("test_")
+        and any(
+            isinstance(child, ast.Constant) and child.value == "downgrade"
+            for child in ast.walk(node)
+        )
+    ]
+    assert downgrading_tests, f"no downgrading tests found in {path}"
+    missing = [
+        node.name
+        for node in downgrading_tests
+        if "migration_downgrade_fence" not in {arg.arg for arg in node.args.args}
+    ]
+    assert missing == [], f"downgrading tests in {path} do not request the fence: {missing}"
 
 
 def _drift(**overrides: object) -> str:

@@ -222,6 +222,8 @@ jobs:
       # the prod-guard.
       POSTGRES_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
       BRAIN_V42_TEST_DB_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
+      # This job's whole PostgreSQL cluster is a throwaway service container.
+      BRAIN_V42_TEST_DISPOSABLE_CLUSTER: "1"
       GRAPH_ENABLED: "false"
       # The GPU embedding/reranker services are absent in CI; the tests that hit
       # localhost:8003 carry their own pytest.skip guard.

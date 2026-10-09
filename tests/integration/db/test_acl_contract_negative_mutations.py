@@ -11,10 +11,9 @@ The difference matters. An asset-side mutation proves the test reads the asset; 
 database-side mutation proves the CONTRACT sees the damage. Only the second one
 answers "would this receipt have caught it".
 
-Measured here on 2026-09-03, and the baseline was worth measuring on its own: the
-ACL asset passes on a database the alembic chain has just built — all four
-counters at zero. The yardstick never replayed it, so that had never been
-established.
+Replay the live v22 ACL asset on the current chain-built database. It preserves
+v11's codex/ownership checks and adds migration 064's runtime ACL declarations;
+v8's cluster-role inventory predates brain_app and cannot attest this era.
 
 **What this module deliberately does NOT mutate: anything cluster-wide.**
 `ALTER ROLE`, `CREATE ROLE` and role membership live in the cluster, not in a
@@ -43,7 +42,7 @@ from tests.integration.disposable_db import fresh_head_database, replay_attestat
 pytestmark = pytest.mark.integration
 
 PROJECT_ROOT = Path(__file__).parents[3]
-ACL_ASSET = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v8-acl.sql"
+ACL_ASSET = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v22-acl.sql"
 
 #: The term of `contract_grant_mismatches` that catches a grant that VANISHED.
 #: Removing it is how this module proves the term is load-bearing rather than
