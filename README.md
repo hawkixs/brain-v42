@@ -230,7 +230,7 @@ the first provider proves nothing about fallthrough.
 
 ## Production state
 
-The repository migration target is migration 063. No page in this repository proves a
+The repository migration target is migration 064. No page in this repository proves a
 live schema head — **measure it, do not read it here**:
 
 ```bash

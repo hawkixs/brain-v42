@@ -1707,7 +1707,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_063_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_064_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1717,7 +1717,9 @@ def test_repository_head_063_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 063 on 2026-10-06 — the client credential registry,
+    silently. Bumped to 064 on 2026-10-06 — runtime role grants and default
+    privileges, with no new tables or schema-shape changes. Previously bumped to
+    063 on 2026-10-06 — the client credential registry,
     admin elevations and the schema compatibility ledger: three tables and one
     trigger, not applied to production at the time of writing. Previously bumped to
     062 on 2026-10-05 — two partial indexes on
@@ -1789,7 +1791,7 @@ def test_repository_head_063_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     head = _repository_head()
-    assert head == "063"
+    assert head == "064"
 
     # Everything below is DERIVED from that measured head. It used to be COPIED,
     # and that is precisely how `SCHEMA.md` came to announce 049 while the chain

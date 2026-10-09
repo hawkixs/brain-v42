@@ -75,8 +75,11 @@ brain-v42-domain-backfill-apply = "brain_v42.scripts.domain_backfill_apply:main"
 brain-v42-repair-plan-index = "brain_v42.scripts.repair_plan_index:main"
 brain-v42-rebuild-graph-projection = "brain_v42.scripts.rebuild_graph_projection:main"
 brain-v42-recover-graph-projection = "brain_v42.scripts.recover_graph_projection:main"
+brain-v42-graph-bootstrap = "brain_v42.scripts.graph_bootstrap:main"
 brain-v42-mint-dream-capability-registry = "brain_v42.scripts.mint_dream_capability_registry:main"
 brain-v42-domain-backfill = "brain_v42.scripts.domain_backfill:main"
+brain-v42-migrate = "brain_v42.scripts.migrate_cli:main"
+brain-v42-restore = "brain_v42.scripts.restore_cli:main"
 
 [project.optional-dependencies]
 # OTel tracing of tool calls — a SEPARATE extra, never in `dependencies`.

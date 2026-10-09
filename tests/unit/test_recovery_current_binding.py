@@ -197,15 +197,15 @@ def test_a_missing_key_is_refused() -> None:
 def test_a_migration_that_lands_without_its_contract_fails_the_gate(tmp_path: Path) -> None:
     """The scenario this whole module exists to catch.
 
-    A new migration ships (`064`, beyond the `063` this repository's `current.json`
+    A new migration ships (`065`, beyond the `064` this repository's `current.json`
     declares) and nobody minted its recovery contract yet. The gate must fail, and
     its message must tell the author what to do about it — not just that something
     disagrees.
     """
-    _write_revision(tmp_path, "063", None)
-    _write_revision(tmp_path, "064", "063")
+    _write_revision(tmp_path, "064", None)
+    _write_revision(tmp_path, "065", "064")
     new_shipped_head = release.head_of_versions_strict(tmp_path)
-    assert new_shipped_head == "064"
+    assert new_shipped_head == "065"
 
     binding = load_binding(CURRENT_JSON)
     problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head=new_shipped_head)

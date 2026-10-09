@@ -276,7 +276,11 @@ if TYPE_CHECKING:
 # `tests/unit/test_plan_index_repair_review_block.py` derives the reviewed set
 # from this block and fails if the constant below outruns it, or if a revision
 # is skipped between the first entry and the head.
-_REQUIRED_ALEMBIC_HEAD = "063"
+# Bumped to 064 after reviewing the complete migration: only runtime role ACLs
+# and default privileges change. No column, constraint, index or trigger changes
+# on indexed_plans, indexed_plan_chunks or project_contexts. The repair's DELETEs
+# and context UPDATEs retain their behavior; 064 is inert on their schema shape.
+_REQUIRED_ALEMBIC_HEAD = "064"
 
 
 class RepairStore:
