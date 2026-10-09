@@ -16,6 +16,10 @@
 # /etc/brain-v42/neo4j-auth: uid 7474, mode 0600 (neo4j/password; _FILE pattern)
 # /etc/brain-v42/brain-app-password: uid 1000, mode 0600 (matches runtime DSN password)
 # /etc/brain-v42/embedding-token: uid 1000, mode 0600 (hosted embedding API key)
+# /etc/brain-v42/rerank-api-key: uid 1000, mode 0600 (OpenRouter rerank key, value only;
+# read by mcp only). Rerank rollback: set the x-rerank-env block to BRAIN_RERANK_BACKEND
+# "none" alone (the settings validator refuses any other rerank line next to it), then
+# redeploy through the rail. A rotated key needs an explicit recreate.
 # /etc/brain-v42/github-app-key.pem: uid 1000, mode 0600 (GitHub App private key)
 # /etc/brain-v42/delivery-observer.env: uid 1000, mode 0600 (the real observer config,
 # read via --env-file; BRAIN_DELIVERY_ENABLED=true, BRAIN_DELIVERY_POSTGRES_URL for brain_app,
@@ -70,9 +74,15 @@ x-embedding-env: &embedding-env
   EMBEDDING_DIMENSION: "1536"
   BRAIN_EMBEDDING_TOKEN_FILE: /run/secrets/embedding_token
 
-# lot 0.6.10 replaces this block with the hosted rerank settings
+# Hosted reranker (lot 0.6.10, ruling 26208df8): Voyage rerank-3-lite through OpenRouter,
+# provider pinned, data collection denied. Rollback: keep only BRAIN_RERANK_BACKEND: "none".
 x-rerank-env: &rerank-env
-  BRAIN_RERANK_BACKEND: "none"
+  BRAIN_RERANK_BACKEND: "cohere"
+  BRAIN_RERANKER_URL: https://openrouter.ai/api
+  BRAIN_RERANK_MODEL: voyageai/rerank-3-lite
+  BRAIN_RERANK_HEALTH_PATH: /v1/key
+  BRAIN_RERANK_PROVIDER: '{"only":["voyageai"],"allow_fallbacks":false,"data_collection":"deny"}'
+  BRAIN_RERANK_API_KEY_FILE: /run/secrets/rerank_api_key
 
 x-server: &server
   restart: unless-stopped
@@ -203,6 +213,7 @@ services:
       BRAIN_CLIENT_ACTIVITY_ALLOWED_HOST: "metrics"
     secrets:
       - embedding_token
+      - rerank_api_key
     volumes:
       - /etc/brain-v42/activity:/etc/brain-v42/activity:ro
     healthcheck:
@@ -289,6 +300,8 @@ secrets:
     file: /etc/brain-v42/brain-app-password
   embedding_token:
     file: /etc/brain-v42/embedding-token
+  rerank_api_key:
+    file: /etc/brain-v42/rerank-api-key
   github_app_key:
     file: /etc/brain-v42/github-app-key.pem
   observer_config:
