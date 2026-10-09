@@ -11,6 +11,10 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 from structlog.testing import capture_logs
 
 from brain_v42.credentials import verifier as verifier_module
+from brain_v42.credentials.agent_unresolved import (
+    agent_unresolved_counts,
+    reset_agent_unresolved_counts,
+)
 from brain_v42.credentials.reasons import refusal_counts, reset_refusal_counts
 from brain_v42.credentials.verifier import CredentialVerifier
 from brain_v42.provenance import get_current_principal
@@ -59,8 +63,10 @@ def reset(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
         "brain_v42.mcp.credentials_http._seen_unresolved_agents", set(), raising=False
     )
     reset_refusal_counts()
+    reset_agent_unresolved_counts()
     yield
     reset_refusal_counts()
+    reset_agent_unresolved_counts()
 
 
 async def verifier(*, refresh: bool = True) -> CredentialVerifier:
@@ -223,6 +229,8 @@ async def test_unresolved_project_falls_back_to_client_with_one_bounded_warning(
             response = await request(guard, token=TOKEN, agent=agent)
             assert response.status_code == 200
             assert response.json() == {"actor": "red-rail"}
+        assert agent_unresolved_counts() == {reason: 2}
+        assert len(logs) == 1
         response = await request(guard, token=TOKEN, agent="another-project")
         assert response.status_code == 200
         assert response.json() == {"actor": "red-rail"}
@@ -257,6 +265,7 @@ async def test_unresolved_project_warning_memo_is_bounded_per_process() -> None:
         assert (await request(guards[1], token=TOKEN, agent="unknown-0")).status_code == 200
     assert len(logs) == 64
     assert all(entry["event"] == "mcp_auth.agent_unresolved" for entry in logs)
+    assert agent_unresolved_counts() == {"unknown_project": 71}
 
 
 def test_unresolved_warning_memo_distinguishes_clients_and_reasons() -> None:
@@ -282,6 +291,7 @@ async def test_unresolved_agent_without_project_issuer_keeps_exact_refusal(agent
     assert len(logs) == 1
     assert logs[0]["event"] == "mcp_auth.refused"
     assert logs[0]["reason"] == "agent_mismatch"
+    assert agent_unresolved_counts() == {}
 
 
 async def test_raw_issuer_match_precedes_project_fallback() -> None:

@@ -15,6 +15,7 @@ from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from brain_v42.credentials.agent_unresolved import count_agent_unresolved
 from brain_v42.credentials.reasons import TRANSPORT_STATUSES, emit_refusal
 from brain_v42.credentials.redact import short_id
 from brain_v42.credentials.verifier import CredentialRefused, CredentialVerifier, VerifiedPrincipal
@@ -58,6 +59,7 @@ def _fallback_unresolved_project_actor(
     client_id: str, agent: str, reason: Literal["not_kebab", "unknown_project"]
 ) -> str:
     """Option B: retain access under the client actor while surfacing lost project attribution."""
+    count_agent_unresolved(reason)
     key = (client_id, agent[:64], reason)
     if (
         key not in _seen_unresolved_agents

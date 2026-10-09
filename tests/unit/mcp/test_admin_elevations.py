@@ -28,13 +28,16 @@ TOKEN = "synthetic-elevation-bearer"
 
 @pytest.fixture(autouse=True)
 def counters() -> Iterator[None]:
+    from brain_v42.credentials.agent_unresolved import reset_agent_unresolved_counts
     from brain_v42.credentials.elevation_refusals import reset_elevation_refusal_counts
 
     reset_refusal_counts()
     reset_elevation_refusal_counts()
+    reset_agent_unresolved_counts()
     yield
     reset_refusal_counts()
     reset_elevation_refusal_counts()
+    reset_agent_unresolved_counts()
 
 
 @pytest.fixture
