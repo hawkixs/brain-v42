@@ -1,0 +1,115 @@
+{
+  "digest": "sha256:9fd7231cd2b8c32067535e15c440bd27779fbd352117b08821455c93162a6e0d",
+  "idempotency_key": "contract:brain-v42:1",
+  "issuer": "agent:claude-code:a65d41ad-1705-4534-bedd-5f13f069f2f1",
+  "kind": "contract",
+  "payload": {
+    "contract": {
+      "acceptance_criteria": [
+        "C1 the first rail deploy restores the verified workstation dump into a fresh cluster, migrates 061->064 and bootstraps the graph through idempotent one-shots, and goes healthy within the declared wait budget",
+        "C2 every client authenticates with its own credential; a revoked or unknown token is refused (401) and counted in mcp_auth_refused; admin rights exist only through a time-boxed elevation",
+        "C3 /version on red-base reports the released version, git sha and image digest exactly",
+        "C4 red-backup runs and drills against the red-base brain green, and the recovery contract v22 binding in the image matches the deployed digest",
+        "C5 the workstation database stays read-only and restorable as the rollback until the operator retires it after the post-cutover follow-up (G12)",
+        "C6 rail check green through release before the operator's go; deploy, observe and learn green after the cutover and the second release",
+        "C7 search reranks through the hosted Voyage reranker (OpenRouter) from the first deploy; BRAIN_RERANK_BACKEND=none is the tested rollback and leaves search serving unreranked"
+      ],
+      "acceptance_mode": "explicit",
+      "constraints": [
+        "Every deployment to red-base goes through red-rail; no hand docker compose except the operator's recorded empty-volume retry",
+        "MCP, metrics and every database stay off the public internet: WireGuard bind plus per-client bearer",
+        "No window work between 00:55 and 03:00 UTC (red-backup night run)"
+      ],
+      "deliverables": [
+        {
+          "key": "main",
+          "no_checks_reason": null,
+          "repository": "hawkixs/brain-v42",
+          "repository_id": null,
+          "required_checks": [
+            {
+              "app_slug": "github-actions",
+              "kind": "check_run",
+              "name": "lint-ruff",
+              "provider_id": null
+            },
+            {
+              "app_slug": "github-actions",
+              "kind": "check_run",
+              "name": "lint-mypy",
+              "provider_id": null
+            },
+            {
+              "app_slug": "github-actions",
+              "kind": "check_run",
+              "name": "test-unit",
+              "provider_id": null
+            },
+            {
+              "app_slug": "github-actions",
+              "kind": "check_run",
+              "name": "test-integration",
+              "provider_id": null
+            },
+            {
+              "app_slug": "github-actions",
+              "kind": "check_run",
+              "name": "test-coverage",
+              "provider_id": null
+            },
+            {
+              "app_slug": "github-actions",
+              "kind": "check_run",
+              "name": "security-bandit",
+              "provider_id": null
+            },
+            {
+              "app_slug": "github-actions",
+              "kind": "check_run",
+              "name": "security-gitleaks",
+              "provider_id": null
+            },
+            {
+              "app_slug": "github-actions",
+              "kind": "check_run",
+              "name": "security-pip-audit",
+              "provider_id": null
+            },
+            {
+              "app_slug": "github-actions",
+              "kind": "check_run",
+              "name": "security-pip-audit-embedding-supervisor",
+              "provider_id": null
+            },
+            {
+              "app_slug": "red-rail-reviewer",
+              "kind": "check_run",
+              "name": "red-rail/review",
+              "provider_id": null
+            },
+            {
+              "app_slug": null,
+              "kind": "commit_status",
+              "name": "independent-review",
+              "provider_id": 8717916
+            }
+          ],
+          "review": {
+            "allowed_reviewers": [
+              "red-rail-reviewer[bot]"
+            ],
+            "required_approvals": 1
+          },
+          "target_branch": "main"
+        }
+      ],
+      "objective": "Move brain-v42 production off the workstation to red-base as release 0.6.9, deployed exclusively through red-rail (private-compose), with per-client credentials replacing the shared MCP bearer.",
+      "priority": 0,
+      "schema_version": 1
+    },
+    "reason": "Programme 2f70b779 (brain-v42 moves to red-base); merge rule 39f7ea9f requires a green rail check, and operator ruling c3d40d76 applies it before the go. The independent-review selector (provider 8717916, the hawkixs account) proves the status was posted with that account's token, not who judged."
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-09T14:57:15.467959Z",
+  "schema_version": 1
+}
