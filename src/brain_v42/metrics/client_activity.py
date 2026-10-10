@@ -63,7 +63,7 @@ _TRANSPORT_KEY_PREFIX = "transport-"
 # through ``_MODEL_PATTERN``. Strictly ASCII, and deliberately so: the label is
 # an identity, and letting unicode through would open impersonation by
 # homoglyph or by bidirectional override.
-_ACTOR_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,63}\Z")
+_ACTOR_PATTERN = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._:-]{0,63}\Z")
 _REJECTED_ACTOR = "_rejected"
 
 
