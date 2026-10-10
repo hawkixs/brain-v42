@@ -173,6 +173,115 @@ async def test_project_issuer_accepts_existing_canonical_project(agent: str) -> 
     assert logs == []
 
 
+@pytest.mark.parametrize("suffix", ["", "/.claude/worktrees/topic/src", "/.worktrees/topic/src"])
+@pytest.mark.parametrize("full_project_exists", [False, True])
+async def test_project_issuer_never_authorizes_a_truncated_project_collision(
+    suffix: str, full_project_exists: bool
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from starlette.responses import JSONResponse
+
+    from brain_v42.credentials.verifier import VerifiedPrincipal
+    from brain_v42.mcp.credentials_http import CredentialGuard
+    from brain_v42.provenance import get_current_actor
+
+    key = "a" * 64
+    long_key = key + "-x"
+    projects = {key, long_key} if full_project_exists else {key}
+    core = AsyncMock(spec=CredentialVerifier)
+    core.verify.return_value = VerifiedPrincipal(
+        "workstation-claude", frozenset({"read"}), frozenset({"@project"}), ROW_ID, None
+    )
+    core.project_exists.side_effect = lambda candidate: candidate in projects
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await JSONResponse(
+            {"actor": get_current_actor(), "project": scope["state"]["brain_actor_project"]}
+        )(scope, receive, send)
+
+    with capture_logs() as logs:
+        response = await request(
+            CredentialGuard(app, verifier=core),
+            token=TOKEN,
+            agent=f"/checkout/{long_key}{suffix}",
+        )
+    assert response.status_code == 200
+    assert response.json() == {"actor": "workstation-claude", "project": None}
+    assert agent_unresolved_counts() == {"unknown_project": 1}
+    assert logs == [
+        {
+            "event": "mcp_auth.agent_unresolved",
+            "log_level": "warning",
+            "client_id": "workstation-claude",
+            "agent": key,
+            "reason": "unknown_project",
+        }
+    ]
+
+
+@pytest.mark.parametrize("agent_prefix", ["", "/checkout/"])
+async def test_project_issuer_accepts_an_exact_max_length_project(agent_prefix: str) -> None:
+    from unittest.mock import AsyncMock
+
+    from starlette.responses import JSONResponse
+
+    from brain_v42.credentials.verifier import VerifiedPrincipal
+    from brain_v42.mcp.credentials_http import CredentialGuard
+    from brain_v42.provenance import get_current_actor
+
+    key = "a" * 64
+    core = AsyncMock(spec=CredentialVerifier)
+    core.verify.return_value = VerifiedPrincipal(
+        "workstation-claude", frozenset({"read"}), frozenset({"@project"}), ROW_ID, None
+    )
+    core.project_exists.side_effect = lambda candidate: candidate == key
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await JSONResponse(
+            {"actor": get_current_actor(), "project": scope["state"]["brain_actor_project"]}
+        )(scope, receive, send)
+
+    with capture_logs() as logs:
+        response = await request(
+            CredentialGuard(app, verifier=core), token=TOKEN, agent=agent_prefix + key
+        )
+    assert response.status_code == 200
+    assert response.json() == {"actor": key, "project": key}
+    assert agent_unresolved_counts() == {}
+    assert logs == []
+
+
+async def test_exact_client_label_never_attributes_a_truncated_project_collision() -> None:
+    from unittest.mock import AsyncMock
+
+    from starlette.responses import JSONResponse
+
+    from brain_v42.credentials.verifier import VerifiedPrincipal
+    from brain_v42.mcp.credentials_http import CredentialGuard
+    from brain_v42.provenance import get_current_actor
+
+    key = "a" * 64
+    label = key + "-x"
+    core = AsyncMock(spec=CredentialVerifier)
+    core.verify.return_value = VerifiedPrincipal(
+        label, frozenset({"read"}), frozenset(), ROW_ID, None
+    )
+    core.project_exists.side_effect = lambda candidate: candidate == key
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await JSONResponse(
+            {"actor": get_current_actor(), "project": scope["state"]["brain_actor_project"]}
+        )(scope, receive, send)
+
+    with capture_logs() as logs:
+        response = await request(CredentialGuard(app, verifier=core), token=TOKEN, agent=label)
+    assert response.status_code == 200
+    assert response.json() == {"actor": key, "project": None}
+    assert agent_unresolved_counts() == {}
+    assert logs == []
+
+
 @pytest.mark.parametrize(
     ("pattern", "agent", "accepted"),
     [

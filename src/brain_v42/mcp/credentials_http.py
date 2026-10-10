@@ -22,9 +22,11 @@ from brain_v42.credentials.verifier import CredentialRefused, CredentialVerifier
 from brain_v42.mcp.http_security import PUBLIC_HTTP_PATHS, public_probe_scope
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.provenance import (
+    MAX_ACTOR_LENGTH,
     get_current_actor,
     get_current_principal,
     normalize_agent,
+    resolve_agent_path,
     set_current_actor,
     set_current_principal,
 )
@@ -72,16 +74,28 @@ def _fallback_unresolved_project_actor(
     return client_id
 
 
+def _existing_actor_project(raw: str, verifier: CredentialVerifier) -> str | None:
+    """Resolve full identities so provenance truncation cannot grant a different project."""
+    value = raw.strip()
+    if not value or "${" in value:
+        raise ValueError("Actor is not a project key")
+    value = resolve_agent_path(value)
+    if len(value) > MAX_ACTOR_LENGTH:
+        return None
+    key = canonicalize_project_key(value, strict=True)
+    return key if verifier.project_exists(key) else None
+
+
 def _project_actor(
     raw: str, verifier: CredentialVerifier, client_id: str
 ) -> tuple[str, str | None]:
     """Existence in the credential snapshot, rather than syntax, grants project actors."""
     agent = normalize_agent(raw)
     try:
-        key = canonicalize_project_key(agent, strict=True)
+        key = _existing_actor_project(raw, verifier)
     except ValueError:
         return _fallback_unresolved_project_actor(client_id, agent, "not_kebab"), None
-    if verifier.project_exists(key):
+    if key is not None:
         return key, key
     return _fallback_unresolved_project_actor(client_id, agent, "unknown_project"), None
 
@@ -254,8 +268,7 @@ class CredentialGuard:
         state["brain_actor"] = normalize_agent(actor)
         if actor_project is None:
             try:
-                key = canonicalize_project_key(state["brain_actor"], strict=True)
-                actor_project = key if self.verifier.project_exists(key) else None
+                actor_project = _existing_actor_project(actor, self.verifier)
             except Exception:
                 # This is trace attribution, not authorization: a registry error
                 # must not refuse an actor already accepted by its issuer pattern.
