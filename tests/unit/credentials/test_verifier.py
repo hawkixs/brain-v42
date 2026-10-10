@@ -53,6 +53,13 @@ class Repo:
         self.loads = 0
         self.lookups = 0
         self.fail = False
+        self.projects = ["brain-v42"]
+        self.project_fail = False
+
+    async def project_keys(self) -> list[str]:
+        if self.project_fail:
+            raise RuntimeError("project registry unavailable")
+        return list(self.projects)
 
     async def active_rows(self, now: datetime) -> list[CredentialRow]:
         self.loads += 1
@@ -94,6 +101,86 @@ def repo() -> Repo:
 
 def verifier(repo: Repo, clock: Clock) -> CredentialVerifier:
     return CredentialVerifier(repo, clock=clock.utc, monotonic=clock.monotonic)
+
+
+async def test_projects_are_read_from_the_same_refreshed_snapshot(repo: Repo, clock: Clock) -> None:
+    repo.rows = [row("test-token")]
+    core = verifier(repo, clock)
+    assert await core.refresh()
+    repo.projects = ["red-rail"]
+    assert core.project_exists("brain-v42")
+    assert not core.project_exists("red-rail")
+    assert await core.notify()
+    assert not core.project_exists("brain-v42")
+    assert core.project_exists("red-rail")
+    assert not core.project_exists("brain_v42")
+
+
+async def test_failed_project_load_keeps_both_old_snapshots(repo: Repo, clock: Clock) -> None:
+    repo.rows = [row("old-test-token")]
+    core = verifier(repo, clock)
+    assert await core.refresh()
+    repo.rows = [row("new-test-token")]
+    repo.projects = ["red-rail"]
+    repo.project_fail = True
+    clock.advance(90)
+    assert not await core.refresh()
+    assert (await core.verify("old-test-token")).client_id == "client"
+    assert core.project_exists("brain-v42")
+    assert not core.project_exists("red-rail")
+    clock.advance(0.01)
+    with pytest.raises(CredentialRefused, match="registry_unavailable"):
+        await core.verify("old-test-token")
+    with pytest.raises(CredentialRefused, match="registry_unavailable"):
+        core.project_exists("brain-v42")
+    repo.project_fail = False
+    assert await core.run_listener_reconnected()
+    assert core.project_exists("red-rail")
+    assert (await core.verify("new-test-token")).client_id == "client"
+
+
+async def test_initial_project_load_failure_never_publishes_credentials(
+    repo: Repo, clock: Clock
+) -> None:
+    repo.rows = [row("test-token")]
+    repo.project_fail = True
+    core = verifier(repo, clock)
+    assert not await core.refresh()
+    with pytest.raises(CredentialRefused, match="registry_unavailable"):
+        await core.verify("test-token")
+
+
+async def test_token_only_registry_cannot_resolve_projects(clock: Clock) -> None:
+    """Telemetry's read-only adapter does not serve MCP actor resolution."""
+
+    class TokenRegistry:
+        async def active_rows(self, now: datetime) -> list[CredentialRow]:
+            return [row("test-token")]
+
+        async def disposition_by_digest(
+            self, digest: bytes, now: datetime
+        ) -> tuple[None, Disposition]:
+            return None, "unknown"
+
+    core = CredentialVerifier(TokenRegistry(), clock=clock.utc, monotonic=clock.monotonic)
+    assert await core.refresh()
+    assert (await core.verify("test-token")).client_id == "client"
+    with pytest.raises(CredentialRefused, match="registry_unavailable"):
+        core.project_exists("brain-v42")
+
+
+async def test_repository_reads_only_project_keys() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from brain_v42.repositories.pg_client_credentials import PgClientCredentialRepo
+
+    session = AsyncMock()
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = ["brain-v42", "red-rail"]
+    session.execute.return_value = result
+    assert await PgClientCredentialRepo().project_keys(session=session) == ["brain-v42", "red-rail"]
+    statement = session.execute.call_args.args[0]
+    assert str(statement) == "SELECT project_contexts.project_key \nFROM project_contexts"
 
 
 @pytest.fixture(autouse=True)

@@ -14,6 +14,7 @@ from the transport layer as well as from the services.
 from __future__ import annotations
 
 import os
+import re
 import uuid
 from contextvars import ContextVar, Token
 
@@ -81,6 +82,20 @@ _current_actor: ContextVar[str] = ContextVar(
 
 _current_principal: ContextVar[str | None] = ContextVar("brain_v42_current_principal", default=None)
 
+_current_actor_project: ContextVar[str | None] = ContextVar(
+    "brain_v42_current_actor_project", default=None
+)
+
+
+def set_current_actor_project(project_key: str | None) -> None:
+    """Carry the current request's verified project across the SDK task boundary."""
+    _current_actor_project.set(project_key)
+
+
+def get_current_actor_project() -> str | None:
+    """Return only the project observed for this request's credential actor."""
+    return _current_actor_project.get()
+
 
 def set_current_principal(client_id: str | None) -> None:
     """Set only the verified credential identity, independently of declared actors."""
@@ -92,11 +107,21 @@ def get_current_principal() -> str | None:
     return _current_principal.get()
 
 
+def resolve_agent_path(value: str) -> str:
+    """Keep a worktree's checkout identity, including calls from its subdirectories."""
+    if not value.startswith("/"):
+        return value
+    matches = list(re.finditer(r"/(?:\.claude/worktrees|\.worktrees)/[^/]+", value))
+    if matches:
+        value = value[: matches[-1].start()]
+    return os.path.basename(value.rstrip("/")) or UNKNOWN_ACTOR
+
+
 def normalize_agent(value: str | None) -> str:
     """Reduce a raw ``X-Brain-Agent`` to a clean actor name.
 
     Interactive Claude Code sessions send ``${PWD}``, which Claude Code expands
-    into the project's absolute path: we keep the basename. Static service
+    into the project's absolute path: we keep the checkout basename. Static service
     labels pass through unchanged. A daemon session (no ``PWD`` in the
     environment) leaves the template unexpanded, which we collapse onto a single
     bucket rather than invent one actor per literal. The result is truncated to
@@ -111,8 +136,7 @@ def normalize_agent(value: str | None) -> str:
         return UNKNOWN_ACTOR
     if "${" in value:
         return UNEXPANDED_ACTOR
-    if value.startswith("/"):
-        value = os.path.basename(value.rstrip("/")) or UNKNOWN_ACTOR
+    value = resolve_agent_path(value)
     return value[:MAX_ACTOR_LENGTH]
 
 

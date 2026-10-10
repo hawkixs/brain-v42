@@ -589,6 +589,54 @@ def test_console_entry_point_names_sync_main() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "patterns",
+    [
+        [],
+        ["@project"],
+        ["red-rail", "red", "operator", "agent:*", "service:*", "red"],
+        ["0.a:b-", "a" * 64, "a" * 64 + "*"],
+    ],
+)
+def test_issue_stores_sorted_unique_issuers(cli: Any, patterns: list[str]) -> None:
+    module, repo = cli
+    arguments = ["issue", "--client-id", "red-rail", "--families", "read", "--reason", "setup"]
+    for pattern in patterns:
+        arguments.extend(["--issuer", pattern])
+    assert module.main(arguments) == 0
+    assert repo.calls[0][1]["issuers"] == sorted(set(patterns))
+
+
+@pytest.mark.parametrize(
+    "pattern",
+    ["*", "@other", "a*b", "a**", "a?", "a[bc]", "a b", "", "A", ":a", "a" * 65],
+)
+def test_invalid_issuer_is_refused_before_issue(
+    cli: Any, pattern: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module, repo = cli
+    assert (
+        module.main(
+            [
+                "issue",
+                "--client-id",
+                "red-rail",
+                "--families",
+                "read",
+                "--reason",
+                "setup",
+                "--issuer",
+                pattern,
+            ]
+        )
+        == 2
+    )
+    assert repo.calls == []
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "--issuer" in output.err
+
+
 def test_confirmation_prompt_is_written_to_the_tty(
     cli: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:

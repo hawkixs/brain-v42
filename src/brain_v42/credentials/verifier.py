@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from hashlib import sha256
 from threading import Lock
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 from uuid import UUID
 
 import structlog
@@ -35,7 +35,9 @@ def _reserve_lookup(now: float) -> bool:
         return True
 
 
-class CredentialRepository(Protocol):
+class CredentialLookupRepository(Protocol):
+    """Token-only readers also serve the telemetry sidecar, without actor resolution."""
+
     async def active_rows(self, now: datetime) -> Sequence[CredentialRow]: ...
 
     async def disposition_by_digest(
@@ -43,6 +45,11 @@ class CredentialRepository(Protocol):
         token_sha256: bytes,
         now: datetime,
     ) -> tuple[str | None, Disposition]: ...
+
+
+@runtime_checkable
+class CredentialRepository(CredentialLookupRepository, Protocol):
+    async def project_keys(self) -> Sequence[str]: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,7 +90,7 @@ class CredentialVerifier:
 
     def __init__(
         self,
-        repository: CredentialRepository,
+        repository: CredentialLookupRepository,
         *,
         clock: Callable[[], datetime],
         monotonic: Callable[[], float],
@@ -94,6 +101,7 @@ class CredentialVerifier:
         self._monotonic = monotonic
         self._sleep = sleep
         self._snapshot: tuple[_SnapshotEntry, ...] = ()
+        self._projects: frozenset[str] | None = None
         self._last_success: float | None = None
         self._dispositions: OrderedDict[bytes, str] = OrderedDict()
         self._refresh_lock = asyncio.Lock()
@@ -104,6 +112,11 @@ class CredentialVerifier:
             loaded_at = self._monotonic()
             try:
                 rows = await self._repository.active_rows(self._clock())
+                projects = (
+                    frozenset(await self._repository.project_keys())
+                    if isinstance(self._repository, CredentialRepository)
+                    else None
+                )
                 snapshot = tuple(
                     _SnapshotEntry(
                         row.token_sha256,
@@ -121,11 +134,19 @@ class CredentialVerifier:
                 _logger.warning("credentials.registry_refresh_failed", error=type(exc).__name__)
                 return False
             self._snapshot = snapshot
+            self._projects = projects
             # A renewed row may expire or be revoked again with a different reason.
             for entry in snapshot:
                 self._dispositions.pop(entry.digest, None)
             self._last_success = loaded_at
             return True
+
+    def project_exists(self, key: str) -> bool:
+        """Read the same bounded-staleness registry; absent project readers fail closed."""
+        self._require_fresh_snapshot()
+        if self._projects is None:
+            raise CredentialRefused("registry_unavailable")
+        return key in self._projects
 
     async def notify(self) -> bool:
         """Reload after NOTIFY without depending on its payload or delivery history."""

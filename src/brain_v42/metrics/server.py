@@ -592,6 +592,7 @@ class MetricsServer:
         # Structural zero stays present before the first event/flush and on DB failure.
         metrics["mcp_auth_refused"] = process_agg.pop("mcp_auth_refused", {})
         metrics["elevation_refused"] = process_agg.pop("elevation_refused", {})
+        metrics["mcp_auth_agent_unresolved"] = process_agg.pop("mcp_auth_agent_unresolved", {})
 
         # Override per-process tools/embedding/reranker with cross-process aggregation
         # when multiple processes are active

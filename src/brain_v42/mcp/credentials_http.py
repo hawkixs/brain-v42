@@ -1,26 +1,32 @@
 """Adapt registry identities to FastMCP and refuse before its HTTP body reader."""
 
 import hmac
+import re
 from collections import OrderedDict
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from fnmatch import fnmatchcase
 from hashlib import sha256
+from typing import Literal
 
+import structlog
 from fastmcp.server.auth import AccessToken, TokenVerifier
 from starlette.datastructures import Headers
 from starlette.middleware import Middleware
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from brain_v42.credentials.agent_unresolved import count_agent_unresolved
 from brain_v42.credentials.reasons import TRANSPORT_STATUSES, emit_refusal
 from brain_v42.credentials.redact import short_id
 from brain_v42.credentials.verifier import CredentialRefused, CredentialVerifier, VerifiedPrincipal
 from brain_v42.mcp.http_security import PUBLIC_HTTP_PATHS, public_probe_scope
+from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.provenance import (
+    MAX_ACTOR_LENGTH,
     get_current_actor,
     get_current_principal,
     normalize_agent,
+    resolve_agent_path,
     set_current_actor,
     set_current_principal,
 )
@@ -37,6 +43,61 @@ _request_verification: ContextVar[_RequestVerification | None] = ContextVar(
     "brain_v42_request_verification", default=None
 )
 _SESSION_LIMIT_PER_CLIENT = 256
+_logger = structlog.get_logger(__name__)
+# Sessions parked outside a project repeat the same warning on every call.
+# Stop at a hard cap so varying declared agents cannot grow a process-wide memo.
+_seen_unresolved_agents: set[tuple[str, str, str]] = set()
+_MAX_UNRESOLVED_AGENTS_TRACKED = 64
+
+
+def _matches_issuer(raw: str, pattern: str) -> bool:
+    """Authorize raw headers with only the grammar supported by the issuing CLI."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9.:-]{0,63}\*?", pattern):
+        return False
+    return raw.startswith(pattern[:-1]) if pattern.endswith("*") else raw == pattern
+
+
+def _fallback_unresolved_project_actor(
+    client_id: str, agent: str, reason: Literal["not_kebab", "unknown_project"]
+) -> str:
+    """Option B: retain access under the client actor while surfacing lost project attribution."""
+    count_agent_unresolved(reason)
+    key = (client_id, agent[:64], reason)
+    if (
+        key not in _seen_unresolved_agents
+        and len(_seen_unresolved_agents) < _MAX_UNRESOLVED_AGENTS_TRACKED
+    ):
+        _seen_unresolved_agents.add(key)
+        _logger.warning(
+            "mcp_auth.agent_unresolved", client_id=client_id, agent=key[1], reason=reason
+        )
+    return client_id
+
+
+def _existing_actor_project(raw: str, verifier: CredentialVerifier) -> str | None:
+    """Resolve full identities so provenance truncation cannot grant a different project."""
+    value = raw.strip()
+    if not value or "${" in value:
+        raise ValueError("Actor is not a project key")
+    value = resolve_agent_path(value)
+    if len(value) > MAX_ACTOR_LENGTH:
+        return None
+    key = canonicalize_project_key(value, strict=True)
+    return key if verifier.project_exists(key) else None
+
+
+def _project_actor(
+    raw: str, verifier: CredentialVerifier, client_id: str
+) -> tuple[str, str | None]:
+    """Existence in the credential snapshot, rather than syntax, grants project actors."""
+    agent = normalize_agent(raw)
+    try:
+        key = _existing_actor_project(raw, verifier)
+    except ValueError:
+        return _fallback_unresolved_project_actor(client_id, agent, "not_kebab"), None
+    if key is not None:
+        return key, key
+    return _fallback_unresolved_project_actor(client_id, agent, "unknown_project"), None
 
 
 class CredentialTokenVerifier(TokenVerifier):
@@ -138,12 +199,18 @@ class CredentialGuard:
                 if owner != principal.client_id:
                     raise CredentialRefused("foreign_client_attach")
             actor = principal.client_id if declared_agent is None else declared_agent
+            actor_project = None
             # Authorize the raw value before normalizing/truncating provenance.
-            if len(declared_agents) > 1 or (
-                actor != principal.client_id
-                and not any(fnmatchcase(actor, pattern) for pattern in principal.issuers)
-            ):
+            if len(declared_agents) > 1:
                 raise CredentialRefused("agent_mismatch")
+            if actor != principal.client_id and not any(
+                _matches_issuer(actor, pattern)
+                for pattern in principal.issuers
+                if pattern != "@project"
+            ):
+                if "@project" not in principal.issuers:
+                    raise CredentialRefused("agent_mismatch")
+                actor, actor_project = _project_actor(actor, self.verifier, principal.client_id)
         except CredentialRefused as exc:
             status = TRANSPORT_STATUSES[exc.reason]
             client = scope.get("client")
@@ -199,6 +266,14 @@ class CredentialGuard:
         state = scope.setdefault("state", {})
         state["brain_principal"] = principal.client_id
         state["brain_actor"] = normalize_agent(actor)
+        if actor_project is None:
+            try:
+                actor_project = _existing_actor_project(actor, self.verifier)
+            except Exception:
+                # This is trace attribution, not authorization: a registry error
+                # must not refuse an actor already accepted by its issuer pattern.
+                actor_project = None
+        state["brain_actor_project"] = actor_project
         previous = get_current_principal()
         previous_actor = get_current_actor()
         verification_context = _request_verification.set(
