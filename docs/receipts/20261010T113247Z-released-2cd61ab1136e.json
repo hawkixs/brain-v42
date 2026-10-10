@@ -1,0 +1,30 @@
+{
+  "digest": "sha256:2cd61ab1136e75390a422b32e184f1fcce1b3e3a63006388c0717eb65376a18a",
+  "idempotency_key": "released:0.6.10",
+  "issuer": "agent:claude-code:793cc9c1-9abe-4ed9-83ec-f8cc962d7836",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "changelog": [
+        "chore(receipts): lot 0.6.9 verdicts and the integration of 5048ffe0",
+        "chore(release): 0.6.10",
+        "fix(deploy): pass the release identity to /version on red-base",
+        "fix(credentials): check project existence on the full declared identity",
+        "feat(metrics): count unresolved @project agents (option B)",
+        "feat(credentials): issuer patterns and per-project actors under credentials",
+        "feat(delivery): attestation API v1.1 issuer argument, colon actor labels, wire tests",
+        "chore(receipts): record the release of 0.6.9"
+      ],
+      "digest": "sha256:c396f5e1d5743d8de9a2e6154d73bb3ebda6564156531a9f4af19235f4581615",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:c396f5e1d5743d8de9a2e6154d73bb3ebda6564156531a9f4af19235f4581615",
+      "platform": "linux/amd64",
+      "sha": "afc561931963b8514cd41ef24c4ee1c959053461",
+      "tag": "v0.6.10",
+      "version": "0.6.10"
+    },
+    "kind": "released"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-10T11:32:47.999934Z",
+  "schema_version": 1
+}
