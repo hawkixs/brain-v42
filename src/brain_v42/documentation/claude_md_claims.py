@@ -17,7 +17,7 @@ document the other side rejects — the very drift this ticket describes,
 reproduced inside its own fix.
 
 Everything that CAN be derived IS derived, at call time: the Alembic head, the
-port from `Settings`, the transport URL from `.mcp.json`, the FastMCP major from
+port from `Settings`, the transport URL from the `Settings` MCP HTTP defaults, the FastMCP major from
 `uv.lock`. A retyped number goes stale exactly like the document it guards. What
 stays literal is prose that has no machine-readable source — the three
 operator-facing paragraphs — and it lives here rather than in a test so the
@@ -26,7 +26,6 @@ report cannot hold a different copy of it.
 
 from __future__ import annotations
 
-import json
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -81,9 +80,15 @@ def _locked_version(package_name: str, root: Path | None = None) -> str:
     return str(versions.pop())
 
 
-def _production_mcp_url(root: Path | None = None) -> str:
-    config = json.loads(((root or REPO_ROOT) / ".mcp.json").read_text(encoding="utf-8"))
-    return str(config["mcpServers"]["brain-v42"]["url"])
+def _production_mcp_url() -> str:
+    # The repository's .mcp.json declares no server: each operator configures the
+    # client at user scope, so the documented address comes from the server's own
+    # defaults (FastMCP serves streamable HTTP on /mcp).
+    from brain_v42.config import Settings  # noqa: PLC0415
+
+    host = Settings.model_fields["mcp_http_host"].default
+    port = Settings.model_fields["mcp_http_port"].default
+    return f"http://{host}:{port}/mcp"
 
 
 def _reranker_port() -> int:
@@ -142,9 +147,9 @@ SEC2_RESIDUALS_CONTRACT = (
 )
 
 
-def mcp_transport_contract(root: Path | None = None) -> str:
+def mcp_transport_contract() -> str:
     return (
-        f"**MCP transport**: production = HTTP loopback `{_production_mcp_url(root)}`; "
+        f"**MCP transport**: production = HTTP loopback `{_production_mcp_url()}`; "
         "configuration default and dev/fallback = `stdio`."
     )
 
@@ -161,7 +166,7 @@ def claims(root: Path | None = None) -> tuple[Claim, ...]:
     """The five, derived fresh on every call."""
     return (
         Claim("documented_migration_head", f"migration {repository_head(root)}"),
-        Claim("documented_mcp_transport", mcp_transport_contract(root)),
+        Claim("documented_mcp_transport", mcp_transport_contract()),
         Claim("documented_reranker_endpoint", reranker_contract()),
         Claim("documented_network_boundary", NETWORK_BOUNDARY_CONTRACT, normalized=True),
         Claim("documented_fastmcp_major", fastmcp_contract(root)),
