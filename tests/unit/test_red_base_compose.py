@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import os
 import re
 from pathlib import Path
@@ -13,6 +15,7 @@ import yaml
 
 from brain_v42.config import Settings
 from brain_v42.delivery_observer.config import load_observer_settings
+from brain_v42.mcp.server import version_check
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / "deploy" / "compose.yaml"
@@ -213,6 +216,28 @@ def test_release_identity_uses_the_real_parser(
     }
     # The metrics runtime exposes collectors, not the measured-facts registry.
     assert "BRAIN_FACTS_LIVE_RELEASE_IDENTITY" not in compose["services"]["metrics"]["environment"]
+
+
+def test_version_identity_is_interpolated_on_mcp_only(
+    compose: dict[str, Any], clean_settings_env: pytest.MonkeyPatch
+) -> None:
+    environment = compose["services"]["mcp"]["environment"]
+    expected = {
+        "BRAIN_GIT_SHA": "${GIT_SHA}",
+        "BRAIN_IMAGE_DIGEST": "${IMAGE_DIGEST}",
+    }
+    assert {key: environment.get(key) for key in expected} == expected
+    for name, service in compose["services"].items():
+        if name != "mcp":
+            assert expected.keys().isdisjoint(service.get("environment", {})), name
+
+    values = {"GIT_SHA": "a" * 40, "IMAGE_DIGEST": "sha256:" + "b" * 64}
+    for key, interpolation in expected.items():
+        clean_settings_env.setenv(key, values[interpolation[2:-1]])
+    response = asyncio.run(version_check(None))
+    payload = json.loads(response.body)
+    assert payload["git_sha"] == values["GIT_SHA"]
+    assert payload["image_digest"] == values["IMAGE_DIGEST"]
 
 
 def test_owner_credentials_never_reach_runtime_services(compose: dict[str, Any]) -> None:
