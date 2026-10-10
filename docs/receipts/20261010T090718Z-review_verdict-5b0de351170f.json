@@ -1,0 +1,45 @@
+{
+  "digest": "sha256:5b0de351170f1b62358c5183fb877b02e0f00522a4c630ec3dab517ffef01462",
+  "idempotency_key": "review_verdict:76ad54f4611ce816a87ad0263321f95b4c4a6dc6:114178735414",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 114178735414,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "_project_actor calls normalize_agent before checking project existence, and normalize_agent truncates names to 64 characters. With an existing project whose key is 64 characters long, a directory named that key plus an additional suffix resolves to the existing project and receives its actor and tra",
+          "file": "src/brain_v42/mcp/credentials_http.py",
+          "id": "F-341-1",
+          "line": 79,
+          "severity": "blocking",
+          "status": "fixed",
+          "title": "Resolve project authorization before truncating the actor"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "pr": 341,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "76ad54f4611ce816a87ad0263321f95b4c4a6dc6",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-10T09:07:18.348056Z",
+  "schema_version": 1
+}

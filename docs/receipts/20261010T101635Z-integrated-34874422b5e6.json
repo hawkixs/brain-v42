@@ -1,0 +1,15 @@
+{
+  "digest": "sha256:34874422b5e6c2217b138ad3ea952eca306a37023cba4f5057cd9e9343c41612",
+  "idempotency_key": "integrated:5048ffe021579159a118be7ece51db80d5cb9f6e",
+  "issuer": "agent:claude-code:a65d41ad-1705-4534-bedd-5f13f069f2f1",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "sha": "5048ffe021579159a118be7ece51db80d5cb9f6e"
+    },
+    "kind": "integrated"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-10T10:16:35.455635Z",
+  "schema_version": 1
+}
