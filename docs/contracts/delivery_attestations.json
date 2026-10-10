@@ -1,5 +1,5 @@
 {
-  "contract_version": 1,
+  "contract_version": "1.1",
   "ticket": "04bc1f4a-3c21-48eb-86bb-c3f3279a9c9f",
   "boundary": "Brain is the ledger: it stores issuer-declared delivery facts and validates their form; it never judges a kind, derives no completion refusal from an attestation and computes no metric. Policy and DORA metrics belong to red-rail, which reads.",
   "tools": {
@@ -22,7 +22,17 @@
   "issuer": {
     "actor_project": "a participant of the ticket, from_project or to_project; by agreed convention the executor, to_project, for every kind",
     "issuer_project": "equals actor_project",
-    "issuer_identity": "the normalized X-Brain-Agent caller label; empty, unknown or unexpanded is refused with invalid_issuer; the delivery observer's own identity (brain-v42-delivery-observer) is refused with issuer_identity_reserved",
+    "issuer_identity": "the authorized top-level issuer argument, or the normalized X-Brain-Agent caller label when omitted; empty, unknown or unexpanded is refused with invalid_issuer; the delivery observer's own identity (brain-v42-delivery-observer) is refused with issuer_identity_reserved; read-backs return the stored value",
+    "argument": {
+      "name": "issuer",
+      "tools": ["brain_delivery_attest", "brain_delivery_accept"],
+      "optional": true,
+      "default": null,
+      "location": "top-level tool argument, outside payload",
+      "pattern": "^[A-Za-z0-9_][A-Za-z0-9._:-]{0,63}$",
+      "max_length": 64,
+      "invalid_shape": "invalid_arguments"
+    },
     "normalization": [
       "trim",
       "empty -> unknown (refused)",
@@ -30,7 +40,8 @@
       "absolute path -> its basename",
       "truncated to 64 characters"
     ],
-    "registry": "none; any other label is accepted as declared provenance"
+    "registry": "credentials mode: explicit issuer must match an exact label or a prefix with one trailing * in the credential's issuers; @project matches nothing here. When omitted, the actor must equal client_id or match a pattern. Shared-token mode: an explicit issuer must equal the actor. Otherwise issuer_not_allowed is an authorization refusal, logged and counted once with status 403 inside HTTP 200.",
+    "tool_versions": "the additive optional argument keeps tool version 1.0; contract version 1.1 publishes the new API"
   },
   "kind": {
     "pattern": "^[a-z][a-z0-9_]{0,63}$",
@@ -203,6 +214,9 @@
     "limit_violation": "invalid_limit"
   },
   "error_codes": {
+    "authorization": [
+      "issuer_not_allowed"
+    ],
     "tool": [
       "contract_not_found",
       "delivery_disabled",
