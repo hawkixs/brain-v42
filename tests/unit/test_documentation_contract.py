@@ -1887,10 +1887,25 @@ def test_workflow_guide_is_discoverable_by_the_documentation_contract() -> None:
     assert "brain_workflow_guide" in names
 
 
+def test_repository_mcp_config_declares_no_server() -> None:
+    """The brain client lives in each operator's user-scope Claude Code config.
+
+    A project-scoped entry wins over the user scope for every checkout and
+    worktree, cannot carry a headers helper without a per-directory trust
+    dialog, and would pin a host, an agent identity and a bearer source into a
+    public repository. The file stays because the release archive ships it.
+    """
+    mcp_config = json.loads((REPO_ROOT / ".mcp.json").read_text())
+
+    assert mcp_config == {"mcpServers": {}}
+
+
 def test_documented_transport_matches_default_and_production_client() -> None:
     transport_default = Settings.model_fields["brain_mcp_transport"].default
-    mcp_config = json.loads((REPO_ROOT / ".mcp.json").read_text())
-    production = mcp_config["mcpServers"]["brain-v42"]
+    transport_section = ARCHITECTURE.split("## Transport", maxsplit=1)[1]
+    json_block = re.search(r"```json\s*(.*?)\s*```", transport_section, re.DOTALL)
+    assert json_block is not None
+    production = json.loads(json_block.group(1))["mcpServers"]["brain-v42"]
 
     assert transport_default == "stdio"
     assert production["type"] == "http"
@@ -1904,11 +1919,7 @@ def test_documented_transport_matches_default_and_production_client() -> None:
     assert not parsed_url.password
     assert not parsed_url.query
     assert not parsed_url.fragment
-    transport_section = ARCHITECTURE.split("## Transport", maxsplit=1)[1]
-    json_block = re.search(r"```json\s*(.*?)\s*```", transport_section, re.DOTALL)
-    assert json_block is not None
-    documented_client = json.loads(json_block.group(1))["mcpServers"]["brain-v42"]
-    assert documented_client == production
+    assert "user scope" in transport_section.split("### Dev/fallback", maxsplit=1)[0]
     contract = mcp_transport_contract()
     assert production_url in contract
     assert contract in README

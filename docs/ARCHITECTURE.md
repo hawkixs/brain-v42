@@ -87,6 +87,12 @@ brain_v42 runs as a persistent HTTP MCP server on `127.0.0.1:8765`. Claude Code 
 }
 ```
 
+This entry belongs in each operator's own Claude Code configuration, at user scope
+(`~/.claude.json`), never in the repository: the repository's `.mcp.json` declares no
+server. A project-scoped entry would win over the user scope in every checkout and
+worktree, could not run a `headersHelper` without a per-directory trust dialog, and would
+ship a host, an agent identity and a bearer source with the code.
+
 The `X-Brain-Agent` header is normalised by `_normalize_agent()` in `metrics/instrument.py` to produce clean per-project Prometheus labels (e.g. path-like values are reduced to their basename).
 
 The server binds only to `127.0.0.1` (validated by `Settings._loopback_only`).
