@@ -2,8 +2,10 @@
 
 import io
 import json
+import os
 import runpy
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from typing import Any
@@ -43,6 +45,7 @@ class HookTests(unittest.TestCase):
 
     def submit(self, prompt: str, **extra: Any) -> str:
         self.state_file.write_text(json.dumps(self.state))
+        self.state_file.chmod(0o600)
         return self.run_hook(
             {"session_id": self.claude_id, "prompt": prompt, **extra},
             environ=self.env,
@@ -131,6 +134,7 @@ class HookTests(unittest.TestCase):
             raise OSError("synthetic-hook-bearer")
 
         self.state_file.write_text(json.dumps(self.state))
+        self.state_file.chmod(0o600)
         payload = {"session_id": self.claude_id, "prompt": "/brain-admin 1h maintenance"}
         self.assertEqual(
             self.run_hook(payload, environ=self.env, opener=broken), "Brain elevation refused.\n"
@@ -141,6 +145,38 @@ class HookTests(unittest.TestCase):
 
         self.assertEqual(
             self.run_hook(payload, environ=self.env, opener=malicious), "Brain elevation refused.\n"
+        )
+
+    def test_unsafe_state_files_grant_nothing(self) -> None:
+        real = self.root / "real-state.json"
+        real.write_text(json.dumps(self.state))
+        real.chmod(0o600)
+        self.state_file.symlink_to(real)
+        self.assertNotIn("Brain admin until", self.run_prompt())
+        self.state_file.unlink()
+        for mode in (0o644, 0o666, 0o640, 0o700):
+            self.state_file.write_text(json.dumps(self.state))
+            self.state_file.chmod(mode)
+            self.assertNotIn("Brain admin until", self.run_prompt(), oct(mode))
+        self.assertEqual(self.requests, [])
+
+    def test_fifo_state_file_cannot_block_the_hook(self) -> None:
+        os.mkfifo(self.state_file, 0o600)
+        done = threading.Event()
+
+        def attempt() -> None:
+            self.run_prompt()
+            done.set()
+
+        threading.Thread(target=attempt, daemon=True).start()
+        self.assertTrue(done.wait(2), "the hook blocked on a FIFO state file")
+        self.assertEqual(self.requests, [])
+
+    def run_prompt(self) -> str:
+        return self.run_hook(
+            {"session_id": self.claude_id, "prompt": "/brain-admin 1h maintenance"},
+            environ=self.env,
+            opener=self.opener,
         )
 
     def test_redirects_are_not_followed_with_the_credential(self) -> None:

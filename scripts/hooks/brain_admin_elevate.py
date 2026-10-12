@@ -45,8 +45,11 @@ class NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def _read_credential(path: Path) -> str:
-    """Check the opened inode so symlinks and permission races cannot bypass 0600."""
+def _read_private(path: Path, limit: int, what: str) -> str:
+    """Check the opened inode so symlinks, FIFOs and permission races cannot bypass 0600.
+
+    O_NONBLOCK keeps a FIFO planted at the path from hanging the operator's prompt.
+    """
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(descriptor, "r", encoding="utf-8") as file:
         metadata = os.fstat(file.fileno())
@@ -55,8 +58,12 @@ def _read_credential(path: Path) -> str:
             or stat.S_IMODE(metadata.st_mode) != 0o600
             or metadata.st_uid != os.getuid()
         ):
-            raise ValueError("credential file must be private")
-        token = file.read(4097).strip()
+            raise ValueError(f"{what} must be private")
+        return file.read(limit)
+
+
+def _read_credential(path: Path) -> str:
+    token = _read_private(path, 4097, "credential file").strip()
     if not token or len(token) > 4096 or any(char.isspace() for char in token):
         raise ValueError("invalid credential file")
     return token
@@ -79,8 +86,7 @@ def run_hook(
     if not state_path:
         return ""
     try:
-        with Path(state_path).open(encoding="utf-8") as file:
-            state = json.loads(file.read(16385))
+        state = json.loads(_read_private(Path(state_path), 16385, "state file"))
         if not isinstance(state, dict):
             return ""
         if not payload.get("session_id") or state.get("claude_session_id") != payload["session_id"]:
