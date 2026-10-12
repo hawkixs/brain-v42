@@ -3,7 +3,8 @@
 
 Set BRAIN_ADMIN_URL to the elevation endpoint and BRAIN_ADMIN_CREDENTIAL_FILE to
 its elevation-only bearer file (0600). BRAIN_ADMIN_STATE_FILE names the session's
-local JSON state, maintained by the Brain session integration, with these keys:
+local JSON state, maintained by brain_session_state.py (install it beside this
+file and register that script instead), with these keys:
 claude_session_id, brain_session_id, prompt_count (number of preceding prompts).
 Missing, first-prompt or foreign-session state grants nothing. State and settings
 are local inputs; the submitted prompt supplies only the duration and reason.
