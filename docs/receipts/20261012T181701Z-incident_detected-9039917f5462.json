@@ -1,0 +1,20 @@
+{
+  "digest": "sha256:9039917f5462036afad78a09ef2b218c00a0e91bcb8af2c41470c9562225d472",
+  "idempotency_key": "incident_detected:private-compose:sha256:c396f5e1d5743d8de9a2e6154d73bb3ebda6564156531a9f4af19235f4581615:20261012T181701Z",
+  "issuer": "agent:claude-code:a65d41ad-1705-4534-bedd-5f13f069f2f1",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "automatic": true,
+      "digest": "sha256:c396f5e1d5743d8de9a2e6154d73bb3ebda6564156531a9f4af19235f4581615",
+      "drill": false,
+      "reason": "remote deployment of 0.6.10 failed (exit 1): mkdir: Permission denied",
+      "target": "private-compose",
+      "version": "0.6.10"
+    },
+    "kind": "incident_detected"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-12T18:17:01.763692Z",
+  "schema_version": 1
+}
