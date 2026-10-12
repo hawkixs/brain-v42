@@ -543,6 +543,26 @@ class TestActorLabel:
 
     HOSTILE = "</script><img src=x onerror=alert(1)>"
 
+    @pytest.mark.parametrize(
+        "actor", ["agent:claude", "service:dream", "red-shrik:openbot", "a:" + "b" * 62]
+    )
+    def test_colon_labels_reach_the_panel_intact(self, actor: str) -> None:
+        registry = _registry()
+        registry.record_observations((ClientObservation(actor=actor, session_id=None, calls=2),))
+        (row,) = _brain_rows(registry)
+        assert row["actor"] == actor
+        assert row["id"] == f"unattributed:{actor}"
+        assert row["brain_calls"] == 2
+
+    @pytest.mark.parametrize("actor", [":agent", "agent claude", "agent\tclaude", "a/b", "a" * 65])
+    def test_invalid_labels_still_share_the_rejected_sink(self, actor: str) -> None:
+        registry = _registry()
+        registry.record_observations((ClientObservation(actor=actor, session_id=None, calls=2),))
+        (row,) = _brain_rows(registry)
+        assert row["actor"] == "_rejected"
+        assert row["id"] == "unattributed:_rejected"
+        assert row["brain_calls"] == 2
+
     def test_a_hostile_actor_reaches_neither_the_actor_column_nor_the_id(self) -> None:
         registry = _registry()
         registry.record_observations(

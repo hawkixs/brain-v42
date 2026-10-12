@@ -216,6 +216,12 @@ class _DbCollectorsMixin:
             agg_tools: dict[str, dict[str, Any]] = {}
             mcp_auth_refused: dict[str, int] = {}
             elevation_refused: dict[str, int] = {}
+            mcp_auth_agent_unresolved: dict[str, int] = {}
+            process_counts = {
+                "_mcp_auth_refused": mcp_auth_refused,
+                "_elevation_refused": elevation_refused,
+                "_mcp_auth_agent_unresolved": mcp_auth_agent_unresolved,
+            }
             agg_emb: dict[str, Any] = {
                 "total_requests": 0,
                 "total_errors": 0,
@@ -258,15 +264,11 @@ class _DbCollectorsMixin:
 
                 # Aggregate tools across ALL rows (real tools + pseudo-tools are disjoint)
                 for name, stats in tool_stats.items():
-                    if name in {"_mcp_auth_refused", "_elevation_refused"}:
+                    if name in process_counts:
                         # Cumulative snapshots belong to the emitting process,
                         # never to individual agents or generic tool reducers.
                         if agent_name == "_process" and isinstance(stats, dict):
-                            counts = (
-                                mcp_auth_refused
-                                if name == "_mcp_auth_refused"
-                                else elevation_refused
-                            )
+                            counts = process_counts[name]
                             for reason, count in stats.items():
                                 if isinstance(count, int) and count >= 0:
                                     counts[reason] = counts.get(reason, 0) + count
@@ -473,6 +475,7 @@ class _DbCollectorsMixin:
                 "tools": tools_with_avg,
                 "mcp_auth_refused": mcp_auth_refused,
                 "elevation_refused": elevation_refused,
+                "mcp_auth_agent_unresolved": mcp_auth_agent_unresolved,
                 "embedding": {
                     "total_requests": emb_total,
                     "total_errors": agg_emb["total_errors"],
@@ -501,6 +504,7 @@ class _DbCollectorsMixin:
                 "tools": {},
                 "mcp_auth_refused": {},
                 "elevation_refused": {},
+                "mcp_auth_agent_unresolved": {},
                 "decay": dict(_DECAY_ZERO),
                 "embedding_identity": None,
                 "embedding": {

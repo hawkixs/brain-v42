@@ -256,3 +256,210 @@ async def test_the_generic_attest_tool_refuses_the_reserved_observer_identity(mo
     )
     assert result.is_error and "issuer_identity_reserved" in str(result.content)
     service.attest.assert_not_called()
+
+
+def _attestation_arguments():
+    return {
+        "ticket_id": str(uuid4()),
+        "actor_project": "executor",
+        "kind": "gate_passed",
+        "payload": {"gate": "unit"},
+        "idempotency_key": "gate:unit",
+        "emitted_at": "2026-10-03T12:00:00+00:00",
+    }
+
+
+def _issuer_context(monkeypatch, *, actor="agent:claude", issuers=None):
+    from fastmcp.server.auth import AccessToken
+
+    from brain_v42.mcp.tools import delivery_tools
+
+    access = (
+        None
+        if issuers is None
+        else AccessToken(
+            token="",
+            client_id="client-service",
+            scopes=["delivery"],
+            claims={"credential_id": str(uuid4()), "issuers": issuers},
+        )
+    )
+    monkeypatch.setattr(delivery_tools, "get_current_actor", lambda: actor)
+    monkeypatch.setattr(
+        delivery_tools,
+        "get_current_principal",
+        lambda: None if access is None else access.client_id,
+        raising=False,
+    )
+    monkeypatch.setattr(delivery_tools, "get_access_token", lambda: access, raising=False)
+
+
+def _issuer_service():
+    from datetime import UTC, datetime
+
+    from brain_v42.models.delivery import DeliveryAttestation
+    from brain_v42.models.delivery_hashes import canonical_digest
+
+    async def attest(ticket_id, **kwargs):
+        return DeliveryAttestation(
+            ticket_id=ticket_id,
+            issuer_project=kwargs["actor_project"],
+            issuer_identity=kwargs["caller_identity"],
+            kind=kwargs["kind"],
+            payload=kwargs["payload"],
+            digest=canonical_digest(kwargs["payload"], domain="attestation"),
+            idempotency_key=kwargs["idempotency_key"],
+            emitted_at=datetime.fromisoformat(kwargs["emitted_at"]),
+            recorded_at=datetime(2026, 10, 3, 12, tzinfo=UTC),
+        )
+
+    service = AsyncMock()
+    service.attest.side_effect = attest
+    # Pin the identity passed to acceptance without inventing integration evidence.
+    service.accept.side_effect = DeliveryError("delivery_disabled", "delivery is disabled")
+    return service
+
+
+def _issuer_arguments(operation, issuer):
+    arguments = (
+        _attestation_arguments()
+        if operation == "attest"
+        else {
+            "ticket_id": str(uuid4()),
+            "actor_project": "executor",
+            "rationale": "verified",
+            "expected_revision": 1,
+            "expected_attempt": 1,
+            "expected_delivery_digest": "a" * 64,
+        }
+    )
+    if issuer is not None:
+        arguments["issuer"] = issuer
+    return arguments
+
+
+@pytest.mark.parametrize("operation", ["attest", "accept"])
+async def test_issuer_is_an_optional_top_level_argument(operation):
+    app = await _app(AsyncMock(), "native")
+    async with Client(app) as client:
+        tool = next(t for t in await client.list_tools() if t.name == f"brain_delivery_{operation}")
+    schema = tool.inputSchema
+    assert "issuer" in schema["properties"]
+    assert schema["properties"]["issuer"]["default"] is None
+    assert "issuer" not in schema["required"]
+
+
+@pytest.mark.parametrize("profile", ["native", "compact"])
+@pytest.mark.parametrize("operation", ["attest", "accept"])
+@pytest.mark.parametrize(
+    "actor,issuer,patterns,expected",
+    [
+        ("agent:claude", "release-bot", ["release-bot"], "release-bot"),
+        ("agent:claude", "service:dream", ["service:*"], "service:dream"),
+        ("agent:claude", None, ["agent:*"], "agent:claude"),
+        ("client-service", None, [], "client-service"),
+    ],
+)
+async def test_credentials_store_only_the_authorized_issuer(
+    monkeypatch, profile, operation, actor, issuer, patterns, expected
+):
+    _issuer_context(monkeypatch, actor=actor, issuers=patterns)
+    service = _issuer_service()
+    app = await _app(service, profile)
+    result = await _call(
+        app, profile, f"brain_delivery_{operation}", _issuer_arguments(operation, issuer)
+    )
+    method = getattr(service, operation)
+    method.assert_awaited_once()
+    assert method.call_args.kwargs["caller_identity"] == expected
+    if operation == "attest":
+        assert not result.is_error
+        assert result.structured_content["issuer_identity"] == expected
+    else:
+        assert "delivery_disabled" in str(result.content)
+
+
+@pytest.mark.parametrize("profile", ["native", "compact"])
+@pytest.mark.parametrize("operation", ["attest", "accept"])
+@pytest.mark.parametrize(
+    "actor,issuer,patterns",
+    [
+        ("agent:claude", "other-bot", ["agent:*"]),
+        ("agent:claude", None, []),
+        ("agent:claude", "client-service", []),
+        ("agent:claude", "executor", ["@project"]),
+        ("agent:claude", "agent:other", ["agent:claude"]),
+        ("agent:claude", "agent:other", ["agent:**", "agent:*:other"]),
+    ],
+)
+async def test_credentials_refuse_an_issuer_outside_the_allowlist(
+    monkeypatch, profile, operation, actor, issuer, patterns
+):
+    from structlog.testing import capture_logs
+
+    from brain_v42.credentials.reasons import refusal_counts, reset_refusal_counts
+
+    _issuer_context(monkeypatch, actor=actor, issuers=patterns)
+    service = _issuer_service()
+    app = await _app(service, profile)
+    reset_refusal_counts()
+    with capture_logs() as logs:
+        result = await _call(
+            app, profile, f"brain_delivery_{operation}", _issuer_arguments(operation, issuer)
+        )
+    assert result.is_error and "issuer_not_allowed" in str(result.content)
+    getattr(service, operation).assert_not_called()
+    events = [event for event in logs if event["event"] == "mcp_auth.refused"]
+    assert len(events) == 1 and events[0]["status"] == 403
+    assert refusal_counts() == {"issuer_not_allowed": 1}
+    reset_refusal_counts()
+
+
+@pytest.mark.parametrize("operation", ["attest", "accept"])
+@pytest.mark.parametrize("issuer,allowed", [(None, True), ("agent:claude", True), ("other", False)])
+async def test_shared_token_can_only_declare_its_actor(monkeypatch, operation, issuer, allowed):
+    _issuer_context(monkeypatch)
+    service = _issuer_service()
+    app = await _app(service, "native")
+    result = await _call(
+        app, "native", f"brain_delivery_{operation}", _issuer_arguments(operation, issuer)
+    )
+    if allowed:
+        assert getattr(service, operation).call_args.kwargs["caller_identity"] == "agent:claude"
+    else:
+        assert result.is_error and "issuer_not_allowed" in str(result.content)
+        getattr(service, operation).assert_not_called()
+
+
+@pytest.mark.parametrize("operation", ["attest", "accept"])
+@pytest.mark.parametrize("issuer", [":agent", "a b", "a/b", "a" * 65, "", 7])
+async def test_explicit_issuer_uses_bounded_actor_label_grammar(monkeypatch, operation, issuer):
+    _issuer_context(monkeypatch, issuers=["*"])
+    service = _issuer_service()
+    app = await _app(service, "native")
+    result = await _call(
+        app, "native", f"brain_delivery_{operation}", _issuer_arguments(operation, issuer)
+    )
+    assert result.is_error and "invalid_arguments" in str(result.content)
+    getattr(service, operation).assert_not_called()
+
+
+@pytest.mark.parametrize("profile", ["native", "compact"])
+async def test_optional_issuer_never_changes_the_payload_or_its_digest(monkeypatch, profile):
+    _issuer_context(monkeypatch, issuers=["agent:*", "release-bot"])
+    service = _issuer_service()
+    app = await _app(service, profile)
+    arguments = _attestation_arguments()
+    implicit = await _call(app, profile, "brain_delivery_attest", arguments)
+    explicit = await _call(
+        app, profile, "brain_delivery_attest", arguments | {"issuer": "release-bot"}
+    )
+    assert not implicit.is_error and not explicit.is_error
+    assert implicit.structured_content["issuer_identity"] == "agent:claude"
+    assert explicit.structured_content["issuer_identity"] == "release-bot"
+    assert implicit.structured_content["digest"] == explicit.structured_content["digest"]
+    for result in (implicit, explicit):
+        assert result.structured_content["payload"] == arguments["payload"]
+    for call in service.attest.call_args_list:
+        assert call.kwargs["payload"] == arguments["payload"]
+        assert "issuer" not in call.kwargs

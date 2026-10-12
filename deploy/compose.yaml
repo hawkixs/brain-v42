@@ -219,6 +219,9 @@ services:
       BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED: "true"
       BRAIN_DECAY_HUMAN_SIGNAL_ENABLED: "true"
       BRAIN_FACTS_LIVE_RELEASE_IDENTITY: '{"release_sha":"${GIT_SHA}","package_version":"${VERSION}"}'
+      # The rail verifies /version against the artefact.
+      BRAIN_GIT_SHA: "${GIT_SHA}"
+      BRAIN_IMAGE_DIGEST: "${IMAGE_DIGEST}"
       BRAIN_CLIENT_ACTIVITY_TOKEN_FILE: /etc/brain-v42/activity/token
       BRAIN_CLIENT_ACTIVITY_REPORTING_ENABLED: "true"
       BRAIN_CLIENT_ACTIVITY_URL: http://metrics:9200/v1/client-activity

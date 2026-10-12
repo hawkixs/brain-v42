@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 
+import pytest
+
 from brain_v42.provenance import (
     UNKNOWN_ACTOR,
     enter_call,
@@ -71,6 +73,23 @@ class TestNormalizeTransport:
 
 
 class TestNormalizeAgent:
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("/checkout/brain_v42", "brain_v42"),
+            ("/checkout/brain_v42/.claude/worktrees/topic", "brain_v42"),
+            ("/checkout/red-rail/.worktrees/fix-x", "red-rail"),
+            ("/checkout/brain_v42/.claude/worktrees/topic/src/deep/", "brain_v42"),
+            ("/checkout/red-rail/.worktrees/fix-x/src/deep", "red-rail"),
+            ("/checkout/red-rail/worktrees", "worktrees"),
+            ("/checkout/red-rail/worktrees/topic", "topic"),
+            ("/checkout/outer/.worktrees/one/inner/.worktrees/two/src", "inner"),
+            ("agent:reviewer", "agent:reviewer"),
+        ],
+    )
+    def test_worktree_paths_resolve_to_checkout_actor(self, value: str, expected: str) -> None:
+        assert normalize_agent(value) == expected
+
     def test_absolute_path_reduces_to_basename(self) -> None:
         assert normalize_agent("/home/user/git/red-lab") == "red-lab"
 

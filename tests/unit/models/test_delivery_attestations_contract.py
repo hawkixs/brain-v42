@@ -58,11 +58,26 @@ def _emitted_codes() -> set[str]:
 
 
 def test_contract_version_and_tool_versions() -> None:
-    assert CONTRACT["contract_version"] == 1
+    assert CONTRACT["contract_version"] == "1.1"
     assert CONTRACT["tools"] == {
         "brain_delivery_attest": "1.0",
         "brain_delivery_attestation_list": "1.0",
     }
+
+
+def test_optional_issuer_is_outside_the_digest_and_authorized() -> None:
+    from brain_v42.credentials.reasons import TOOL_STATUSES
+
+    argument = CONTRACT["issuer"]["argument"]
+    assert argument["name"] == "issuer"
+    assert argument["optional"] is True
+    assert argument["default"] is None
+    assert argument["location"] == "top-level tool argument, outside payload"
+    assert argument["max_length"] == 64
+    assert argument["pattern"] == r"^[A-Za-z0-9_][A-Za-z0-9._:-]{0,63}$"
+    assert CONTRACT["error_codes"]["authorization"] == ["issuer_not_allowed"]
+    assert TOOL_STATUSES["issuer_not_allowed"] == 403
+    assert "@project" in CONTRACT["issuer"]["registry"]
 
 
 def test_kind_rules_are_the_code_constants() -> None:

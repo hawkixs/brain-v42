@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 import structlog
 
+from brain_v42.credentials.agent_unresolved import reset_agent_unresolved_counts
 from brain_v42.credentials.audit import render_event
 from brain_v42.credentials.elevation_refusals import (
     emit_elevation_refusal,
@@ -83,6 +84,7 @@ def test_rendered_auth_and_audit_lines_match_the_native_json_contract(
     output = StringIO()
     reset_refusal_counts()
     reset_elevation_refusal_counts()
+    reset_agent_unresolved_counts()
     try:
         structlog.configure(
             processors=build_logging_processors(settings.brain_log_format),
@@ -122,6 +124,7 @@ def test_rendered_auth_and_audit_lines_match_the_native_json_contract(
         structlog.configure(**previous)
         reset_refusal_counts()
         reset_elevation_refusal_counts()
+        reset_agent_unresolved_counts()
     lines = [json.loads(line) for line in output.getvalue().splitlines()]
     assert len(lines) == 10
     for line in lines:

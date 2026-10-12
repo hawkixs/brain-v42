@@ -7,13 +7,77 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from brain_v42.mcp.provenance_middleware import ProvenanceMiddleware
-from brain_v42.provenance import UNKNOWN_ACTOR, get_current_actor, set_current_actor
+from brain_v42.provenance import (
+    UNKNOWN_ACTOR,
+    get_current_actor,
+    get_current_actor_project,
+    get_current_principal,
+    set_current_actor,
+    set_current_actor_project,
+    set_current_principal,
+)
 
 
 def _context(tool_name: str = "brain_get") -> MagicMock:
     context = MagicMock()
     context.message.name = tool_name
     return context
+
+
+@pytest.mark.parametrize("principal", ["current-client", None])
+@pytest.mark.parametrize("raises", [False, True])
+async def test_current_request_project_is_scoped_and_restored(
+    monkeypatch: pytest.MonkeyPatch, principal: str | None, raises: bool
+) -> None:
+    from starlette.requests import Request
+
+    request = Request(
+        {
+            "type": "http",
+            "headers": [],
+            "state": {
+                "brain_principal": principal,
+                "brain_actor": "red-rail",
+                "brain_actor_project": "red-rail",
+            },
+        }
+    )
+    monkeypatch.setattr("brain_v42.mcp.provenance_middleware.get_http_request", lambda: request)
+    monkeypatch.setattr(
+        "brain_v42.mcp.provenance_middleware.get_http_headers",
+        lambda **kwargs: {"x-brain-agent": "brain-v42"},
+    )
+    monkeypatch.setattr("brain_v42.mcp.provenance_middleware.get_session_autoopener", lambda: None)
+    previous = (get_current_actor(), get_current_principal(), get_current_actor_project())
+    set_current_actor("initialize-actor")
+    set_current_principal("initialize-client")
+    set_current_actor_project("initialize-project")
+    middleware = ProvenanceMiddleware()
+
+    async def tool(context: object) -> str:
+        assert get_current_principal() == principal
+        assert get_current_actor() == ("red-rail" if principal else "brain-v42")
+        assert get_current_actor_project() == ("red-rail" if principal else None)
+        if raises:
+            raise ValueError("tool failure")
+        return "done"
+
+    async def gateway(context: object) -> str:
+        return await middleware.on_call_tool(context, tool)
+
+    try:
+        if raises:
+            with pytest.raises(ValueError, match="tool failure"):
+                await middleware.on_call_tool(_context(), gateway)
+        else:
+            assert await middleware.on_call_tool(_context(), gateway) == "done"
+        assert get_current_actor() == "initialize-actor"
+        assert get_current_principal() == "initialize-client"
+        assert get_current_actor_project() == "initialize-project"
+    finally:
+        set_current_actor(previous[0])
+        set_current_principal(previous[1])
+        set_current_actor_project(previous[2])
 
 
 class TestProvenanceMiddleware:

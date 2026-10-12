@@ -14,7 +14,9 @@ table, hence the rule with no row to take: green, silent, and wrong.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
+from contextvars import Context
 from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
@@ -180,6 +182,107 @@ class TestIdentityResolution:
         opener = _RecordingOpener()
         auto = _opener(opener)
         assert await auto.ensure_open() is None
+        assert opener.seen == []
+        assert auto.skipped["no_project"] == 1
+
+
+@pytest.mark.parametrize("mode", ["credentials", "shared_token"])
+@pytest.mark.parametrize("actor", ["red-rail", "ha-workers", "workstation-claude"])
+async def test_non_project_trace_is_skipped_only_in_credentials_mode(mode: str, actor: str) -> None:
+    from starlette.responses import JSONResponse
+    from starlette.types import Receive, Scope, Send
+
+    from brain_v42.mcp.credentials_http import CredentialGuard
+    from tests.unit.mcp.test_credentials_http import TOKEN, issuer_verifier, request
+
+    opener = _RecordingOpener()
+    auto = _opener(opener)
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        set_current_actor(scope.get("state", {}).get("brain_actor", actor))
+        opened = await auto.ensure_open()
+        if mode == "credentials":
+            assert opened is None
+        else:
+            assert opened is not None
+        await JSONResponse({})(scope, receive, send)
+
+    guard = (
+        CredentialGuard(app, verifier=await issuer_verifier([actor]))
+        if mode == "credentials"
+        else app
+    )
+    with capture_logs() as logs:
+        response = await request(guard, token=TOKEN, agent=actor)
+    assert response.status_code == 200
+    assert logs == []
+    if mode == "credentials":
+        assert opener.seen == []
+        assert auto.skipped["no_project"] == 1
+        assert auto.failed == 0
+    else:
+        assert len(opener.seen) == 1
+        assert opener.seen[0].project_key == actor
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected_actor", "opens"),
+    [
+        ("/checkout/brain_v42/.claude/worktrees/topic/src", "brain-v42", True),
+        ("/checkout/brain_v42/.worktrees/topic", "brain-v42", True),
+        ("brain", "brain", True),
+        ("/checkout/unknown-key", "red-rail", False),
+    ],
+)
+async def test_credential_actor_reaches_provenance_and_trace(
+    raw: str, expected_actor: str, opens: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.types import Receive, Scope, Send
+
+    from brain_v42.mcp.credentials_http import CredentialGuard
+    from brain_v42.provenance import get_current_actor, get_current_principal
+    from tests.unit.mcp.test_credentials_http import TOKEN, issuer_verifier, request
+
+    opener = _RecordingOpener()
+    auto = _opener(opener)
+    monkeypatch.setattr("brain_v42.mcp.provenance_middleware.get_session_autoopener", lambda: auto)
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        assert scope["state"]["brain_actor"] == expected_actor
+        monkeypatch.setattr(
+            "brain_v42.mcp.provenance_middleware.get_http_request", lambda: Request(scope)
+        )
+        monkeypatch.setattr(
+            "brain_v42.mcp.provenance_middleware.get_http_headers",
+            lambda **kwargs: {"x-brain-agent": raw, "mcp-session-id": _CONNECTION},
+        )
+
+        async def tool(context: object) -> str:
+            assert get_current_actor() == expected_actor
+            assert get_current_principal() == "red-rail"
+            return "done"
+
+        # The SDK tool task does not inherit the current guard's verification.
+        # Only request state crosses this boundary; raw headers are insufficient.
+        task = asyncio.create_task(
+            ProvenanceMiddleware().on_call_tool(_context(), tool), context=Context()
+        )
+        assert await task == "done"
+        await JSONResponse({})(scope, receive, send)
+
+    response = await request(
+        CredentialGuard(app, verifier=await issuer_verifier(["@project", "brain"])),
+        token=TOKEN,
+        agent=raw,
+    )
+    assert response.status_code == 200
+    if opens:
+        assert len(opener.seen) == 1
+        assert opener.seen[0].project_key == "brain-v42"
+        assert opener.seen[0].started_by_actor == expected_actor
+    else:
         assert opener.seen == []
         assert auto.skipped["no_project"] == 1
 

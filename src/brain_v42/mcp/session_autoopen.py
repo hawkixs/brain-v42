@@ -52,6 +52,8 @@ from brain_v42.provenance import (
     UNEXPANDED_ACTOR,
     UNKNOWN_ACTOR,
     get_current_actor,
+    get_current_actor_project,
+    get_current_principal,
     get_current_transport,
 )
 
@@ -123,13 +125,18 @@ def resolve_auto_open_identity() -> tuple[AutoOpenIdentity | None, str]:
     if actor in (UNKNOWN_ACTOR, UNEXPANDED_ACTOR) or not actor.strip():
         return None, "no_actor"
 
-    try:
-        project_key = canonicalize_project_key(actor)
-    except (TypeError, ValueError):
-        # `strict=True` INTENDED: this is the write path. `strict=False` would
-        # let a malformed key through, which would create a ghost project
-        # invisible to the scoped briefing (learning 7bc821a1).
-        return None, "no_project"
+    if get_current_principal() is not None:
+        project_key = get_current_actor_project()
+        if project_key is None:
+            return None, "no_project"
+    else:
+        try:
+            project_key = canonicalize_project_key(actor)
+        except (TypeError, ValueError):
+            # `strict=True` INTENDED: this is the write path. `strict=False` would
+            # let a malformed key through, which would create a ghost project
+            # invisible to the scoped briefing (learning 7bc821a1).
+            return None, "no_project"
 
     return (
         AutoOpenIdentity(

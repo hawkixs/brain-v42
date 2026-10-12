@@ -41,12 +41,14 @@ from brain_v42.provenance import (
     enter_call,
     exit_call,
     get_current_actor,
+    get_current_actor_project,
     get_current_principal,
     is_outermost_call,
     normalize_agent,
     normalize_session,
     normalize_transport,
     set_current_actor,
+    set_current_actor_project,
     set_current_peer,
     set_current_principal,
     set_current_session,
@@ -85,6 +87,7 @@ class ProvenanceMiddleware(Middleware):
         headers = get_http_headers(include={_TRANSPORT_HEADER}) or {}
         previous_principal = get_current_principal()
         previous_actor = get_current_actor()
+        previous_actor_project = get_current_actor_project()
         # The SDK session task inherits initialize's context. Only the current
         # request carries the identity verified for this particular bearer.
         principal = state.get("brain_principal")
@@ -104,6 +107,9 @@ class ProvenanceMiddleware(Middleware):
         transport = normalize_transport(headers.get(_TRANSPORT_HEADER))
         set_current_principal(principal)
         set_current_actor(actor)
+        set_current_actor_project(
+            state.get("brain_actor_project") if principal is not None else None
+        )
         set_current_session(session)
         set_current_transport(transport)
         peer = getattr(getattr(request, "client", None), "host", None)
@@ -121,6 +127,7 @@ class ProvenanceMiddleware(Middleware):
             exit_call(token)
             set_current_principal(previous_principal)
             set_current_actor(previous_actor)
+            set_current_actor_project(previous_actor_project)
 
     async def _auto_open_session(self) -> None:
         """Open this connection's tracer session, BEFORE the tool.

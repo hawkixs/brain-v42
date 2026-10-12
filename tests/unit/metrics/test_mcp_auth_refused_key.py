@@ -13,6 +13,7 @@ from tests.unit.metrics.test_pseudo_tools_filter import _MOCK_SETTINGS, _make_co
 
 
 async def test_process_counters_start_empty_and_are_persisted_cumulatively() -> None:
+    from brain_v42.credentials.agent_unresolved import reset_agent_unresolved_counts
     from brain_v42.credentials.elevation_refusals import (
         emit_elevation_refusal,
         reset_elevation_refusal_counts,
@@ -21,6 +22,7 @@ async def test_process_counters_start_empty_and_are_persisted_cumulatively() -> 
 
     reset_refusal_counts()
     reset_elevation_refusal_counts()
+    reset_agent_unresolved_counts()
     try:
         assert MetricsFlusher._process_pseudo_tools({})["_mcp_auth_refused"] == {}
         assert MetricsFlusher._process_pseudo_tools({})["_elevation_refused"] == {}
@@ -57,6 +59,7 @@ async def test_process_counters_start_empty_and_are_persisted_cumulatively() -> 
         )
     finally:
         reset_elevation_refusal_counts()
+        reset_agent_unresolved_counts()
         reset_refusal_counts()
 
 

@@ -19,6 +19,7 @@ import structlog
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from brain_v42.credentials.agent_unresolved import agent_unresolved_counts
 from brain_v42.credentials.elevation_refusals import elevation_refusal_counts
 from brain_v42.credentials.reasons import refusal_counts
 from brain_v42.metrics.collector import MetricsCollector, _get_rss_bytes
@@ -94,6 +95,7 @@ class MetricsFlusher:
         # exactly once on _process, even before the first event or tool call.
         ptools["_mcp_auth_refused"] = refusal_counts()
         ptools["_elevation_refused"] = elevation_refusal_counts()
+        ptools["_mcp_auth_agent_unresolved"] = agent_unresolved_counts()
         rk = entry.get("reranker", {})
         probes = rk.get("last_probe", {})
         if (

@@ -36,6 +36,7 @@ from brain_v42.db.tables import (
     brain_credential_audit,
     brain_session_connections,
     brain_sessions,
+    project_contexts,
 )
 from brain_v42.repositories.pg_base import BasePgRepository
 
@@ -276,6 +277,12 @@ class PgClientCredentialRepo(BasePgRepository):
                 .all()
             )
         return [_credential(row) for row in rows]
+
+    async def project_keys(self, *, session: AsyncSession | None = None) -> list[str]:
+        """Load existing identities without treating syntactically valid labels as projects."""
+        async with self._maybe_session(session, write=False) as sess:
+            result = await sess.execute(sa.select(project_contexts.c.project_key))
+            return list(result.scalars().all())
 
     async def disposition_by_digest(
         self, token_sha256: bytes, now: datetime, *, session: AsyncSession | None = None
