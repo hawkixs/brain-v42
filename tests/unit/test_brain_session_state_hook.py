@@ -1,5 +1,6 @@
 """Test the per-session state companion of the admin elevation hook, stdlib only."""
 
+import fcntl
 import io
 import json
 import os
@@ -7,6 +8,8 @@ import runpy
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from typing import Any
@@ -220,6 +223,62 @@ class StateHookTests(unittest.TestCase):
         self.assertEqual((done.returncode, done.stdout, done.stderr), (0, "", ""))
         self.assertEqual(self.state(claude_id)["prompt_count"], 1)
         self.assertNotIn("secret", (self.state_dir / f"{claude_id}.json").read_text())
+
+    def within(self, seconds: float, call: Any) -> Any:
+        """Run a call in a thread so a regression fails the test instead of hanging it."""
+        outcome: list[Any] = []
+        thread = threading.Thread(target=lambda: outcome.append(call()), daemon=True)
+        thread.start()
+        thread.join(seconds)
+        self.assertTrue(outcome, "the hook did not return in time")
+        return outcome[0]
+
+    def test_fifo_at_the_state_path_cannot_block_either_event(self) -> None:
+        claude_id = str(uuid4())
+        self.state_dir.mkdir(mode=0o700)
+        os.mkfifo(self.state_dir / f"{claude_id}.json", 0o600)
+        self.within(3, lambda: self.prompt(claude_id, "/brain-admin 1h x"))
+        self.assertEqual(self.requests, [])
+        self.assertEqual(self.state(claude_id)["prompt_count"], 1)
+        os.unlink(self.state_dir / f"{claude_id}.json")
+        os.mkfifo(self.state_dir / f"{claude_id}.json", 0o600)
+        self.within(3, lambda: self.tool(claude_id, "start", {"session": {"id": str(uuid4())}}))
+
+    def test_unsafe_existing_state_is_read_as_empty_and_never_followed(self) -> None:
+        claude_id = str(uuid4())
+        self.state_dir.mkdir(mode=0o700)
+        path = self.state_dir / f"{claude_id}.json"
+        victim = self.root / "victim.json"
+        victim.write_text(json.dumps({"prompt_count": 5}))
+        victim.chmod(0o600)
+        path.symlink_to(victim)
+        self.prompt(claude_id)
+        self.assertEqual(json.loads(victim.read_text()), {"prompt_count": 5})
+        self.assertFalse(path.is_symlink())
+        self.assertEqual(self.state(claude_id)["prompt_count"], 1)
+        for mode in (0o644, 0o640, 0o602):
+            path.write_text(json.dumps({"prompt_count": 5, "brain_session_id": str(uuid4())}))
+            path.chmod(mode)
+            self.prompt(claude_id)
+            self.assertEqual(
+                self.state(claude_id), {"claude_session_id": claude_id, "prompt_count": 1}
+            )
+
+    def test_a_held_directory_lock_delays_the_hook_but_never_hangs_it(self) -> None:
+        claude_id, brain = str(uuid4()), str(uuid4())
+        self.prompt(claude_id)
+        self.tool(claude_id, "start", {"session": {"id": brain}})
+        self.prompt(claude_id)
+        holder = os.open(self.state_dir, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, holder)
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        started = time.monotonic()
+        output = self.within(4, lambda: self.prompt(claude_id, "/brain-admin 1h x"))
+        self.within(4, lambda: self.tool(claude_id, "end", {"session": {"id": brain}}))
+        self.assertLess(time.monotonic() - started, 4)
+        self.assertEqual(output, "Brain admin until 2026-10-06T13:00:00+00:00.\n")
+        self.assertEqual(self.state(claude_id)["prompt_count"], 2)
+        self.assertEqual(self.state(claude_id)["brain_session_id"], brain)
 
 
 if __name__ == "__main__":

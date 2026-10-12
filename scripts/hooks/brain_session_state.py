@@ -21,6 +21,7 @@ import os
 import runpy
 import stat
 import sys
+import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ _CLEARING = frozenset(_PREFIX + name for name in ("end", "abandon"))
 _MAX_RESPONSE = 1024 * 1024
 _MAX_STDIN = 4 * 1024 * 1024
 _MAX_STATE = 16 * 1024
+_LOCK_WAIT = 1.0
 _DEFAULT_DIR = Path("~/.local/state/brain-v42/sessions")
 _ERRORS = (OSError, ValueError, TypeError, KeyError, AttributeError, RecursionError, RuntimeError)
 
@@ -76,14 +78,23 @@ def _open_state_dir(environ: Mapping[str, str]) -> tuple[int, Path] | None:
 
 
 def _read_state(directory: int, name: str) -> dict[str, Any]:
-    """A missing, foreign or corrupt file reads as empty: a lower count only refuses more."""
+    """Read the state the way the elevate hook will: private, regular, ours, never followed.
+
+    O_NONBLOCK keeps a FIFO planted at the name from hanging the prompt. An unsafe, missing
+    or corrupt file reads as empty: a lower count only refuses more, and the next write
+    replaces the file itself, never what a symlink pointed at.
+    """
     try:
-        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
     except OSError:
         return {}
     with os.fdopen(descriptor, "r", encoding="utf-8") as file:
         metadata = os.fstat(file.fileno())
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != os.getuid():
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.getuid()
+            or stat.S_IMODE(metadata.st_mode) & 0o077
+        ):
             return {}
         try:
             state = json.loads(file.read(_MAX_STATE + 1))
@@ -112,12 +123,29 @@ def _write_state(directory: int, name: str, state: Mapping[str, Any]) -> None:
         raise
 
 
+def _lock(directory: int) -> None:
+    """Wait for the directory lock for about a second, then give up.
+
+    Giving up is safe: a skipped prompt count only lowers the count (which refuses more) and
+    a skipped record leaves the previous id. Blocking would hang the operator's prompt.
+    """
+    deadline = time.monotonic() + _LOCK_WAIT
+    while True:
+        try:
+            fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("state directory lock is held") from None
+            time.sleep(0.02)
+
+
 def _update(
     directory: int, claude_id: str, change: Callable[[dict[str, Any]], bool | None]
 ) -> None:
     """Read-modify-write under a directory lock; a change returning False writes nothing."""
     name = f"{claude_id}.json"
-    fcntl.flock(directory, fcntl.LOCK_EX)
+    _lock(directory)
     state = _read_state(directory, name)
     if change(state) is False:
         return
