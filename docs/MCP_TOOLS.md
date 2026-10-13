@@ -1354,6 +1354,10 @@ List quasi-duplicate pairs detected by embedding similarity (`ConsolidationJob`)
 brain_merge_entities(entity_type, source_id, target_id)
 ```
 Keep `target`, archive `source` with `merged_into=target_id`, union `tags`. Writes a row to `consolidation_log` for audit.
+An already-merged endpoint is refused; the error names the source or target endpoint.
+Rows already merged into the source are re-pointed to the target in the same transaction, each with a `repointed` consolidation audit entry and a `MERGED_INTO` relation written after commit.
+Children of another project are left in place and counted in a warning for a project-scoped merge.
+If the child set keeps changing while locks are taken, the merge refuses after three passes, changing nothing; the caller can retry.
 
 ---
 

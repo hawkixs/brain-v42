@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
@@ -102,6 +103,109 @@ async def test_real_merge_flattens_two_children_and_audits_each(
             .all()
         )
         assert {row["source_id"] for row in audits} == {first, second}
+
+
+@pytest.mark.asyncio
+async def test_real_merge_rereads_child_committed_after_lock_snapshot(
+    session_factory: async_sessionmaker[AsyncSession],
+    merge_project: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A child committed while the lock SELECT waits is absent from its snapshot.
+
+    merged_into has a foreign key, so the child's writer holds FOR KEY SHARE on
+    the source until it commits, and the merge's FOR UPDATE waits for it. The
+    lock statement's snapshot predates that commit: the child is not in the
+    locked set. Holding the writer open until the merge is seen waiting makes
+    that interleaving deterministic, and it is the only one the foreign key
+    leaves open (once the source is locked, no new child can commit).
+    """
+    repo = PgDecisionRepo(session_factory)
+    source, target, child = [
+        await _create_decision(repo, project_key=merge_project, title=title, tags=[])
+        for title in ("Source", "Target", "Late child")
+    ]
+    execute = AsyncSession.execute
+    lock_passes = 0
+    rereads = 0
+
+    async def count_passes(session: AsyncSession, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal lock_passes, rereads
+        sql = str(statement)
+        if sql.startswith("SELECT") and "FOR UPDATE" in sql:
+            lock_passes += 1
+        elif sql.startswith("SELECT") and "NOT IN" in sql:
+            rereads += 1
+        return await execute(session, statement, *args, **kwargs)
+
+    async def wait_for_lock_waiter(observer: AsyncSession, writer_pid: int) -> None:
+        # brain_test is shared: only a backend blocked by THIS writer counts.
+        for _ in range(200):
+            waiting = await execute(
+                observer,
+                sa.text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE :writer = ANY(pg_blocking_pids(pid))"
+                ),
+                {"writer": writer_pid},
+            )
+            if waiting.scalar_one() > 0:
+                return
+            await asyncio.sleep(0.05)
+        raise AssertionError("the merge never waited for the child's writer")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(AsyncSession, "execute", count_passes)
+        async with session_factory() as writer, session_factory() as observer:
+            writer_pid = (await execute(writer, sa.text("SELECT pg_backend_pid()"))).scalar_one()
+            await execute(
+                writer,
+                sa.update(decisions)
+                .where(decisions.c.id == child)
+                .values(
+                    merged_into=source,
+                    freshness_status="archived",
+                    freshness_source="merge",
+                ),
+            )
+            merge = asyncio.create_task(
+                ConsolidationJob(session_factory, PgConsolidationLogRepo(session_factory)).merge(
+                    "decision", source, target
+                )
+            )
+            try:
+                await wait_for_lock_waiter(observer, writer_pid)
+            finally:
+                await writer.commit()
+            await asyncio.wait_for(merge, timeout=30)
+
+    assert lock_passes == 2
+    assert rereads == 2
+    async with session_factory() as observer:
+        assert (
+            await observer.execute(
+                sa.select(decisions.c.merged_into).where(decisions.c.id == child)
+            )
+        ).scalar_one() == target
+        parent = decisions.alias("parent")
+        assert (
+            await observer.execute(
+                sa.select(sa.func.count())
+                .select_from(decisions.join(parent, decisions.c.merged_into == parent.c.id))
+                .where(decisions.c.project_key == merge_project, parent.c.merged_into.is_not(None))
+            )
+        ).scalar_one() == 0
+        assert (
+            await observer.execute(
+                sa.select(sa.func.count())
+                .select_from(consolidation_log)
+                .where(
+                    consolidation_log.c.source_id == child,
+                    consolidation_log.c.target_id == target,
+                    consolidation_log.c.action == "repointed",
+                )
+            )
+        ).scalar_one() == 1
 
 
 @pytest.mark.asyncio
