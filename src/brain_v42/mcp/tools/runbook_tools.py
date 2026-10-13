@@ -81,9 +81,9 @@ def register_runbook_tools(
         description: str,
         project_key: str,
         trigger: str,
-        steps: list[dict],
+        steps: list[dict | str],
         prerequisites: list[str] | None,
-        rollback_steps: list[dict] | None,
+        rollback_steps: list[dict | str] | None,
         estimated_duration: str | None,
         tags: list[str] | None,
     ) -> RunbookCreate:
