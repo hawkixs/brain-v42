@@ -712,14 +712,20 @@ class MetricsCollector(
                 aggregated[name]["errors"] += stats["errors"]
                 aggregated[name]["total_latency"] += stats["total_latency"]
         tools: dict[str, Any] = {}
+        # Same percentile keys as the cross-process merge: the handler publishes
+        # these entries when no process row is live, and the shape must not move.
+        cutoff = time.time() - TOOL_LATENCY_WINDOW_SECONDS
         for name, agg in aggregated.items():
             calls = agg["calls"]
             error_times = self._tool_error_times.get(name, deque())
+            samples = self._tool_latency_by_name.get(name, deque())
             tools[name] = {
                 "calls": calls,
                 "errors": agg["errors"],
                 "recent_errors": self._count_recent(error_times),
                 "avg_latency_ms": round(agg["total_latency"] / calls, 1) if calls else 0.0,
+                **self._percentiles(samples, TOOL_LATENCY_WINDOW_SECONDS),
+                "samples": sum(ts >= cutoff for ts, _ in samples),
             }
 
         # Embedding stats with avg latency

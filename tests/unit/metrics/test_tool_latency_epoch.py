@@ -70,6 +70,23 @@ def test_empty_tool_window_is_null(collector: MetricsCollector) -> None:
         }
 
 
+def test_local_tools_carry_the_same_percentile_keys(collector: MetricsCollector) -> None:
+    """With no live process row the handler publishes these entries as `tools`.
+
+    Their shape must not depend on liveness: a consumer reading `p95` gets a
+    measured value or null, never a missing key.
+    """
+    for latency in (10.0, 20.0, 30.0):
+        collector.record_tool_call("search", latency, agent="first")
+    entry = collector.get_metrics()["tools"]["search"]
+    assert {key: entry[key] for key in ("p50", "p95", "p99", "samples")} == {
+        "p50": 20.0,
+        "p95": 30.0,
+        "p99": 30.0,
+        "samples": 3,
+    }
+
+
 def test_tool_samples_are_bounded(collector: MetricsCollector) -> None:
     for _ in range(2001):
         collector.record_tool_call("search", 10.0)
