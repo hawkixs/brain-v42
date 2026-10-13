@@ -17,6 +17,12 @@ CALLER_SAFE_SITES: dict[tuple[str, str, str, str], str] = {
         "return self._transport_refusal(request, exc.reason, None)",
     ): "CredentialRefused carries a closed reason code, never an underlying error payload.",
     (
+        "mcp/argument_guidance.py",
+        "on_call_tool",
+        "ValidationError",
+        "ToolError(_guidance(name, exc, parameters, context.message.arguments or {}))",
+    ): "Guidance reads errors(include_input=False): field paths and expected types, never values.",
+    (
         "mcp/business_errors.py",
         "surfaced",
         "SURFACED_BUSINESS_ERRORS",
