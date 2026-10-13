@@ -7,6 +7,7 @@ from uuid import uuid4
 import pytest
 
 from brain_v42.models.ticket import (
+    SELF_TRANSITIONS,
     ExtractionStatus,
     Ticket,
     TicketCreate,
@@ -295,13 +296,27 @@ class TestSelfTicketTransition:
         assert updated.status is TicketStatus.OPEN
         assert repo.apply_transition.await_args.kwargs["resolved_at"] is None
 
-    async def test_no_role_check_regardless_of_declared_author(self):
-        # 'red-lab' is neither from_project nor to_project — on a cross-ticket that
-        # would be a NotAllowedError. On a self-ticket the single party makes the
-        # role moot.
-        svc, _, _ = _svc(ticket=_self_ticket())
-        updated = await svc.transition(uuid4(), "red-lab", "resolve")
+    @pytest.mark.parametrize("kind,status,action", sorted(SELF_TRANSITIONS, key=str))
+    async def test_third_party_cannot_transition_self_ticket(self, kind, status, action):
+        svc, repo, _ = _svc(ticket=_self_ticket(kind=kind, status=status))
+        with pytest.raises(
+            NotAllowedError,
+            match=rf"'{action.value}' is reserved to the ticket's project",
+        ) as exc:
+            await svc.transition(uuid4(), "red-lab", action.value)
+
+        assert str(exc.value) == (
+            f"'{action.value}' is reserved to the ticket's project "
+            f"('{SELF_PROJECT}'); author was 'red-lab'"
+        )
+        repo.apply_transition.assert_not_awaited()
+        repo.add_message.assert_not_awaited()
+
+    async def test_canonical_project_alias_can_transition_self_ticket(self):
+        svc, repo, _ = _svc(ticket=_self_ticket())
+        updated = await svc.transition(uuid4(), "brain_v42", "resolve")
         assert updated.status is TicketStatus.CLOSED
+        repo.apply_transition.assert_awaited_once()
 
 
 class TestCrossProjectTransitionNonRegression:
