@@ -55,6 +55,18 @@ DYNAMIC_MAPS = {
 # Per-block evaluation health, kept apart from payloads that own status keys.
 BLOCK_HEALTH = {"status": None, "error_type": None, "as_of": None, "last_ok_at": None}
 
+# Per-tool stats in both tool maps; percentiles cover a window, counters do not.
+TOOL_STATS = {
+    "calls": None,
+    "errors": None,
+    "recent_errors": None,
+    "avg_latency_ms": None,
+    "p50": None,
+    "p95": None,
+    "p99": None,
+    "samples": None,
+}
+
 # None denotes a JSON scalar (including null), [shape] a nonempty list whose
 # EVERY item must match, and [] an intentionally empty, unimplemented section.
 # Fixed vocabularies (tables, entity types, intents, receivers, killswitches,
@@ -86,7 +98,7 @@ METRICS_SCHEMA = {
         "models_seen": [None],
         "model_source": None,
     },
-    "tools": {"*": {"calls": None, "errors": None, "recent_errors": None, "avg_latency_ms": None}},
+    "tools": {"*": TOOL_STATS},
     "search_quality": {
         "searches_total": None,
         "searches_with_zero_results": None,
@@ -220,12 +232,16 @@ METRICS_SCHEMA = {
     "mcp_auth_agent_unresolved": {"*": None},
     "author_binding_candidates": {"*": None},
     "cross_process": {
+        "counters": {
+            "epoch": None,
+            "since": None,
+            "processes": None,
+            "tool_latency_window_s": None,
+        },
         "active_processes": None,
         "active_agents": None,
         "total_memory_rss_bytes": None,
-        "tools": {
-            "*": {"calls": None, "errors": None, "recent_errors": None, "avg_latency_ms": None}
-        },
+        "tools": {"*": TOOL_STATS},
         "embedding": {
             "total_requests": None,
             "total_errors": None,
