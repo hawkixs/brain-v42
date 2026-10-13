@@ -155,6 +155,11 @@ METRICS_SCHEMA = {
     "client_activity_registry": {
         "evictions_total": {"ttl": None, "capacity": None},
         "evictions_bearing_total": None,
+        "conversation_evictions_total": {
+            "codex": {"ttl": None, "capacity": None},
+            "claude": {"ttl": None, "capacity": None},
+        },
+        "conversation_evictions_bearing_total": {"codex": None, "claude": None},
         "occupancy": None,
         "capacity": None,
         "folded_observations_total": None,
