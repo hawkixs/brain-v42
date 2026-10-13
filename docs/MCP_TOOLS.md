@@ -710,6 +710,7 @@ brain_supersede_decision(old_decision_id, title, context, decision_made,
                          project_key=None, tags=None)
 ```
 Create a new decision and mark the old one `status=superseded`, `superseded_by=new_id`. Atomic (one transaction). The old decision must exist and must not already be superseded. Otherwise the call is refused and no replacement is created.
+The old decision must belong to the same project as the replacement (or both must be unscoped); a decision of another project is refused and nothing is written.
 
 ### brain_get_supersession_chain
 ```

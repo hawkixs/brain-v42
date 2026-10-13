@@ -769,7 +769,7 @@ class TestSupersede:
     @pytest.mark.asyncio
     async def test_unscoped_supersede_still_writes(self) -> None:
         """An unscoped replacement of an unscoped decision is a supported path."""
-        session = _make_mock_session(row=_make_decision_row(id=NEW_UUID))
+        session = _make_mock_session(row=_make_decision_row(id=NEW_UUID, project_key=None))
         session.execute.return_value.scalars.return_value.all.return_value = [OLD_UUID]
         repo = PgDecisionRepo()
         data = DecisionCreate(title="Replacement", description="Context", reasoning="Reason")
@@ -782,7 +782,7 @@ class TestSupersede:
         assert session.execute.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_supersede_filters_old_decision_by_status_only(self) -> None:
+    async def test_supersede_filters_old_decision_by_status_and_project(self) -> None:
         session = _make_mock_session(row=_make_decision_row(id=NEW_UUID))
         session.execute.return_value.scalars.return_value.all.return_value = [OLD_UUID]
         repo = PgDecisionRepo()
@@ -796,13 +796,77 @@ class TestSupersede:
 
         statement = session.execute.await_args_list[1].args[0]
         sql = str(statement)
-        # No project predicate: cross-project supersession exists in production
-        # (2 of 56 rows on 2026-10-13) and restricting it is an operator decision.
         where = sql.split("WHERE", 1)[1]
-        assert "project_key" not in where
+        assert "decisions.project_key IS NOT DISTINCT FROM" in where
         assert "decisions.status !=" in sql
         assert "RETURNING decisions.id" in sql
         assert "superseded" in statement.compile().params.values()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("invalid_old", ["missing", "superseded", "foreign_superseded"])
+    async def test_missing_or_superseded_keeps_existing_error(self, invalid_old: str) -> None:
+        """An ineligible old row keeps its refusal even when its project differs."""
+        inserted = MagicMock()
+        inserted.mappings.return_value.one.return_value = _make_decision_row(id=NEW_UUID)
+        updated = MagicMock()
+        updated.scalars.return_value.all.return_value = []
+        diagnostic = MagicMock()
+        diagnostic.mappings.return_value.one_or_none.return_value = (
+            None
+            if invalid_old == "missing"
+            else {
+                "status": "superseded",
+                "project_key": "foreign-proj"
+                if invalid_old == "foreign_superseded"
+                else "test-proj",
+            }
+        )
+        session = _make_mock_session()
+        session.execute.side_effect = [inserted, updated, diagnostic]
+        repo = PgDecisionRepo()
+        data = DecisionCreate(
+            title="Replacement", description="Context", reasoning="Reason", project_key="test-proj"
+        )
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(repo, "get_session", lambda: _mock_get_session(session))
+            with pytest.raises(pg_decision.DecisionNotSupersedableError) as raised:
+                await repo.supersede(OLD_UUID, data)
+
+        assert type(raised.value) is pg_decision.DecisionNotSupersedableError
+        assert str(raised.value) == f"Decision {OLD_UUID} does not exist or is already superseded"
+
+    @pytest.mark.asyncio
+    async def test_cross_project_refusal_does_not_disclose_project_or_content(self) -> None:
+        """The diagnostic identifies a live foreign row without exposing its content."""
+        inserted = MagicMock()
+        inserted.mappings.return_value.one.return_value = _make_decision_row(id=NEW_UUID)
+        updated = MagicMock()
+        updated.scalars.return_value.all.return_value = []
+        diagnostic = MagicMock()
+        diagnostic.mappings.return_value.one_or_none.return_value = {
+            "status": "active",
+            "project_key": "foreign-proj",
+        }
+        session = _make_mock_session()
+        session.execute.side_effect = [inserted, updated, diagnostic]
+        repo = PgDecisionRepo()
+        data = DecisionCreate(
+            title="Replacement", description="Context", reasoning="Reason", project_key="test-proj"
+        )
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(repo, "get_session", lambda: _mock_get_session(session))
+            with pytest.raises(pg_decision.DecisionCrossProjectSupersedeError) as raised:
+                await repo.supersede(OLD_UUID, data)
+
+        assert isinstance(raised.value, pg_decision.DecisionNotSupersedableError)
+        assert (
+            str(raised.value)
+            == "The old decision belongs to a different project scope; supersede it from its own project (same project_key)"
+        )
+        assert session.begin.return_value.__aexit__.await_args.args[0] is type(raised.value)
+        session.commit.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
