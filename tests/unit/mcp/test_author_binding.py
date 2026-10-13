@@ -107,14 +107,33 @@ def test_log_labels_are_bounded_and_sanitized(
         assert "\n" not in fields[name]
 
 
+@pytest.mark.parametrize(
+    ("principal", "actor", "cause", "level"),
+    [
+        (None, None, "unauthenticated", "debug"),
+        ("client-a", None, "unresolved_actor", "info"),
+        ("client-a", "project-a", "mismatch", "info"),
+    ],
+)
 def test_logging_failure_cannot_interrupt_the_write(
-    observer: ModuleType, monkeypatch: pytest.MonkeyPatch
+    observer: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    principal: str | None,
+    actor: str | None,
+    cause: str,
+    level: str,
 ) -> None:
-    monkeypatch.setattr(observer, "get_current_principal", lambda: None)
-    monkeypatch.setattr(observer, "get_current_actor_project", lambda: None)
-    observer._logger.info.side_effect = RuntimeError("private detail")
-    observer._logger.warning.side_effect = RuntimeError("private detail")
+    monkeypatch.setattr(observer, "get_current_principal", lambda: principal)
+    monkeypatch.setattr(observer, "get_current_actor_project", lambda: actor)
+    for name in ("debug", "info", "warning"):
+        getattr(observer._logger, name).side_effect = RuntimeError("private detail")
     assert observer.observe_declared_project("brain_ticket_reply", "project") is None
+    # The failing call is the one this cause logs with, so the guard is exercised.
+    getattr(observer._logger, level).assert_called_once()
+    observer._logger.warning.assert_called_once_with(
+        "author_binding.failed", error_type="RuntimeError"
+    )
+    assert observer.author_binding_counts() == {f"brain_ticket_reply:{cause}": 1}
 
 
 async def test_a_real_tool_call_reads_the_real_provenance_context(observer: ModuleType) -> None:

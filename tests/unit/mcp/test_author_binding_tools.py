@@ -15,14 +15,16 @@ from brain_v42.mcp.tools import delivery_tools, ticket_tools
 from brain_v42.mcp.tools.formatters import format_confirmation, format_id
 from brain_v42.models.delivery import DeliveryError, DeliveryRefreshResult
 from brain_v42.models.ticket import Ticket, TicketGroups, TicketMessage, TicketStatus
+from brain_v42.services.ticket_service import TicketError
 from tests.unit.models.test_delivery_summary import summary_view
 
 TICKET_ID = str(uuid4())
 
 
 @pytest.mark.parametrize("operation", ["create", "reply", "transition", "plan"])
+@pytest.mark.parametrize("fails", [False, True])
 async def test_ticket_write_observes_author_and_preserves_result(
-    operation: str, monkeypatch: pytest.MonkeyPatch
+    operation: str, fails: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     observer = MagicMock()
     monkeypatch.setattr(ticket_tools, "observe_declared_project", observer, raising=False)
@@ -42,6 +44,8 @@ async def test_ticket_write_observes_author_and_preserves_result(
 
     async def result(*args: Any, **kwargs: Any) -> Any:
         observer.assert_called_once_with(f"brain_ticket_{operation}", "declared")
+        if fails:
+            raise TicketError("refused by the ticket domain")
         return returned
 
     method = AsyncMock(side_effect=result)
@@ -74,7 +78,12 @@ async def test_ticket_write_observes_author_and_preserves_result(
             "Ticket planned: planned", "planned", id=format_id(TICKET_ID)
         )
     assert tool is not None
-    assert await tool.fn(**arguments) == expected
+    if fails:
+        # The refusal is the tool's own, unchanged by the observation.
+        with pytest.raises(ToolError, match="^refused by the ticket domain$"):
+            await tool.fn(**arguments)
+    else:
+        assert await tool.fn(**arguments) == expected
     method.assert_awaited_once()
 
 
