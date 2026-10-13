@@ -239,6 +239,7 @@ def test_public_tool_signatures_have_no_internal_scope_parameter() -> None:
         "alternatives_considered",
         "tags",
         "claims",
+        "alternatives",
     )
     assert tuple(inspect.signature(tools["brain_promote_adr"]).parameters) == (
         "title",
