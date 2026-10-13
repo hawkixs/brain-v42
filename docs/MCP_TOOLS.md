@@ -87,6 +87,8 @@ rollout, and rollback are documented in
 
 `brain_learn` is the last-resort tool, never the default.
 
+Which capture tool: a choice between options -> `brain_log_decision`; a procedure -> `brain_create_runbook`; code -> `brain_save_snippet`; durable architecture -> `brain_propose_adr`; anything else -> `brain_learn`.
+
 ## Measured facts
 
 The version 1.0 fact tools expose the closed, independently verified fact
