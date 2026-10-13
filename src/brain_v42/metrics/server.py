@@ -39,6 +39,37 @@ from brain_v42.metrics.slow_block_cache import SlowBlockCache
 
 logger = structlog.get_logger(__name__)
 
+EXCLUDABLE_METRICS_KEYS = frozenset(
+    {
+        "collected_at",
+        "started_at",
+        "version",
+        "model",
+        "embedding_dim",
+        "uptime_seconds",
+        "memory_rss_bytes",
+        "embedding_service",
+        "tools",
+        "search_quality",
+        "reranker",
+        "decay",
+        "graph",
+        "receiver_rejections",
+        "receiver_refused",
+        "client_activity_registry",
+        "database",
+        "mcp_auth_refused",
+        "elevation_refused",
+        "mcp_auth_agent_unresolved",
+        "cross_process",
+        "dream",
+        "nightly",
+        "tickets",
+        "session_slots",
+        "block_status",
+    }
+)
+
 _OTLP_READ_CHUNK_BYTES = 64 * 1024
 _OTLP_BODY_READ_TIMEOUT_SECONDS = 5.0
 """TOTAL budget for reading a body, same value and same shape as the embedding shim.
@@ -644,6 +675,28 @@ class MetricsServer:
         - tool/embedding stats aggregated from all active process_metrics rows
         - DB row counts, coverage, pool stats from collect_db_stats()
         """
+        raw_exclude_parameter = request.query.get("exclude")
+        exclude_parameter = (
+            raw_exclude_parameter if isinstance(raw_exclude_parameter, str) else None
+        )
+        excluded: set[str] = set()
+        if exclude_parameter is not None:
+            tokens = [token.strip() for token in exclude_parameter.split(",")]
+            empty_tokens = [token for token in tokens if not token]
+            unknown_tokens = [
+                token for token in tokens if token and token not in EXCLUDABLE_METRICS_KEYS
+            ]
+            if empty_tokens or unknown_tokens:
+                return web.json_response(
+                    {
+                        "error": "empty_exclude_key" if empty_tokens else "unknown_exclude_key",
+                        "keys": empty_tokens or unknown_tokens,
+                        "allowed": sorted(EXCLUDABLE_METRICS_KEYS),
+                    },
+                    status=400,
+                )
+            excluded.update(tokens)
+
         metrics = self._collector.get_metrics()
 
         # Rejections served by the POST receivers — the structure is always
@@ -812,29 +865,32 @@ class MetricsServer:
             except Exception:
                 graph_healthy = False
             graph_stats = metrics.get("graph", {})
-            inventory = await self._slow_block_cache.get(
-                "graph_inventory", lambda: self._collector.collect_graph_inventory(self._graph_svc)
-            )
-            inventory = inventory or {}
-            metrics["graph"] = {
-                "status": "up" if graph_healthy else "down",
-                "total_queries": graph_stats.get("total_queries", 0),
-                "total_errors": graph_stats.get("total_errors", 0),
-                "recent_errors": graph_stats.get("recent_errors", 0),
-                "avg_latency_ms": graph_stats.get("avg_latency_ms", 0.0),
-                "nodes_total": inventory.get("nodes_total", {}),
-                "edges_total": inventory.get("edges_total", {}),
-                "orphans_total": inventory.get("orphans_total", {}),
-                "generated_at": inventory.get("generated_at"),
-            }
+            if "graph" not in excluded:
+                inventory = await self._slow_block_cache.get(
+                    "graph_inventory",
+                    lambda: self._collector.collect_graph_inventory(self._graph_svc),
+                )
+                inventory = inventory or {}
+                metrics["graph"] = {
+                    "status": "up" if graph_healthy else "down",
+                    "total_queries": graph_stats.get("total_queries", 0),
+                    "total_errors": graph_stats.get("total_errors", 0),
+                    "recent_errors": graph_stats.get("recent_errors", 0),
+                    "avg_latency_ms": graph_stats.get("avg_latency_ms", 0.0),
+                    "nodes_total": inventory.get("nodes_total", {}),
+                    "edges_total": inventory.get("edges_total", {}),
+                    "orphans_total": inventory.get("orphans_total", {}),
+                    "generated_at": inventory.get("generated_at"),
+                }
 
         # Dream run metrics — merge run-level data + cumulative promotions counts
         # + per-target post-promotion health (ADR #4 v2 telemetry). Assembled
         # inside one `compute` so the cache memoizes the three collector calls
         # (and their generated_at) as a single block (1669d429 item 2).
-        dream_metrics = await self._slow_block_cache.get("dream", self._compute_dream_block)
-        if dream_metrics:
-            metrics["dream"] = dream_metrics
+        if "dream" not in excluded:
+            dream_metrics = await self._slow_block_cache.get("dream", self._compute_dream_block)
+            if dream_metrics:
+                metrics["dream"] = dream_metrics
 
         # Nightly-ops (killswitches, roadmap/extract review, last failure) —
         # consumed by red-monitor's nightly-ops panel (ticket de1ad785).
@@ -844,12 +900,13 @@ class MetricsServer:
         # a collector double that lacks the method must degrade this block to
         # absent, never 500 the whole endpoint (a real incident: a `MinimalCollector`
         # test double raised AttributeError here, outside any try/except).
-        nightly = await self._slow_block_cache.get(
-            "nightly",
-            lambda: self._collector.collect_nightly_ops(scheduler_mode=self._dream_scheduler),
-        )
-        if nightly:
-            metrics["nightly"] = nightly
+        if "nightly" not in excluded:
+            nightly = await self._slow_block_cache.get(
+                "nightly",
+                lambda: self._collector.collect_nightly_ops(scheduler_mode=self._dream_scheduler),
+            )
+            if nightly:
+                metrics["nightly"] = nightly
 
         # Per-project ticket counters (ticket 0fb857ef) — replaces red-monitor's
         # abandoned roadmap tab. Categorisation is brain's alone: collect_ticket_counts
@@ -859,18 +916,20 @@ class MetricsServer:
         # raised exception leaves "tickets" absent. Same reasoning as
         # "nightly" just above: a collector lacking the method must degrade this
         # block to absent, not 500 the whole endpoint.
-        tickets_block = await self._slow_block_cache.get(
-            "tickets", lambda: self._collector.collect_ticket_counts()
-        )
-        if tickets_block:
-            metrics["tickets"] = tickets_block
+        if "tickets" not in excluded:
+            tickets_block = await self._slow_block_cache.get(
+                "tickets", lambda: self._collector.collect_ticket_counts()
+            )
+            if tickets_block:
+                metrics["tickets"] = tickets_block
 
         # Read-only slot and operator-session state for red-cockpit (ADR #34 D12).
-        slots_block = await self._slow_block_cache.get(
-            "session_slots", lambda: self._collector.collect_session_slots()
-        )
-        if slots_block:
-            metrics["session_slots"] = slots_block
+        if "session_slots" not in excluded:
+            slots_block = await self._slow_block_cache.get(
+                "session_slots", lambda: self._collector.collect_session_slots()
+            )
+            if slots_block:
+                metrics["session_slots"] = slots_block
 
         # Older collector doubles may not expose health; their unevaluated blocks
         # are explicitly not_measured rather than assumed healthy.
@@ -897,6 +956,9 @@ class MetricsServer:
         embedding_service_block = metrics.get("embedding_service", {})
         if "model" in embedding_service_block:
             metrics["model"] = embedding_service_block["model"]
+
+        for key in excluded:
+            metrics.pop(key, None)
 
         return web.json_response(metrics)
 
