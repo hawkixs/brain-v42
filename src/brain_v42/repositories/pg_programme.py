@@ -115,6 +115,17 @@ _GATE_ORDER: Final = (
 )
 
 
+async def _one_snapshot(session: AsyncSession) -> None:
+    """Read a programme and its gates from one snapshot (review round 2 of #377).
+
+    Under READ COMMITTED each statement sees its own snapshot: a report committed
+    between the programme read and the gate read would publish a gate already moved
+    beside the programme's previous `last_change`. This must be the transaction's
+    first statement.
+    """
+    await session.execute(sa.text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY"))
+
+
 class PgProgrammeRepo:
     """Every programme read and write; the limits default to the contract's."""
 
@@ -141,6 +152,7 @@ class PgProgrammeRepo:
         self, *, include_done: bool = False, key: str | None = None
     ) -> list[dict[str, Any]]:
         async with self._session_factory() as session:
+            await _one_snapshot(session)
             query = sa.select(programmes).order_by(*_PROGRAMME_ORDER)
             if key is not None:
                 query = query.where(programmes.c.key == key)
@@ -157,6 +169,7 @@ class PgProgrammeRepo:
         position, then creation, then key, whatever the state).
         """
         async with self._session_factory() as session:
+            await _one_snapshot(session)
             # The window is the database's clock, like every timestamp it compares to.
             now = await session.scalar(sa.select(sa.func.now()))
             assert isinstance(now, datetime)

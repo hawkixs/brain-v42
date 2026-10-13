@@ -550,3 +550,49 @@ async def test_every_write_signs_the_gate_and_only_transitions_move_last_change(
     )
     assert through_upsert["last_change"]["to"] == "blocked"
     assert through_upsert["last_change"]["by"] == coordinator
+
+
+class _ReportsMidRead(PgProgrammeRepo):
+    """Commits a gate report after the programme rows were read, before their gates."""
+
+    def __init__(self, factory: async_sessionmaker, owner: str) -> None:
+        super().__init__(factory)
+        self._writer = PgProgrammeRepo(factory)
+        self._owner = owner
+        self._reported = False
+
+    async def _published(self, session, row):  # type: ignore[no-untyped-def]
+        if not self._reported:
+            self._reported = True
+            await self._writer.report_gate(
+                caller=self._owner, programme=row["key"], gate="G1", state="done"
+            )
+        return await super()._published(session, row)
+
+
+@pytest.mark.parametrize("read", ["list_programmes", "published_block"])
+async def test_a_read_publishes_one_snapshot_even_when_a_report_lands_mid_read(
+    factory, coordinator: str, owner: str, read: str
+) -> None:
+    """Review round 2 of #377: a programme and its gates come from one snapshot.
+
+    A report committed between the programme read and the gate read must not publish
+    a gate already `done` beside the programme's pre-transition `last_change`.
+    """
+    repo = PgProgrammeRepo(factory)
+    await repo.upsert_programme(caller=coordinator, key="snap", title="Snapshot")
+    await repo.upsert_gate(caller=coordinator, programme="snap", gate="G1", title="t", owner=owner)
+
+    racing = _ReportsMidRead(factory, owner)
+    if read == "list_programmes":
+        (published,) = await racing.list_programmes(key="snap")
+    else:
+        (published,) = (await racing.published_block())["programmes"]
+
+    assert racing._reported
+    assert published["last_change"] is None
+    assert published["gates"][0]["state"] == "todo"
+    # The report did commit: the next read sees both halves of it.
+    (after,) = await repo.list_programmes(key="snap")
+    assert after["gates"][0]["state"] == "done"
+    assert after["last_change"]["to"] == "done"
