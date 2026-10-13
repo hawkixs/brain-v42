@@ -31,7 +31,8 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 from uuid import UUID
 
 import structlog
-from pydantic import Field
+from fastmcp.exceptions import ToolError
+from pydantic import BeforeValidator, Field
 from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
@@ -61,6 +62,7 @@ from brain_v42.models.input_bounds import (
     ShortText,
     ShortTextList,
     TagList,
+    _single_text_as_list,
 )
 from brain_v42.models.learning import Confidence, LearningCreate, SourceType
 from brain_v42.models.project_key import canonicalize_project_key
@@ -711,6 +713,7 @@ def register_tools(
         | None = None,
         tags: TagList | None = None,
         claims: list[dict] | None = None,
+        alternatives: ShortTextList | None = None,
     ) -> str:
         """Propose an Architecture Decision Record (ADR) in status='proposed'.
 
@@ -726,12 +729,21 @@ def register_tools(
             decision: The decision taken.
             consequences: What becomes easier and what becomes harder.
             project_key: Owning project.
+            alternatives: Option titles; each is also used as its description.
             alternatives_considered: Options weighed and set aside.
             tags: Free-form tags.
 
         Returns:
             Confirmation string naming the ADR number.
         """
+        if alternatives is not None and alternatives_considered is not None:
+            raise ToolError(
+                "Pass either alternatives or alternatives_considered, not both; the shapes are ambiguous."
+            )
+        if alternatives is not None:
+            alternatives_considered = [
+                AlternativeConsidered(title=text, description=text) for text in alternatives
+            ]
         data = _adr_create(
             title,
             context,
@@ -1015,7 +1027,14 @@ def register_tools(
     @mcp.tool(version="1.0", annotations=_READ_ANNOTATIONS)
     async def brain_search(
         query: SearchQuery,
-        types: list[KnowledgeType] | None = None,
+        types: Annotated[
+            list[KnowledgeType],
+            BeforeValidator(_single_text_as_list),
+            Field(
+                description="Knowledge types; a single string is accepted as a one-element list."
+            ),
+        ]
+        | None = None,
         project_key: str | None = None,
         project_group: str | None = None,
         limit: int = 20,
