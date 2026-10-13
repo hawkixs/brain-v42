@@ -204,4 +204,5 @@ async def test_uvicorn_configuration_has_no_unsupported_body_limit(
         "timeout_graceful_shutdown": 10,
         "proxy_headers": False,
         "forwarded_allow_ips": "",
+        "log_config": None,
     }
