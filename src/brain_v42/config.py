@@ -691,6 +691,23 @@ class Settings(BaseSettings):
     metrics_receiver_auth: Literal["none", "credentials"] = Field(
         default="none", validation_alias=_brain_alias("METRICS_RECEIVER_AUTH")
     )
+    metrics_read_clients: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, validation_alias=_brain_alias("METRICS_READ_CLIENTS")
+    )
+    """Limit credentialed sidecar reads to operator-named telemetry clients."""
+
+    @field_validator("metrics_read_clients", mode="before")
+    @classmethod
+    def validate_metrics_read_clients(cls, value: object) -> list[str]:
+        """Reject malformed allowlists at startup rather than broaden read access."""
+        entries = ([] if value == "" else value.split(",")) if isinstance(value, str) else value
+        if not isinstance(entries, list) or any(
+            not isinstance(entry, str) or re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,63}", entry) is None
+            for entry in entries
+        ):
+            raise ValueError("METRICS_READ_CLIENTS must be comma-separated valid client ids")
+        return entries
+
     # Loopback by default (2026-07-04, supersedes the 0.0.0.0 of b68356c2): the
     # real consumers (red-monitor) are local; the GitLab webhook that justified
     # the LAN bind is off. Overridable through METRICS_HOST on revival (docker

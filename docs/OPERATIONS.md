@@ -333,6 +333,55 @@ The contract is `docs/contracts/programmes_v1.md`. Three things to know when ope
   writable by its coordinating project. Mark a finished programme `done`: it stays published
   for seven days, then leaves the block but remains readable through `brain_programme_list`.
 
+## Protected sidecar reads
+
+Consumers can read `GET /api/session-slots/v1` (the slot inventory alone) and
+`GET /api/brain-graph/v1` (the graph snapshot) over the sidecar's WireGuard listener.
+The operator issues each consumer's client credential through the registry CLI;
+issuing credentials is an operator gesture. Configure `METRICS_RECEIVER_AUTH=credentials`
+and `METRICS_READ_CLIENTS=red-monitor,red-cockpit` with the client ids the operator
+actually issued. The allowlist is comma-separated with no spaces; each id must match
+`[a-z0-9][a-z0-9.-]{0,63}`. Its default is empty, which admits no credentialed reader.
+The credential must have the existing `telemetry` family as well as an allowlisted id.
+
+Store the bearer token in a file with mode `0600` on the consumer's machine. The
+consumer reads that file and sends exactly one `Authorization: Bearer <token>` header.
+Keep the token out of the repository, environment and command line. This telemetry
+credential exposes no MCP tools, but can also submit OTLP usage to `/v1/logs` and
+`/v1/logs/claude`: the accepted residual risk is fabricated usage counters, so restrict
+issuance to the operator's consumers (decision 11defbe0).
+
+Headerless transport-loopback requests are admitted for local diagnostics. Any supplied
+Authorization header is checked even on loopback; forwarded headers do not change the
+transport peer. Without a verifier, non-loopback requests get
+`403 {"error": "loopback peer required"}` before header inspection, and a loopback
+request supplying any Authorization header gets `401`.
+
+Credentialed read refusals return `{"reason": "<code>"}`:
+
+| HTTP status | Reason |
+|---|---|
+| 401 | `malformed_authorization` (duplicate, non-Bearer or empty header/token), `missing_token`, `unknown_token`, `revoked_token`, `expired_token` |
+| 403 | `client_not_allowed` (not allowlisted), `family_denied` (no telemetry family) |
+| 429 | `rate_limited` (10 reads/s per client, burst 20, shared across both read routes) |
+| 503 | `registry_unavailable` (cold snapshot or last successful refresh older than 90 s) |
+
+`429` and credential `503` responses include `Retry-After: 1`. Malformed or missing
+headers are refused locally with `401` before consulting even a cold or stale registry.
+The registry refreshes every 30 s: an outage preserves valid cached credentials until
+90 s after the last successful refresh. Expiry is checked on every request; revocation
+is effective after the next successful refresh. A revoked credential still cached
+during an outage can read until that 90 s boundary, after which reads fail closed.
+Read quotas and refusal logs (`metrics.read_refused`, plus debug `metrics.read_admitted`)
+are separate from telemetry receiver quotas and observation counters.
+
+The slot response is `{"session_slots": <block>}`, matching the existing block in
+`/metrics` and `docs/contracts/session_slots_block.json`. Both routes to that block
+share one computation per cache TTL (30 s by default). A failed slot read returns `{}`
+and retries after the error TTL (5 s by default); `/metrics.block_status.session_slots`
+reports that health. The existing public reads `/metrics`, `/api/cockpit`, `/programmes`
+and `/healthz` keep their admission and payloads, including `/metrics.session_slots`.
+
 ## Admin elevation hook (`/brain-admin`)
 
 The operator elevates the current Brain session to admin by typing a command in the
