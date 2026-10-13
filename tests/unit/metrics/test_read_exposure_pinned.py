@@ -427,7 +427,11 @@ COCKPIT_SCHEMA = {
         "rerankUsed": None,
         "queries24h": None,
     },
-    "block_status": {"memory": BLOCK_HEALTH, "retrieval": BLOCK_HEALTH},
+    "block_status": {
+        "memory": BLOCK_HEALTH,
+        "retrieval": BLOCK_HEALTH,
+        "retrieval_log": BLOCK_HEALTH,
+    },
     "latencyBuckets": [{"range": None, "count": None, "tone": None}],
     "cost": {
         "today": None,
