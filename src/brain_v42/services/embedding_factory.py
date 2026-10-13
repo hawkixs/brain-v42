@@ -17,12 +17,17 @@ from pathlib import Path
 import structlog
 from pydantic import ValidationError
 
-from brain_v42.config import Settings, get_settings
+from brain_v42.config import Settings, _is_openrouter_host, get_settings
 from brain_v42.safe_logging import redact_url
 from brain_v42.services.embedding_wire import EmbeddingWire, OpenAIWire, ShimWire
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 from brain_v42.services.rerank_chain import RerankChain
-from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
+from brain_v42.services.rerank_wire import (
+    CohereRerankWire,
+    RerankWire,
+    ShimRerankWire,
+    VoyageRerankWire,
+)
 from brain_v42.services.reranker_client import RerankClientLike, RerankerClient, RerankObserver
 
 logger = structlog.get_logger(__name__)
@@ -181,20 +186,10 @@ def _rerank_key_from_dotenv(content: str, path: Path) -> str:
     return values[0]
 
 
-def _resolve_rerank_bearer(settings: Settings) -> str:
-    """The key the reranker client sends as ``Authorization: Bearer``.
-
-    The cohere backend talks to a different party than the shim, so it has its own
-    key and NEVER consults ``brain_embedding_token_file``: that file holds the
-    shim's bearer, and sending it to a hosted vendor would be a credential leak
-    where the shim path only raises a collision. The shim backend resolves exactly
-    as before.
-    """
-    if settings.rerank_backend != "cohere":
-        return _resolve_shim_bearer(settings, settings.rerank_api_key.get_secret_value())
-    key_file = settings.rerank_api_key_file
+def _resolve_rerank_bearer(key_file: Path | None, api_key: str = "") -> str:
+    """Resolve one hosted link's key without ever consulting the shim bearer."""
     if key_file is None:
-        return settings.rerank_api_key.get_secret_value()
+        return api_key
     path = Path(key_file).expanduser()
     try:
         mode = path.stat().st_mode
@@ -273,6 +268,8 @@ def build_embedding_service(settings: Settings) -> GPUEmbeddingService:
 
 def build_rerank_wire(settings: Settings) -> RerankWire:
     """Select the rerank wire format named by ``settings.rerank_backend``."""
+    if settings.rerank_backend == "voyage":
+        return VoyageRerankWire(model=settings.rerank_model)
     if settings.rerank_backend == "cohere":
         provider = settings.rerank_provider
         return CohereRerankWire(
@@ -294,7 +291,12 @@ def build_reranker_client(
     """
     if settings.rerank_backend == "none":
         return None
-    api_key = _resolve_rerank_bearer(settings)
+    if settings.rerank_backend == "shim":
+        api_key = _resolve_shim_bearer(settings, settings.rerank_api_key.get_secret_value())
+    else:
+        api_key = _resolve_rerank_bearer(
+            settings.rerank_api_key_file, settings.rerank_api_key.get_secret_value()
+        )
     primary = RerankerClient(
         base_url=settings.reranker_url,
         timeout=settings.reranker_timeout,
@@ -306,15 +308,26 @@ def build_reranker_client(
     if not settings.rerank_fallback_model:
         return primary
     provider = settings.rerank_fallback_provider
+    fallback_url = settings.rerank_fallback_url or settings.reranker_url
+    fallback_key = api_key
+    key_file = settings.rerank_fallback_api_key_file
+    if key_file is not None and (
+        settings.rerank_api_key_file is None
+        or key_file.expanduser() != settings.rerank_api_key_file.expanduser()
+    ):
+        fallback_key = _resolve_rerank_bearer(key_file)
+    fallback_health_path = settings.rerank_health_path
+    if settings.rerank_backend == "voyage" or settings.rerank_fallback_url:
+        fallback_health_path = "/v1/key" if _is_openrouter_host(fallback_url) else "/health"
     fallback = RerankerClient(
-        base_url=settings.reranker_url,
+        base_url=fallback_url,
         timeout=settings.reranker_timeout,
         wire=CohereRerankWire(
             model=settings.rerank_fallback_model,
-            health_path=settings.rerank_health_path,
+            health_path=fallback_health_path,
             routing=provider.model_dump(exclude_none=True) if provider is not None else None,
         ),
-        api_key=api_key,
+        api_key=fallback_key,
         budget_seconds=settings.rerank_budget_seconds,
         observer=observer,
     )

@@ -310,3 +310,32 @@ async def test_probe_calibration_and_close_delegate_to_links() -> None:
     assert chain.last_probe_monotonic == chain._primary.last_probe_monotonic
     await chain.close()
     assert primary_http.is_closed and fallback_http.is_closed
+
+
+@pytest.mark.asyncio
+async def test_voyage_429_serves_cohere_on_the_voyage_scale() -> None:
+    from brain_v42.services.rerank_chain import RerankChain
+    from brain_v42.services.rerank_wire import VoyageRerankWire
+
+    primary = RerankerClient(wire=VoyageRerankWire("rerank-3-lite"))
+    requests = []
+
+    def limited(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(429, headers={"Retry-After": "120"})
+
+    primary._client = httpx.AsyncClient(
+        base_url="https://api.voyageai.com", transport=httpx.MockTransport(limited)
+    )
+    fallback = MagicMock(side_effect=lambda request: success(0.2, 0.3, 0.4))
+    chain = RerankChain(primary, link(FALLBACK, fallback), overall_budget=0.1, primary_budget=0.05)
+    try:
+        scores = await chain.rerank("q", ["a", "b", "c"])
+        shift = math.log(0.5 / 0.5) - math.log(0.3 / 0.7)
+        assert scores == pytest.approx([math.log(p / (1 - p)) + shift for p in [0.2, 0.3, 0.4]])
+        assert chain.calibration.identity == "voyage:rerank-3-lite"
+        assert chain.calibration.search_min_score == 0.50
+        assert chain.calibration.dedup_signal is None
+        assert len(requests) == fallback.call_count == 1
+    finally:
+        await chain.close()

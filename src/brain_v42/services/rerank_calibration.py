@@ -19,11 +19,23 @@ class RerankCalibration:
 
 def is_calibrated(identity: str) -> bool:
     """A fallback needs a measured floor before its scale can be aligned."""
-    return identity in {"shim", "cohere:voyageai/rerank-3-lite", "cohere:cohere/rerank-4-fast"}
+    return identity in {
+        "shim",
+        "cohere:voyageai/rerank-3-lite",
+        "cohere:cohere/rerank-4-fast",
+        "voyage:rerank-3-lite",
+    }
 
 
 def calibration_for_identity(identity: str) -> RerankCalibration:
     """Disable dedup signalling unless this backend's score scale is calibrated."""
+    if identity == "voyage:rerank-3-lite":
+        return RerankCalibration(
+            identity=identity,
+            search_min_score=0.50,
+            dedup_signal=None,
+            source="same model as cohere:voyageai/rerank-3-lite (internal bench, 762 queries)",
+        )
     if identity == "shim":
         return RerankCalibration(
             identity=identity,

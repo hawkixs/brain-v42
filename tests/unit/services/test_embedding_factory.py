@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import httpx
 import pytest
 from pydantic import SecretStr
@@ -99,6 +102,109 @@ DSN = "postgresql+asyncpg://brain:brain@localhost:5433/brain"
 
 def _settings(**kwargs: object) -> Settings:
     return Settings(postgres_url=DSN, _env_file=None, **kwargs)  # type: ignore[call-arg]
+
+
+@pytest.mark.asyncio
+async def test_voyage_chain_uses_separate_urls_and_keys_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from structlog.testing import capture_logs
+
+    from brain_v42.services.rerank_chain import RerankChain
+
+    primary_key, fallback_key = "voyage-SENTINEL", "openrouter-SENTINEL"
+    primary_file, fallback_file = tmp_path / "voyage-key", tmp_path / "fallback-key"
+    for path, value in [(primary_file, primary_key), (fallback_file, fallback_key)]:
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
+    reads = []
+    original_read = Path.read_text
+
+    def read_once(path: Path, *args: Any, **kwargs: Any) -> str:
+        assert path in {primary_file, fallback_file}, (
+            "hosted reranking must never read the shim bearer"
+        )
+        reads.append(path)
+        return original_read(path, *args, **kwargs)
+
+    settings = _settings(
+        rerank_backend="voyage",
+        reranker_url="https://api.voyageai.com",
+        rerank_model="rerank-3-lite",
+        rerank_api_key_file=primary_file,
+        brain_embedding_token_file=tmp_path / "do-not-read-shim",
+        rerank_fallback_model="cohere/rerank-4-fast",
+        rerank_fallback_url="https://openrouter.ai/api",
+        rerank_fallback_api_key_file=fallback_file,
+        rerank_fallback_provider={"only": ["cohere"]},
+    )
+    monkeypatch.setattr(Path, "read_text", read_once)
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "api.voyageai.com":
+            assert request.headers["Authorization"] == f"Bearer {primary_key}"
+            return httpx.Response(429, headers={"Retry-After": "120"})
+        assert request.url.host == "openrouter.ai"
+        assert request.headers["Authorization"] == f"Bearer {fallback_key}"
+        return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.3}]})
+
+    original_client = httpx.AsyncClient
+
+    def mock_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        return original_client(*args, **kwargs, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+    with capture_logs() as records:
+        chain = build_reranker_client(settings)
+        assert isinstance(chain, RerankChain)
+        try:
+            assert chain._primary._base_url == "https://api.voyageai.com"
+            assert chain._fallback._base_url == "https://openrouter.ai/api"
+            assert chain._fallback._wire.health_path == "/v1/key"
+            assert await chain.rerank("q", ["a"]) == pytest.approx([0.0])
+            assert len(requests) == 2
+            assert reads.count(primary_file) == reads.count(fallback_file) == 1
+        finally:
+            await chain.close()
+    assert primary_key not in repr(records)
+    assert fallback_key not in repr(records)
+
+
+@pytest.mark.parametrize("invalid_link", ["primary", "fallback"])
+def test_voyage_chain_key_errors_never_render_either_key(tmp_path: Path, invalid_link: str) -> None:
+    from structlog.testing import capture_logs
+
+    from brain_v42.services.embedding_factory import RerankKeyError
+
+    primary_key, fallback_key = "voyage-SENTINEL", "openrouter-SENTINEL"
+    primary_file, fallback_file = tmp_path / "voyage-key", tmp_path / "fallback-key"
+    for path, value in [(primary_file, primary_key), (fallback_file, fallback_key)]:
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
+    invalid_file = primary_file if invalid_link == "primary" else fallback_file
+    invalid_file.write_text(
+        f"BRAIN_RERANK_API_KEY={primary_key}\nBRAIN_RERANK_API_KEY={fallback_key}",
+        encoding="utf-8",
+    )
+    settings = _settings(
+        rerank_backend="voyage",
+        reranker_url="https://api.voyageai.com",
+        rerank_model="rerank-3-lite",
+        rerank_api_key_file=primary_file,
+        rerank_fallback_model="cohere/rerank-4-fast",
+        rerank_fallback_url="https://openrouter.ai/api",
+        rerank_fallback_api_key_file=fallback_file,
+        rerank_fallback_provider={"only": ["cohere"]},
+    )
+    with capture_logs() as records, pytest.raises(RerankKeyError) as excinfo:
+        build_reranker_client(settings)
+    assert str(invalid_file) in str(excinfo.value)
+    assert "exactly once" in str(excinfo.value)
+    for key in (primary_key, fallback_key):
+        assert key not in str(excinfo.value)
+        assert key not in repr(records)
 
 
 class TestBackendSelection:
