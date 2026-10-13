@@ -295,6 +295,51 @@ Focus slots (ADR #34) carry the topics in flight; the tools are described in
   `receipt_pending=true`. A slot found in that state came from a missed hook call: close it with
   `brain_slot_close`.
 
+## Admin elevation hook (`/brain-admin`)
+
+The operator elevates the current Brain session to admin by typing a command in the
+conversation. Two scripts under `scripts/hooks/` implement the client side; the endpoint
+is `POST /admin/elevations` on the MCP HTTP server.
+
+- `brain_admin_elevate.py` judges a submitted prompt and posts the elevation.
+- `brain_session_state.py` keeps the per-Claude-session state the first script reads
+  (`claude_session_id`, `brain_session_id`, `prompt_count`) and calls it itself, so the
+  order is deterministic: Claude Code runs the hooks of one event in parallel, and the
+  prompt must be judged against the count of *preceding* prompts before it joins the count.
+
+Install both files side by side in `~/.claude/hooks/brain-admin/` (directory mode `0700`),
+then register **only** `brain_session_state.py`, for two events in the Claude Code settings:
+
+- `UserPromptSubmit`, no matcher;
+- `PostToolUse`, matcher `mcp__brain-v42__brain_session_(start|resume|relay|end|abandon)`.
+  `start`, `resume` and `relay` record the session the tool returned (for `relay`, the
+  successor, not the relayed one); `end` and `abandon` clear it only if it is that session.
+
+Environment of the hook process:
+
+| Variable | Meaning |
+|---|---|
+| `BRAIN_ADMIN_URL` | `http://<brain host>:8765/admin/elevations`; the path is checked exactly |
+| `BRAIN_ADMIN_CREDENTIAL_FILE` | regular file, mode `0600`, holding the operator-elevate token |
+| `BRAIN_SESSION_STATE_DIR` | optional; default `~/.local/state/brain-v42/sessions` |
+
+The state directory is created `0700`; a symlink, a directory owned by someone else or one
+accessible to group or others is refused and nothing is written. One file per Claude
+session, written atomically with mode `0600`.
+
+Usage: put `/brain-admin 1h <reason>` as the first line of a prompt (a duration of up to
+four hours, `s`, `m` or `h`). It is never honoured as the first prompt of a Claude session,
+nor inside a cross-session message wrapper, nor when embedded in other text; a Brain
+session must have been started or resumed in that Claude session first. Every elevation
+raises `credentials.elevated`, which red-watcher forwards as a DM.
+
+Residual risks, accepted in decision `69128c54`: every process of the workstation user can
+read the credential file and write the state files, so a malicious local agent with a shell
+could elevate a session; the boundary against prompt injection holds (only text the human
+submits reaches the hook), the boundary against a malicious local process is a convention
+plus the DM alert. An agent that calls `brain_session_resume` on another open session makes
+that session the one the next `/brain-admin` targets.
+
 ## Network trust boundary (detailed)
 
 MCP HTTP binds to loopback by default. A non-loopback `MCP_HTTP_HOST` requires
