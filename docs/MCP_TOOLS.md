@@ -1057,7 +1057,9 @@ brain_set_project_context(project_key, name, description,
                           related_projects=None, plan_scan_paths=None,
                           gitlab_project_path=None, project_group=None)
 ```
-Upsert by `project_key`. `plan_scan_paths` drive `PlanIndexer`; `gitlab_project_path` drives webhook ingestion; `project_group` allows cross-project search.
+Upsert metadata by `project_key`. Creation may set `current_focus`; an existing project's different supplied focus is refused as `focus_write_requires_update_project_focus`, pointing to `brain_update_project_focus` with its revision CAS and shrink guard. Focus comparison ignores leading and trailing whitespace; equivalent prose preserves the stored focus. Omitting focus preserves it and allows other fields to update. `plan_scan_paths` drive `PlanIndexer`; `gitlab_project_path` drives webhook ingestion; `project_group` allows cross-project search.
+
+The remaining focus replacement exception is `src/brain_v42/scripts/scrub_xml_tool_call_leak.py`: this operator maintenance script, dry by default, rewrites `current_focus` without a revision CAS or shrink guard when run with `--live`.
 
 ### brain_update_project_focus (`project_context_tools.py`)
 ```
@@ -1065,7 +1067,7 @@ brain_update_project_focus(project_key, current_focus, expected_focus_revision,
                            blockers=None, feature_status=None, unpin=None,
                            allow_focus_shrink=False)
 ```
-Compare `expected_focus_revision` to the current project revision, then apply focus, blockers, feature statuses, and pins in one PostgreSQL transaction. `current_focus` REPLACES the whole project focus, so the same shrink guard as an unbound `brain_session_end` and a base `brain_session_relay` applies: after the revision check and before any write, a `current_focus` shorter than 70% of the current focus is refused `base_focus_shrink` (both lengths and the floor in the message) and the whole batch, roadmap changes included, is left unwritten. `allow_focus_shrink=true` is the operator's override. `feature_status` uses exact feature names and the canonical statuses `planned | research | design | building | deployed | done | archived`. An invalid status, missing or ambiguous feature, merged-feature reactivation, overlap with `unpin`, or revision conflict rolls back the complete batch. Every successful composite mutation consumes the revision, even when the focus text is unchanged. The project's dynamic CLAUDE.md section is updated afterward on a best-effort basis and is not part of the transaction.
+Compare `expected_focus_revision` to the current project revision, then apply focus, blockers, feature statuses, and pins in one PostgreSQL transaction. `current_focus` REPLACES the whole project focus, so the same shrink guard as an unbound `brain_session_end` and a base `brain_session_relay` applies: after the revision check and before any write, a `current_focus` shorter than 70% of the current focus is refused `base_focus_shrink` (both lengths and the floor in the message) and the whole batch, roadmap changes included, is left unwritten. `allow_focus_shrink=true` requires an active /brain-admin elevation for the verified credential and current MCP connection, checked before any mutation. Without it, `focus_shrink_override_refused` leaves the entire batch unwritten; shared-token and stdio callers cannot override. Refusal messages name the characters dropped and share kept. `feature_status` uses exact feature names and the canonical statuses `planned | research | design | building | deployed | done | archived`. An invalid status, missing or ambiguous feature, merged-feature reactivation, overlap with `unpin`, or revision conflict rolls back the complete batch. Every successful composite mutation consumes the revision, even when the focus text is unchanged. The project's dynamic CLAUDE.md section is updated afterward on a best-effort basis and is not part of the transaction.
 
 ### brain_list_projects (`project_context_tools.py`)
 ```
@@ -1098,7 +1100,7 @@ every learning, decision, snippet, runbook, ADR and plan; it stops appearing in
 the session briefing, the roadmap and an unscoped `brain_search`, and stays
 fully readable through `brain_search(project_key=...)`. Writes `archived_at` and
 `archived_reason` and nothing else — deliberately NOT through
-`brain_set_project_context`, which is not a PATCH and would overwrite focus,
+`brain_set_project_context`, which is not a PATCH and would overwrite
 blockers, group and metadata. `reason` is required. Idempotent: `archived_at`
 records when the project was archived, not when the command was last re-run.
 
