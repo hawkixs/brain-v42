@@ -341,8 +341,16 @@ async def mcp_base_url(module_exit_witness: None) -> AsyncIterator[str]:
         reset_session_autoopener()
 
         import fastmcp.server.http as fastmcp_http
+        from mcp.server import streamable_http_manager
 
         original_session_manager = fastmcp_http.StreamableHTTPSessionManager
+        # The stateful plan also replaces the SDK transport. Register its original
+        # with the patch context so it is restored even if startup fails before yield.
+        patch.setattr(
+            streamable_http_manager,
+            "StreamableHTTPServerTransport",
+            streamable_http_manager.StreamableHTTPServerTransport,
+        )
 
         # MEASURED: `apply_tool_catalog_profile` does `mcp.add_transform(...)` on
         # the MODULE singleton, and the transforms STACK — 0, then 1, then 2 at the
