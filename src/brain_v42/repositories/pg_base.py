@@ -10,9 +10,14 @@ Design rules (vague 3 contract):
     the distance column (680c51b fixed at the source).
   - extra_clauses: Sequence[ColumnElement] | None is the generic extension
     mechanism on list/search — never add per-business-domain filter params.
-  - include_archived on list_all ONLY; searches do NOT filter archived rows
-    (pg_service refilters in Python, filtering in SQL would break
-    include_archived=True).
+  - include_archived is a list_all parameter. Searches take no such parameter:
+    a caller that wants live rows only passes ``live_row_clauses()`` as
+    ``extra_clauses``, so the exclusion happens in the WHERE, BEFORE the LIMIT.
+    Without it a search returns archived/merged rows too (the default, kept for
+    include_archived=True); brain_service refilters in Python as a second line.
+  - Every vector search runs ``VectorScanSettings.apply`` first (hnsw.ef_search,
+    hnsw.iterative_scan), transaction-local, so a filtered HNSW scan cannot
+    silently return fewer rows than the LIMIT asks for.
 """
 
 from __future__ import annotations
@@ -51,6 +56,62 @@ class EmbeddingBacklogStats:
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
+
+
+_ITERATIVE_SCAN_MIN_VERSION = (0, 8, 0)
+# pgvector's own default for hnsw.ef_search; never go below it.
+_DEFAULT_EF_SEARCH = 40
+
+
+def _parse_version(raw: str) -> tuple[int, ...]:
+    """'0.8.1' -> (0, 8, 1); a non-numeric part ends the parse."""
+    parts: list[int] = []
+    for piece in raw.split("."):
+        if not piece.isdigit():
+            break
+        parts.append(int(piece))
+    return tuple(parts)
+
+
+class VectorScanSettings:
+    """Sets the HNSW scan parameters for one transaction, before a vector SELECT.
+
+    ``hnsw.ef_search`` bounds how many candidates an HNSW scan visits: with the
+    default 40, a filtered search asking for LIMIT 50 can return fewer rows than
+    exist. ``hnsw.iterative_scan`` (pgvector >= 0.8.0) lets the scan keep going
+    until the LIMIT is met after filtering. Both are set with ``set_config(...,
+    true)``, i.e. transaction-local, so nothing leaks into a pooled connection.
+
+    ``hnsw.iterative_scan`` is an unknown parameter below 0.8.0 and PG15+
+    refuses an unknown parameter under a reserved prefix, so the extension
+    version is read once per instance and cached. An unreadable version skips
+    iterative scan: the fail-safe side.
+    """
+
+    def __init__(self) -> None:
+        self._iterative_supported: bool | None = None
+
+    async def _supports_iterative_scan(self, sess: AsyncSession) -> bool:
+        if self._iterative_supported is None:
+            result = await sess.execute(
+                sa.text("SELECT extversion FROM pg_extension WHERE extname = 'vector'")
+            )
+            raw = result.scalar()
+            self._iterative_supported = (
+                isinstance(raw, str) and _parse_version(raw) >= _ITERATIVE_SCAN_MIN_VERSION
+            )
+        return self._iterative_supported
+
+    async def apply(self, sess: AsyncSession, limit: int) -> None:
+        """Set ef_search = max(40, limit) and, when supported, iterative_scan."""
+        await sess.execute(
+            sa.text("SELECT set_config('hnsw.ef_search', :v, true)"),
+            {"v": str(max(_DEFAULT_EF_SEARCH, limit))},
+        )
+        if await self._supports_iterative_scan(sess):
+            await sess.execute(
+                sa.text("SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)")
+            )
 
 
 def project_scope(
@@ -122,6 +183,7 @@ class BasePgRepository:
         property return type as ``async_sessionmaker[AsyncSession]``.
         """
         self._session_factory = session_factory  # calls property setter below
+        self._vector_scan = VectorScanSettings()
 
     @property
     def _session_factory(self) -> async_sessionmaker[AsyncSession]:
@@ -496,7 +558,8 @@ class BasePgRepository:
             include_archived: When False, adds ``merged_into IS NULL`` and
                 ``freshness_status != 'archived'`` filters (if the table has those
                 columns).  True or None (default) adds no archive filter.
-                NOTE: searches do NOT filter archived rows — only list_all does.
+                Searches have no such parameter: pass ``live_row_clauses()`` as
+                their ``extra_clauses``.
             extra_clauses: Additional SQLAlchemy WHERE expressions appended to the
                 query.  This is the generic extension point for subclasses — never
                 add per-business-domain kwargs here.
@@ -509,10 +572,7 @@ class BasePgRepository:
 
             # include_archived=False: add archive-exclusion filters (if columns exist)
             if include_archived is False:
-                if "merged_into" in self.table.c:
-                    where_clauses.append(self.table.c.merged_into.is_(None))
-                if "freshness_status" in self.table.c:
-                    where_clauses.append(self.table.c.freshness_status != "archived")
+                where_clauses.extend(self.live_row_clauses())
 
             # Append any caller-supplied extra clauses
             if extra_clauses:
@@ -557,6 +617,20 @@ class BasePgRepository:
 
     # Alias — list and search paths use the same slim column set.
     _list_columns = _search_columns
+
+    def live_row_clauses(self) -> list[ColumnElement[bool]]:
+        """WHERE clauses that keep live rows only: not merged, not archived.
+
+        Only for the columns the table has. Pass as ``extra_clauses`` to a search
+        so the exclusion applies BEFORE the LIMIT; filtering the returned page
+        afterwards can leave it short of the rows that exist.
+        """
+        clauses: list[ColumnElement[bool]] = []
+        if "merged_into" in self.table.c:
+            clauses.append(self.table.c.merged_into.is_(None))
+        if "freshness_status" in self.table.c:
+            clauses.append(self.table.c.freshness_status != "archived")
+        return clauses
 
     def _build_filter_clauses(self, filters: dict[str, Any]) -> list[Any]:
         """Build SQLAlchemy WHERE clauses from a {column: value} dict. Skips None values.
@@ -618,7 +692,7 @@ class BasePgRepository:
         from callers that discard the total (e.g. pg_snippet, pg_runbook).
 
         extra_clauses: Additional WHERE expressions (generic extension point).
-        NOTE: search paths do NOT filter archived rows — only list_all does.
+        Archived/merged rows are kept unless the caller passes ``live_row_clauses()``.
 
         Raises AttributeError if table has no 'search_vector' column.
         """
@@ -692,6 +766,7 @@ class BasePgRepository:
             raise AttributeError(f"Table '{self.table.name}' has no 'embedding' column.")
 
         async def _execute(sess: AsyncSession) -> list[Row]:
+            await self._vector_scan.apply(sess, limit)
             embedding_col = self.table.c.embedding
             query_vec = sa.cast(embedding, Vector(_EMBEDDING_DIM))
 

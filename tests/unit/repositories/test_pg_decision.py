@@ -569,7 +569,8 @@ class TestSearchVector:
             results = await repo.search_vector([0.1] * 1536, project_key="brain_v42")
 
         assert len(results) == 1
-        session.execute.assert_called_once()
+        # HNSW scan settings run first; the vector SELECT is the last statement.
+        assert "<=>" in str(session.execute.call_args.args[0])
 
 
 # ---------------------------------------------------------------------------

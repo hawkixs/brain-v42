@@ -701,7 +701,8 @@ class TestSearchVector:
         result = await repo.search_vector(query_embedding, project_key="brain_v42")
 
         assert isinstance(result, list)
-        mock_session.execute.assert_awaited_once()
+        # HNSW scan settings run first; the vector SELECT is the last statement.
+        assert "<=>" in str(mock_session.execute.await_args.args[0])
 
     @pytest.mark.asyncio
     async def test_search_vector_with_confidence(self) -> None:
@@ -716,7 +717,7 @@ class TestSearchVector:
         result = await repo.search_vector(query_embedding, confidence="high")
 
         assert isinstance(result, list)
-        mock_session.execute.assert_awaited_once()
+        assert "<=>" in str(mock_session.execute.await_args.args[0])
 
     @pytest.mark.asyncio
     async def test_search_vector_empty_result(self) -> None:
