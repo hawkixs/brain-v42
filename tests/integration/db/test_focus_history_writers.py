@@ -23,9 +23,14 @@ import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
+from brain_v42.models.focus_slot import FocusSlotError
 from brain_v42.models.project_context import ProjectContextCreate, ProjectContextUpdate
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.services.roadmap_service import ProjectFocusConflictError, RoadmapService
+from tests.integration.db import test_delivery_focus_slots as _slots
+
+# Keep the factory and cleanup on the same private head, including focus-slot refusals.
+session_factory = _slots.session_factory
 
 pytestmark = pytest.mark.integration
 
@@ -51,11 +56,11 @@ async def _history(session_factory: async_sessionmaker[AsyncSession]) -> list[di
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def clean(engine: AsyncEngine) -> AsyncIterator[None]:
+async def clean(private_head_engine: AsyncEngine) -> AsyncIterator[None]:
     """No context, no trail — before and after. The trail must be lifted to be cleared."""
 
     async def purge() -> None:
-        async with engine.begin() as connection:
+        async with private_head_engine.begin() as connection:
             # The trigger is NAMED, never `USER`. `DISABLE TRIGGER USER` is not the
             # inverse of `ENABLE TRIGGER USER`: the first switches off whatever is
             # on, the second switches on EVERYTHING — including a trigger some
@@ -132,61 +137,41 @@ async def test_a_context_born_without_a_focus_records_that_too(
 
 
 @pytest.mark.asyncio
-async def test_get_or_create_historicises_both_of_its_branches(
+async def test_get_or_create_refuses_conflicting_focus_without_a_history_write(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """One upsert, two branches, and the conflict branch is the B6 channel itself."""
+    """The conflict branch cannot replace focus without a revision CAS."""
     repo = PgProjectContextRepo(session_factory)
     await repo.get_or_create(_create())
-    await repo.get_or_create(_create(current_focus="focus after the upsert"))
+    with pytest.raises(FocusSlotError, match="focus_write_requires_update_project_focus"):
+        await repo.get_or_create(_create(current_focus="focus after the upsert"))
 
     assert await _history(session_factory) == [
         {"focus_revision": 0, "focus": "focus at birth", "actor": None, "source": "context_upsert"},
-        {
-            "focus_revision": 1,
-            "focus": "focus after the upsert",
-            "actor": None,
-            "source": "context_upsert",
-        },
     ]
 
 
 @pytest.mark.asyncio
-async def test_the_upsert_records_an_explicit_erasure(
+async def test_the_upsert_refuses_an_explicit_erasure(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
-    """The exact shape of B6: a focus overwritten to NULL, now recoverable."""
+    """An explicit NULL cannot erase a stored focus through the metadata upsert."""
     repo = PgProjectContextRepo(session_factory)
     await repo.get_or_create(_create(current_focus="prose worth keeping"))
-    await repo.get_or_create(_create(current_focus=None))
+    with pytest.raises(FocusSlotError, match="focus_write_requires_update_project_focus"):
+        await repo.get_or_create(_create(current_focus=None))
 
     trail = await _history(session_factory)
 
-    assert [row["focus"] for row in trail] == ["prose worth keeping", None]
+    assert [row["focus"] for row in trail] == ["prose worth keeping"]
+    assert (await repo.get_by_key(_KEY)).current_focus == "prose worth keeping"
 
 
 # ── The four UPDATE paths ────────────────────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_update_focus_historicises(
-    session_factory: async_sessionmaker[AsyncSession],
-) -> None:
-    repo = PgProjectContextRepo(session_factory)
-    await repo.create(_create())
-
-    await repo.update_focus(_KEY, "focus from the tool")
-
-    assert (await _history(session_factory))[-1] == {
-        "focus_revision": 1,
-        "focus": "focus from the tool",
-        "actor": None,
-        "source": "focus_tool",
-    }
-
-
-@pytest.mark.asyncio
-async def test_a_generic_update_that_moves_the_focus_historicises(
+async def test_a_generic_update_cannot_move_the_focus_or_write_history(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> None:
     repo = PgProjectContextRepo(session_factory)
@@ -195,11 +180,12 @@ async def test_a_generic_update_that_moves_the_focus_historicises(
     await repo.update(created.id, ProjectContextUpdate(current_focus="focus from a partial update"))
 
     assert (await _history(session_factory))[-1] == {
-        "focus_revision": 1,
-        "focus": "focus from a partial update",
+        "focus_revision": 0,
+        "focus": "focus at birth",
         "actor": None,
-        "source": "generic_update",
+        "source": "context_upsert",
     }
+    assert (await repo.get_by_key(_KEY)).current_focus == "focus at birth"
 
 
 @pytest.mark.asyncio

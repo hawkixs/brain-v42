@@ -286,6 +286,7 @@ async def test_a_shrinking_focus_is_refused_and_writes_nothing(
 async def test_the_operator_override_lets_a_shrinking_focus_through(
     session_factory: async_sessionmaker[AsyncSession],
     focus_project: tuple[str, dict[str, UUID]],
+    elevated_caller,
 ) -> None:
     project_key, _ = focus_project
     service = roadmap_service.RoadmapService(session_factory)

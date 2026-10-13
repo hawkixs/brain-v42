@@ -258,6 +258,7 @@ def register_decay_tools(
                 authorization=scope,
             )
         except ConsolidationEntityNotFoundError as exc:
+            # The consolidation guard names only the entity type and missing UUID.
             return format_error(str(exc))
 
         logger.info(

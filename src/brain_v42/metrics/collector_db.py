@@ -217,10 +217,12 @@ class _DbCollectorsMixin:
             mcp_auth_refused: dict[str, int] = {}
             elevation_refused: dict[str, int] = {}
             mcp_auth_agent_unresolved: dict[str, int] = {}
+            author_binding_candidates: dict[str, int] = {}
             process_counts = {
                 "_mcp_auth_refused": mcp_auth_refused,
                 "_elevation_refused": elevation_refused,
                 "_mcp_auth_agent_unresolved": mcp_auth_agent_unresolved,
+                "_author_binding_candidates": author_binding_candidates,
             }
             agg_emb: dict[str, Any] = {
                 "total_requests": 0,
@@ -476,6 +478,7 @@ class _DbCollectorsMixin:
                 "mcp_auth_refused": mcp_auth_refused,
                 "elevation_refused": elevation_refused,
                 "mcp_auth_agent_unresolved": mcp_auth_agent_unresolved,
+                "author_binding_candidates": author_binding_candidates,
                 "embedding": {
                     "total_requests": emb_total,
                     "total_errors": agg_emb["total_errors"],
@@ -505,6 +508,7 @@ class _DbCollectorsMixin:
                 "mcp_auth_refused": {},
                 "elevation_refused": {},
                 "mcp_auth_agent_unresolved": {},
+                "author_binding_candidates": {},
                 "decay": dict(_DECAY_ZERO),
                 "embedding_identity": None,
                 "embedding": {

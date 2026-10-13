@@ -32,6 +32,7 @@ TOOL_FAMILIES: dict[str, str] = {
     "brain_get_runbook": "read",
     "brain_get_roadmap": "read",
     "brain_focus_history": "read",
+    "brain_project_focus_get": "read",
     "brain_list_projects": "read",
     "brain_list_project_groups": "read",
     "brain_workflow_guide": "read",

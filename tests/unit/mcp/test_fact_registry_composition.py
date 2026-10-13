@@ -25,6 +25,7 @@ _PRODUCTION_FACTS = (
     "alembic_head",
     "dream_last_night",
     "claims_verification_last_night",
+    "delivery_observer_liveness",
 )
 
 
@@ -35,6 +36,7 @@ def test_with_a_declared_identity_the_first_fact_is_registered_and_the_catalogue
         "graph_projection_lag",
         "alembic_head",
         "claims_verification_last_night",
+        "delivery_observer_liveness",
     )
     # Only the production identity is declared: every other target's facts are
     # refused, named, and the service still starts.
@@ -64,6 +66,7 @@ def test_a_declared_host_identity_registers_the_dream_killswitch_fact() -> None:
         "dream_killswitches_declared",
         "dream_last_night",
         "claims_verification_last_night",
+        "delivery_observer_liveness",
     )
     assert registry.briefing_names() == (
         "graph_projection_lag",
@@ -72,6 +75,7 @@ def test_a_declared_host_identity_registers_the_dream_killswitch_fact() -> None:
         "alembic_head_shipped",
         "dream_killswitches_declared",
         "claims_verification_last_night",
+        "delivery_observer_liveness",
     )
     assert registry.describe("dream_killswitches_declared").target is FactTarget.HOST
 
@@ -132,6 +136,7 @@ def test_a_refused_probe_is_recorded_with_its_reason_for_the_briefing() -> None:
         "dream_killswitches_declared": "unverifiable_target",
         "dream_last_night": "unverifiable_target",
         "claims_verification_last_night": "unverifiable_target",
+        "delivery_observer_liveness": "unverifiable_target",
     }
 
 
@@ -146,6 +151,7 @@ def test_undeclared_live_release_refuses_its_facts_while_production_still_regist
         "dream_killswitches_declared",
         "dream_last_night",
         "claims_verification_last_night",
+        "delivery_observer_liveness",
     )
     assert registry.refusals() == {
         "live_release_sha": "unverifiable_target",

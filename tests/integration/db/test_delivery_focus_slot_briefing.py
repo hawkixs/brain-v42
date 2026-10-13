@@ -9,12 +9,12 @@ from brain_v42.db.focus_slots import close_slot
 from brain_v42.db.tables import decisions, focus_slots, project_contexts
 from brain_v42.models.focus_slot import SlotAnchor
 from brain_v42.repositories.pg_focus_slot import PgFocusSlotRepo
-from brain_v42.repositories.pg_project_context import PgProjectContextRepo
+from brain_v42.services.roadmap_service import RoadmapService
 from tests.integration.db import test_delivery_focus_slots as _slots
 from tests.integration.db.test_delivery_focus_slot_binding import sessions
 from tests.integration.db.test_delivery_focus_slot_bound_end import bound
 from tests.integration.db.test_delivery_focus_slot_relay import relay
-from tests.integration.db.test_delivery_focus_slots import service, ticket
+from tests.integration.db.test_delivery_focus_slots import base_state, service, ticket
 
 session_factory = _slots.session_factory
 slot_project = _slots.slot_project
@@ -64,7 +64,7 @@ async def test_last_ended_session_activity_prevents_a_slot_from_looking_stale(
     session_factory, slot_project
 ):
     session_id, key, slot_id = await bound(session_factory, slot_project)
-    await sessions(session_factory).end(session_id, key, "done", "body", 0)
+    await sessions(session_factory).end(session_id, key, "done", "next body", 0)
     async with session_factory.begin() as session:
         await session.execute(
             focus_slots.update()
@@ -114,7 +114,11 @@ async def test_a_receipt_closed_slot_is_to_distill_and_an_explicit_close_is_not(
 async def test_writing_the_base_clears_the_slots_closed_before_it(session_factory, slot_project):
     await closed_slot(session_factory, slot_project, f"receipt:{uuid4()}")
     assert (
-        await PgProjectContextRepo(session_factory).update_focus(slot_project, "distilled focus")
+        await RoadmapService(session_factory).update_project_focus(
+            slot_project,
+            "distilled focus",
+            expected_focus_revision=(await base_state(session_factory, slot_project))[1],
+        )
         is not None
     )
     after = await closed_slot(session_factory, slot_project, f"receipt:{uuid4()}")

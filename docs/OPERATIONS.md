@@ -66,9 +66,10 @@ is refused. This provenance is client-declared, not cryptographic proof of autho
 
 Every result that exposes a session also carries `attributed_knowledge_ids`, a view
 rehydrated from the ledger. Captures stay visible after a start retry, a resume, a
-heartbeat, a list, or an abandon. Abandoning a session does not release its
-attributions: their provenance stays exclusive, and an exact retry of `capture` stays
-idempotent even after abandonment.
+heartbeat, a list, or an abandon. Abandoning a session keeps its ledger in place,
+but makes its artifacts reclaimable by a later explicit capture or absorption
+(decision 974f46f3). Open and ended operator holders remain protected. An exact retry
+of `capture` stays idempotent while the abandoned session still owns the artifact.
 
 `brain_session_end` no longer accepts capture identifiers directly: it reads this
 ledger. Since migration 047 a closure no longer needs a non-empty ledger or a
@@ -147,17 +148,24 @@ that carries a connection identifier, so never under stdio or in stateless HTTP 
 The connection stage records each connection seen by one of those lifecycle calls
 in `brain_session_connections` and takes artifacts from the project's `open` or
 `closed_inactive` traces on every recorded connection, bounded by the session's start.
-That start excludes artifacts produced by a predecessor on the same connection; the
-exact match works even when a coordinating session makes every instant ambiguous.
+Abandoned operator sessions are also donors, matched through their seen connections
+because operator rows carry no `connection_id`. That start excludes artifacts produced
+by a predecessor on the same connection. Decision 974f46f3 makes the connection stage
+abstain when another open operator of the same project saw the same connection; a
+coordinating session on a different connection still does not block the exact match.
 A connection that saw no lifecycle call still falls back to the window stage.
 The window stage then runs whenever ledger capacity
 remains (100 artifacts per session, minus those already attributed), whether or not the
 current connection still has a trace. Its donors are the project's `open` or
-`closed_inactive` traces opened by a human actor, never an abandoned trace and never one
-opened by a system actor such as the Dream. It takes an artifact only if no other
+`closed_inactive` traces opened by a human actor and abandoned operator sessions,
+never an abandoned trace and never a trace opened by a system actor such as the Dream.
+The abandoned donor itself is not a rival. It takes an artifact only if no other
 session of the project that is not an agent trace covered the instant of its creation,
 whether that session is still open or has finished since; under that ambiguity the
-artifact stays with the trace. The server never promotes a trace into an operator
+artifact stays with its donor. Connection-stage abstentions also apply to the fallback,
+and both stages report refused artifacts and rival session identifiers. Artifacts on
+abandoned operator holders count as unattributed in the closing receipt.
+The server never promotes a trace into an operator
 session. Migration 047 removed the "non-empty ledger XOR `nothing_to_capture_reason`"
 constraint on `ended`, because a ledger can now be filled without an explicit capture,
 and migration 048 records in `attribution_mode` which key attributed each artifact
@@ -203,8 +211,16 @@ followed by a rail deploy. Each run prints its report to `docker logs brain-v42-
 and records a `dream_runs` row (`phase = 'sweep'`, `phase_dry_run` set accordingly) on a
 best-effort basis: a run that fails before reaching the database (invalid configuration,
 PostgreSQL down) or whose INSERT fails leaves no row, so a missing row does not prove the
-loop is dead. A failed run is retried the next day; the healthcheck proves only that the
-loop process exists, not that a run completed.
+loop is dead. A failed run is retried the next day.
+After the sweep, the same loop runs `python -m brain_v42.maintenance.trace_retention`
+(see "Agent trace and graph outbox retention"), dry unless its command line carries
+`--execute`; its two report lines go to the same container log.
+Each of the two jobs touches its own heartbeat file when it succeeds
+(`/tmp/brain-v42-session-sweep.heartbeat`, `/tmp/brain-v42-trace-retention.heartbeat`).
+The healthcheck fails once either is missing or older than 26 hours (a day between runs
+plus two hours for the runs), after a 15-minute start period that covers the first runs,
+so `brain-v42-session-sweep` turns `unhealthy` when a job stops completing, not only
+when the loop dies.
 
 **Arming state is measured, not documented.** This document deliberately does not
 state whether the four flags are armed: drop-ins change, and a copied value cannot
@@ -388,6 +404,19 @@ Variables: `BRAIN_CLAUDE_TOKEN_FILE` (default
 (default `~/.config/brain-v42/clients/agent-map`). Sessions pick the new helper up when
 they reconnect. Check the effect on the metrics sidecar: the `mcp_auth_agent_unresolved`
 counters stop growing, and the per-agent view shows the mapped projects.
+
+## Metrics sidecar health
+
+`GET /healthz` on the metrics sidecar (`:9200`) runs `SELECT 1` on its own engine, bounded
+by two seconds. PostgreSQL answering gives `200` with `"database": "reachable"`; an error
+or a stall gives `503` with `"status": "degraded"` and `"database": "unreachable"`, and a
+`metrics_healthz.database_unreachable` warning naming only the error type. The compose
+healthcheck reads this endpoint, so a PostgreSQL outage now turns `brain-v42-metrics`
+`unhealthy`, which red-agent reports in the container's health field. The answer still
+carries `ingest_receivers`. Unlike the MCP server's `/healthz`, this one does touch the
+database. The answer is decided at the two-second bound: a probe cancelled there finishes
+tearing down its connection in the background, so the endpoint stays within the
+healthcheck's three-second client timeout even when that teardown is slow.
 
 ## Network trust boundary (detailed)
 
@@ -1147,6 +1176,28 @@ running from a checkout says "live release unmeasured" instead of guessing.
 whether `v0.6.3` was observed, the tickets planned but not shipped in it, and those
 shipped under another tag.
 
+## Delivery observer: liveness
+
+Two signals say whether the observer is still observing, not merely running.
+
+**Heartbeat (container health).** With `BRAIN_DELIVERY_HEARTBEAT_PATH` set (Compose sets
+`/tmp/brain-v42-delivery-observer.heartbeat`), the observer rewrites that file, atomically,
+after every completed cycle, after every persisted observation attempt, and while the
+release and deployed passes page through their candidates. A cycle cut short by ownership
+loss or a shutdown does not refresh it at its end (a release pass may still refresh once
+before it notices, and the process exits right after). The `delivery-observer` healthcheck fails when the
+file is missing or older than 600 s (start period 120 s), so `brain-v42-delivery-observer`
+turns `unhealthy` and red-agent reports it. A failed write never stops observation; it is
+reported as one `observer_heartbeat_write_failed` JSON line on stderr with the error type.
+
+**Fact `delivery_observer_liveness` (briefing).** Measured on the production database:
+`lock_held` (the observer's session advisory lock is granted to a backend of this
+database), `overdue` (subjects the observer queue considers due for more than 600 s),
+`last_confirmation_age_seconds` (newest confirmation, any outcome; null when none) and
+`healthy` = lock held and nothing overdue. A dead observer shows as `lock_held = false`; a
+live but stalled one as `overdue > 0`. Read it with
+`brain_fact_get("delivery_observer_liveness")`.
+
 ## Delivery confirmation retention
 
 The maintenance CLI keeps every error confirmation (observer backoff depends on
@@ -1187,6 +1238,10 @@ SELECT count(*) FROM delivery_confirmations;
 ```
 
 Deleted successes remain recoverable from the preceding backup dump.
+
+## Agent trace and graph outbox retention
+
+`python -m brain_v42.maintenance.trace_retention` previews old, unreferenced closed agent traces and delivered graph outbox rows; deletion is dry by default and requires `--execute`. Trace retention has a 30-day minimum window, and outbox retention has a seven-day minimum (both default to 30 days). It keeps open and operator sessions, traces referenced by artifacts, checkpoints, slot history or relay children, and every undelivered outbox row. Batches default to 5000 rows, with at most 100 batches per purge. A dry run counts every candidate; an execute run is capped at `--max-batches` × `--batch-size` rows. Locked candidates are skipped, and later invocations can process the remainder.
 
 ## Automation service
 

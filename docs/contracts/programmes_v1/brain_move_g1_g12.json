@@ -1,0 +1,215 @@
+{
+  "version": "programmes/v1",
+  "generated_at": "2026-10-06T16:40:00+00:00",
+  "programmes": [
+    {
+      "key": "brain-move-red-base",
+      "title": "Brain to red-base",
+      "coordinator": "brain-v42",
+      "state": "active",
+      "last_change": {
+        "gate": "G3",
+        "from": "todo",
+        "to": "in_progress",
+        "at": "2026-10-06T16:36:00+00:00",
+        "by": "brain-v42"
+      },
+      "gates": [
+        {
+          "key": "G1",
+          "title": "Design: red-base spec, client identity spec, ADR #35",
+          "owner": "brain-v42",
+          "state": "done",
+          "depends_on": [],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T12:00:00+00:00",
+          "updated_by": "brain-v42"
+        },
+        {
+          "key": "G2",
+          "title": "Lot 0.6.9 plan approved by a non-Claude judge",
+          "owner": "brain-v42",
+          "state": "done",
+          "depends_on": [
+            "G1"
+          ],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T12:05:00+00:00",
+          "updated_by": "brain-v42"
+        },
+        {
+          "key": "G3",
+          "title": "Lot 0.6.9 code merged",
+          "owner": "brain-v42",
+          "state": "in_progress",
+          "depends_on": [
+            "G2"
+          ],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": {
+            "done": 2,
+            "total": 25,
+            "unit": "steps"
+          },
+          "note": null,
+          "updated_at": "2026-10-06T16:36:00+00:00",
+          "updated_by": "brain-v42"
+        },
+        {
+          "key": "G4",
+          "title": "Release 0.6.9 built by rail release",
+          "owner": "brain-v42",
+          "state": "todo",
+          "depends_on": [
+            "G3"
+          ],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T12:10:00+00:00",
+          "updated_by": "brain-v42"
+        },
+        {
+          "key": "G5",
+          "title": "Rehearsals R1, R2 and R4 green",
+          "owner": "brain-v42",
+          "state": "todo",
+          "depends_on": [
+            "G4"
+          ],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T12:10:00+00:00",
+          "updated_by": "brain-v42"
+        },
+        {
+          "key": "G6",
+          "title": "red-rail ships private-timers",
+          "owner": "red-rail",
+          "state": "done",
+          "depends_on": [],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T12:15:00+00:00",
+          "updated_by": "red-rail"
+        },
+        {
+          "key": "G7",
+          "title": "red-backup deployed on red-base",
+          "owner": "red-backup",
+          "state": "in_progress",
+          "depends_on": [
+            "G6"
+          ],
+          "weight": 4,
+          "waiting_on_operator": {
+            "ask": "validate export-accounts spec",
+            "since": "2026-10-06T14:40:00+00:00"
+          },
+          "progress": {
+            "done": 6,
+            "total": 15,
+            "unit": "tasks"
+          },
+          "note": "first deploy without the brain target",
+          "updated_at": "2026-10-06T16:30:00+00:00",
+          "updated_by": "red-backup"
+        },
+        {
+          "key": "G8",
+          "title": "red-watcher ready for the cutover",
+          "owner": "red-watcher",
+          "state": "in_progress",
+          "depends_on": [],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": "503 reason to confirm",
+          "updated_at": "2026-10-06T14:00:00+00:00",
+          "updated_by": "red-watcher"
+        },
+        {
+          "key": "G9",
+          "title": "Recovery binding contract red-backup and image",
+          "owner": "brain-v42",
+          "state": "done",
+          "depends_on": [],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T12:20:00+00:00",
+          "updated_by": "brain-v42"
+        },
+        {
+          "key": "G10",
+          "title": "Operator go for the window",
+          "owner": "brain-v42",
+          "state": "todo",
+          "depends_on": [
+            "G5",
+            "G7",
+            "G8",
+            "G9"
+          ],
+          "weight": 1,
+          "waiting_on_operator": {
+            "ask": "go for the cutover window",
+            "since": "2026-10-06T12:25:00+00:00"
+          },
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T12:25:00+00:00",
+          "updated_by": "brain-v42"
+        },
+        {
+          "key": "G11",
+          "title": "Cutover",
+          "owner": "brain-v42",
+          "state": "todo",
+          "depends_on": [
+            "G4",
+            "G5",
+            "G7",
+            "G8",
+            "G9",
+            "G10"
+          ],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T12:25:00+00:00",
+          "updated_by": "brain-v42"
+        },
+        {
+          "key": "G12",
+          "title": "Post-cutover follow-up",
+          "owner": "brain-v42",
+          "state": "todo",
+          "depends_on": [
+            "G11"
+          ],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T12:25:00+00:00",
+          "updated_by": "brain-v42"
+        }
+      ]
+    }
+  ]
+}

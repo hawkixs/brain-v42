@@ -16,6 +16,7 @@ import yaml
 from brain_v42.config import Settings
 from brain_v42.delivery_observer.config import load_observer_settings
 from brain_v42.maintenance.session_sweep import build_parser as session_sweep_parser
+from brain_v42.maintenance.trace_retention import build_parser as trace_retention_parser
 from brain_v42.mcp.server import version_check
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,6 +107,15 @@ def test_restart_and_healthchecks(compose: dict[str, Any]) -> None:
         assert "urllib.request.urlopen" in probe[3]
         assert f"http://127.0.0.1:{port}/healthz" in probe[3]
         assert "timeout=" in probe[3]
+    observer = compose["services"]["delivery-observer"]
+    heartbeat = observer["environment"]["BRAIN_DELIVERY_HEARTBEAT_PATH"]
+    probe = observer["healthcheck"]["test"]
+    assert probe[:3] == ["CMD", "python", "-c"]
+    parsed = re.search(r"Path\('([^']+)'\).*<=\s*(\d+)", probe[3])
+    assert parsed is not None
+    assert parsed.groups() == (heartbeat, "600")
+    assert "/proc/1/cmdline" not in probe[3]
+    assert observer["healthcheck"]["start_period"] == "120s"
 
 
 def test_only_wireguard_server_ports_are_published(compose: dict[str, Any]) -> None:
@@ -444,25 +454,81 @@ def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
     assert service["container_name"] == "brain-v42-session-sweep"
     command = service["command"]
     assert command[:2] == ["/bin/sh", "-c"]
+    # Ticket abbfabfd item 3: each job touches its own heartbeat file only when it
+    # succeeds, so the healthcheck can tell a loop that still runs from one that
+    # still works.
     match = re.fullmatch(
-        r"while :; do\s+python -m brain_v42\.maintenance\.session_sweep(?P<args>[^|]*)"
-        r"\|\| echo \"session-sweep: run failed[^\"]*\" >&2;\s+sleep 86400;\s*done\s*",
+        r"while :; do\s+python -m brain_v42\.maintenance\.session_sweep(?P<args>[^&|]*)"
+        r"&& touch (?P<sweep_beat>/tmp/[\w.-]+) "
+        r"\|\| echo \"session-sweep: run failed[^\"]*\" >&2;\s+"
+        r"python -m brain_v42\.maintenance\.trace_retention(?P<retention>[^&|]*)"
+        r"&& touch (?P<retention_beat>/tmp/[\w.-]+) "
+        r"\|\| echo \"trace-retention: run failed[^\"]*\" >&2;\s+"
+        r"sleep 86400;\s*done\s*",
         command[2],
     )
     assert match, command[2]
     arguments = session_sweep_parser().parse_args(match["args"].split())
     assert arguments.wet is False
     assert arguments.older_than_days == 7
+    # Ticket 8f319827: retention runs after the sweep in the same daily loop, dry
+    # until a separate configuration pull request passes --execute.
+    retention = trace_retention_parser().parse_args(match["retention"].split())
+    assert retention.execute is False
+    assert (retention.trace_older_than_days, retention.outbox_older_than_days) == (30, 30)
     assert service["env_file"] == ["/etc/brain-v42/postgres-app.env"]
     assert service["environment"] == compose["x-brain-env"]
     assert "secrets" not in service
     probe = service["healthcheck"]["test"]
     assert probe[:3] == ["CMD", "python", "-c"]
-    assert "brain_v42.maintenance.session_sweep" in probe[3]
-    assert "/proc/1/cmdline" in probe[3]
+    assert match["sweep_beat"] != match["retention_beat"]
+    for beat in (match["sweep_beat"], match["retention_beat"]):
+        assert repr(beat) in probe[3]
+    # A day between runs, plus two hours for the runs themselves.
+    assert "93600" in probe[3]
+    assert service["healthcheck"]["start_period"] == "15m"
     for key, value in service["environment"].items():
         clean_settings_env.setenv(key, value)
     assert Settings(_env_file=None).brain_session_inactive_sweep_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("sweep_age", "retention_age", "healthy"),
+    [
+        (60, 60, True),
+        (93_000, 60, True),
+        (94_000, 60, False),
+        (60, 94_000, False),
+        (None, 60, False),
+    ],
+)
+def test_session_sweep_healthcheck_reads_both_heartbeats(
+    compose: dict[str, Any], tmp_path: Path, sweep_age, retention_age, healthy
+) -> None:
+    """Run the healthcheck's own code against files of known age."""
+    import subprocess
+    import sys
+    import time
+
+    probe = compose["services"]["session-sweep"]["healthcheck"]["test"][3]
+    for name, age in (
+        ("brain-v42-session-sweep.heartbeat", sweep_age),
+        ("brain-v42-trace-retention.heartbeat", retention_age),
+    ):
+        if age is None:
+            continue
+        beat = tmp_path / name
+        beat.touch()
+        os.utime(beat, (time.time() - age, time.time() - age))
+        assert f"'/tmp/{name}'" in probe
+        probe = probe.replace(f"'/tmp/{name}'", repr(str(beat)))
+    if sweep_age is None:
+        probe = probe.replace(
+            "'/tmp/brain-v42-session-sweep.heartbeat'",
+            repr(str(tmp_path / "brain-v42-session-sweep.heartbeat")),
+        )
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, timeout=30)
+    assert (result.returncode == 0) is healthy
 
 
 def test_projector_is_private_to_the_graph_processes(compose: dict[str, Any]) -> None:
@@ -504,7 +570,10 @@ def test_observer_configuration_is_expressible_without_a_root_owned_file_in_the_
     ]
     assert "env_file" not in observer
     assert compose["secrets"]["observer_config"]["file"] == "/etc/brain-v42/delivery-observer.env"
-    assert observer["environment"] == {"BRAIN_LOG_FORMAT": "json"}
+    assert observer["environment"] == {
+        "BRAIN_LOG_FORMAT": "json",
+        "BRAIN_DELIVERY_HEARTBEAT_PATH": "/tmp/brain-v42-delivery-observer.heartbeat",
+    }
     assert "observer_config" in observer["secrets"]
     assert observer["user"] == "1000:1000"
     header = COMPOSE.read_text(encoding="utf-8").split("name:", 1)[0]
@@ -532,6 +601,7 @@ def test_observer_configuration_is_expressible_without_a_root_owned_file_in_the_
     )
     assert settings.github_app_id == settings.github_installation_id == 1
     assert settings.github_private_key_path == key_path
+    assert settings.heartbeat_path == Path(observer["environment"]["BRAIN_DELIVERY_HEARTBEAT_PATH"])
 
 
 def test_only_the_six_rail_variables_are_interpolated(compose: dict[str, Any]) -> None:

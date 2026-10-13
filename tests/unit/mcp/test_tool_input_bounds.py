@@ -116,6 +116,7 @@ UNBOUNDED_BY_DESIGN = {
     ("brain_ticket_list", "project_key"): "Canonicalized project key",
     ("brain_ticket_list", "target_release"): "Release identifier",
     ("brain_focus_history", "project_key"): "Canonicalized project key",
+    ("brain_project_focus_get", "project_key"): "Canonicalized project key",
     ("brain_project_archive", "project_key"): "Canonicalized project key",
     ("brain_project_unarchive", "project_key"): "Canonicalized project key",
     ("brain_list_projects", "project_group"): "Canonicalized project group",

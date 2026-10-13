@@ -2152,9 +2152,9 @@ project_focus_history = Table(
         server_default=sa.text("now()"),
     ),
     sa.PrimaryKeyConstraint("project_key", "focus_revision", name="project_focus_history_pkey"),
-    # An exact mirror of the CHECK 050 installs. Six sources for seven writers:
-    # `focus_tool` covers the roadmap CAS and the repository's `update_focus`,
-    # `context_upsert` covers `create` and `get_or_create`.
+    # An exact mirror of the CHECK 050 installs. `focus_tool` is the roadmap CAS,
+    # `context_upsert` covers `create` and the insert branch of `get_or_create`;
+    # `generic_update` has had no writer since ticket 7eab4e35.
     sa.CheckConstraint(
         "source IN ('session_end', 'focus_tool', 'context_upsert', "
         "'generic_update', 'maintenance_scrub', 'migration_seed')",

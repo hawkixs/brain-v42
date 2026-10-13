@@ -2,7 +2,7 @@
 
 **Repository schema:** the repository carries migrations through revision 065. Migration 065 adds `programmes` and `programme_gates`, the programme progress published to the cockpit (contract `docs/contracts/programmes_v1.md`). Migration 064 declares the least-privilege runtime ACLs for `brain_app`; the migrate CLI configures only its login attributes and timeouts. This is a code target, not a statement about any deployed database. Migration 063 adds four tables: the client credential registry (`brain_client_credentials`, digests only, with a NOTIFY trigger), time-boxed admin elevations (`brain_admin_elevations`), the schema compatibility ledger (`brain_schema_compat`) and the credential audit outbox (`brain_credential_audit`). Migration 062 adds two partial observer-error indexes and installs `pg_stat_statements` in the `monitoring` schema. Earlier revisions add measured-fact definitions, delivery attestations, focus slots, ticket release planning, and session connection provenance.
 
-**MCP catalog:** 78 always-on + 2 graph-gated = 80.
+**MCP catalog:** 79 always-on + 2 graph-gated = 81.
 
 brain-v42 is a persistent FastMCP application backed by PostgreSQL and pgvector.
 Neo4j is a derived relationship projection; HTTP is used for persistent connections
@@ -37,7 +37,7 @@ registry exposes definitions and measured values through `brain_fact_get` and
                                  v
  +-------------------------------+--+  +----------------------+  +----------------------+
  | FastMCP server (Python 3.12+)     |  | Metrics runtime      |  | Automation runtime   |
- | 78 always-on + 2 graph-gated = 80 |  | 127.0.0.1:9200       |  | 127.0.0.1:9201       |
+ | 79 always-on + 2 graph-gated = 81 |  | 127.0.0.1:9200       |  | 127.0.0.1:9201       |
  | service layer + search fan-out    |  | /metrics / cockpit   |  | health / webhook     |
  | MCP background flushers/indexer   |  | optional legacy owner|  | dedup scheduler      |
  +----------------+------------------+  +----------+-----------+  +-----------+----------+
@@ -501,8 +501,22 @@ All are optional via settings (`metrics_enabled`, `decay_enabled`, `graph_enable
 
 `src/brain_v42/metrics/server.py` starts an aiohttp app exposing:
 
-- `GET /metrics` — Prometheus format, read from `MetricsCollector` in-memory counters and PG aggregates.
+- `GET /metrics` — JSON, read from `MetricsCollector` in-memory counters and PG aggregates.
 - `GET /api/cockpit` — single JSON snapshot (`CockpitCollector`) consumed by `red-monitor` with ~2s poll. The `transport` field reads `settings.brain_mcp_transport` (so it correctly shows `"http"` post-cutover). `cache_hit_ratio` is `null` — the GPU embedding service does not expose a cache-hit counter.
+
+**Read boundary (decisions 30cacb0b and 94771690, 2026-10-13)**: when the sidecar binds a non-loopback
+address with `METRICS_ALLOW_NON_LOOPBACK` (as on red-base's wg0), `GET /metrics` and
+`GET /api/cockpit` answer any WireGuard peer without a credential, by operator decision.
+The WireGuard perimeter is the read boundary. The payloads include the inventory of
+every project's open sessions, focus slots (ids, titles, anchors) and ticket counters,
+per-agent and per-tool call counts, reranker usage by identity, MCP auth refusals by
+cause, Dream/nightly state and database sizes: together, the inventory and usage profile.
+They carry no secret field; configured endpoint URLs (`embedding_service.url`) are
+published with userinfo, query string and fragment stripped by `redact_url` (ticket
+2bb6f20b). The exact field list is pinned by
+`tests/unit/metrics/test_read_exposure_pinned.py`; widening it is a decision, not a
+drive-by change. `GET /healthz` also requires no credential; `/api/brain-graph/v1`
+remains loopback-gated, and POST receivers remain gated by credentials.
 
 `GET /metrics` itself is polled by `red-monitor` roughly every 5s. The `dream`, `nightly`, `tickets` and graph-inventory (`nodes_total`/`edges_total`/`orphans_total`) sections it assembles together run on the order of fifteen PostgreSQL queries plus a Neo4j round trip on every call. `SlowBlockCache` (`src/brain_v42/metrics/slow_block_cache.py`) memoizes those blocks behind a TTL with single-flight coalescing: concurrent pollers landing during a refresh await the SAME in-flight computation rather than each starting their own query set. Each cached block carries its own `generated_at` (ISO-8601 UTC), additive — no existing key is renamed or removed. `database` and the embedding/graph healthchecks are deliberately excluded and stay live, uncached, on every poll. TTLs are `METRICS_SLOW_BLOCK_CACHE_TTL_SECONDS` (default 30s) and the shorter `METRICS_SLOW_BLOCK_CACHE_ERROR_TTL_SECONDS` (default 5s) for a failed or partial computation — a raised exception is never cached as a success for the full TTL (decision 1669d429 item 2). Two signalling shapes reach that short TTL: `tickets` raises its SQL exception plainly (see below), while `dream`, `nightly` and graph-inventory each catch their own SQL/Neo4j failures internally and, since they already have a degraded value ready (`{}`, or a partial dict), raise it wrapped in `CollectorDegraded(payload)` instead of returning it — a plain return would have been indistinguishable from a legitimate empty result (e.g. "no dream runs yet") and was memoized for the full TTL (a MAJOR fix, PR #201). `SlowBlockCache` recognises `CollectorDegraded` ahead of its generic `except` clause and stores/returns `.payload` unchanged — red-monitor sees the exact same shape either way, only the retry cadence differs.
 
@@ -964,7 +978,7 @@ brain_v42/
 │   └── mcp/
 │       ├── server.py             # entry point (stdio+http), build_services(), app_lifecycle()
 │       ├── http_security.py      # HostOriginGuard + BearerTokenGuard ASGI middleware
-│       └── tools/                # 78 always-on + 2 graph-gated = 80
+│       └── tools/                # 79 always-on + 2 graph-gated = 81
 ├── alembic/versions/             # migrations 001–065 defined in the repository
 ├── scripts/                      # legacy import + projection inventory/recovery CLIs
 ├── tests/                        # unit/ + integration/
@@ -987,7 +1001,7 @@ brain_v42/
 | Embeddings | sentence-transformers / PyTorch in-process | Configurable (`BRAIN_EMBEDDING_BACKEND`): shipped default `shim` → local :8003 (Qodo-Embed-1-1.5B, 1536d, `qodo` profile); production deployment: OpenAI-compatible backend on Mistral codestral |
 | Reranker | none | Cross-encoder :8003 unified endpoint, BatchingRerankerClient (20 ms window) |
 | MCP transport | stdio | HTTP loopback 127.0.0.1:8765 + HostOriginGuard + bearer obligatoire sous systemd (optionnel en HTTP dev direct) |
-| MCP tools | 21 | 78 always-on + 2 graph-gated = 80 |
+| MCP tools | 21 | 79 always-on + 2 graph-gated = 81 |
 | Tables | 6 | 31 (knowledge, audit, plans, dream, webhook, coordination, sessions, graph ledger) |
 | Maintenance | manual | Dream mode nightly + DecayFlusher + ConsolidationJob |
 | Observability | none | /metrics :9200 + /api/cockpit + process_metrics |

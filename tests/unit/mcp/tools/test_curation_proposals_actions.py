@@ -22,14 +22,16 @@ id foreign to the project is refused BY NAME and never reaches the service.
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from fastmcp.exceptions import ToolError
+from structlog.testing import capture_logs
 
 from brain_v42.mcp.tools import dream_tools as dream_tools_module
 from brain_v42.mcp.tools.dream_tools import register_dream_tools
+from brain_v42.services.proposal_service import ProposalApplyError, ProposalNotProposedError
 
 
 class MockMCP:
@@ -117,6 +119,84 @@ def _tools(ownership_rows: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
 def _service() -> _FakeService:
     assert len(_FakeService.instances) >= 1
     return _FakeService.instances[-1]
+
+
+@pytest.mark.parametrize("status", ["applied", "rejected"])
+async def test_reject_preserves_service_state_refusals(
+    monkeypatch: pytest.MonkeyPatch, status: str
+) -> None:
+    tools = _tools([_ownership_row(701, "brain-v42")], monkeypatch)
+    message = f"proposal #701 is not pending: already {status}"
+    monkeypatch.setattr(
+        _FakeService,
+        "reject_roadmap_curation",
+        AsyncMock(
+            side_effect=ProposalNotProposedError(
+                message, family="roadmap-curation", proposal_id=701, status=status
+            )
+        ),
+    )
+    with capture_logs() as logs:
+        out = await tools["brain_reject_curation_proposals"](
+            project_key="brain-v42", proposal_ids=[701]
+        )
+    assert message in out
+    assert "0 rejetée(s)" in out
+    assert not [event for event in logs if event["log_level"] == "error"]
+
+
+async def test_reject_preserves_service_internal_error_reference(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = _tools([_ownership_row(701, "brain-v42")], monkeypatch)
+    message = "reject proposal failed: internal error RuntimeError (ref abc123456789)"
+    monkeypatch.setattr(
+        _FakeService,
+        "reject_roadmap_curation",
+        AsyncMock(
+            side_effect=ProposalApplyError(message, family="roadmap-curation", proposal_id=701)
+        ),
+    )
+    with capture_logs() as logs:
+        out = await tools["brain_reject_curation_proposals"](
+            project_key="brain-v42", proposal_ids=[701]
+        )
+    assert message in out
+    assert out.count("(ref ") == 1
+    assert not [event for event in logs if event["log_level"] == "error"]
+
+
+@pytest.mark.asyncio
+async def test_batch_rejection_failure_hides_exception_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = _tools([_ownership_row(701, "brain-v42")], monkeypatch)
+    monkeypatch.setattr(
+        _FakeService,
+        "reject_roadmap_curation",
+        AsyncMock(side_effect=RuntimeError("SELECT secret")),
+    )
+    out = await tools["brain_reject_curation_proposals"](
+        project_key="brain-v42", proposal_ids=[701]
+    )
+    assert "SELECT" not in out and "secret" not in out
+    assert "internal error RuntimeError (ref " in out
+    assert "#701" in out and "0 rejetée(s)" in out
+
+
+@pytest.mark.asyncio
+async def test_curation_apply_failure_hides_exception_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    tools = _tools([_ownership_row(701, "brain-v42")], monkeypatch)
+    monkeypatch.setattr(
+        _FakeService,
+        "apply_roadmap_curation",
+        AsyncMock(side_effect=RuntimeError("SELECT secret")),
+    )
+    with pytest.raises(
+        ToolError, match=r"internal error RuntimeError \(ref [0-9a-f]{12}\)"
+    ) as caught:
+        await tools["brain_apply_curation_proposal"](project_key="brain-v42", proposal_id=701)
+    assert "SELECT" not in str(caught.value) and "secret" not in str(caught.value)
 
 
 @pytest.mark.asyncio

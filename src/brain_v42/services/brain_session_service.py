@@ -44,6 +44,7 @@ from brain_v42.models.focus_slot import (
 )
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.provenance import get_current_peer, get_current_principal
+from brain_v42.services.focus_shrink_override import require_focus_shrink_override
 from brain_v42.services.focus_slot_service import slot_body
 
 __all__ = [
@@ -433,6 +434,10 @@ class BrainSessionService:
         handover becomes the BASE focus. Which one the session needs is the
         repository's to say, it alone has read the row: here exactly one is required.
 
+        Both forms REPLACE the whole focus body and refuse replacements under 70%.
+        Only initiator="operator" may override; guard_mod is refused before mutation,
+        even if its credential and connection hold a /brain-admin elevation.
+
         Before the transaction, in this order: the guard-mod flag (S10), the
         inputs and the new-key rule, then derived capture absorbed into the OLD
         session exactly as `end` does — `relay` reads the ledger to end it.
@@ -583,11 +588,13 @@ class BrainSessionService:
     ) -> BrainSessionEndResult:
         """Validate and atomically persist a fail-closed session end.
 
-        `allow_focus_shrink` lifts the destructive-shrink guard of an UNBOUND end, which
-        writes `next_focus` as the project's whole base focus. `end` has no initiator:
-        it is only ever an operator command, so the flag is an operator gesture and the
-        guard mod, which may relay but never end, cannot reach it.
+        `next_focus` REPLACES the whole base focus or bound slot body. A replacement
+        under 70% is refused unless `allow_focus_shrink` is authorized by an active
+        /brain-admin elevation for this credential and MCP connection. Shared-token
+        and stdio callers cannot override; an operator relay is the other explicit path.
         """
+        if allow_focus_shrink:
+            await require_focus_shrink_override()
         normalized_summary = _normalize_required(summary, field_name="summary")
         normalized_focus = _normalize_required(next_focus, field_name="next_focus")
         identity = _normalize_expected_client_key(expected_client_key)
