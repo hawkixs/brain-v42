@@ -205,6 +205,9 @@ best-effort basis: a run that fails before reaching the database (invalid config
 PostgreSQL down) or whose INSERT fails leaves no row, so a missing row does not prove the
 loop is dead. A failed run is retried the next day; the healthcheck proves only that the
 loop process exists, not that a run completed.
+After the sweep, the same loop runs `python -m brain_v42.maintenance.trace_retention`
+(see "Agent trace and graph outbox retention"), dry unless its command line carries
+`--execute`; its two report lines go to the same container log.
 
 **Arming state is measured, not documented.** This document deliberately does not
 state whether the four flags are armed: drop-ins change, and a copied value cannot
@@ -1031,6 +1034,53 @@ forever. The suppression is a LOG volume decision only: `brain_reindex_plans` st
 names every rejected path in its `Fichiers non indexés` list on every single run, and
 so does each sweep's `plan_index_refresher.sweep_done` error count.
 
+## Delivery observer: observation cadence
+
+A successful observation sets when the subject is looked at again:
+
+- an open pull request (no `integration_sha` yet): every
+  `BRAIN_DELIVERY_POLL_SECONDS` (default 60), so a merge is seen within a minute;
+- an integrated pull request and a ticket's repository contexts: after
+  `max(POLL_SECONDS, FRESHNESS_SECONDS // 2 - <duration of the collection>)`, 300 s at the
+  defaults for a quick collection. Before its next confirmation lands, evidence ages by
+  that delay, up to one poll interval before the loop picks the job, and the next
+  collection, which is sequential requests plus admission waits and can last minutes
+  for a large context set. Waiting the whole window would leave it stale at the end of
+  every cycle and refuse a resolve in that gap; subtracting the collection keeps a
+  uniformly slow one no worse than the poll cadence.
+
+With `D_prev` and `D_next` the durations of two consecutive collections, the next
+confirmation of a settled subject lands at age:
+
+- `FRESHNESS_SECONDS / 2 + POLL_SECONDS + (D_next - D_prev)` while
+  `FRESHNESS_SECONDS / 2 - D_prev >= POLL_SECONDS`: evidence stays fresh while a collection
+  slows by at most `FRESHNESS_SECONDS / 2 - POLL_SECONDS` (240 s at the defaults) against the
+  previous one, for example when GitHub's responses go from one to nine seconds across a
+  large context set;
+- `2 × POLL_SECONDS + D_next` once the delay is floored at the poll interval (a previous
+  collection longer than 240 s at the defaults): the poll cadence's own bound, fresh while
+  `D_next <= FRESHNESS_SECONDS - 2 × POLL_SECONDS` (480 s).
+
+Past either bound evidence reads stale for at most one cycle: a resolve in that window is refused
+with `delivery_requirements_unsatisfied` until the next confirmation lands, and nothing is
+lost. This residual is accepted (coordination ruling, 2026-10-13): no cadence slower than
+the poll interval could tolerate an arbitrary slowdown.
+
+The observer paces itself with its own `BRAIN_DELIVERY_FRESHNESS_SECONDS`, while the MCP
+server judges freshness with its own: give both processes the same value. An observer
+value above the server's leaves evidence stale between two observations.
+
+A failed observation retries on its own schedule. An outage, a rate limit or an invalid
+response backs off up to 300 s, or longer when GitHub names a longer `Retry-After` (capped
+at an hour). A repository or pull request the App cannot see (`provider_not_found`,
+`provider_forbidden`) waits `300 × 4^n` seconds, `n` being the failures since its last
+success (300 s, 20 min, 80 min, 5 h 20, 21 h 20, then a day), so a forgotten installation
+case stops spending the shared request budget. From its fourth
+consecutive failure the observer also writes an `observation_backoff` line on stderr
+(`subject`, `error_code`, `prior_failures`, `delay_seconds`): that subject now waits on an
+operator fix. Once it is fixed, `brain_delivery_refresh` on the ticket makes its
+contexts and active bindings due at once instead of waiting out the backoff.
+
 ## Delivery observer: releases and deployments
 
 Besides confirming pull requests, the delivery observer
@@ -1153,6 +1203,10 @@ SELECT count(*) FROM delivery_confirmations;
 ```
 
 Deleted successes remain recoverable from the preceding backup dump.
+
+## Agent trace and graph outbox retention
+
+`python -m brain_v42.maintenance.trace_retention` previews old, unreferenced closed agent traces and delivered graph outbox rows; deletion is dry by default and requires `--execute`. Trace retention has a 30-day minimum window, and outbox retention has a seven-day minimum (both default to 30 days). It keeps open and operator sessions, traces referenced by artifacts, checkpoints, slot history or relay children, and every undelivered outbox row. Batches default to 5000 rows, with at most 100 batches per purge. A dry run counts every candidate; an execute run is capped at `--max-batches` × `--batch-size` rows. Locked candidates are skipped, and later invocations can process the remainder.
 
 ## Automation service
 
