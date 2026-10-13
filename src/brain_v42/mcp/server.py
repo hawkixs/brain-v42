@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import inspect
-import logging
 import os
 import signal
 import sys
@@ -83,7 +82,12 @@ from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.repositories.pg_runbook import PgRunbookRepo
 from brain_v42.repositories.pg_snippet import PgSnippetRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
-from brain_v42.safe_logging import build_logging_processors, configure_json_logging, redact_url
+from brain_v42.safe_logging import (
+    build_logging_processors,
+    configure_console_logging,
+    configure_json_logging,
+    redact_url,
+)
 from brain_v42.services.adr_service import ADRService
 from brain_v42.services.agent_trace_net import AgentTraceNet, agent_trace_net_is_armed
 from brain_v42.services.auto_linker import AutoLinker
@@ -137,7 +141,7 @@ def _configure_stdio_logging() -> None:
             logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
             processors=processors,
         )
-        logging.basicConfig(stream=sys.stderr, level=logging.INFO, force=True)
+        configure_console_logging(processors)
     structlog.get_logger(__name__).info(
         "logging.configured", renderer=log_format, service="brain-v42-mcp", pid=os.getpid()
     )
@@ -1343,7 +1347,8 @@ async def _run_mcp(
                 "timeout_graceful_shutdown": 10,
                 "proxy_headers": False,
                 "forwarded_allow_ips": "",
-                **({"log_config": None} if settings.brain_log_format == "json" else {}),
+                # Preserve sanitized root handlers in both console and JSON modes.
+                "log_config": None,
             },
             middleware=plan.middleware,
             **banner_options,
