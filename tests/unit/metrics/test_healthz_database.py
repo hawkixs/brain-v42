@@ -91,6 +91,26 @@ async def test_healthz_answers_within_its_timeout_even_if_cancellation_is_slow()
     await asyncio.wait_for(finished.wait(), timeout=5)
 
 
+async def test_healthz_is_unhealthy_when_the_probe_ends_cancelled() -> None:
+    """red-rail review of #368 (F-368-1): a probe task that finishes cancelled
+    (a driver cancelling its own operation) made task.exception() raise
+    CancelledError out of the handler instead of answering 503."""
+
+    async def cancelled_by_itself() -> None:
+        raise asyncio.CancelledError
+
+    status, body = await _healthz(_server(database_probe=cancelled_by_itself))
+    assert (status, body["status"], body["database"]) == (503, "degraded", "unreachable")
+
+
+async def test_healthz_without_a_probe_keeps_its_original_answer() -> None:
+    """red-rail review of #368 (F-368-2): with no probe the contract is unchanged,
+    200 and no database key."""
+    status, body = await _healthz(_server())
+    assert status == 200
+    assert body == {"status": "ok", "ingest_receivers": "enabled"}
+
+
 async def test_healthz_keeps_reporting_the_receivers() -> None:
     status, body = await _healthz(_server(database_probe=AsyncMock(side_effect=OSError())))
     assert body["ingest_receivers"] == "enabled"
