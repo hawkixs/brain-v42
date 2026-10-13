@@ -340,6 +340,55 @@ submits reaches the hook), the boundary against a malicious local process is a c
 plus the DM alert. An agent that calls `brain_session_resume` on another open session makes
 that session the one the next `/brain-admin` targets.
 
+## Workstation Claude Code headers (`headersHelper`)
+
+Claude Code reaches the MCP server with a user-scope `headersHelper`,
+`deploy/clients/claude-brain-headers.sh`. It prints one JSON line: the bearer read from
+the client's `0600` token file and, as `X-Brain-Agent`, what the server needs to attribute
+the session to a project. The server keeps the basename of a path and accepts it only if it
+is an existing kebab-case project; otherwise the call still runs, under the client actor,
+and `mcp_auth_agent_unresolved` counts the miss (`not_kebab` or `unknown_project`).
+
+What the helper sends, in order:
+
+1. Nothing for the home directory itself or for the daemon's prewarmed
+   `/tmp/cc-daemon-*/spare` processes: no project is claimed and nothing is counted.
+2. The project key of the longest matching prefix in the operator's map file, when one
+   matches on whole path components.
+3. Otherwise, the working directory of the Claude Code process that runs the helper (never
+   `${PWD}`: Desktop sessions inherit the app's directory, which is the home directory).
+
+A path that JSON cannot carry unescaped (a quote, a backslash, a control character) claims
+no project. A missing or empty token file makes the helper fail with nothing on stdout.
+
+Install, from the canonical checkout:
+
+```bash
+install -m 0700 deploy/clients/claude-brain-headers.sh ~/.config/brain-v42/clients/claude-brain-headers.sh
+```
+
+The map file is the operator's, `~/.config/brain-v42/clients/agent-map`, mode `0600`, one
+`<absolute path> <project_key>` per line, `#` for comments. The helper trusts it only when
+its directory belongs to the user with no group or other permission, the map path is not a
+symlink, and the file it actually opens is a regular file owned by the user with no group or
+other permission; it ignores any line whose key the server would refuse. Directories above
+the map's own are not checked: this residual is accepted (operator ruling, 2026-10-13),
+because the default path sits in the user's private configuration tree next to the helper
+and the token, which whoever controlled an ancestor could replace anyway. Never point
+`BRAIN_AGENT_MAP_FILE` into a directory another user can write or redirect. Seed the map
+for directories whose basename is not their project:
+
+```
+/path/to/ReD_v1/skills red-skills
+/path/to/ReD_v1 red
+```
+
+Variables: `BRAIN_CLAUDE_TOKEN_FILE` (default
+`~/.config/brain-v42/clients/workstation-claude.token`) and `BRAIN_AGENT_MAP_FILE`
+(default `~/.config/brain-v42/clients/agent-map`). Sessions pick the new helper up when
+they reconnect. Check the effect on the metrics sidecar: the `mcp_auth_agent_unresolved`
+counters stop growing, and the per-agent view shows the mapped projects.
+
 ## Network trust boundary (detailed)
 
 MCP HTTP binds to loopback by default. A non-loopback `MCP_HTTP_HOST` requires
