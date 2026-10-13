@@ -10,23 +10,13 @@ from fastmcp.exceptions import ToolError
 from fastmcp.server.middleware import Middleware
 from pydantic import ValidationError
 
-_SEMANTIC_ALIASES: dict[str, tuple[str, ...]] = {
-    # These measured naming mismatches are semantically close but often fail string matching.
-    "id": ("entity_id",),
-    "type": ("entity_type",),
-    "key": ("name",),
-    "decision": ("decision_made",),
-    "description": ("context", "intention"),
-    "title": ("topic",),
-    "content": ("insight",),
-    "message": ("body",),
-    "note": ("message",),
-    "comment": ("message",),
-    "from_project": ("author_project",),
-    "actor_project": ("author_project",),
-    "project_key": ("author_project",),
-}
+from brain_v42.mcp.parameter_vocabulary import PARAMETER_ALIASES
+
 _SAFE_KEY = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,39}$")
+_ALIAS_HINTS: dict[str, set[str]] = {}
+for _aliases in PARAMETER_ALIASES.values():
+    for _alias, _canonical in _aliases.items():
+        _ALIAS_HINTS.setdefault(_alias, set()).add(_canonical)
 
 
 def _safe_key(key: Any) -> str:
@@ -316,7 +306,7 @@ def _guidance(
     unexpected_clauses: list[str] = []
     core_clauses: list[str] = []
     for key in unknown:
-        semantic = next((item for item in _SEMANTIC_ALIASES.get(key, ()) if item in props), None)
+        semantic = next(iter(sorted(_ALIAS_HINTS.get(key, set()) & props.keys())), None)
         close = difflib.get_close_matches(key, list(props), n=1, cutoff=0.5)
         hint = semantic or (close[0] if close else None)
         suffix = f" (did you mean '{hint}'?)" if hint else ""
@@ -408,6 +398,36 @@ class ArgumentGuidanceMiddleware(Middleware):
 
     async def on_call_tool(self, context: Any, call_next: Any) -> Any:
         name = context.message.name
+        if name != "brain_call_tool":
+            aliases = PARAMETER_ALIASES.get(name, {})
+            arguments = dict(context.message.arguments or {})
+            for alias, canonical in aliases.items():
+                if alias not in arguments:
+                    continue
+                if canonical in arguments or any(
+                    other_alias in arguments and other_canonical == canonical
+                    for other_alias, other_canonical in aliases.items()
+                    if other_alias != alias
+                ):
+                    conflicting = (
+                        canonical
+                        if canonical in arguments
+                        else next(
+                            other_alias
+                            for other_alias, other_canonical in aliases.items()
+                            if other_alias != alias
+                            and other_canonical == canonical
+                            and other_alias in arguments
+                        )
+                    )
+                    raise ToolError(
+                        f"Ambiguous arguments for {name}: '{alias}' and '{conflicting}' name the same parameter; pass only '{canonical}'."
+                    )
+                arguments[canonical] = arguments.pop(alias)
+            if arguments != (context.message.arguments or {}):
+                context = context.copy(
+                    message=context.message.model_copy(update={"arguments": arguments})
+                )
         try:
             return await call_next(context)
         except ValidationError as exc:
