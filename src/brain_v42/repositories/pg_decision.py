@@ -258,6 +258,21 @@ class PgDecisionRepo(BasePgRepository):
                 )
                 if owner.scalar_one_or_none() != project_key:
                     return False
+                # A caller-owned transaction keeps successful savepoint locks:
+                # reject foreign referrers before taking any of those locks.
+                referrers = (
+                    (
+                        await sess.execute(
+                            sa.select(decisions.c.id, decisions.c.project_key).where(
+                                decisions.c.superseded_by == decision_id
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+                if any(row["project_key"] != project_key for row in referrers):
+                    return False
                 locked = await self._lock_with_referrers(sess, decision_id)
                 target = next((row for row in locked if row["id"] == decision_id), None)
                 if target is None or target["project_key"] != project_key:

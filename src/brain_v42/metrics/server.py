@@ -650,6 +650,7 @@ class MetricsServer:
         metrics["mcp_auth_refused"] = process_agg.pop("mcp_auth_refused", {})
         metrics["elevation_refused"] = process_agg.pop("elevation_refused", {})
         metrics["mcp_auth_agent_unresolved"] = process_agg.pop("mcp_auth_agent_unresolved", {})
+        metrics["author_binding_candidates"] = process_agg.pop("author_binding_candidates", {})
 
         # Override per-process tools/embedding/reranker with cross-process aggregation
         # when multiple processes are active

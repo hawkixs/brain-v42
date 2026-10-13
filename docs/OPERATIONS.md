@@ -66,9 +66,10 @@ is refused. This provenance is client-declared, not cryptographic proof of autho
 
 Every result that exposes a session also carries `attributed_knowledge_ids`, a view
 rehydrated from the ledger. Captures stay visible after a start retry, a resume, a
-heartbeat, a list, or an abandon. Abandoning a session does not release its
-attributions: their provenance stays exclusive, and an exact retry of `capture` stays
-idempotent even after abandonment.
+heartbeat, a list, or an abandon. Abandoning a session keeps its ledger in place,
+but makes its artifacts reclaimable by a later explicit capture or absorption
+(decision 974f46f3). Open and ended operator holders remain protected. An exact retry
+of `capture` stays idempotent while the abandoned session still owns the artifact.
 
 `brain_session_end` no longer accepts capture identifiers directly: it reads this
 ledger. Since migration 047 a closure no longer needs a non-empty ledger or a
@@ -147,17 +148,24 @@ that carries a connection identifier, so never under stdio or in stateless HTTP 
 The connection stage records each connection seen by one of those lifecycle calls
 in `brain_session_connections` and takes artifacts from the project's `open` or
 `closed_inactive` traces on every recorded connection, bounded by the session's start.
-That start excludes artifacts produced by a predecessor on the same connection; the
-exact match works even when a coordinating session makes every instant ambiguous.
+Abandoned operator sessions are also donors, matched through their seen connections
+because operator rows carry no `connection_id`. That start excludes artifacts produced
+by a predecessor on the same connection. Decision 974f46f3 makes the connection stage
+abstain when another open operator of the same project saw the same connection; a
+coordinating session on a different connection still does not block the exact match.
 A connection that saw no lifecycle call still falls back to the window stage.
 The window stage then runs whenever ledger capacity
 remains (100 artifacts per session, minus those already attributed), whether or not the
 current connection still has a trace. Its donors are the project's `open` or
-`closed_inactive` traces opened by a human actor, never an abandoned trace and never one
-opened by a system actor such as the Dream. It takes an artifact only if no other
+`closed_inactive` traces opened by a human actor and abandoned operator sessions,
+never an abandoned trace and never a trace opened by a system actor such as the Dream.
+The abandoned donor itself is not a rival. It takes an artifact only if no other
 session of the project that is not an agent trace covered the instant of its creation,
 whether that session is still open or has finished since; under that ambiguity the
-artifact stays with the trace. The server never promotes a trace into an operator
+artifact stays with its donor. Connection-stage abstentions also apply to the fallback,
+and both stages report refused artifacts and rival session identifiers. Artifacts on
+abandoned operator holders count as unattributed in the closing receipt.
+The server never promotes a trace into an operator
 session. Migration 047 removed the "non-empty ledger XOR `nothing_to_capture_reason`"
 constraint on `ended`, because a ledger can now be filled without an explicit capture,
 and migration 048 records in `attribution_mode` which key attributed each artifact

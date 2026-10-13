@@ -47,7 +47,7 @@ FOCUS_WRITERS: dict[str, tuple[str, bool | None, str]] = {
     "src/brain_v42/repositories/pg_project_context.py": (
         "writer",
         True,
-        "create + get_or_create (both branches) + update + update_focus",
+        "create + get_or_create (insert only); metadata updates never write focus",
     ),
     "src/brain_v42/repositories/pg_brain_session.py": (
         "writer",
@@ -93,7 +93,6 @@ FOCUS_WRITERS: dict[str, tuple[str, bool | None, str]] = {
         "`focus_updated_at`. Its only project_contexts statements are SELECTs: never writes the "
         "base, never stamps",
     ),
-    "src/brain_v42/services/project_context_service.py": ("reader", None, "delegates"),
     "src/brain_v42/mcp/tools/project_context_tools.py": ("reader", None, "tool surface"),
     "src/brain_v42/mcp/tools/project_focus_read_tools.py": (
         "reader",

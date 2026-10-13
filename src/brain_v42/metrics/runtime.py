@@ -41,7 +41,7 @@ from brain_v42.metrics.credential_registry import ReadOnlyCredentialRegistry
 from brain_v42.metrics.recent_log import RecentLogProcessor
 from brain_v42.metrics.retention import PROCESS_METRICS_STALE_SQL
 from brain_v42.metrics.server import MetricsServer
-from brain_v42.safe_logging import build_logging_processors
+from brain_v42.safe_logging import build_logging_processors, safe_format_exc_info
 from brain_v42.services.brain_graph_projection import (
     BrainGraphProjectionService,
     Neo4jGraphSnapshotReader,
@@ -286,7 +286,7 @@ def build_sidecar_structlog_processors(
         return "\n".join(f"<{priority}> {line}" if line.strip() else line for line in lines)
 
     processors[-1] = render_lines
-    processors.insert(-1, structlog.processors.format_exc_info)
+    processors.insert(-1, safe_format_exc_info)
     return processors
 
 

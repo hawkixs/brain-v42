@@ -115,15 +115,14 @@ FocusArg = Annotated[
         min_length=1,
         max_length=NEXT_FOCUS_MAX_LENGTH,
         description=(
-            "Jugement et engagements pour la session suivante — ce qui n'est pas "
-            "dérivable automatiquement (ex : ne pas publier ce brouillon et pourquoi, "
-            "une échéance et sa raison, une décision opérateur à respecter). N'y "
-            "recopie pas l'état mesurable (révision de schéma, HEAD git, arbre propre, "
-            "résultat de suite de tests) : il est déjà recalculé à chaque briefing "
-            "depuis la source réelle, et une copie manuelle se périme en silence. "
-            "Pour une session non liée à un slot, ce texte REMPLACE tout le focus du "
-            "projet : sous 70 % de sa longueur actuelle, il est refusé "
-            "(`base_focus_shrink`) sauf `allow_focus_shrink=true` (opérateur uniquement)."
+            "REPLACES the whole project base focus for an unbound session, or the whole "
+            "slot body for a bound session. A replacement under 70% of the current "
+            "length is refused (`base_focus_shrink` or `slot_focus_shrink`), leaving "
+            "the session open. The override is operator-only: an end requires an "
+            "active /brain-admin elevation for this credential and MCP connection; "
+            "an operator relay may also override. Carry all durable judgement and "
+            "commitments forward, including decisions and deadlines with their reasons. "
+            "Do not copy measurable state: each briefing recalculates it from its source."
         ),
     ),
 ]
@@ -134,7 +133,22 @@ SlotBodyArg = Annotated[str, Field(min_length=1, max_length=SLOT_BODY_MAX_LENGTH
 #: A relay handover is a slot body for a bound session (4,000, checked by the service
 #: once the form is known) and the whole BASE focus for an unbound one: the argument
 #: carries the larger of the two, the base's, exactly as `end`'s `next_focus` does.
-RelayHandoverArg = Annotated[str, Field(min_length=1, max_length=NEXT_FOCUS_MAX_LENGTH)]
+RelayHandoverArg = Annotated[
+    str,
+    Field(
+        min_length=1,
+        max_length=NEXT_FOCUS_MAX_LENGTH,
+        description=(
+            "REPLACES the whole project base focus for an unbound session, or the whole "
+            "slot body for a bound session. A replacement under 70% of the current "
+            "length is refused (`base_focus_shrink` or `slot_focus_shrink`), leaving "
+            "the session open. Carry all durable content forward. The override is "
+            "operator-only: an elevated /brain-admin session may override on end, "
+            "or a relay with initiator='operator' may pass allow_focus_shrink=true. "
+            "A guard_mod relay cannot override, even with elevation."
+        ),
+    ),
+]
 ReasonArg = Annotated[str, Field(min_length=1, max_length=2_000)]
 FocusRevisionArg = Annotated[int, Field(ge=0, strict=True)]
 ListLimitArg = Annotated[int, Field(ge=1, le=100)]
@@ -295,11 +309,12 @@ def register_session_lifecycle_tools(
             bool,
             Field(
                 description=(
-                    "Operator only. An UNBOUND session's `next_focus` REPLACES the whole "
-                    "project focus, and one under 70% of the current length is refused "
-                    "(`base_focus_shrink`, both sizes in the message, session left open); "
-                    "true lets that shrink through. `end` is only ever an operator command, "
-                    "so this flag is an operator gesture; a bound session never meets the guard."
+                    "The override is operator-only and requires an active /brain-admin "
+                    "elevation for this credential and MCP connection, checked before "
+                    "any mutation (`focus_shrink_override_refused`). True allows a "
+                    "replacement under 70% of the whole base focus or slot body "
+                    "(`base_focus_shrink` or `slot_focus_shrink`); shared-token and "
+                    "stdio callers cannot override. An operator relay is also permitted."
                 )
             ),
         ] = False,
@@ -327,8 +342,12 @@ def register_session_lifecycle_tools(
         under a compare-and-swap on `expected_focus_revision`. SHRINK GUARD: a
         `next_focus` under 70% of the current base focus is refused before any write
         (`base_focus_shrink`, current, proposed and floor in the message) and the
-        session stays open, so carry the durable content over and call again. Only
-        the operator may pass `allow_focus_shrink = true`. A stale revision is still
+        session stays open, so carry the durable content over and call again. A bound
+        end REPLACES the whole slot body and meets the same 70% guard
+        (`slot_focus_shrink`). `allow_focus_shrink = true` requires an active
+        /brain-admin elevation for this credential and MCP connection; otherwise
+        `focus_shrink_override_refused` is raised before any mutation. Shared-token
+        and stdio callers cannot override; an operator relay can. A stale revision is still
         recorded as a conflict and closes the session, since nothing is written.
 
         An agent tracer is the only session the server opens or closes on
@@ -355,7 +374,16 @@ def register_session_lifecycle_tools(
         initiator: RelayInitiator,
         expected_slot_revision: FocusRevisionArg | None = None,
         expected_focus_revision: FocusRevisionArg | None = None,
-        allow_focus_shrink: bool = False,
+        allow_focus_shrink: Annotated[
+            bool,
+            Field(
+                description=(
+                    "Operator-only override of the 70% guard for the whole base focus "
+                    "or slot body. Accepted only with initiator='operator'; guard_mod "
+                    "is refused in code, even with a /brain-admin elevation."
+                )
+            ),
+        ] = False,
         knowledge_ids: RelayKnowledgeIdsArg | None = None,
         nothing_to_capture_reason: ReasonArg | None = None,
     ) -> BrainSessionRelayResult:
@@ -367,7 +395,7 @@ def register_session_lifecycle_tools(
         and exactly one revision per call.
 
         Bound session: send `expected_slot_revision`; the `handover` (at most 4,000
-        characters) becomes the slot body and the successor stays on the slot. A
+        characters) REPLACES the whole slot body and the successor stays on the slot. A
         closed slot or a stale revision changes nothing and leaves the session open.
 
         Unbound session: send `expected_focus_revision`, the BASE revision; the
@@ -378,6 +406,10 @@ def register_session_lifecycle_tools(
         both lengths in the message), because it REPLACES the whole base: carry the
         durable content over. Only an operator relay may pass `allow_focus_shrink =
         true`; a guard mod never can.
+
+        The same 70% guard applies to a bound slot body (`slot_focus_shrink`).
+        The override is enforced before mutation: only initiator='operator' can
+        pass it, without elevation; a guard_mod relay is refused even if elevated.
 
         An equal replay returns the same successor with `replayed = true`; any other
         payload on an ended session is `terminal_conflict`. The successor's next end

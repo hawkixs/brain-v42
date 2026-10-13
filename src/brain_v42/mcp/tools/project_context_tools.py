@@ -24,6 +24,7 @@ from brain_v42.mcp.tools.tool_annotations import (
     _READ_ANNOTATIONS,
     _WRITE_ANNOTATIONS,
 )
+from brain_v42.models.focus_slot import FocusSlotError
 from brain_v42.models.input_bounds import (
     KnowledgeText,
     ShortText,
@@ -31,6 +32,7 @@ from brain_v42.models.input_bounds import (
 )
 from brain_v42.models.project_context import ProjectContextCreate
 from brain_v42.models.project_key import canonicalize_project_key
+from brain_v42.services.focus_shrink_override import require_focus_shrink_override
 from brain_v42.services.roadmap_service import (
     ProjectFocusConflictError,
     ProjectFocusNotFoundError,
@@ -117,6 +119,7 @@ def register_project_context_tools(
         try:
             key = canonicalize_project_key(project_key)
         except ValueError as exc:
+            # This isolated key canonicalizer constructs an actionable invalid-key hint.
             return format_error(str(exc))
 
         rows = await project_context_svc.focus_history(key, limit=limit, offset=offset)
@@ -172,7 +175,9 @@ def register_project_context_tools(
         """Set or initialize a project context (upsert by project_key).
 
         Uses upsert semantics: if project_key already exists, updates the
-        record with the new values. Otherwise, creates a new record.
+        record's metadata with the new values. Otherwise, creates a new record.
+        The focus is set only at creation: a different current_focus on an
+        existing project is refused (see current_focus below).
 
         Args:
             project_key: Canonical project key (kebab-case, e.g. 'brain-v42').
@@ -187,6 +192,9 @@ def register_project_context_tools(
             current_phase: Current lifecycle phase (free text).
             current_focus: Focus prose — capped at the same character bound as
                 every MCP focus writer; do not restate machine-measurable state.
+                Sets focus only on creation. An existing project's different focus
+                is refused as focus_write_requires_update_project_focus: use
+                brain_update_project_focus with its revision CAS and shrink guard.
             blockers: Current blockers, one string each.
             related_projects: Project keys this one relates to.
             plan_scan_paths: Filesystem paths scanned for plan indexing.
@@ -205,14 +213,18 @@ def register_project_context_tools(
             git_workflow=git_workflow,
             test_strategy=test_strategy,
             current_phase=current_phase,
-            current_focus=current_focus,
             blockers=blockers or [],
             related_projects=related_projects or [],
             plan_scan_paths=plan_scan_paths or [],
             gitlab_project_path=gitlab_project_path,
             project_group=project_group,
         )
-        await project_context_svc.get_or_create(data)
+        if current_focus is not None:
+            data = data.model_copy(update={"current_focus": current_focus})
+        try:
+            await project_context_svc.get_or_create(data)
+        except FocusSlotError as exc:
+            return format_error(str(exc))
         return format_confirmation("Project context set", "", project_key=project_key)
 
     @mcp.tool(version="1.0", annotations=_WRITE_ANNOTATIONS)
@@ -227,7 +239,7 @@ def register_project_context_tools(
 
         This writes `archived_at` and `archived_reason` and nothing else. It
         deliberately does NOT go through `brain_set_project_context`, which is
-        not a PATCH and would overwrite focus, blockers, group and metadata.
+        not a PATCH and would overwrite blockers, group and metadata.
 
         Args:
             project_key: The project to archive.
@@ -285,7 +297,8 @@ def register_project_context_tools(
                 description=(
                     "New current focus. It REPLACES the whole project focus, and a text "
                     "under 70% of the current length is refused (`base_focus_shrink`) "
-                    "unless `allow_focus_shrink` is true (operator only)."
+                    "unless `allow_focus_shrink` is authorized by an active /brain-admin "
+                    "elevation for this credential and MCP connection."
                 )
             ),
         ],
@@ -297,7 +310,9 @@ def register_project_context_tools(
             bool,
             Field(
                 description=(
-                    "Operator only. True lets a `current_focus` under 70% of the current "
+                    "The override is operator-only. An active /brain-admin elevation is required for this credential "
+                    "and MCP connection; shared-token and stdio callers are refused "
+                    "(`focus_shrink_override_refused`). True lets a `current_focus` under 70% of the current "
                     "focus length through; otherwise it is refused (`base_focus_shrink`, "
                     "both sizes in the message) and nothing is written, roadmap changes "
                     "included."
@@ -310,7 +325,10 @@ def register_project_context_tools(
         `current_focus` REPLACES the project's whole focus. SHRINK GUARD: a replacement
         under 70% of the current length is refused as `base_focus_shrink`, the same
         rule as an unbound `brain_session_end` and a base `brain_session_relay`; carry
-        the durable content over, or have the operator pass `allow_focus_shrink`.
+        the durable content over, or pass `allow_focus_shrink` with an active /brain-admin
+        elevation for this credential and MCP connection. Shared-token and stdio
+        overrides are refused as `focus_shrink_override_refused` before any mutation.
+        An operator relay can also authorize a deliberate replacement.
 
         Args:
             project_key: The project key to update.
@@ -321,13 +339,15 @@ def register_project_context_tools(
                 Example: {"Core Monitoring": "deployed", "GPU Collector": "building"}
                 Features in this dict are automatically pinned.
             unpin: Optional list of feature names to unpin (set pinned=false).
-            allow_focus_shrink: Operator only: let a shrinking focus through.
+            allow_focus_shrink: Requires an active /brain-admin elevation, checked in code.
         """
         project_key = canonicalize_project_key(project_key, strict=False)
         logger.debug("mcp.brain_update_project_focus", project_key=project_key)
         if roadmap_svc is None:
             return format_error("Atomic project focus coordinator unavailable; no write performed")
         try:
+            if allow_focus_shrink:
+                await require_focus_shrink_override()
             outcome = await roadmap_svc.update_project_focus(
                 project_key,
                 current_focus,
@@ -337,14 +357,19 @@ def register_project_context_tools(
                 unpin=unpin,
                 allow_focus_shrink=allow_focus_shrink,
             )
+        except FocusSlotError as exc:
+            return format_error(str(exc))
         except ProjectFocusShrinkError as exc:
+            # The focus shrink guard constructs a curated refusal, not a driver message.
             return format_error(f"base_focus_shrink: {exc}")
         except ProjectFocusConflictError as exc:
+            # Only the declared focus and revision are exposed, never exception text.
             return format_error(
                 f"Focus conflict: current revision {exc.current_revision}, "
                 f"current focus: {exc.current_focus!r}. Resume the session and retry."
             )
         except (ProjectFocusNotFoundError, ProjectFocusValidationError) as exc:
+            # These domain guards construct project/field refusals without driver text.
             return format_error(str(exc))
 
         # Auto-update CLAUDE.md dynamic section (best-effort, may fail in CI)

@@ -46,3 +46,21 @@ def test_the_refusal_names_both_sizes_the_floor_and_the_replacement() -> None:
     assert "70" in message  # the floor, in characters
     assert "REPLACES" in message and "allow_focus_shrink" in message
     assert message.startswith("the next focus has ")
+
+
+def test_the_incident_message_names_the_loss_and_kept_share() -> None:
+    message = _refusal(2643, 814)
+    assert message is not None
+    assert "1829 characters" in message
+    assert "30.8%" in message
+    assert "This write REPLACES the whole base focus" in message
+
+
+def test_the_refusal_can_name_a_slot_body() -> None:
+    message = focus_shrink_refusal(
+        "x" * 100, "y" * 40, subject="next_focus for slot example", target="slot body"
+    )
+    assert message is not None
+    assert "60 characters" in message and "40.0%" in message
+    assert "This write REPLACES the whole slot body" in message
+    assert "slot example" in message
