@@ -750,6 +750,28 @@ class MetricsServer:
         elif process_agg["active_processes"] is None:
             # These fields normally come from the aggregate. Do not present this
             # sidecar's idle counters as measurements of an unavailable source.
+            metrics["tools"] = None
+            for key in (
+                "total_calls",
+                "total_errors",
+                "recent_errors",
+                "total_candidates",
+                "avg_latency_ms",
+                "by_identity",
+            ):
+                metrics["reranker"][key] = None
+            for key in (
+                "total_queries",
+                "total_errors",
+                "recent_errors",
+                "avg_latency_ms",
+            ):
+                metrics["graph"][key] = None
+            metrics["decay"] = {
+                "stale_count": None,
+                "archived_count": None,
+                "access_log_size": None,
+            }
             for key in (
                 "total_requests",
                 "total_errors",

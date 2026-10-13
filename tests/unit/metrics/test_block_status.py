@@ -367,6 +367,36 @@ async def test_metrics_failure_keeps_payload_keys_and_exposes_all_health(
         assert set(failed[key]) == set(success[key])
     for key in ("total_requests", "total_errors", "recent_errors", "avg_latency_ms"):
         assert failed["embedding_service"][key] is None
+    assert failed["tools"] is None
+    assert set(failed["reranker"]) >= {
+        "backend",
+        "total_calls",
+        "total_errors",
+        "recent_errors",
+        "total_candidates",
+        "avg_latency_ms",
+        "by_identity",
+        "last_probe_ok",
+        "last_probe_reason",
+        "last_probe_age_s",
+    }
+    for key in ("backend", "last_probe_ok", "last_probe_reason", "last_probe_age_s"):
+        assert failed["reranker"][key] == success["reranker"][key]
+    for key in (
+        "total_calls",
+        "total_errors",
+        "recent_errors",
+        "total_candidates",
+        "avg_latency_ms",
+        "by_identity",
+    ):
+        assert failed["reranker"][key] is None
+    assert failed["graph"]["total_queries"] is None
+    assert failed["graph"]["total_errors"] is None
+    assert failed["graph"]["recent_errors"] is None
+    assert failed["graph"]["avg_latency_ms"] is None
+    assert set(failed["decay"]) == {"stale_count", "archived_count", "access_log_size"}
+    assert all(value is None for value in failed["decay"].values())
     assert failed["embedding_service"]["model"] == success["embedding_service"]["model"]
     assert failed["embedding_service"]["status"] == "up"
     for key in keys:
