@@ -447,8 +447,9 @@ def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
     """Ticket 888660a9: red-base had no runner for the seven-day rule.
 
     The MCP server's own net closes idle agent traces every fifteen minutes, so
-    this loop carries the seven-day rule only, and ships dry: wetting it is a
-    separate configuration pull request, after a dry night's journal was read.
+    this loop carries the seven-day rule only. It shipped dry; the operator armed it
+    on 2026-10-13 after the dry run of the 0.6.12 deploy (5 sessions, 3625 traces,
+    3185 outbox rows), so the sweep runs --wet and the retention --execute.
     """
     service = compose["services"]["session-sweep"]
     assert service["container_name"] == "brain-v42-session-sweep"
@@ -469,12 +470,12 @@ def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
     )
     assert match, command[2]
     arguments = session_sweep_parser().parse_args(match["args"].split())
-    assert arguments.wet is False
+    assert arguments.wet is True
     assert arguments.older_than_days == 7
-    # Ticket 8f319827: retention runs after the sweep in the same daily loop, dry
-    # until a separate configuration pull request passes --execute.
+    # Ticket 8f319827: retention runs after the sweep in the same daily loop, armed
+    # by the operator on 2026-10-13 together with the sweep.
     retention = trace_retention_parser().parse_args(match["retention"].split())
-    assert retention.execute is False
+    assert retention.execute is True
     assert (retention.trace_older_than_days, retention.outbox_older_than_days) == (30, 30)
     assert service["env_file"] == ["/etc/brain-v42/postgres-app.env"]
     assert service["environment"] == compose["x-brain-env"]
