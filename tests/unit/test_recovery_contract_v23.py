@@ -1,6 +1,6 @@
 """Recovery contract v23 — v22 plus the 065 footprint, head 065.
 
-065 adds two tables, `programmes` and `programme_gates`, with their constraints,
+065 adds two tables, `programmes` and `programme_gates`, with their 23 constraints,
 four indexes (two primary keys, two UNIQUE constraints) and three foreign keys. It
 adds no trigger, trigger function, sequence, view or extension, changes no existing
 table and grants nothing beyond what 064's default privileges already give.
@@ -22,8 +22,8 @@ V22_ASSETS = {
 }
 V23_ASSETS = {
     "brain-v42-v23.json": "140d4de9cee2d9e5f87880bf543322d1edcef6642648ad925c0461876bb319ec",
-    "brain-v42-v23.sql": "a80cc68190d33d261d35a74a1b4093835752e67da39d76c13e042529a1347a96",
-    "brain-v42-v23-pgrestore.sql": "3c5347c438d886b0f68ba31ff35e7e8dcc698d56bde19c673e751b8cbf5aec72",
+    "brain-v42-v23.sql": "214581f7f7440315c1283e3503dc18979658fe99288803eae7ac6b1da06e686b",
+    "brain-v42-v23-pgrestore.sql": "32bcf735af16456359dcf4b5906b482b5ebfbc7cbc7bbb3fe357b2a5136c5e85",
 }
 VARIANTS = ("brain-v42-v23.sql", "brain-v42-v23-pgrestore.sql")
 NEW_TABLES = ["programme_gates", "programmes"]
@@ -38,6 +38,8 @@ NEW_CONSTRAINTS = [
     ("programme_gates", "programme_gates_owner_project_fkey"),
     ("programme_gates", "programme_gates_depends_on_valid"),
     ("programme_gates", "programme_gates_progress_valid"),
+    ("programmes", "programmes_updated_by_valid"),
+    ("programme_gates", "programme_gates_updated_by_valid"),
 ]
 
 

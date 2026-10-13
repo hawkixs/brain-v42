@@ -171,6 +171,12 @@ async def test_a_valid_programme_and_gate_round_trip_with_server_times(
         {"title": "   "},
         {"title": "t" * 121},
         {"position": -1},
+        # Review round 1 of #376: outer blanks, line breaks, identities.
+        {"title": " padded"},
+        {"title": "two" + chr(10) + "lines"},
+        {"title": "bidi" + chr(0x202E) + "flip"},
+        {"by": "Brain_V42"},
+        {"by": ""},
     ],
 )
 async def test_programme_shapes_outside_the_contract_are_refused(
@@ -203,6 +209,18 @@ async def test_programme_last_change_is_all_or_nothing(
             {"id": programme_id, "key": key},
         ),
     )
+    for gate, by in (("bad key", key), ("G" * 33, key), ("G1", "BAD_KEY")):
+        await _refused(
+            connection,
+            connection.execute(
+                sa.text(
+                    "UPDATE programmes SET last_change_gate = :gate, last_change_from = 'todo', "
+                    "last_change_to = 'done', last_change_at = now(), last_change_by = :by "
+                    "WHERE id = :id"
+                ),
+                {"id": programme_id, "gate": gate, "by": by},
+            ),
+        )
     await connection.execute(
         sa.text(
             "UPDATE programmes SET last_change_gate = 'G1', last_change_from = 'todo', "
@@ -236,6 +254,17 @@ async def test_programme_last_change_is_all_or_nothing(
         {"done": 1, "total": 2, "unit": "u" * 25},
         {"note": ""},
         {"note": "n" * 201},
+        # Review round 1 of #376: each dependency is checked on its own.
+        {"depends_on": ["G2,G3"]},
+        {"depends_on": [""]},
+        {"depends_on": ["G2", ""]},
+        {"depends_on": ["G1,"]},
+        {"title": "padded "},
+        {"note": "line" + chr(0x2028) + "separator"},
+        {"note": "zero" + chr(0x200B) + "width"},
+        {"ask": "tab" + chr(9) + "inside", "since": NOW},
+        {"done": 1, "total": 2, "unit": " t"},
+        {"by": "BAD_KEY"},
     ],
 )
 async def test_gate_shapes_outside_the_contract_are_refused(
@@ -244,6 +273,16 @@ async def test_gate_shapes_outside_the_contract_are_refused(
     connection, key = project
     programme_id = await _programme(connection, key)
     await _refused(connection, _gate(connection, programme_id, key, **overrides))
+
+
+async def test_valid_dependencies_and_clean_text_still_pass(
+    project: tuple[AsyncConnection, str],
+) -> None:
+    connection, key = project
+    programme_id = await _programme(connection, key, title="café — déjà vu")
+    await _gate(connection, programme_id, key, key="G1")
+    await _gate(connection, programme_id, key, key="G2")
+    await _gate(connection, programme_id, key, key="G3", depends_on=["G1", "G2"], note="naïve 50 %")
 
 
 async def test_gate_keys_are_unique_per_programme_only(

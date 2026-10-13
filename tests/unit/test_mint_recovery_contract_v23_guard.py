@@ -59,3 +59,26 @@ def test_the_connection_itself_is_verified_before_any_use(
 
     connection.close.assert_awaited_once()
     connection.fetch.assert_not_called()
+
+
+def test_no_row_is_exempt_from_the_065_delta(mint) -> None:
+    """Review of #376: v21's exemption skipped any new fingerprint of a named index.
+
+    v23 measures each variant on the form it describes, so nothing is exempt: a
+    divergence on any row outside the 065 footprint stops the mint.
+    """
+    assert mint.TWIN_DIVERGENCE_BY_DESIGN == set()
+    with pytest.raises(SystemExit):
+        mint.split_delta(
+            "expected_table_indexes",
+            [("dream_promotions", "idx_dream_promotions_source_materialized", "0" * 32)],
+            [("dream_promotions", "idx_dream_promotions_source_materialized", "1" * 32)],
+        )
+
+
+def test_every_written_asset_is_replayed_from_disk(mint) -> None:
+    """Review of #376: the written bytes, not the text in memory, pass a full replay."""
+    source = SCRIPT.read_text()
+    main = source[source.index("async def main(") : source.index("async def replay_written(")]
+    assert main.index("dst.write_text(") < main.index("await replay_written(dsn, dst")
+    assert "asset.read_text(" in source[source.index("async def replay_written(") :]

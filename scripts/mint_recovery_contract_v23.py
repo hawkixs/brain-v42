@@ -96,8 +96,30 @@ KEY_WIDTH = {
 }
 #: 065 alters no existing table: no fingerprint is rewritten, only rows are added.
 REWRITABLE_ROWS: set[tuple[str, tuple]] = set()
-TWIN_DIVERGENCE_BY_DESIGN = {
-    ("expected_table_indexes", ("dream_promotions", "idx_dream_promotions_source_materialized")),
+#: v21 exempted one historical index row from the delta. The v23 measurements never
+#: meet it (each variant is measured on the database form it describes), so the
+#: exemption is EMPTY: any divergence on any row outside the 065 footprint stops the
+#: mint instead of being skipped (review round 1 of #376).
+TWIN_DIVERGENCE_BY_DESIGN: set[tuple[str, tuple]] = set()
+#: What the written asset may still report when replayed in full on the database it
+#: was measured on: the data checks (a disposable database is empty), the trigger
+#: 050 ships disabled (production armed it; a chain-built database has not), and, on
+#: the live asset only, the extension build of the host (vector 0.8.2 is pinned,
+#: the disposable server runs another build).
+DATA_CHECK_KINDS = frozenset({"row_count_sum_min"})
+PINNED_RUNTIME_DRIFT = {
+    "view_column_mismatches": 0,
+    "view_option_mismatches": 0,
+    "artifact_index_mismatches": 0,
+    "ended_snapshot_mismatches": 0,
+    "focus_revision_violations": 0,
+    "session_column_mismatches": 0,
+    "artifact_column_mismatches": 0,
+    "runtime_trigger_mismatches": 1,
+    "view_definition_mismatches": 0,
+    "artifact_project_mismatches": 0,
+    "session_constraint_mismatches": 0,
+    "artifact_constraint_mismatches": 0,
 }
 
 
@@ -348,7 +370,39 @@ async def main(dsn: str, src: Path, dst: Path) -> int:
 
     dst.write_text(text, encoding="utf-8")
     print(f"\nwrote : {dst}", flush=True)
+    await replay_written(dsn, dst, restored="-pgrestore" in dst.name)
+    print(f"replayed: {dst.name} passes every structural check on the measured database")
     return 0
+
+
+async def replay_written(dsn: str, asset: Path, *, restored: bool) -> None:
+    """Re-read the asset FROM DISK and replay it in full, read-only (review of #376).
+
+    The pair measurement above checks four fingerprint families; the full replay also
+    covers views, sequences, extensions, catalog counts and every invariant, on the
+    bytes that were actually written.
+    """
+    manifest = json.loads((RECOVERY / "brain-v42-v22.json").read_text(encoding="utf-8"))
+    kinds = {check["id"]: check["kind"] for check in manifest["checks"]}
+    connection = await connect(dsn)
+    try:
+        async with connection.transaction(readonly=True):
+            receipt = json.loads(await connection.fetchval(asset.read_text(encoding="utf-8")))
+    finally:
+        await connection.close()
+    failures = {check["id"]: check for check in receipt["checks"] if check["status"] != "pass"}
+    unexplained = {}
+    for check_id, failure in failures.items():
+        if kinds.get(check_id) in DATA_CHECK_KINDS:
+            continue
+        if check_id == "brain_runtime_032_036_037" and failure["observed"] == PINNED_RUNTIME_DRIFT:
+            continue
+        if check_id == "extension_versions" and not restored:
+            continue
+        unexplained[check_id] = failure
+    if unexplained:
+        asset.unlink()
+        raise SystemExit(f"the written asset fails on its own database, removed: {unexplained}")
 
 
 if __name__ == "__main__":

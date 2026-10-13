@@ -12,7 +12,9 @@ facts: `updated_by` is the caller's project, `updated_at` and `last_change_at`
 are transaction times.
 
 `last_change_*` is the programme's latest gate state TRANSITION: all five set
-or all five NULL, and `from` differs from `to`.
+or all five NULL, and `from` differs from `to`. Every published identity
+(`updated_by`, `last_change_by`) matches the project-key grammar, every key its
+key grammar, every declared text the contract's one-line rule.
 
 No trigger, no sequence, no function: the recovery contract v23 adds exactly
 two tables, their constraints, four indexes and three foreign keys.
@@ -34,6 +36,38 @@ depends_on = None
 
 _STATES_PROGRAMME = "('active', 'paused', 'done')"
 _STATES_GATE = "('todo', 'in_progress', 'blocked', 'done')"
+#: The key grammars of contract section 2, as whole-string regexes.
+_PROGRAMME_KEY = "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+_GATE_KEY_BODY = "[A-Za-z0-9][A-Za-z0-9._-]{0,31}"
+#: A published project identity: a canonical brain project key (models/project_key.py).
+_PROJECT = "^[a-z0-9]+([:-][a-z0-9]+)*$"
+#: Contract section 2's forbidden characters: C0 and C1 controls, DEL, zero-width,
+#: line and paragraph separators, bidi overrides and isolates. The service refuses a
+#: wider set (whole Unicode categories); this is the floor a write that skipped it
+#: still meets. Written with regex escapes only: this source carries none of them.
+_FORBIDDEN = (
+    "[\\x01-\\x1f\\x7f-\\x9f\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]"
+)
+
+
+def _line(column: str, limit: int) -> str:
+    """One declared line: no outer space, 1 to `limit` characters, no forbidden one."""
+    return (
+        f"{column} = btrim({column}) AND {column} <> '' "
+        f"AND char_length({column}) <= {limit} AND {column} !~ '{_FORBIDDEN}'"
+    )
+
+
+#: Each dependency is a gate key on its own: the joined string matches the grammar
+#: element by element, and splitting it back must give as many elements as stored,
+#: so an element holding a comma, or an empty one, is refused.
+_DEPENDS_ON = (
+    "cardinality(depends_on) <= 12 AND array_position(depends_on, NULL) IS NULL "
+    "AND cardinality(string_to_array(array_to_string(depends_on, ','), ',')) "
+    "= cardinality(depends_on) "
+    f"AND array_to_string(depends_on, ',') ~ '^({_GATE_KEY_BODY}(,{_GATE_KEY_BODY})*)?$' "
+    "AND NOT (key = ANY (depends_on))"
+)
 
 _PROGRAMMES = f"""
 CREATE TABLE IF NOT EXISTS public.programmes (
@@ -55,17 +89,16 @@ CREATE TABLE IF NOT EXISTS public.programmes (
     CONSTRAINT programmes_key_key UNIQUE (key),
     CONSTRAINT programmes_coordinator_project_fkey FOREIGN KEY (coordinator_project)
         REFERENCES public.project_contexts (project_key) ON DELETE RESTRICT,
-    CONSTRAINT programmes_key_valid
-        CHECK (COALESCE(key ~ '^[A-Za-z0-9][A-Za-z0-9._-]{{0,63}}$', false)),
-    CONSTRAINT programmes_title_valid
-        CHECK (COALESCE(btrim(title) <> '' AND char_length(title) <= 120, false)),
+    CONSTRAINT programmes_key_valid CHECK (COALESCE(key ~ '{_PROGRAMME_KEY}', false)),
+    CONSTRAINT programmes_title_valid CHECK (COALESCE({_line("title", 120)}, false)),
     CONSTRAINT programmes_state_valid CHECK (COALESCE(state IN {_STATES_PROGRAMME}, false)),
     CONSTRAINT programmes_position_valid CHECK (COALESCE(position >= 0, false)),
+    CONSTRAINT programmes_updated_by_valid CHECK (COALESCE(updated_by ~ '{_PROJECT}', false)),
     CONSTRAINT programmes_last_change_valid CHECK (COALESCE(
         (last_change_gate IS NULL AND last_change_from IS NULL AND last_change_to IS NULL
             AND last_change_at IS NULL AND last_change_by IS NULL)
-        OR (last_change_gate IS NOT NULL AND last_change_at IS NOT NULL
-            AND last_change_by IS NOT NULL
+        OR (last_change_gate ~ '^{_GATE_KEY_BODY}$' AND last_change_at IS NOT NULL
+            AND last_change_by ~ '{_PROJECT}'
             AND last_change_from IN {_STATES_GATE} AND last_change_to IN {_STATES_GATE}
             AND last_change_from <> last_change_to),
         false))
@@ -99,30 +132,25 @@ CREATE TABLE IF NOT EXISTS public.programme_gates (
     CONSTRAINT programme_gates_owner_project_fkey FOREIGN KEY (owner_project)
         REFERENCES public.project_contexts (project_key) ON DELETE RESTRICT,
     CONSTRAINT programme_gates_key_valid
-        CHECK (COALESCE(key ~ '^[A-Za-z0-9][A-Za-z0-9._-]{{0,31}}$', false)),
-    CONSTRAINT programme_gates_title_valid
-        CHECK (COALESCE(btrim(title) <> '' AND char_length(title) <= 120, false)),
+        CHECK (COALESCE(key ~ '^{_GATE_KEY_BODY}$', false)),
+    CONSTRAINT programme_gates_title_valid CHECK (COALESCE({_line("title", 120)}, false)),
     CONSTRAINT programme_gates_state_valid CHECK (COALESCE(state IN {_STATES_GATE}, false)),
-    CONSTRAINT programme_gates_depends_on_valid CHECK (COALESCE(
-        cardinality(depends_on) <= 12 AND array_position(depends_on, NULL) IS NULL
-            AND array_to_string(depends_on, ',')
-                ~ '^([A-Za-z0-9][A-Za-z0-9._-]{{0,31}}(,|$))*$'
-            AND NOT (key = ANY (depends_on)),
-        false)),
+    CONSTRAINT programme_gates_depends_on_valid CHECK (COALESCE({_DEPENDS_ON}, false)),
     CONSTRAINT programme_gates_weight_valid CHECK (COALESCE(weight BETWEEN 1 AND 100, false)),
     CONSTRAINT programme_gates_waiting_valid CHECK (COALESCE(
         (waiting_ask IS NULL AND waiting_since IS NULL)
-        OR (btrim(waiting_ask) <> '' AND char_length(waiting_ask) <= 200
-            AND waiting_since IS NOT NULL),
+        OR ({_line("waiting_ask", 200)} AND waiting_since IS NOT NULL),
         false)),
     CONSTRAINT programme_gates_progress_valid CHECK (COALESCE(
         (progress_done IS NULL AND progress_total IS NULL AND progress_unit IS NULL)
         OR (progress_total BETWEEN 1 AND 100000 AND progress_done BETWEEN 0 AND progress_total
-            AND btrim(progress_unit) <> '' AND char_length(progress_unit) <= 24),
+            AND {_line("progress_unit", 24)}),
         false)),
     CONSTRAINT programme_gates_note_valid
-        CHECK (COALESCE(note IS NULL OR (btrim(note) <> '' AND char_length(note) <= 200), false)),
-    CONSTRAINT programme_gates_position_valid CHECK (COALESCE(position >= 0, false))
+        CHECK (COALESCE(note IS NULL OR ({_line("note", 200)}), false)),
+    CONSTRAINT programme_gates_position_valid CHECK (COALESCE(position >= 0, false)),
+    CONSTRAINT programme_gates_updated_by_valid
+        CHECK (COALESCE(updated_by ~ '{_PROJECT}', false))
 )
 """
 

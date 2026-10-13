@@ -1751,7 +1751,7 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programme_gates',
          'programme_gates_depends_on_valid',
-         'fa21f0160571b7cd3304ccf1adca087f'
+         '2127742f29798442b88e102b90887a20'
      ),
      (
          'programme_gates',
@@ -1761,7 +1761,7 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programme_gates',
          'programme_gates_note_valid',
-         'd7ebeac2da70a84655314d312b467188'
+         '292930078214d69d1312a8dc60f130a8'
      ),
      (
          'programme_gates',
@@ -1791,7 +1791,7 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programme_gates',
          'programme_gates_progress_valid',
-         '62df3b7ef5fe529e8ccb3b1cc1527be7'
+         'e7d9f0be4b451bffedee04d5b3fec585'
      ),
      (
          'programme_gates',
@@ -1801,12 +1801,17 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programme_gates',
          'programme_gates_title_valid',
-         'c9778b8a20e8cdf80b1178bda7071f4e'
+         'f115bf6e08458f2171e8915a68e69bff'
+     ),
+     (
+         'programme_gates',
+         'programme_gates_updated_by_valid',
+         'a0c32211ac6ffc472c8162fbb62fa0dc'
      ),
      (
          'programme_gates',
          'programme_gates_waiting_valid',
-         'b3d0616ca23316159945a719d60e1dd3'
+         '6243a9095885b3bb58fa944596830d50'
      ),
      (
          'programme_gates',
@@ -1831,7 +1836,7 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programmes',
          'programmes_last_change_valid',
-         '7c03048e216d0b4ac6ad0d8868544ced'
+         '39d8b6509b6f9376340726c4992edd79'
      ),
      (
          'programmes',
@@ -1851,7 +1856,12 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programmes',
          'programmes_title_valid',
-         'c9778b8a20e8cdf80b1178bda7071f4e'
+         'f115bf6e08458f2171e8915a68e69bff'
+     ),
+     (
+         'programmes',
+         'programmes_updated_by_valid',
+         'a0c32211ac6ffc472c8162fbb62fa0dc'
      )
 ),
 observed_table_constraints(table_name, constraint_name, definition_md5) AS (

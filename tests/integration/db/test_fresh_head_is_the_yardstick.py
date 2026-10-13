@@ -22,7 +22,7 @@ it too, and the exception is removed instead of surviving.
 
 **The current candidate is v23 for head 065.** v23 adds the measured 065 footprint to
 v22 (which carried v21's 063 footprint and added 064's runtime ACL check): two tables,
-`programmes` and `programme_gates`, with their 21 constraints, 4 indexes and 3 foreign
+`programmes` and `programme_gates`, with their 23 constraints, 4 indexes and 3 foreign
 keys, and no trigger, sequence or function. Its two SQL variants were minted from a
 fresh 065 head and a real restore of a chain-built 064 source migrated to 065.
 `PINNED_ASSET_DRIFT` remains an exact guard: any unexplained difference from the
