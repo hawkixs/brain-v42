@@ -107,6 +107,15 @@ def test_restart_and_healthchecks(compose: dict[str, Any]) -> None:
         assert "urllib.request.urlopen" in probe[3]
         assert f"http://127.0.0.1:{port}/healthz" in probe[3]
         assert "timeout=" in probe[3]
+    observer = compose["services"]["delivery-observer"]
+    heartbeat = observer["environment"]["BRAIN_DELIVERY_HEARTBEAT_PATH"]
+    probe = observer["healthcheck"]["test"]
+    assert probe[:3] == ["CMD", "python", "-c"]
+    parsed = re.search(r"Path\('([^']+)'\).*<=\s*(\d+)", probe[3])
+    assert parsed is not None
+    assert parsed.groups() == (heartbeat, "600")
+    assert "/proc/1/cmdline" not in probe[3]
+    assert observer["healthcheck"]["start_period"] == "120s"
 
 
 def test_only_wireguard_server_ports_are_published(compose: dict[str, Any]) -> None:
@@ -561,7 +570,10 @@ def test_observer_configuration_is_expressible_without_a_root_owned_file_in_the_
     ]
     assert "env_file" not in observer
     assert compose["secrets"]["observer_config"]["file"] == "/etc/brain-v42/delivery-observer.env"
-    assert observer["environment"] == {"BRAIN_LOG_FORMAT": "json"}
+    assert observer["environment"] == {
+        "BRAIN_LOG_FORMAT": "json",
+        "BRAIN_DELIVERY_HEARTBEAT_PATH": "/tmp/brain-v42-delivery-observer.heartbeat",
+    }
     assert "observer_config" in observer["secrets"]
     assert observer["user"] == "1000:1000"
     header = COMPOSE.read_text(encoding="utf-8").split("name:", 1)[0]
@@ -589,6 +601,7 @@ def test_observer_configuration_is_expressible_without_a_root_owned_file_in_the_
     )
     assert settings.github_app_id == settings.github_installation_id == 1
     assert settings.github_private_key_path == key_path
+    assert settings.heartbeat_path == Path(observer["environment"]["BRAIN_DELIVERY_HEARTBEAT_PATH"])
 
 
 def test_only_the_six_rail_variables_are_interpolated(compose: dict[str, Any]) -> None:

@@ -32,7 +32,107 @@ from brain_v42.db.tables import (
     tickets,
 )
 from brain_v42.models.delivery import ArtifactBinding, ContractRevision, PullRequestEvidence
-from brain_v42.repositories.pg_delivery import _contract_from_json
+from brain_v42.repositories.pg_delivery import DELIVERY_OBSERVER_LOCK, _contract_from_json
+
+
+def _current_revision(w: sa.Table, r: sa.Table) -> sa.ColumnElement[bool]:
+    """Keep queue and liveness reads on the same workflow generation."""
+    return sa.and_(r.c.ticket_id == w.c.ticket_id, r.c.contract_revision == w.c.current_revision)
+
+
+def _eligible_ticket(w: sa.Table, t: sa.Table) -> sa.ColumnElement[bool]:
+    """Define active observer subjects once for scheduling and liveness."""
+    return sa.and_(
+        w.c.disposition == "active",
+        t.c.kind == "request",
+        t.c.status.in_(("open", "in_progress", "resolved")),
+    )
+
+
+def _context_due(w: sa.Table, r: sa.Table) -> sa.ColumnElement[bool]:
+    has_context = r.c.normalized_contract.contains(
+        {"context_refs": [{"kind": "repository_document", "required": True}]}
+    )
+    return sa.and_(
+        has_context,
+        w.c.context_due_at.is_not(None),
+        w.c.context_due_at <= sa.func.clock_timestamp(),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class ObserverLiveness:
+    lock_held: bool
+    overdue: int
+    last_confirmation_age_seconds: int | None
+    healthy: bool
+
+
+async def read_observer_liveness(
+    session: AsyncSession, *, overdue_after_seconds: int
+) -> ObserverLiveness:
+    """Measure lock ownership, overdue eligible work, and newest persisted attempt."""
+    if type(overdue_after_seconds) is not int or overdue_after_seconds < 0:
+        raise ValueError("overdue threshold must be a non-negative integer")
+    w, r, b, t = workflows, revisions, bindings, tickets
+    eligible = _eligible_ticket(w, t)
+    current_revision = _current_revision(w, r)
+    due_before = sa.func.clock_timestamp() - timedelta(seconds=overdue_after_seconds)
+    overdue_artifacts = (
+        sa.select(b.c.id)
+        .select_from(
+            b.join(
+                w,
+                sa.and_(
+                    b.c.ticket_id == w.c.ticket_id,
+                    b.c.contract_revision == w.c.current_revision,
+                    b.c.attempt == w.c.attempt,
+                ),
+            )
+            .join(r, current_revision)
+            .join(t, t.c.id == w.c.ticket_id)
+        )
+        .where(eligible, b.c.active.is_(True), b.c.due_at < due_before, ~_context_due(w, r))
+    )
+    overdue_context = (
+        sa.select(w.c.ticket_id)
+        .select_from(w.join(r, current_revision).join(t, t.c.id == w.c.ticket_id))
+        .where(eligible, _context_due(w, r), w.c.context_due_at < due_before)
+    )
+    overdue = int(
+        await session.scalar(
+            sa.select(sa.func.count()).select_from(
+                sa.union_all(overdue_artifacts, overdue_context).subquery("overdue_subjects")
+            )
+        )
+        or 0
+    )
+    lock = DELIVERY_OBSERVER_LOCK
+    lock_held = bool(
+        await session.scalar(
+            sa.text(
+                "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND granted "
+                "AND database = (SELECT oid FROM pg_database WHERE datname = current_database()) "
+                "AND objsubid = 1 AND classid::bigint = (CAST(:key AS bigint) >> 32) "
+                "AND objid::bigint = (:key & 4294967295))"
+            ),
+            {"key": lock},
+        )
+    )
+    row = (
+        await session.execute(
+            sa.select(
+                sa.func.max(confirmations.c.collection_finished_at).label("finished_at"),
+                sa.func.clock_timestamp().label("now"),
+            )
+        )
+    ).one()
+    if row.finished_at is None:
+        age_seconds = None
+    else:
+        age_seconds = max(0, int((row.now - row.finished_at).total_seconds()))
+    healthy = lock_held and overdue == 0
+    return ObserverLiveness(lock_held, overdue, age_seconds, healthy)
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,22 +214,9 @@ class PgDeliveryQueue:
             .correlate(w)
             .scalar_subquery()
         )
-        current_revision = sa.and_(
-            r.c.ticket_id == w.c.ticket_id, r.c.contract_revision == w.c.current_revision
-        )
-        eligible = sa.and_(
-            w.c.disposition == "active",
-            tickets.c.kind == "request",
-            tickets.c.status.in_(("open", "in_progress", "resolved")),
-        )
-        has_context = r.c.normalized_contract.contains(
-            {"context_refs": [{"kind": "repository_document", "required": True}]}
-        )
-        context_due = sa.and_(
-            has_context,
-            w.c.context_due_at.is_not(None),
-            w.c.context_due_at <= sa.func.clock_timestamp(),
-        )
+        current_revision = _current_revision(w, r)
+        eligible = _eligible_ticket(w, tickets)
+        context_due = _context_due(w, r)
         common = [
             w.c.ticket_id,
             w.c.attempt,
