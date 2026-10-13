@@ -220,10 +220,16 @@ def _fit_message(
         else:
             first = core[0] if core else "invalid value shape"
             body = first[: max(0, budget)] + "…"
-        return f"{prefix} {body}."
+        message = f"{prefix} {body}."
+        if len(message) > 600:
+            message = message[:599] + "…"
+        return message
 
     base_message = f"{prefix} {body}."
-    signature = signature_for(600 - len(base_message) - len(" Expected: "))
+    signature_cap = 600 - len(base_message) - len(" Expected: ")
+    if unexpected:
+        signature_cap -= len("…")
+    signature = signature_for(signature_cap)
     kept_unexpected: list[str] = []
     truncated = False
     for index, clause in enumerate(unexpected):
@@ -271,8 +277,13 @@ def _fit_message(
         if signature:
             message += f" Expected: {signature}"
 
+    if len(message) > 600 and signature:
+        message = f"{prefix} {body}."
     if len(message) > 600:
-        message = message[:597].rstrip(" ;") + "…"
+        shortened = message[:597].rsplit("; ", 1)[0].rstrip(" ;")
+        if len(shortened) < len(prefix) + 1:
+            shortened = message[:597].rstrip(" ;")
+        message = shortened + "…"
     return message
 
 

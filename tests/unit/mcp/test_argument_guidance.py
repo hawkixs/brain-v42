@@ -322,6 +322,14 @@ def test_limits_patterns_enum_and_signature_edge_rendering() -> None:
     )
 
 
+def test_signature_respects_cap_for_parameterless_tool() -> None:
+    from brain_v42.mcp.argument_guidance import _signature
+
+    schema = {"properties": {}}
+    assert _signature("tool_x", schema, len("tool_x()") - 1) == ""
+    assert _signature("tool_x", schema, len("tool_x()")) == "tool_x()"
+
+
 def test_limit_message_uses_item_units_for_list_length_errors() -> None:
     from brain_v42.mcp.argument_guidance import _limit_message
 
@@ -368,6 +376,7 @@ def test_guidance_omits_signature_when_unknown_keys_leave_no_room() -> None:
 
     message = _guidance("x" * 590, error, schema, {})
     assert "Expected:" not in message
+    assert len(message) <= 600
 
 
 def test_argument_error_docs_describe_all_echoed_caller_names() -> None:
@@ -432,6 +441,37 @@ def test_guidance_caps_unexpected_clauses_with_long_tool_names() -> None:
         message = _guidance("t" * name_length, error, schema, {})
         assert len(message) <= 600
         assert "…. Expected: " in message
+
+
+def test_guidance_never_cuts_a_signature_when_unexpected_clauses_are_truncated() -> None:
+    from pydantic import ValidationError
+
+    from brain_v42.mcp.argument_guidance import _guidance
+
+    error = ValidationError.from_exception_data(
+        "Synthetic",
+        [
+            {"type": "missing_argument", "loc": ("a",), "input": None},
+            *[
+                {"type": "unexpected_keyword_argument", "loc": (key,), "input": None}
+                for key in ("u1", "u2", "u3")
+            ],
+        ],
+    )
+    for name_length in range(1, 600):
+        long_name = "p" * name_length
+        schema = {
+            "properties": {"a": {"type": "string"}, long_name: {"type": "string"}},
+            "required": ["a", long_name],
+        }
+        message = _guidance("tool_x", error, schema, {})
+        assert len(message) <= 600
+        if " Expected: " in message:
+            assert message.endswith(")")
+
+        if name_length == 520:
+            assert " Expected: " in message
+            assert message.endswith(")")
 
 
 def test_guidance_shortens_a_single_overlong_clause() -> None:
