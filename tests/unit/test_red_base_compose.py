@@ -377,38 +377,46 @@ def test_restore_input_and_bootstrap_marker_source(compose: dict[str, Any]) -> N
 
 
 HOSTED_RERANK = {
-    "BRAIN_RERANK_BACKEND": "cohere",
-    "BRAIN_RERANKER_URL": "https://openrouter.ai/api",
-    "BRAIN_RERANK_MODEL": "voyageai/rerank-3-lite",
-    "BRAIN_RERANK_HEALTH_PATH": "/v1/key",
-    "BRAIN_RERANK_PROVIDER": '{"only":["voyageai"],"allow_fallbacks":false,"data_collection":"deny"}',
-    "BRAIN_RERANK_API_KEY_FILE": "/run/secrets/rerank_api_key",
-    # Operator go 742e7a05: a second rerank link instead of RRF when Voyage saturates.
+    # Operator decision fa3b6abc: Voyage's own API with the operator's key (own quota);
+    # data policy 7d36a08c (training opt-out on the Voyage account).
+    "BRAIN_RERANK_BACKEND": "voyage",
+    "BRAIN_RERANKER_URL": "https://api.voyageai.com",
+    "BRAIN_RERANK_MODEL": "rerank-3-lite",
+    "BRAIN_RERANK_API_KEY_FILE": "/run/secrets/voyage_api_key",
+    # Operator go 742e7a05: a second rerank link instead of RRF.
     "BRAIN_RERANK_FALLBACK_MODEL": "cohere/rerank-4-fast",
     "BRAIN_RERANK_FALLBACK_PROVIDER": '{"only":["cohere"],"allow_fallbacks":false,"data_collection":"deny"}',
+    "BRAIN_RERANK_FALLBACK_URL": "https://openrouter.ai/api",
+    "BRAIN_RERANK_FALLBACK_API_KEY_FILE": "/run/secrets/rerank_api_key",
     "BRAIN_RERANK_BUDGET_SECONDS": "2.5",
     "BRAIN_RERANK_PRIMARY_BUDGET_SECONDS": "1.0",
 }
+RERANK_SECRETS = {
+    "voyage_api_key": "/etc/brain-v42/voyage-api-key",
+    "rerank_api_key": "/etc/brain-v42/rerank-api-key",
+}
 
 
-def test_rerank_is_the_hosted_voyage_block_on_mcp_only(compose: dict[str, Any]) -> None:
-    """Ruling 26208df8: Voyage through OpenRouter is active from the cutover."""
+def test_rerank_is_voyage_direct_with_a_cohere_fallback_on_mcp_only(
+    compose: dict[str, Any],
+) -> None:
     text = COMPOSE.read_text(encoding="utf-8")
     assert "x-rerank-env: &rerank-env" in text
     assert compose["x-rerank-env"] == HOSTED_RERANK
     mcp = compose["services"]["mcp"]
     for key, value in HOSTED_RERANK.items():
         assert mcp["environment"][key] == value
-    assert "rerank_api_key" in mcp["secrets"]
-    assert compose["secrets"]["rerank_api_key"] == {"file": "/etc/brain-v42/rerank-api-key"}
+    for secret, source in RERANK_SECRETS.items():
+        assert secret in mcp["secrets"]
+        assert compose["secrets"][secret] == {"file": source}
     # The metrics runtime builds a reranker only for legacy automation, which is off:
-    # it gets neither the settings nor the key (least privilege).
+    # it gets neither the settings nor the keys (least privilege).
     metrics = compose["services"]["metrics"]
     assert metrics["environment"]["METRICS_LEGACY_AUTOMATION_ENABLED"] == "false"
     assert not any(
         key.startswith(("BRAIN_RERANK", "BRAIN_RERANKER")) for key in metrics["environment"]
     )
-    assert "rerank_api_key" not in metrics["secrets"]
+    assert not set(RERANK_SECRETS) & set(metrics["secrets"])
     assert ":8003" not in text
 
 
@@ -418,13 +426,13 @@ def test_hosted_rerank_block_passes_the_settings_policy(
     for key, value in compose["x-rerank-env"].items():
         clean_settings_env.setenv(key, value)
     settings = Settings(_env_file=None)
-    assert settings.rerank_backend == "cohere"
-    assert settings.rerank_provider is not None
-    assert settings.rerank_provider.only == ["voyageai"]
-    assert settings.rerank_provider.allow_fallbacks is False
-    assert settings.rerank_provider.data_collection == "deny"
-    assert str(settings.rerank_api_key_file) == "/run/secrets/rerank_api_key"
+    assert settings.rerank_backend == "voyage"
+    assert settings.reranker_url == "https://api.voyageai.com"
+    assert settings.rerank_provider is None
+    assert str(settings.rerank_api_key_file) == "/run/secrets/voyage_api_key"
     assert settings.rerank_fallback_model == "cohere/rerank-4-fast"
+    assert settings.rerank_fallback_url == "https://openrouter.ai/api"
+    assert str(settings.rerank_fallback_api_key_file) == "/run/secrets/rerank_api_key"
     assert settings.rerank_fallback_provider is not None
     assert settings.rerank_fallback_provider.only == ["cohere"]
     assert settings.rerank_fallback_provider.allow_fallbacks is False
@@ -434,6 +442,7 @@ def test_hosted_rerank_block_passes_the_settings_policy(
 
 def test_rerank_rollback_is_documented_for_the_operator() -> None:
     header = COMPOSE.read_text(encoding="utf-8").split("name:", 1)[0]
+    assert "/etc/brain-v42/voyage-api-key: uid 1000, mode 0600" in header
     assert "cohere/rerank-4-fast" in header
     assert "BRAIN_RERANK_BACKEND" in header and "none" in header
 
