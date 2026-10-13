@@ -291,12 +291,13 @@ def build_reranker_client(
     """
     if settings.rerank_backend == "none":
         return None
-    if settings.rerank_backend == "shim":
-        api_key = _resolve_shim_bearer(settings, settings.rerank_api_key.get_secret_value())
-    else:
+    if settings.rerank_backend in ("cohere", "voyage"):
+        # Hosted vendors have their own key and NEVER see the shim's bearer.
         api_key = _resolve_rerank_bearer(
             settings.rerank_api_key_file, settings.rerank_api_key.get_secret_value()
         )
+    else:
+        api_key = _resolve_shim_bearer(settings, settings.rerank_api_key.get_secret_value())
     primary = RerankerClient(
         base_url=settings.reranker_url,
         timeout=settings.reranker_timeout,
