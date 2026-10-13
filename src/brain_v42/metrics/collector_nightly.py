@@ -50,6 +50,10 @@ logger = structlog.get_logger(__name__)
 #: project's cockpit page, even though the pool it observes (dream_runs,
 #: ticket_extraction_proposals) spans ~10 projects (ticket 69949ffc).
 _SIDECAR_PROJECT_KEY = "brain-v42"
+# An absent killswitch file means Dream is not deployed on this host (red-base runs
+# none, 52c96594): said once per process, never as a warning on every collection
+# (ticket c206929f). An existing but unreadable file is still a warning.
+_KILLSWITCHES_ABSENT_NOTED = False
 
 
 class _NightlyCollectorsMixin:
@@ -72,6 +76,12 @@ class _NightlyCollectorsMixin:
         killswitches: dict[str, bool] | None
         try:
             killswitches = parse_killswitches(ks_path.read_text())
+        except FileNotFoundError:
+            global _KILLSWITCHES_ABSENT_NOTED
+            if not _KILLSWITCHES_ABSENT_NOTED:
+                _KILLSWITCHES_ABSENT_NOTED = True
+                logger.info("metrics.nightly.killswitches_absent", path=str(ks_path))
+            killswitches = None
         except OSError:
             logger.warning("metrics.nightly.killswitches_unreadable", path=str(ks_path))
             killswitches = None
