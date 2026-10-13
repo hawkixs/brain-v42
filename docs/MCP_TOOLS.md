@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Repository target: 065.** The tool catalogue is registered by `build_server()` in `src/brain_v42/mcp/server.py`, through the `register_*_tools()` functions in `src/brain_v42/mcp/tools/`.
-**Repository registry:** 79 always-on + 2 graph-gated = 81 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 84 always-on + 2 graph-gated = 86 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Profiles:** `compact` is the default presentation profile: the nine session lifecycle tools remain visible, while other tools are found with `brain_find_tool` and invoked with `brain_call_tool`. `native` exposes the registered catalogue. Dream capability principals receive only the phase allowlist and cannot use the catalog gateways. The `x-brain-tool-profile: native` request header selects native presentation when permitted. `brain_code_mode`, when enabled, installs its own profile only while Dream capability enforcement is off; HTTP security rejects code mode at startup when enforcement is enabled.
 **Transports:** the server supports HTTP and stdio. Authentication and HTTP request limits are enforced at the HTTP transport boundary; they do not change tool signatures.
 
@@ -15,7 +15,7 @@ Unexpected tool failures return `<operation> failed: internal error <Class> (ref
 
 Lifecycle v4 has run in production since 24 July 2026.
 
-Migration 065 is the repository target: `programmes` and `programme_gates`, the programme progress of contract `docs/contracts/programmes_v1.md`, with no MCP surface in this revision. Migration 064: runtime role ACLs with no new MCP surface. Migration 063 adds four tables for the client credential registry, admin elevations and the schema compatibility ledger, with no MCP surface yet. Migration 062: two partial error indexes on `delivery_confirmations` and `pg_stat_statements` in schema `monitoring`, no new table and no MCP surface. Migration 061: `brain_session_connections` retains the connections seen by operator lifecycle calls for exact absorption across transport changes. Migration 060: focus slots (ADR #34), three tables and two nullable `brain_sessions` columns, plus the 16314b31 CHECK fix; downgrade refuses to destroy slots without `-x allow_focus_slots_downgrade=yes`. Migration 059: `tickets.target_release`, nullable with no default or backfill, validated as `major.minor.patch` and indexed for planned tickets; downgrade refuses to erase plans without `-x allow_target_release_downgrade=yes`. Migration 058: the `knowledge_claims` provenance CHECK also accepts `extracted` (claims the server derives from knowledge prose, decision f99ca46f); its downgrade refuses while such rows exist. Migration 057 before it: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
+Migration 065 is the repository target: `programmes` and `programme_gates`, the programme progress of contract `docs/contracts/programmes_v1.md`, behind the five `brain_programme_*` tools. Migration 064: runtime role ACLs with no new MCP surface. Migration 063 adds four tables for the client credential registry, admin elevations and the schema compatibility ledger, with no MCP surface yet. Migration 062: two partial error indexes on `delivery_confirmations` and `pg_stat_statements` in schema `monitoring`, no new table and no MCP surface. Migration 061: `brain_session_connections` retains the connections seen by operator lifecycle calls for exact absorption across transport changes. Migration 060: focus slots (ADR #34), three tables and two nullable `brain_sessions` columns, plus the 16314b31 CHECK fix; downgrade refuses to destroy slots without `-x allow_focus_slots_downgrade=yes`. Migration 059: `tickets.target_release`, nullable with no default or backfill, validated as `major.minor.patch` and indexed for planned tickets; downgrade refuses to erase plans without `-x allow_target_release_downgrade=yes`. Migration 058: the `knowledge_claims` provenance CHECK also accepts `extracted` (claims the server derives from knowledge prose, decision f99ca46f); its downgrade refuses while such rows exist. Migration 057 before it: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
 so a reader can tell a PROVEN attribution (`derived_connection`, same connection) from a DEDUCED
 one (`derived_window`, sole covering session at the instant of creation) — and undo the second
 kind. Migration 047 removes the closing XOR, so a session whose ledger
@@ -1048,6 +1048,48 @@ brain_slot_close(slot_id, expected_revision>=0, note[1..2000]) -> {slot}
 ```
 Explicit user command; `close_reason = 'explicit'`, revision + 1, a `slot_close` history row. Refusals: `slot_not_found`, `slot_closed`, `slot_revision_conflict` (names the current revision), `slot_bound` (an open session is bound: end, relay or abandon it first).
 
+## Programme progress — 5 tools (`programme_tools.py`)
+
+A programme is a multi-session effort the operator follows in the cockpit; a gate is one declared step of it. The rows are published unchanged on the metrics sidecar's `GET /programmes` and relayed by red-monitor; the contract, with every limit and refusal, is `docs/contracts/programmes_v1.md`. One report replaces a message to the coordinating session.
+
+**Who writes.** The caller's project, as the credential layer resolved it (a verified principal and its accepted actor's project), signs every write: no argument names the writer. A call with no resolved project is refused with `caller_unidentified`, so the shared-token and stdio transports cannot write programmes. A credential's issuer patterns are its authority here, as they are for delivery attestations: a credential holding `@project` writes as any existing project it declares, and one holding a prefix pattern (`red-lab*`) writes as every existing project that pattern matches. Issue credentials with that in mind. The project that creates a programme coordinates it: only it changes the programme and the structure of its gates. A gate's owner and the coordinator report it and raise or lift its request. The cockpit and red-monitor never write.
+
+**Text.** Titles hold at most 120 characters, notes and asks at most 200. A value is refused with `invalid_text`, never cut, when it has an outer blank or carries a character of the Unicode categories Cc, Cf, Cs, Co, Cn, Zl or Zp: controls and line breaks, format characters such as zero-width, bidi marks, soft hyphen and tag characters, surrogates, private use, unassigned code points, and line or paragraph separators. Blank fillers (U+034F, U+115F, U+1160, U+2800, U+3164, U+FFA0) are refused too. This is stricter than the contract's minimum: no invisible payload reaches a reader.
+
+**Quotas.** At most 8 programmes are active or paused at once. One coordinating project holds at most 4 of them, and at most 40 programmes in any state; past that, the write is refused with `coordinator_limit_reached`. Positions run from 0 to 9999.
+
+### brain_programme_upsert
+```
+brain_programme_upsert(key, title=None, state=None, position=None) -> programme
+```
+Creates a programme (needs a title; starts `active`) or changes its title, state (`active`, `paused`, `done`) or order. Refusals: `invalid_key`, `invalid_text`, `invalid_state`, `invalid_position`, `programme_incomplete`, `not_coordinator`, `programme_limit_reached` (at most 8 active or paused), `coordinator_limit_reached` (4 live or 40 in all per coordinator), `programme_too_large`, `caller_unidentified`.
+
+### brain_programme_gate_upsert
+```
+brain_programme_gate_upsert(programme, gate, title=None, owner=None, depends_on=None,
+                            weight=None, position=None, state=None) -> programme
+```
+Coordinator only. A new gate needs a title and an owner (a project key) and starts `todo`. `depends_on` (at most 12 keys) names gates of the same programme; a self-edge or a cycle is refused. `weight` (1 to 100, default 1) is the relative remaining effort the cockpit's critical path uses. A state change through this tool is recorded like a report. Refusals: `not_coordinator`, `programme_not_found`, `gate_incomplete`, `invalid_owner`, `owner_unknown`, `unknown_dependency`, `invalid_dependencies`, `dependency_cycle`, `invalid_weight`, `gate_limit_reached` (32 gates), `programme_too_large` (16 KiB as published).
+
+### brain_programme_gate_report
+```
+brain_programme_gate_report(programme, gate, state=None, progress=None, clear_progress=False,
+                            note=None, clear_note=False) -> programme
+```
+The gate's owner or the coordinator. A state change (`todo`, `in_progress`, `blocked`, `done`) becomes the programme's `last_change`; every accepted report refreshes the gate's `updated_at` and `updated_by`, so reporting the same state keeps the gate from reading stale. `progress` is `{done, total, unit}` with `0 <= done <= total <= 100000`. Refusals: `not_gate_owner`, `programme_not_found`, `gate_not_found`, `invalid_state`, `invalid_progress`, `invalid_text`, `nothing_to_report`, `conflicting_arguments`, `programme_too_large`.
+
+### brain_programme_request
+```
+brain_programme_request(programme, gate, ask=None) -> programme
+```
+The gate's owner or the coordinator raises a request to the operator (`ask`, one line) or lifts it (no `ask`). The same ask raised again keeps its `since`; a different ask is a new request. The request stays in the operator's "for you" list until it is lifted. Refusals: `not_gate_owner`, `programme_not_found`, `gate_not_found`, `invalid_text`.
+
+### brain_programme_list
+```
+brain_programme_list(include_done=False, key=None) -> {programmes}
+```
+Read only. Active and paused programmes in brain's order, each in the published shape; `include_done` adds every done programme, `key` reads one programme whatever its state.
+
 ## Project context — 4 tools
 
 ### brain_set_project_context (`project_context_tools.py`)
@@ -1428,6 +1470,7 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `runbook_tools.py` | runbooks | 4 |
 | `session_lifecycle_tools.py` | persistent session lifecycle | 10 |
 | `focus_slot_tools.py` | focus slots (ADR #34) | 3 |
+| `programme_tools.py` | programme progress (contract programmes/v1) | 5 |
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 6 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
@@ -1435,4 +1478,4 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `fact_tools.py` | measured facts (registered by later server composition) | 2 |
 | `claim_tools.py` | claim verification + reads (registered by later server composition) | 3 |
 | `project_focus_read_tools.py` | current project focus read | 1 |
-| **Total** | | **79 always-on + 2 graph-gated = 81** |
+| **Total** | | **84 always-on + 2 graph-gated = 86** |

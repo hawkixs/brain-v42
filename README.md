@@ -102,6 +102,7 @@ support to be enabled.
 | Graph traversal | `brain_get_neighbors`, `brain_graph_path` |
 | Session lifecycle | `brain_session_start`, `brain_session_capture`, `brain_session_heartbeat`, `brain_session_checkpoint`, `brain_session_end`, `brain_session_relay`, `brain_session_list`, `brain_session_resume`, `brain_session_bind`, `brain_session_abandon` |
 | Focus slots | `brain_slot_open`, `brain_slot_list`, `brain_slot_close` |
+| Programme progress | `brain_programme_upsert`, `brain_programme_gate_upsert`, `brain_programme_gate_report`, `brain_programme_request`, `brain_programme_list` |
 | Project context | `brain_focus_history`, `brain_project_focus_get`, `brain_set_project_context`, `brain_project_archive`, `brain_project_unarchive`, `brain_list_projects`, `brain_update_project_focus`, `brain_list_project_groups` |
 | Decisions | `brain_log_decision`, `brain_supersede_decision`, `brain_get_supersession_chain` |
 | Learnings | `brain_learn`, `brain_validate_learning` |
