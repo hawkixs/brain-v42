@@ -666,7 +666,7 @@ class MetricsServer:
         metrics["search_rerank"] = process_agg.pop("search_rerank", {})
         metrics.pop("search", None)
         # Persisted by MCP's emitter; this sidecar's own collector never reranks.
-        aggregated_chain = process_agg.get("tools", {}).get("_reranker", {}).get("chain")
+        aggregated_chain = (process_agg.get("tools") or {}).get("_reranker", {}).get("chain")
         if aggregated_chain is not None:
             metrics.setdefault("reranker", {})["chain"] = aggregated_chain
         else:

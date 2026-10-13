@@ -539,11 +539,11 @@ class _DbCollectorsMixin:
                 "active_agents": None,
                 "total_memory_rss_bytes": None,
                 "tools": None,
-                "search_rerank": {},
+                "search_rerank": None,
                 "mcp_auth_refused": None,
                 "elevation_refused": None,
                 "mcp_auth_agent_unresolved": None,
-                "author_binding_candidates": {},
+                "author_binding_candidates": None,
                 "decay": dict.fromkeys(_DECAY_ZERO),
                 "embedding_identity": None,
                 "embedding": {
