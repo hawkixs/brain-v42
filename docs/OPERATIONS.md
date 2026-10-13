@@ -1243,6 +1243,13 @@ dual-run, lease proof and rollback are described in the
 [systemd runbook](../deploy/systemd/README.md). Deploying the code with
 `METRICS_LEGACY_AUTOMATION_ENABLED=true` does not change the live automation owner.
 
+On red-base the Compose file sets `METRICS_LEGACY_AUTOMATION_ENABLED=false` and no
+automation service runs, so the legacy automation lease and the jobs it carried, among
+them the six-hourly `feature_dedup`, run nowhere. This is accepted (operator ruling of
+2026-10-13): the roadmap feature those jobs serve is being retired (ticket `0f008a1c`).
+The legacy lease path stays in the code, dormant, until that retirement removes it; do
+not re-enable it to bring `feature_dedup` back.
+
 ## Codex gateway
 
 The Codex gateway is an optional companion service. Activation is blocked while the
