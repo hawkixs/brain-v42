@@ -428,6 +428,10 @@ def build_metrics_runtime(
         neo4j_source=(Neo4jGraphSnapshotReader(neo4j_driver) if neo4j_driver is not None else None),
     )
 
+    async def database_probe() -> None:
+        async with runtime_engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+
     def server_factory(
         gitlab_ingestor: GitLabEventProcessor | None,
         project_key_resolver: ProjectKeyResolver | None,
@@ -452,6 +456,7 @@ def build_metrics_runtime(
             slow_block_cache_error_ttl_seconds=(
                 effective_settings.metrics_slow_block_cache_error_ttl_seconds
             ),
+            database_probe=database_probe,
         )
 
     lease = (
