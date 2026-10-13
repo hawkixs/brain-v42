@@ -22,6 +22,7 @@ from brain_v42.db.tables import (
     project_contexts,
 )
 from brain_v42.models.brain_session import BrainSessionIdentityConflictError
+from brain_v42.models.focus_slot import FocusSlotError
 from brain_v42.provenance import set_current_actor, set_current_principal, set_current_transport
 from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
 from brain_v42.services.brain_session_service import BrainSessionService
@@ -229,7 +230,12 @@ async def test_agent_trace_is_never_locked(attribution_case: AttributionCase) ->
             sa.select(brain_sessions.c.client_key).where(brain_sessions.c.id == tracer_id)
         )
     set_current_principal("red-rail")
-    await case.service.resume(tracer_id, key)
+    # Since ticket 0dcec2be the operator lifecycle refuses an agent trace outright,
+    # even to a caller holding its key; resume used to succeed here.
+    with pytest.raises(FocusSlotError, match="^session_is_agent_trace: "):
+        await case.service.resume(tracer_id, key)
+    # The property this test has always pinned, kept apart from the refusal so the
+    # refusal cannot mask it: no attribution lock is ever taken on a trace.
     assert await case.owner(tracer_id) is None
     assert refusal_counts().get("foreign_client_attach", 0) == 0
 
