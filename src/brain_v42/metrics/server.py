@@ -61,6 +61,8 @@ EXCLUDABLE_METRICS_KEYS = frozenset(
         "mcp_auth_refused",
         "elevation_refused",
         "mcp_auth_agent_unresolved",
+        "search_rerank",
+        "author_binding_candidates",
         "cross_process",
         "dream",
         "nightly",

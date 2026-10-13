@@ -9,7 +9,7 @@ from uuid import uuid4
 
 import pytest
 
-from brain_v42.metrics.server import MetricsServer
+from brain_v42.metrics.server import EXCLUDABLE_METRICS_KEYS, MetricsServer
 
 # Production measured 40.9 KB total / 27.6 KB session_slots on 2026-10-12.
 MIN_EXCLUDED_BODY_BYTES = 12 * 1024
@@ -105,6 +105,14 @@ async def test_empty_exclude_token_is_rejected() -> None:
     assert response.status == 400
     assert json.loads(response.body)["error"] == "empty_exclude_key"
     assert json.loads(response.body)["keys"] == [""]
+
+
+async def test_every_default_top_level_key_is_excludable() -> None:
+    # The allowed set is static: a block added to /metrics later must be added
+    # to it too, or ?exclude=<that block> answers 400 for a key the payload has.
+    response = await _server(_collector())._handle_metrics(_request())
+
+    assert set(json.loads(response.body)) - EXCLUDABLE_METRICS_KEYS == set()
 
 
 async def test_default_request_keeps_the_full_payload_keys() -> None:
