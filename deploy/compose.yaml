@@ -323,21 +323,23 @@ services:
       - -c
       - |
         while :; do
-          python -m brain_v42.maintenance.session_sweep || echo "session-sweep: run failed, next attempt in 24 h" >&2;
-          python -m brain_v42.maintenance.trace_retention || echo "trace-retention: run failed, next attempt in 24 h" >&2;
+          python -m brain_v42.maintenance.session_sweep && touch /tmp/brain-v42-session-sweep.heartbeat || echo "session-sweep: run failed, next attempt in 24 h" >&2;
+          python -m brain_v42.maintenance.trace_retention && touch /tmp/brain-v42-trace-retention.heartbeat || echo "trace-retention: run failed, next attempt in 24 h" >&2;
           sleep 86400;
         done
     env_file:
       - /etc/brain-v42/postgres-app.env
     environment: *brain-env
     healthcheck:
-      # Liveness of the daily loop only, not run progress: reports go to the container log
-      # and, best-effort, to dream_runs.
-      test: [CMD, python, -c, "from pathlib import Path; assert b'brain_v42.maintenance.session_sweep' in Path('/proc/1/cmdline').read_bytes()"]
+      # Each job touches its heartbeat only when it succeeds (ticket abbfabfd): the check
+      # fails once either file is missing or older than a day plus two hours, so a loop
+      # that still runs but no longer completes a run turns the container unhealthy.
+      # The start period covers the first runs, made at start.
+      test: [CMD, python, -c, "import time; from pathlib import Path; assert all(time.time() - Path(p).stat().st_mtime <= 93600 for p in ('/tmp/brain-v42-session-sweep.heartbeat', '/tmp/brain-v42-trace-retention.heartbeat'))"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 15m
 
 secrets:
   postgres_password:

@@ -445,10 +445,15 @@ def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
     assert service["container_name"] == "brain-v42-session-sweep"
     command = service["command"]
     assert command[:2] == ["/bin/sh", "-c"]
+    # Ticket abbfabfd item 3: each job touches its own heartbeat file only when it
+    # succeeds, so the healthcheck can tell a loop that still runs from one that
+    # still works.
     match = re.fullmatch(
-        r"while :; do\s+python -m brain_v42\.maintenance\.session_sweep(?P<args>[^|]*)"
+        r"while :; do\s+python -m brain_v42\.maintenance\.session_sweep(?P<args>[^&|]*)"
+        r"&& touch (?P<sweep_beat>/tmp/[\w.-]+) "
         r"\|\| echo \"session-sweep: run failed[^\"]*\" >&2;\s+"
-        r"python -m brain_v42\.maintenance\.trace_retention(?P<retention>[^|]*)"
+        r"python -m brain_v42\.maintenance\.trace_retention(?P<retention>[^&|]*)"
+        r"&& touch (?P<retention_beat>/tmp/[\w.-]+) "
         r"\|\| echo \"trace-retention: run failed[^\"]*\" >&2;\s+"
         r"sleep 86400;\s*done\s*",
         command[2],
@@ -467,11 +472,54 @@ def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
     assert "secrets" not in service
     probe = service["healthcheck"]["test"]
     assert probe[:3] == ["CMD", "python", "-c"]
-    assert "brain_v42.maintenance.session_sweep" in probe[3]
-    assert "/proc/1/cmdline" in probe[3]
+    assert match["sweep_beat"] != match["retention_beat"]
+    for beat in (match["sweep_beat"], match["retention_beat"]):
+        assert repr(beat) in probe[3]
+    # A day between runs, plus two hours for the runs themselves.
+    assert "93600" in probe[3]
+    assert service["healthcheck"]["start_period"] == "15m"
     for key, value in service["environment"].items():
         clean_settings_env.setenv(key, value)
     assert Settings(_env_file=None).brain_session_inactive_sweep_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("sweep_age", "retention_age", "healthy"),
+    [
+        (60, 60, True),
+        (93_000, 60, True),
+        (94_000, 60, False),
+        (60, 94_000, False),
+        (None, 60, False),
+    ],
+)
+def test_session_sweep_healthcheck_reads_both_heartbeats(
+    compose: dict[str, Any], tmp_path: Path, sweep_age, retention_age, healthy
+) -> None:
+    """Run the healthcheck's own code against files of known age."""
+    import subprocess
+    import sys
+    import time
+
+    probe = compose["services"]["session-sweep"]["healthcheck"]["test"][3]
+    for name, age in (
+        ("brain-v42-session-sweep.heartbeat", sweep_age),
+        ("brain-v42-trace-retention.heartbeat", retention_age),
+    ):
+        if age is None:
+            continue
+        beat = tmp_path / name
+        beat.touch()
+        os.utime(beat, (time.time() - age, time.time() - age))
+        assert f"'/tmp/{name}'" in probe
+        probe = probe.replace(f"'/tmp/{name}'", repr(str(beat)))
+    if sweep_age is None:
+        probe = probe.replace(
+            "'/tmp/brain-v42-session-sweep.heartbeat'",
+            repr(str(tmp_path / "brain-v42-session-sweep.heartbeat")),
+        )
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, timeout=30)
+    assert (result.returncode == 0) is healthy
 
 
 def test_projector_is_private_to_the_graph_processes(compose: dict[str, Any]) -> None:

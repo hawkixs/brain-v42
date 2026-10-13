@@ -203,11 +203,16 @@ followed by a rail deploy. Each run prints its report to `docker logs brain-v42-
 and records a `dream_runs` row (`phase = 'sweep'`, `phase_dry_run` set accordingly) on a
 best-effort basis: a run that fails before reaching the database (invalid configuration,
 PostgreSQL down) or whose INSERT fails leaves no row, so a missing row does not prove the
-loop is dead. A failed run is retried the next day; the healthcheck proves only that the
-loop process exists, not that a run completed.
+loop is dead. A failed run is retried the next day.
 After the sweep, the same loop runs `python -m brain_v42.maintenance.trace_retention`
 (see "Agent trace and graph outbox retention"), dry unless its command line carries
 `--execute`; its two report lines go to the same container log.
+Each of the two jobs touches its own heartbeat file when it succeeds
+(`/tmp/brain-v42-session-sweep.heartbeat`, `/tmp/brain-v42-trace-retention.heartbeat`).
+The healthcheck fails once either is missing or older than 26 hours (a day between runs
+plus two hours for the runs), after a 15-minute start period that covers the first runs,
+so `brain-v42-session-sweep` turns `unhealthy` when a job stops completing, not only
+when the loop dies.
 
 **Arming state is measured, not documented.** This document deliberately does not
 state whether the four flags are armed: drop-ins change, and a copied value cannot
