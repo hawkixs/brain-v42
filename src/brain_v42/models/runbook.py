@@ -45,10 +45,16 @@ def _number_steps(value: Any) -> Any:
     """
     if not isinstance(value, list):
         return value
-    return [
-        {"order": index + 1, **item} if isinstance(item, dict) and "order" not in item else item
-        for index, item in enumerate(value)
-    ]
+    numbered: list[Any] = []
+    for index, item in enumerate(value):
+        if isinstance(item, str):
+            if not item.strip():
+                raise ValueError("step title must not be empty")
+            item = {"title": item}
+        if isinstance(item, dict) and "order" not in item:
+            item = {"order": index + 1, **item}
+        numbered.append(item)
+    return numbered
 
 
 class RunbookBase(BaseModel):
