@@ -645,6 +645,12 @@ class MetricsServer:
 
         # Cross-process aggregated tool/embedding stats
         process_agg = await self._collector.collect_process_metrics()
+        # These counters belong to MCP's single emitter, not this sidecar.
+        metrics["search_rerank"] = process_agg.pop("search_rerank", {})
+        metrics.pop("search", None)
+        metrics.setdefault("reranker", {})["chain"] = (
+            process_agg.get("tools", {}).get("_reranker", {}).get("chain", {})
+        )
         # Read MCP's persisted snapshot, never this sidecar's in-memory counter.
         # Structural zero stays present before the first event/flush and on DB failure.
         metrics["mcp_auth_refused"] = process_agg.pop("mcp_auth_refused", {})
@@ -668,6 +674,7 @@ class MetricsServer:
                     "total_candidates": reranker_agg.get("total_candidates", 0),
                     "avg_latency_ms": reranker_agg["avg_latency_ms"],
                     "by_identity": reranker_agg.get("by_identity", {}),
+                    "chain": reranker_agg.get("chain", {}),
                     "last_probe_ok": probe["ok"] if probe else None,
                     "last_probe_reason": probe["reason"] if probe else None,
                     "last_probe_age_s": round(max(0.0, time.time() - probe["at"]), 1)

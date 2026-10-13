@@ -570,6 +570,32 @@ it to zero and rounds to 0.1 seconds. Flush data keeps per-identity probe state 
 present. Existing legacy metrics retain their meanings; observer failures log once
 and never fail a search.
 
+`reranker.chain` counts chain operations separately from link attempts:
+`operations`, `served_by` (counts keyed by the serving identity), `handovers`
+(primary failures that pass to the fallback), and `failed_all`. A successful
+fallback counts as a served operation; it does not count as RRF. Missing chain
+observations appear as `{}` on `/metrics`.
+
+`search_rerank` counts each search once, including grouped output:
+`rerank_searches` counts all searches, `rerank_eligible` counts searches where at
+least one shard actually passed candidates to the reranker, and `rerank_rrf`
+counts eligible searches where at least one invoked shard returned `rrf_fallback`.
+Empty candidate sets, FTS fallback, backend `none` (`disabled`) and `rrf_only`
+are not eligible. Eligibility is measured before result limits and score
+filtering, so an invoked search returning no hits can still be eligible. The
+acceptance ratio is `rerank_rrf / rerank_eligible`; with a zero denominator it is
+undefined, not evidence that reranking succeeded.
+
+The MCP collector snapshot and flush store these search counters under `search`;
+the flusher persists them as the `_search_rerank` pseudo-tool and chain counters
+inside `_reranker`. The sidecar reads both from the single `_process` row:
+`agent_name` is the primary key and each upsert replaces that row, so these
+counters are never summed across agents. `search_rerank.emitter_started_at` is
+the emitter's construction time (`time.time()`), stable for its process lifetime
+and persisted even before its first search. Readers reset their baseline when
+this generation changes, never merely because a counter drops. Missing search
+observations appear as `{}`; the sidecar never substitutes its own generation.
+
 ### Embedding shim static bearer
 
 The shim reads its bearer from a file, never from a variable: `docker inspect`

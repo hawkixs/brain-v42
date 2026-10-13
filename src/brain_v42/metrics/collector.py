@@ -97,6 +97,18 @@ class MetricsCollector(
             "total_candidates": 0,
         }
         self._rerank_by_identity: dict[str, dict[str, Any]] = {}
+        self._rerank_chain: dict[str, Any] = {
+            "operations": 0,
+            "served_by": {},
+            "handovers": 0,
+            "failed_all": 0,
+        }
+        self._search_rerank = {
+            "rerank_searches": 0,
+            "rerank_eligible": 0,
+            "rerank_rrf": 0,
+            "emitter_started_at": self._started_at,
+        }
         self._rerank_backend: str | None = None
         self._rerank_attempt_latencies: dict[str, deque[tuple[float, float]]] = {}
         self._rerank_operation_latencies: dict[str, deque[tuple[float, float]]] = {}
@@ -384,6 +396,29 @@ class MetricsCollector(
         """Expose configuration even when an intentional rollback makes no calls."""
         self._rerank_backend = backend
 
+    def on_chain(self, outcome: str, served_identity: str | None) -> None:
+        """Count the serving link once, independently of its retries."""
+        self._rerank_chain["operations"] += 1
+        if outcome == "failed_all":
+            self._rerank_chain["failed_all"] += 1
+        elif served_identity is not None:
+            served = self._rerank_chain["served_by"]
+            served[served_identity] = served.get(served_identity, 0) + 1
+
+    def on_handover(self) -> None:
+        self._rerank_chain["handovers"] += 1
+
+    def record_search_rerank(self, eligible: bool, rrf: bool) -> None:
+        """The denominator counts searches that actually submitted candidates."""
+        self._search_rerank["rerank_searches"] += 1
+        self._search_rerank["rerank_eligible"] += int(eligible)
+        self._search_rerank["rerank_rrf"] += int(eligible and rrf)
+
+    def _rerank_chain_snapshot(self) -> dict[str, Any]:
+        if not self._rerank_chain["operations"] and not self._rerank_chain["handovers"]:
+            return {}
+        return {**self._rerank_chain, "served_by": dict(self._rerank_chain["served_by"])}
+
     def _rerank_stats_for(self, identity: str) -> dict[str, Any]:
         if identity not in self._rerank_by_identity:
             self._rerank_by_identity[identity] = {
@@ -590,6 +625,7 @@ class MetricsCollector(
                 },
             },
             "reranker": {
+                "chain": self._rerank_chain_snapshot(),
                 "backend": self._rerank_backend,
                 "total_calls": self._reranker_stats["total_calls"],
                 "total_errors": self._reranker_stats["total_errors"],
@@ -599,6 +635,7 @@ class MetricsCollector(
                 "by_identity": self._rerank_identity_snapshot(),
                 "last_probe": {key: dict(probe) for key, probe in self._rerank_last_probe.items()},
             },
+            "search": dict(self._search_rerank),
             "graph": {
                 "total_queries": self._graph_stats["total_queries"],
                 "total_errors": self._graph_stats["total_errors"],
@@ -699,6 +736,7 @@ class MetricsCollector(
         # Reranker stats
         reranker_total = self._reranker_stats["total_calls"]
         reranker = {
+            "chain": self._rerank_chain_snapshot(),
             "backend": self._rerank_backend,
             "total_calls": reranker_total,
             "total_errors": self._reranker_stats["total_errors"],
@@ -739,6 +777,7 @@ class MetricsCollector(
             "tools": tools,
             "search_quality": search_quality,
             "reranker": reranker,
+            "search": dict(self._search_rerank),
             "decay": dict(self._decay_stats),
             "graph": graph,
         }

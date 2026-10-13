@@ -67,6 +67,13 @@ class RerankObserver(Protocol):
     def on_probe(self, identity: str, ok: bool, reason: str) -> None: ...
 
 
+class RerankChainObserver(Protocol):
+    """Optional chain telemetry, independent of each link's attempt counters."""
+
+    def on_chain(self, outcome: str, served_identity: str | None) -> None: ...
+    def on_handover(self) -> None: ...
+
+
 class RerankerClient:
     """Async HTTP client for a reranker service.
 

@@ -21,6 +21,46 @@ PRIMARY = "voyageai/rerank-3-lite"
 FALLBACK = "cohere/rerank-4-fast"
 
 
+@pytest.mark.parametrize("outcome", ["primary", "fallback", "failed_all"])
+async def test_chain_reports_outcome_and_handover(outcome: str) -> None:
+    observer = MagicMock()
+    chain = chain_over(
+        lambda request: success(0.8) if outcome == "primary" else httpx.Response(400),
+        lambda request: httpx.Response(400) if outcome == "failed_all" else success(0.3),
+        observer=observer,
+    )
+    try:
+        if outcome == "failed_all":
+            with pytest.raises(RerankBudgetExhausted):
+                await chain.rerank("q", ["a"])
+        else:
+            await chain.rerank("q", ["a"])
+        identity = (
+            None
+            if outcome == "failed_all"
+            else f"cohere:{PRIMARY if outcome == 'primary' else FALLBACK}"
+        )
+        observer.on_chain.assert_called_once_with(outcome, identity)
+        assert observer.on_handover.call_count == (0 if outcome == "primary" else 1)
+    finally:
+        await chain.close()
+
+
+@pytest.mark.parametrize("raising", [False, True])
+async def test_chain_telemetry_is_optional_and_never_changes_results(raising: bool) -> None:
+    observer = MagicMock(spec=["on_chain", "on_handover"] if raising else [])
+    if raising:
+        observer.on_chain.side_effect = RuntimeError("telemetry failed")
+        observer.on_handover.side_effect = RuntimeError("telemetry failed")
+    chain = chain_over(
+        lambda request: httpx.Response(400), lambda request: success(0.3), observer=observer
+    )
+    try:
+        assert await chain.rerank("q", ["a"]) == pytest.approx([0.0])
+    finally:
+        await chain.close()
+
+
 def success(*probabilities: float) -> httpx.Response:
     return httpx.Response(
         200,
