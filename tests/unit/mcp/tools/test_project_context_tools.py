@@ -278,7 +278,7 @@ class TestBrainSetProjectContext:
         assert call_arg.current_focus == "Services layer"
 
     async def test_never_returns_error(self, tools: tuple[dict[str, Any], AsyncMock]) -> None:
-        """brain_set_project_context never returns an error (get_or_create always succeeds)."""
+        """A metadata-only upsert succeeds (the focus refusal is pinned in the integration tests)."""
         registered, svc = tools
         ctx = make_project_context()
         svc.get_or_create.return_value = ctx
@@ -419,6 +419,7 @@ class TestBrainUpdateProjectFocus:
     async def test_forwards_the_operator_shrink_override(
         self,
         tools_with_roadmap: tuple[dict[str, Any], AsyncMock, AsyncMock],
+        elevated_caller: AsyncMock,
     ) -> None:
         registered, _, roadmap_svc = tools_with_roadmap
 

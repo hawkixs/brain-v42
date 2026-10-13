@@ -37,7 +37,10 @@ _PROBABILITY_EPSILON = 1e-7
 class RerankWire(Protocol):
     """Request shaping and response parsing for one rerank wire format."""
 
-    health_path: str
+    @property
+    def health_path(self) -> str | None:
+        """None when the wire needs an authenticated POST rather than GET."""
+        ...
 
     @property
     def identity(self) -> str:
@@ -123,19 +126,7 @@ class CohereRerankWire:
 
     def retry_delay(self, response: httpx.Response, attempt: int) -> float | None:
         """Never shorten a provider's requested cooldown to fit a caller's budget."""
-        if response.status_code not in {429, 500, 502, 503, 504}:
-            return None
-        retry_after = response.headers.get("Retry-After")
-        if retry_after is not None:
-            try:
-                return max(0.0, float(retry_after))
-            except ValueError:
-                try:
-                    return max(0.0, parsedate_to_datetime(retry_after).timestamp() - time.time())
-                except (ValueError, TypeError, OverflowError):
-                    # A malformed header cannot provide a usable cooldown.
-                    pass
-        return random.uniform(0, 0.1 * 2**attempt)
+        return _hosted_retry_delay(response, attempt)
 
     def request(self, query: str, candidates: list[str]) -> tuple[str, dict[str, Any]]:
         body: dict[str, Any] = {
@@ -151,30 +142,89 @@ class CohereRerankWire:
         return "/v1/rerank", body
 
     def parse(self, payload: Any, expected: int) -> list[float]:
+        return _parse_indexed_scores(payload, expected, "results")
+
+
+class VoyageRerankWire:
+    """Direct Voyage returns the same probabilities under a different array key."""
+
+    health_path: str | None = None
+
+    def __init__(self, model: str) -> None:
+        self._model = model
+
+    @property
+    def identity(self) -> str:
+        return f"voyage:{self._model}"
+
+    def request(self, query: str, candidates: list[str]) -> tuple[str, dict[str, Any]]:
+        # Omitting top_k asks Voyage to score every document for offset slicing.
+        return "/v1/rerank", {
+            "query": query,
+            "documents": candidates,
+            "model": self._model,
+            "truncation": True,
+        }
+
+    def parse(self, payload: Any, expected: int) -> list[float]:
+        return _parse_indexed_scores(payload, expected, "data")
+
+    def retry_delay(self, response: httpx.Response, attempt: int) -> float | None:
+        return _hosted_retry_delay(response, attempt)
+
+    def probe_request(self) -> tuple[str, str, dict[str, Any]]:
+        """Voyage has no free GET probe; score one document to verify the key."""
+        path, body = self.request("ping", ["ping"])
+        return "POST", path, body
+
+
+def is_hosted_wire(wire: RerankWire) -> bool:
+    """Only hosted links use the elapsed-time budget and chain handover policy."""
+    return isinstance(wire, (CohereRerankWire, VoyageRerankWire))
+
+
+def _hosted_retry_delay(response: httpx.Response, attempt: int) -> float | None:
+    """Share cooldown handling so direct and routed calls never shorten it."""
+    if response.status_code not in {429, 500, 502, 503, 504}:
+        return None
+    retry_after = response.headers.get("Retry-After")
+    if retry_after is not None:
         try:
-            results = payload["results"]
-        except (TypeError, KeyError) as exc:
-            raise ValueError("rerank response has no 'results' array") from exc
-
-        if len(results) != expected:
-            raise ValueError(f"rerank response returned {len(results)} scores, expected {expected}")
-
-        by_index: dict[int, float] = {}
-        for item in results:
+            return max(0.0, float(retry_after))
+        except ValueError:
             try:
-                index = int(item["index"])
-                score = float(item["relevance_score"])
-            except (TypeError, KeyError, ValueError) as exc:
-                raise ValueError("rerank response item is malformed") from exc
-            if not math.isfinite(score):
-                raise ValueError("rerank response carries a non-finite score")
-            by_index[index] = score
+                return max(0.0, parsedate_to_datetime(retry_after).timestamp() - time.time())
+            except (ValueError, TypeError, OverflowError):
+                # A malformed header cannot provide a usable cooldown.
+                pass
+    return random.uniform(0, 0.1 * 2**attempt)
 
-        if set(by_index) != set(range(expected)):
-            raise ValueError(
-                f"rerank response carries indices {sorted(by_index)}, expected 0..{expected - 1}"
-            )
-        return [_to_logit(by_index[i]) for i in range(expected)]
+
+def _parse_indexed_scores(payload: Any, expected: int, array_key: str) -> list[float]:
+    """Restore input order before batching slices either provider's response."""
+    try:
+        results = payload[array_key]
+    except (TypeError, KeyError) as exc:
+        raise ValueError(f"rerank response has no '{array_key}' array") from exc
+    if len(results) != expected:
+        raise ValueError(f"rerank response returned {len(results)} scores, expected {expected}")
+
+    by_index: dict[int, float] = {}
+    for item in results:
+        try:
+            index = int(item["index"])
+            score = float(item["relevance_score"])
+        except (TypeError, KeyError, ValueError) as exc:
+            raise ValueError("rerank response item is malformed") from exc
+        if not math.isfinite(score):
+            raise ValueError("rerank response carries a non-finite score")
+        by_index[index] = score
+
+    if set(by_index) != set(range(expected)):
+        raise ValueError(
+            f"rerank response carries indices {sorted(by_index)}, expected 0..{expected - 1}"
+        )
+    return [_to_logit(by_index[i]) for i in range(expected)]
 
 
 def _to_logit(probability: float) -> float:

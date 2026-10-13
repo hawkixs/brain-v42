@@ -16,6 +16,7 @@ import yaml
 from brain_v42.config import Settings
 from brain_v42.delivery_observer.config import load_observer_settings
 from brain_v42.maintenance.session_sweep import build_parser as session_sweep_parser
+from brain_v42.maintenance.trace_retention import build_parser as trace_retention_parser
 from brain_v42.mcp.server import version_check
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -106,6 +107,15 @@ def test_restart_and_healthchecks(compose: dict[str, Any]) -> None:
         assert "urllib.request.urlopen" in probe[3]
         assert f"http://127.0.0.1:{port}/healthz" in probe[3]
         assert "timeout=" in probe[3]
+    observer = compose["services"]["delivery-observer"]
+    heartbeat = observer["environment"]["BRAIN_DELIVERY_HEARTBEAT_PATH"]
+    probe = observer["healthcheck"]["test"]
+    assert probe[:3] == ["CMD", "python", "-c"]
+    parsed = re.search(r"Path\('([^']+)'\).*<=\s*(\d+)", probe[3])
+    assert parsed is not None
+    assert parsed.groups() == (heartbeat, "600")
+    assert "/proc/1/cmdline" not in probe[3]
+    assert observer["healthcheck"]["start_period"] == "120s"
 
 
 def test_only_wireguard_server_ports_are_published(compose: dict[str, Any]) -> None:
@@ -367,33 +377,48 @@ def test_restore_input_and_bootstrap_marker_source(compose: dict[str, Any]) -> N
 
 
 HOSTED_RERANK = {
-    "BRAIN_RERANK_BACKEND": "cohere",
-    "BRAIN_RERANKER_URL": "https://openrouter.ai/api",
-    "BRAIN_RERANK_MODEL": "voyageai/rerank-3-lite",
-    "BRAIN_RERANK_HEALTH_PATH": "/v1/key",
-    "BRAIN_RERANK_PROVIDER": '{"only":["voyageai"],"allow_fallbacks":false,"data_collection":"deny"}',
-    "BRAIN_RERANK_API_KEY_FILE": "/run/secrets/rerank_api_key",
+    # Operator decision fa3b6abc: Voyage's own API with the operator's key (own quota);
+    # data policy 7d36a08c (training opt-out on the Voyage account).
+    "BRAIN_RERANK_BACKEND": "voyage",
+    "BRAIN_RERANKER_URL": "https://api.voyageai.com",
+    "BRAIN_RERANK_MODEL": "rerank-3-lite",
+    "BRAIN_RERANK_API_KEY_FILE": "/run/secrets/voyage_api_key",
+    # Operator go 742e7a05: a second rerank link instead of RRF.
+    "BRAIN_RERANK_FALLBACK_MODEL": "cohere/rerank-4-fast",
+    "BRAIN_RERANK_FALLBACK_PROVIDER": '{"only":["cohere"],"allow_fallbacks":false,"data_collection":"deny"}',
+    "BRAIN_RERANK_FALLBACK_URL": "https://openrouter.ai/api",
+    "BRAIN_RERANK_FALLBACK_API_KEY_FILE": "/run/secrets/rerank_api_key",
+    # Measured 2026-10-13 on 0.6.14: Voyage direct answers in about 1 s, so a 1.0 s primary
+    # budget cut half the calls, and each cut closed the pooled connection (cold TLS next).
+    "BRAIN_RERANK_BUDGET_SECONDS": "3.0",
+    "BRAIN_RERANK_PRIMARY_BUDGET_SECONDS": "1.6",
+}
+RERANK_SECRETS = {
+    "voyage_api_key": "/etc/brain-v42/voyage-api-key",
+    "rerank_api_key": "/etc/brain-v42/rerank-api-key",
 }
 
 
-def test_rerank_is_the_hosted_voyage_block_on_mcp_only(compose: dict[str, Any]) -> None:
-    """Ruling 26208df8: Voyage through OpenRouter is active from the cutover."""
+def test_rerank_is_voyage_direct_with_a_cohere_fallback_on_mcp_only(
+    compose: dict[str, Any],
+) -> None:
     text = COMPOSE.read_text(encoding="utf-8")
     assert "x-rerank-env: &rerank-env" in text
     assert compose["x-rerank-env"] == HOSTED_RERANK
     mcp = compose["services"]["mcp"]
     for key, value in HOSTED_RERANK.items():
         assert mcp["environment"][key] == value
-    assert "rerank_api_key" in mcp["secrets"]
-    assert compose["secrets"]["rerank_api_key"] == {"file": "/etc/brain-v42/rerank-api-key"}
+    for secret, source in RERANK_SECRETS.items():
+        assert secret in mcp["secrets"]
+        assert compose["secrets"][secret] == {"file": source}
     # The metrics runtime builds a reranker only for legacy automation, which is off:
-    # it gets neither the settings nor the key (least privilege).
+    # it gets neither the settings nor the keys (least privilege).
     metrics = compose["services"]["metrics"]
     assert metrics["environment"]["METRICS_LEGACY_AUTOMATION_ENABLED"] == "false"
     assert not any(
         key.startswith(("BRAIN_RERANK", "BRAIN_RERANKER")) for key in metrics["environment"]
     )
-    assert "rerank_api_key" not in metrics["secrets"]
+    assert not set(RERANK_SECRETS) & set(metrics["secrets"])
     assert ":8003" not in text
 
 
@@ -403,16 +428,27 @@ def test_hosted_rerank_block_passes_the_settings_policy(
     for key, value in compose["x-rerank-env"].items():
         clean_settings_env.setenv(key, value)
     settings = Settings(_env_file=None)
-    assert settings.rerank_backend == "cohere"
-    assert settings.rerank_provider is not None
-    assert settings.rerank_provider.only == ["voyageai"]
-    assert settings.rerank_provider.allow_fallbacks is False
-    assert settings.rerank_provider.data_collection == "deny"
-    assert str(settings.rerank_api_key_file) == "/run/secrets/rerank_api_key"
+    assert settings.rerank_backend == "voyage"
+    assert settings.reranker_url == "https://api.voyageai.com"
+    assert settings.rerank_provider is None
+    assert str(settings.rerank_api_key_file) == "/run/secrets/voyage_api_key"
+    assert settings.rerank_fallback_model == "cohere/rerank-4-fast"
+    assert settings.rerank_fallback_url == "https://openrouter.ai/api"
+    assert str(settings.rerank_fallback_api_key_file) == "/run/secrets/rerank_api_key"
+    assert settings.rerank_fallback_provider is not None
+    assert settings.rerank_fallback_provider.only == ["cohere"]
+    assert settings.rerank_fallback_provider.allow_fallbacks is False
+    assert settings.rerank_fallback_provider.data_collection == "deny"
+    assert settings.rerank_primary_budget_seconds < settings.rerank_budget_seconds
+    # The fallback keeps at least 1.4 s (Cohere rerank-4-fast measured 0.6-1.0 s, one 1.85 s).
+    assert settings.rerank_budget_seconds - settings.rerank_primary_budget_seconds >= 1.4
 
 
 def test_rerank_rollback_is_documented_for_the_operator() -> None:
     header = COMPOSE.read_text(encoding="utf-8").split("name:", 1)[0]
+    assert "/etc/brain-v42/voyage-api-key: uid 1000, mode 0600" in header
+    assert "3.0 s budget" in header
+    assert "cohere/rerank-4-fast" in header
     assert "BRAIN_RERANK_BACKEND" in header and "none" in header
 
 
@@ -437,32 +473,89 @@ def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
     """Ticket 888660a9: red-base had no runner for the seven-day rule.
 
     The MCP server's own net closes idle agent traces every fifteen minutes, so
-    this loop carries the seven-day rule only, and ships dry: wetting it is a
-    separate configuration pull request, after a dry night's journal was read.
+    this loop carries the seven-day rule only. It shipped dry; the operator armed it
+    on 2026-10-13 after the dry run of the 0.6.12 deploy (5 sessions, 3625 traces,
+    3185 outbox rows), so the sweep runs --wet and the retention --execute.
     """
     service = compose["services"]["session-sweep"]
     assert service["container_name"] == "brain-v42-session-sweep"
     command = service["command"]
     assert command[:2] == ["/bin/sh", "-c"]
+    # Ticket abbfabfd item 3: each job touches its own heartbeat file only when it
+    # succeeds, so the healthcheck can tell a loop that still runs from one that
+    # still works.
     match = re.fullmatch(
-        r"while :; do\s+python -m brain_v42\.maintenance\.session_sweep(?P<args>[^|]*)"
-        r"\|\| echo \"session-sweep: run failed[^\"]*\" >&2;\s+sleep 86400;\s*done\s*",
+        r"while :; do\s+python -m brain_v42\.maintenance\.session_sweep(?P<args>[^&|]*)"
+        r"&& touch (?P<sweep_beat>/tmp/[\w.-]+) "
+        r"\|\| echo \"session-sweep: run failed[^\"]*\" >&2;\s+"
+        r"python -m brain_v42\.maintenance\.trace_retention(?P<retention>[^&|]*)"
+        r"&& touch (?P<retention_beat>/tmp/[\w.-]+) "
+        r"\|\| echo \"trace-retention: run failed[^\"]*\" >&2;\s+"
+        r"sleep 86400;\s*done\s*",
         command[2],
     )
     assert match, command[2]
     arguments = session_sweep_parser().parse_args(match["args"].split())
-    assert arguments.wet is False
+    assert arguments.wet is True
     assert arguments.older_than_days == 7
+    # Ticket 8f319827: retention runs after the sweep in the same daily loop, armed
+    # by the operator on 2026-10-13 together with the sweep.
+    retention = trace_retention_parser().parse_args(match["retention"].split())
+    assert retention.execute is True
+    assert (retention.trace_older_than_days, retention.outbox_older_than_days) == (30, 30)
     assert service["env_file"] == ["/etc/brain-v42/postgres-app.env"]
     assert service["environment"] == compose["x-brain-env"]
     assert "secrets" not in service
     probe = service["healthcheck"]["test"]
     assert probe[:3] == ["CMD", "python", "-c"]
-    assert "brain_v42.maintenance.session_sweep" in probe[3]
-    assert "/proc/1/cmdline" in probe[3]
+    assert match["sweep_beat"] != match["retention_beat"]
+    for beat in (match["sweep_beat"], match["retention_beat"]):
+        assert repr(beat) in probe[3]
+    # A day between runs, plus two hours for the runs themselves.
+    assert "93600" in probe[3]
+    assert service["healthcheck"]["start_period"] == "15m"
     for key, value in service["environment"].items():
         clean_settings_env.setenv(key, value)
     assert Settings(_env_file=None).brain_session_inactive_sweep_enabled is False
+
+
+@pytest.mark.parametrize(
+    ("sweep_age", "retention_age", "healthy"),
+    [
+        (60, 60, True),
+        (93_000, 60, True),
+        (94_000, 60, False),
+        (60, 94_000, False),
+        (None, 60, False),
+    ],
+)
+def test_session_sweep_healthcheck_reads_both_heartbeats(
+    compose: dict[str, Any], tmp_path: Path, sweep_age, retention_age, healthy
+) -> None:
+    """Run the healthcheck's own code against files of known age."""
+    import subprocess
+    import sys
+    import time
+
+    probe = compose["services"]["session-sweep"]["healthcheck"]["test"][3]
+    for name, age in (
+        ("brain-v42-session-sweep.heartbeat", sweep_age),
+        ("brain-v42-trace-retention.heartbeat", retention_age),
+    ):
+        if age is None:
+            continue
+        beat = tmp_path / name
+        beat.touch()
+        os.utime(beat, (time.time() - age, time.time() - age))
+        assert f"'/tmp/{name}'" in probe
+        probe = probe.replace(f"'/tmp/{name}'", repr(str(beat)))
+    if sweep_age is None:
+        probe = probe.replace(
+            "'/tmp/brain-v42-session-sweep.heartbeat'",
+            repr(str(tmp_path / "brain-v42-session-sweep.heartbeat")),
+        )
+    result = subprocess.run([sys.executable, "-c", probe], capture_output=True, timeout=30)
+    assert (result.returncode == 0) is healthy
 
 
 def test_projector_is_private_to_the_graph_processes(compose: dict[str, Any]) -> None:
@@ -504,7 +597,10 @@ def test_observer_configuration_is_expressible_without_a_root_owned_file_in_the_
     ]
     assert "env_file" not in observer
     assert compose["secrets"]["observer_config"]["file"] == "/etc/brain-v42/delivery-observer.env"
-    assert observer["environment"] == {"BRAIN_LOG_FORMAT": "json"}
+    assert observer["environment"] == {
+        "BRAIN_LOG_FORMAT": "json",
+        "BRAIN_DELIVERY_HEARTBEAT_PATH": "/tmp/brain-v42-delivery-observer.heartbeat",
+    }
     assert "observer_config" in observer["secrets"]
     assert observer["user"] == "1000:1000"
     header = COMPOSE.read_text(encoding="utf-8").split("name:", 1)[0]
@@ -532,6 +628,7 @@ def test_observer_configuration_is_expressible_without_a_root_owned_file_in_the_
     )
     assert settings.github_app_id == settings.github_installation_id == 1
     assert settings.github_private_key_path == key_path
+    assert settings.heartbeat_path == Path(observer["environment"]["BRAIN_DELIVERY_HEARTBEAT_PATH"])
 
 
 def test_only_the_six_rail_variables_are_interpolated(compose: dict[str, Any]) -> None:

@@ -52,7 +52,8 @@ def _log_failure() -> None:
 def _assert_traceback_without_locals(rendered: str) -> None:
     assert "Traceback" in rendered, rendered
     assert "ConnectionRefusedError" in rendered, rendered
-    assert "postgres down" in rendered, rendered
+    assert "<message redacted>" in rendered, rendered
+    assert "postgres down" not in rendered, rendered
     assert _SECRET not in rendered, "frame local leaked into the rendered traceback"
 
 
@@ -149,7 +150,8 @@ def test_json_exception_is_one_line_without_frame_locals(
         assert payload["logger"] == "test.no_locals"
         assert payload["level"] == "error"
         assert "ConnectionRefusedError" in json.dumps(payload["exception"])
-        assert "postgres down" in json.dumps(payload["exception"])
+        assert "<message redacted>" in json.dumps(payload["exception"])
+        assert "postgres down" not in json.dumps(payload["exception"])
         assert _SECRET not in rendered, "frame local leaked into the rendered traceback"
         assert "exc_info" not in payload
         for exception in payload["exception"]:

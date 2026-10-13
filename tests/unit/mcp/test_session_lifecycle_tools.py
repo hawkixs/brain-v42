@@ -200,9 +200,9 @@ async def test_next_focus_description_scopes_judgment_out_of_measurable_state() 
 
     description = end["next_focus"]["description"].lower()
 
-    assert "jugement" in description
+    assert "judgement" in description
     assert "briefing" in description
-    assert "mesur" in description  # covers mesurable/mesuré/mesure
+    assert "measurable" in description
 
 
 async def test_end_rejects_boolean_focus_revision_before_service_call() -> None:
@@ -371,8 +371,10 @@ async def test_end_publishes_the_replacement_and_the_shrink_guard() -> None:
     assert "operator" in override and "70%" in override and "base_focus_shrink" in override
     assert "allow_focus_shrink" not in tool.parameters.get("required", [])
     # `next_focus` itself says it replaces the whole project focus (unbound session).
-    assert "REMPLACE" in properties["next_focus"]["description"]
-    assert "70 %" in properties["next_focus"]["description"]
+    assert "REPLACES" in properties["next_focus"]["description"]
+    assert "70%" in properties["next_focus"]["description"]
+    assert "slot body" in properties["next_focus"]["description"]
+    assert "/brain-admin" in properties["allow_focus_shrink"]["description"]
     assert "REPLACES" in tool.description and "base_focus_shrink" in tool.description
 
 

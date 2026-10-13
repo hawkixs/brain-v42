@@ -54,7 +54,6 @@ def make_mock_repo() -> MagicMock:
     repo = MagicMock(spec=PgProjectContextRepo)
     repo.get_or_create = AsyncMock()
     repo.get_by_key = AsyncMock()
-    repo.update_focus = AsyncMock()
     repo.refresh_counts = AsyncMock()
     return repo
 
@@ -212,63 +211,6 @@ class TestGetByKey:
         from brain_v42.services.project_context_service import ProjectContextService
 
         assert inspect.iscoroutinefunction(ProjectContextService.get_by_key)
-
-
-# ---------------------------------------------------------------------------
-# update_focus()
-# ---------------------------------------------------------------------------
-
-
-class TestUpdateFocus:
-    async def test_delegates_to_repo_and_returns_result(self) -> None:
-        """update_focus(project_key, focus) delegates to repo.update_focus and returns result."""
-        from brain_v42.services.project_context_service import ProjectContextService
-
-        mock_repo = make_mock_repo()
-        ctx = make_project_context(current_focus="Working on M3 services")
-        mock_repo.update_focus.return_value = ctx
-
-        svc = ProjectContextService(pg_repo=mock_repo)
-        result = await svc.update_focus("brain-v42", "Working on M3 services")
-
-        mock_repo.update_focus.assert_called_once_with("brain-v42", "Working on M3 services", None)
-        assert result is ctx
-
-    async def test_delegates_with_blockers(self) -> None:
-        """update_focus(project_key, focus, blockers) passes blockers to repo."""
-        from brain_v42.services.project_context_service import ProjectContextService
-
-        mock_repo = make_mock_repo()
-        ctx = make_project_context(current_focus="M3 services", blockers=["ONNX not loaded"])
-        mock_repo.update_focus.return_value = ctx
-
-        svc = ProjectContextService(pg_repo=mock_repo)
-        result = await svc.update_focus("brain-v42", "M3 services", blockers=["ONNX not loaded"])
-
-        mock_repo.update_focus.assert_called_once_with(
-            "brain-v42", "M3 services", ["ONNX not loaded"]
-        )
-        assert result is ctx
-
-    async def test_returns_none_when_not_found(self) -> None:
-        """update_focus() propagates None when project_key does not exist."""
-        from brain_v42.services.project_context_service import ProjectContextService
-
-        mock_repo = make_mock_repo()
-        mock_repo.update_focus.return_value = None
-
-        svc = ProjectContextService(pg_repo=mock_repo)
-        result = await svc.update_focus("nonexistent", "some focus")
-
-        assert result is None
-
-    async def test_update_focus_is_async(self) -> None:
-        """update_focus is a coroutine (async)."""
-        import inspect
-
-        from brain_v42.services.project_context_service import ProjectContextService
-
-        assert inspect.iscoroutinefunction(ProjectContextService.update_focus)
 
 
 # ---------------------------------------------------------------------------

@@ -51,7 +51,8 @@ def _measures_active_merge(observed: Any) -> sa.ColumnElement[bool]:
     A reopen deactivates the bindings and the next attempt binds a new merge, while
     the old release and deployment rows stay in the append-only ledger. Without this
     scope the view would present the first merge's tag or live release as the
-    reopened ticket's own.
+    reopened ticket's own. Shared history can give two repositories the same
+    merge SHA, so repository identity is part of that scope too.
 
     The identity label is only declared: the write side also requires the executor
     project as issuer (``PgReleaseDerivationRepo``), so the read side does too.
@@ -68,6 +69,7 @@ def _measures_active_merge(observed: Any) -> sa.ColumnElement[bool]:
             binding.c.ticket_id == observed.c.ticket_id,
             binding.c.active.is_(True),
             binding.c.integration_sha == observed.c.payload["integration_sha"].astext,
+            binding.c.repository_id.cast(sa.Text) == observed.c.payload["repository_id"].astext,
         ),
     )
 
@@ -184,6 +186,7 @@ class PgTicketRepo(BasePgRepository):
             live.c.kind == "deployed",
             _measures_active_merge(live),
             live.c.payload["integration_sha"].astext == binding.c.integration_sha,
+            live.c.payload["repository_id"].astext == binding.c.repository_id.cast(sa.Text),
             live.c.payload["live_release_sha"].astext == running_sha,
         )
         query = sa.select(sa.func.count().filter(carried), sa.func.count()).where(

@@ -7,6 +7,8 @@ import json
 from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
+from brain_v42.models.claim_input import ClaimMutationError
+
 if TYPE_CHECKING:
     from brain_v42.facts.model import FactTarget
     from brain_v42.facts.probe import FactDescriptor
@@ -179,18 +181,18 @@ def assert_expected_within_bounds(expected: Mapping[str, object]) -> None:
     """Reject a declared expectation beyond the smaller claim-specific envelope."""
     depth = _canonical_depth(expected)
     if depth > 4:
-        raise ValueError(f"expected depth rule exceeds 4 levels (measured {depth})")
+        raise ClaimMutationError(f"expected depth rule exceeds 4 levels (measured {depth})")
 
     # canonical_json's 8-level / 4096-byte envelope protects all fact values.
     # Claims are deliberately tighter, so callers see the claim rule instead.
     try:
         text = canonical_json(expected)
     except ValueTooLargeError as exc:
-        raise ValueError(
+        raise ClaimMutationError(
             "expected byte-size rule exceeds 1024 UTF-8 bytes (measured more than 4096 bytes)"
         ) from exc
     byte_count = len(text.encode("utf-8"))
     if byte_count > 1024:
-        raise ValueError(
+        raise ClaimMutationError(
             f"expected byte-size rule exceeds 1024 UTF-8 bytes (measured {byte_count})"
         )

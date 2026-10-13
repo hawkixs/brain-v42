@@ -15,8 +15,8 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.focus_history import focus_history_select, record_focus_history
-from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import adrs, decisions, learnings, project_contexts, runbooks, snippets
+from brain_v42.models.focus_slot import FocusSlotError
 from brain_v42.models.project_context import (
     ProjectContext,
     ProjectContextCreate,
@@ -34,11 +34,10 @@ class PgProjectContextRepo(BasePgRepository):
         create(data)             — INSERT a new project context
         get_by_id(id)            — SELECT by UUID
         get_by_key(project_key)  — SELECT by unique project_key
-        update(id, data)         — UPDATE fields (partial, only non-None)
+        update(id, data)         — UPDATE metadata (partial, only non-None)
         delete(id)               — DELETE by UUID
         list_all(limit, offset)  — SELECT all, ordered by created_at DESC
         get_or_create(data)      — Upsert by project_key (insert or return existing)
-        update_focus(project_key, focus, blockers) — Partial update of current_focus + blockers
         refresh_counts(project_key) — Recompute *_count columns by cross-table COUNT
     """
 
@@ -134,16 +133,14 @@ class PgProjectContextRepo(BasePgRepository):
             return await _execute(sess)
 
     async def update(self, id: UUID, data: ProjectContextUpdate) -> ProjectContext | None:  # type: ignore[override]
-        """Partial update — only fields provided (non-None) are changed."""
+        """Update metadata only; focus replacements require the dedicated CAS path."""
         update_values: dict = {
-            k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None
+            k: v
+            for k, v in data.model_dump(exclude_unset=True).items()
+            if v is not None and k != "current_focus"
         }
         if not update_values:
             return await self.get_by_id(id)
-        # A generic partial write can still move the focus; when it does not,
-        # the column must stay put (renaming a project is not authoring prose).
-        if "current_focus" in update_values:
-            update_values["focus_updated_at"] = focus_stamp(update_values["current_focus"])
         update_values["updated_at"] = datetime.now(UTC)
         async with self.get_session() as session:
             async with session.begin():
@@ -157,18 +154,6 @@ class PgProjectContextRepo(BasePgRepository):
                 row = result.mappings().first()
                 if row is None:
                     return None
-                # Same condition as the stamp two dozen lines up, and for the
-                # same reason: renaming a project is not authoring prose. A row
-                # written on every partial update would also collide, the
-                # revision not having moved.
-                if "current_focus" in update_values:
-                    await record_focus_history(
-                        session,
-                        project_key=str(row["project_key"]),
-                        focus_revision=int(row["focus_revision"]),
-                        focus=row["current_focus"],
-                        source="generic_update",
-                    )
                 return ProjectContext.model_validate(dict(row))
 
     async def delete(self, id: UUID) -> bool:  # type: ignore[override]
@@ -279,8 +264,8 @@ class PgProjectContextRepo(BasePgRepository):
     async def get_or_create(self, data: ProjectContextCreate) -> ProjectContext:
         """Upsert project context by project_key.
 
-        INSERT if project_key does not exist, otherwise UPDATE all mutable
-        fields with the new values. Returns the resulting record.
+        INSERT may set focus; on conflict only metadata changes. A different supplied
+        focus is refused inside the transaction, including a concurrent creation.
         """
         from sqlalchemy.dialects.postgresql import insert as pg_insert  # noqa: PLC0415
 
@@ -309,11 +294,10 @@ class PgProjectContextRepo(BasePgRepository):
             **values,
             focus_updated_at=(datetime.now(UTC) if data.current_focus is not None else None),
         )
-        # Fields to update on conflict (everything except project_key and id)
-        update_fields: dict[str, Any] = {k: v for k, v in values.items() if k != "project_key"}
-        # The conflict branch overwrites current_focus, so it dates it — against
-        # the row already stored, not against the one being proposed.
-        update_fields["focus_updated_at"] = focus_stamp(insert_stmt.excluded.current_focus)
+        # The conflict branch must never become a focus writer without CAS.
+        update_fields: dict[str, Any] = {
+            k: v for k, v in values.items() if k not in {"project_key", "current_focus"}
+        }
         update_fields["updated_at"] = datetime.now(UTC)
 
         async with self.get_session() as session:
@@ -324,9 +308,17 @@ class PgProjectContextRepo(BasePgRepository):
                 ).returning(*project_contexts.c)
                 result = await session.execute(stmt)
                 row = result.mappings().one()
-                # BOTH branches. The conflict branch is the overwrite channel B6
-                # names — it rewrites the focus with no CAS, NULL included — so
-                # it is the one that most needs recording.
+                submitted_focus = data.current_focus
+                stored_focus = row["current_focus"]
+                if "current_focus" in data.model_fields_set and (
+                    submitted_focus.strip() if submitted_focus is not None else None
+                ) != (stored_focus.strip() if stored_focus is not None else None):
+                    raise FocusSlotError(
+                        "focus_write_requires_update_project_focus",
+                        "Existing project focus must be replaced through "
+                        "brain_update_project_focus with its revision CAS and shrink guard",
+                    )
+                # An unchanged revision is idempotent; only insertion adds a focus.
                 await record_focus_history(
                     session,
                     project_key=str(row["project_key"]),
@@ -342,7 +334,7 @@ class PgProjectContextRepo(BasePgRepository):
 
         Deliberately NOT routed through `update()` or the context upsert.
         `brain_set_project_context` is not a PATCH: it writes the whole row, so
-        archiving through it would overwrite focus, blockers, group and
+        archiving through it would overwrite blockers, group and
         metadata with whatever the caller happened to omit. That trap has been
         paid for once already (ticket 44ee7643, message 1).
 
@@ -394,41 +386,6 @@ class PgProjectContextRepo(BasePgRepository):
                 row = result.mappings().first()
                 if row is None:
                     return None
-                return ProjectContext.model_validate(dict(row))
-
-    async def update_focus(
-        self,
-        project_key: str,
-        focus: str,
-        blockers: list[str] | None = None,
-    ) -> ProjectContext | None:
-        """Update current_focus and optionally blockers for a project."""
-        update_values: dict = {
-            "current_focus": focus,
-            "focus_updated_at": focus_stamp(focus),
-            "updated_at": datetime.now(UTC),
-        }
-        if blockers is not None:
-            update_values["blockers"] = blockers
-        async with self.get_session() as session:
-            async with session.begin():
-                stmt = (
-                    sa.update(project_contexts)
-                    .where(project_contexts.c.project_key == project_key)
-                    .values(**update_values)
-                    .returning(*project_contexts.c)
-                )
-                result = await session.execute(stmt)
-                row = result.mappings().first()
-                if row is None:
-                    return None
-                await record_focus_history(
-                    session,
-                    project_key=str(row["project_key"]),
-                    focus_revision=int(row["focus_revision"]),
-                    focus=row["current_focus"],
-                    source="focus_tool",
-                )
                 return ProjectContext.model_validate(dict(row))
 
     async def focus_history(

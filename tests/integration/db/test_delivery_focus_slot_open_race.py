@@ -5,6 +5,11 @@ uncommitted slot, so its hook closes nothing and the slot would stay open with
 `receipt_pending` for good. The writer holds `tickets ... FOR UPDATE`; open must queue
 behind it, then see the committed receipt and refuse.
 
+Tickets becoming eligible after open's ticket-lock statement need the project fence:
+the hook waits for open's commit, then sees and closes its slot (ticket d2dbf163).
+In the reverse order, the hook holds the exclusive fence for a newly eligible ticket;
+open waits on the shared fence, then refuses the committed receipt.
+
 Writes slot rows: private head database, like the other slot-writing modules. The interleaving
 is forced, not raced: the receipt transaction stays open while a second connection is observed
 blocked on it through `pg_blocking_pids`.
@@ -13,10 +18,12 @@ blocked on it through `pg_blocking_pids`.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable, Sequence
 from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from brain_v42.db.focus_slots import received_anchor
 from brain_v42.db.tables import delivery_artifact_bindings, delivery_attestations, focus_slots
@@ -157,6 +164,205 @@ async def test_an_open_that_got_its_locks_first_makes_the_later_receipt_find_the
             .one()
         )
     assert row["close_reason"] == f"receipt:{issued.id}" and row["closed_at"] is not None
+
+
+async def open_before_new_candidate_receipt(
+    factory: async_sessionmaker[AsyncSession],
+    anchors: Sequence[SlotAnchor],
+    title: str,
+    writer: Callable[[], Awaitable[None]],
+) -> None:
+    """Pause after the receipt read, then let a previously ineligible ticket write.
+
+    The title squatter blocks only the slot insert, after open's ticket locks and receipt
+    read. Without the project fence the writer commits and misses the uncommitted slot;
+    with it the hook queues behind open and closes the slot after open commits. Observe
+    either completion or the actual lock wait so the regression fails on slot state,
+    rather than timing out while expecting a lock that the old code does not take.
+    """
+    tasks: list[asyncio.Task] = []
+    try:
+        async with asyncio.timeout(WAIT_SECONDS):
+            async with factory() as squatter, squatter.begin():
+                squatter_pid = await squatter.scalar(sa.text("SELECT pg_backend_pid()"))
+                await squatter.execute(
+                    focus_slots.insert().values(project_key=EXECUTOR, title=title, body="x")
+                )
+                opening = asyncio.create_task(service(factory).open(EXECUTOR, title, "b", anchors))
+                tasks.append(opening)
+                open_pid = await wait_until_blocked_on(
+                    factory, squatter_pid, statement="INSERT INTO focus_slots"
+                )
+                receipt = asyncio.create_task(writer())
+                tasks.append(receipt)
+                blocked = asyncio.create_task(
+                    wait_until_blocked_on(factory, open_pid, statement="pg_advisory_xact_lock(")
+                )
+                tasks.append(blocked)
+                done, _ = await asyncio.wait(
+                    [receipt, blocked], return_when=asyncio.FIRST_COMPLETED
+                )
+                for task in done:
+                    task.result()  # propagate a writer failure or an unexpected lock timeout
+                assert not opening.done()
+                await squatter.rollback()
+            opened, _ = await asyncio.gather(opening, receipt)
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async with factory() as session:
+        row = (
+            (
+                await session.execute(
+                    sa.select(focus_slots).where(focus_slots.c.id == opened.slot.id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        completing_row = await received_anchor(session, project_key=EXECUTOR, anchor=anchors[0])
+    assert completing_row is not None  # the later writer really satisfied this anchor
+    assert row["closed_at"] is not None, "the later receipt left the slot open with receipt_pending"
+    assert row["close_reason"] == f"receipt:{completing_row}"
+    listed = await service(factory).list(EXECUTOR, "closed", limit=100)
+    assert not next(item.receipt_pending for item in listed.slots if item.id == opened.slot.id)
+
+
+async def test_a_lot_open_is_closed_by_a_ticket_integrated_after_its_lock_statement(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A planned ticket without an integration SHA is outside the lot's initial lock set."""
+    ticket, binding, _, number = await workflow(session_factory)
+    release = f"9.{uuid4().int % 1000}.{uuid4().int % 1000}"
+    await plan(session_factory, ticket.id, release)
+
+    async def writer() -> None:
+        async with session_factory() as session, session.begin():
+            await integrate_in(session_factory, session, ticket.id, binding, number)
+            await release_in(session, ticket.id, f"v{release}")
+
+    await open_before_new_candidate_receipt(
+        session_factory,
+        [SlotAnchor(kind="lot", target_release=release)],
+        f"new lot candidate {uuid4().hex[:6]}",
+        writer,
+    )
+
+
+async def test_a_pr_open_is_closed_by_a_ticket_bound_after_its_lock_statement(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A second ticket newly bound to the same PR is outside the PR's initial lock set."""
+    _, _, _, number = await workflow(session_factory)
+
+    async def writer() -> None:
+        ticket, binding, _, _ = await workflow(session_factory, pr_number=number)
+        await integrate(session_factory, ticket.id, binding, number)
+
+    await open_before_new_candidate_receipt(
+        session_factory,
+        [SlotAnchor(kind="pr", repository_id=RID, pr_number=number)],
+        f"new pr candidate {uuid4().hex[:6]}",
+        writer,
+    )
+
+
+async def open_behind_new_candidate_receipt(
+    factory: async_sessionmaker[AsyncSession],
+    anchors: Sequence[SlotAnchor],
+    title: str,
+    writer: Callable[[AsyncSession], Awaitable[None]],
+) -> None:
+    """A newly eligible writer owns the exclusive fence before open takes its locks.
+
+    Its new binding or integration SHA is uncommitted, so open's ticket-lock statement
+    cannot select its ticket. Only the project fence orders the receipt read after
+    the writer's commit. Without the fence, open inserts before that commit and this
+    helper times out waiting for the shared advisory lock that was never taken.
+    """
+    tasks: list[asyncio.Task] = []
+    try:
+        async with asyncio.timeout(WAIT_SECONDS):
+            async with factory() as holder, holder.begin():
+                holder_pid = await holder.scalar(sa.text("SELECT pg_backend_pid()"))
+                await writer(holder)  # close_slots_satisfied_by now holds the exclusive fence
+                assert await received_anchor(holder, project_key=EXECUTOR, anchor=anchors[0])
+                async with factory() as observer:
+                    assert (
+                        await received_anchor(observer, project_key=EXECUTOR, anchor=anchors[0])
+                        is None
+                    )
+                opening = asyncio.create_task(service(factory).open(EXECUTOR, title, "b", anchors))
+                tasks.append(opening)
+                await wait_until_blocked_on(
+                    factory, holder_pid, statement="pg_advisory_xact_lock_shared("
+                )
+                assert not opening.done()
+            with pytest.raises(FocusSlotError) as refused:
+                await opening
+            assert refused.value.code == "anchor_already_received"
+            async with factory() as session:
+                assert not await session.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(focus_slots)
+                    .where(focus_slots.c.project_key == EXECUTOR, focus_slots.c.title == title)
+                )
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        async with asyncio.timeout(WAIT_SECONDS):
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def test_a_lot_open_queues_on_the_fence_of_a_newly_integrated_ticket_then_refuses(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The uncommitted integration SHA keeps the writer out of open's lot ticket locks."""
+    async with asyncio.timeout(WAIT_SECONDS):
+        ticket, binding, _, number = await workflow(session_factory)
+        release = f"9.{uuid4().int % 1000}.{uuid4().int % 1000}"
+        await plan(session_factory, ticket.id, release)
+
+        async def writer(holder: AsyncSession) -> None:
+            await integrate_in(session_factory, holder, ticket.id, binding, number)
+            await release_in(holder, ticket.id, f"v{release}")
+
+        await open_behind_new_candidate_receipt(
+            session_factory,
+            [SlotAnchor(kind="lot", target_release=release)],
+            f"lot writer first {uuid4().hex[:6]}",
+            writer,
+        )
+
+
+async def test_a_pr_open_queues_on_the_fence_of_a_newly_bound_ticket_then_refuses(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """The second ticket's uncommitted PR binding is outside open's PR ticket locks."""
+    async with asyncio.timeout(WAIT_SECONDS):
+        _, _, _, number = await workflow(session_factory)
+
+        async def writer(holder: AsyncSession) -> None:
+            # workflow's commits release savepoints, not the holder's transaction: the
+            # second ticket, its binding and its receipt become visible together.
+            transaction_factory = async_sessionmaker(
+                await holder.connection(),
+                expire_on_commit=False,
+                join_transaction_mode="create_savepoint",
+            )
+            ticket, binding, _, _ = await workflow(transaction_factory, pr_number=number)
+            await integrate_in(transaction_factory, holder, ticket.id, binding, number)
+
+        await open_behind_new_candidate_receipt(
+            session_factory,
+            [SlotAnchor(kind="pr", repository_id=RID, pr_number=number)],
+            f"pr writer first {uuid4().hex[:6]}",
+            writer,
+        )
 
 
 @pytest.mark.parametrize(

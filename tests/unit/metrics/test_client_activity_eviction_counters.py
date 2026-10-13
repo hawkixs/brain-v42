@@ -211,6 +211,8 @@ class TestTheCountersReachTheOnlyExposureSite:
         assert set(counters) == {
             "evictions_total",
             "evictions_bearing_total",
+            "conversation_evictions_total",
+            "conversation_evictions_bearing_total",
             "occupancy",
             "capacity",
             "folded_observations_total",
