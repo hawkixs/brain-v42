@@ -1,0 +1,92 @@
+{
+  "source_ref": "c11fc9fab917fdb097480a6d41c93b2234819a7c",
+  "schema": {
+    "additionalProperties": false,
+    "properties": {
+      "actor_project": {
+        "maxLength": 200,
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "limit": {
+        "default": 20,
+        "maximum": 100,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "cursor": {
+        "anyOf": [
+          {
+            "maxLength": 1000,
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "work": {
+        "anyOf": [
+          {
+            "enum": [
+              "implement",
+              "repair",
+              "review",
+              "integrate",
+              "accept"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "blocker": {
+        "anyOf": [
+          {
+            "pattern": "^[a-z][a-z0-9_]{0,99}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "stage": {
+        "anyOf": [
+          {
+            "enum": [
+              "awaiting_artifact",
+              "proposed",
+              "verified",
+              "integrated"
+            ],
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "detail": {
+        "default": "summary",
+        "enum": [
+          "summary",
+          "full"
+        ],
+        "type": "string"
+      }
+    },
+    "required": [
+      "actor_project"
+    ],
+    "type": "object"
+  }
+}
