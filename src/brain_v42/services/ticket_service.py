@@ -229,10 +229,14 @@ class TicketService:
             valid = sorted(a.value for a in TicketAction)
             raise IllegalTransitionError(f"unknown action '{action}' — valid: {valid}") from None
 
-        # Self-ticket (from_project == to_project): a single party, hence no
-        # role check (spec §1.1, §4.1) — SELF_TRANSITIONS replaces TRANSITIONS.
+        # Self-ticket transitions belong to the ticket's sole project.
         self_ticket = ticket.from_project == ticket.to_project
         if self_ticket:
+            if author != ticket.from_project:
+                raise NotAllowedError(
+                    f"'{act.value}' is reserved to the ticket's project "
+                    f"('{ticket.from_project}'); author was '{author}'"
+                )
             new_status = SELF_TRANSITIONS.get((ticket.kind, ticket.status, act))
             if new_status is None:
                 raise self._illegal(ticket, act, self_ticket=True)

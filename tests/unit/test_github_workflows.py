@@ -321,6 +321,37 @@ def _command(script: str, prefix: str) -> list[str]:
     return shlex.split(lines[0])
 
 
+def _assert_uv_version_parity(workflows: dict[str, dict[Any, Any]]) -> None:
+    """Pin the resolved uv version across rails and all narrower env scopes."""
+    names = (
+        "continuous-integration.yml",
+        "continuous-delivery.yml",
+        "release.yml",
+    )
+    versions: list[str] = []
+    for name in names:
+        workflow = workflows[name]
+        version = workflow.get("env", {}).get("UV_VERSION")
+        assert isinstance(version, str) and version.strip(), (
+            f"{name} must set a non-empty top-level env.UV_VERSION"
+        )
+        versions.append(version)
+    assert len(set(versions)) == 1, (
+        f"workflow uv versions differ: {dict(zip(names, versions, strict=True))}"
+    )
+
+    expected = versions[0]
+    for name in names:
+        for job_name, job in workflows[name]["jobs"].items():
+            assert job.get("env", {}).get("UV_VERSION", expected) == expected, (
+                f"{name}:{job_name} overrides UV_VERSION"
+            )
+            for step_index, step in enumerate(job.get("steps", [])):
+                assert step.get("env", {}).get("UV_VERSION", expected) == expected, (
+                    f"{name}:{job_name} step {step_index} overrides UV_VERSION"
+                )
+
+
 def test_pull_request_rail_builds_the_image_without_publishing_anything(
     ci_workflow: dict[Any, Any],
 ) -> None:
@@ -368,6 +399,24 @@ def test_pull_request_image_build_cannot_drift_from_the_delivery_build(
 
     assert shared_options(ci_script) == shared_options(cd_script)
     assert _command(ci_script, "docker run") == _command(cd_script, "docker run")
+
+
+def test_all_workflows_use_the_same_uv_version() -> None:
+    """The three rails must resolve the same uv version at every scope."""
+    workflows = {
+        path.name: _load(path)
+        for path in (CI_WORKFLOW_PATH, CD_WORKFLOW_PATH, RELEASE_WORKFLOW_PATH)
+    }
+
+    _assert_uv_version_parity(workflows)
+
+    modified = {name: dict(workflow) for name, workflow in workflows.items()}
+    modified["continuous-delivery.yml"]["env"] = {
+        **workflows["continuous-delivery.yml"]["env"],
+        "UV_VERSION": "0.10.8",
+    }
+    with pytest.raises(AssertionError):
+        _assert_uv_version_parity(modified)
 
 
 def test_the_default_dockerfile_stage_is_the_production_one() -> None:

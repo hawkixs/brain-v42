@@ -343,6 +343,55 @@ submits reaches the hook), the boundary against a malicious local process is a c
 plus the DM alert. An agent that calls `brain_session_resume` on another open session makes
 that session the one the next `/brain-admin` targets.
 
+## Workstation Claude Code headers (`headersHelper`)
+
+Claude Code reaches the MCP server with a user-scope `headersHelper`,
+`deploy/clients/claude-brain-headers.sh`. It prints one JSON line: the bearer read from
+the client's `0600` token file and, as `X-Brain-Agent`, what the server needs to attribute
+the session to a project. The server keeps the basename of a path and accepts it only if it
+is an existing kebab-case project; otherwise the call still runs, under the client actor,
+and `mcp_auth_agent_unresolved` counts the miss (`not_kebab` or `unknown_project`).
+
+What the helper sends, in order:
+
+1. Nothing for the home directory itself or for the daemon's prewarmed
+   `/tmp/cc-daemon-*/spare` processes: no project is claimed and nothing is counted.
+2. The project key of the longest matching prefix in the operator's map file, when one
+   matches on whole path components.
+3. Otherwise, the working directory of the Claude Code process that runs the helper (never
+   `${PWD}`: Desktop sessions inherit the app's directory, which is the home directory).
+
+A path that JSON cannot carry unescaped (a quote, a backslash, a control character) claims
+no project. A missing or empty token file makes the helper fail with nothing on stdout.
+
+Install, from the canonical checkout:
+
+```bash
+install -m 0700 deploy/clients/claude-brain-headers.sh ~/.config/brain-v42/clients/claude-brain-headers.sh
+```
+
+The map file is the operator's, `~/.config/brain-v42/clients/agent-map`, mode `0600`, one
+`<absolute path> <project_key>` per line, `#` for comments. The helper trusts it only when
+its directory belongs to the user with no group or other permission, the map path is not a
+symlink, and the file it actually opens is a regular file owned by the user with no group or
+other permission; it ignores any line whose key the server would refuse. Directories above
+the map's own are not checked: this residual is accepted (operator ruling, 2026-10-13),
+because the default path sits in the user's private configuration tree next to the helper
+and the token, which whoever controlled an ancestor could replace anyway. Never point
+`BRAIN_AGENT_MAP_FILE` into a directory another user can write or redirect. Seed the map
+for directories whose basename is not their project:
+
+```
+/path/to/ReD_v1/skills red-skills
+/path/to/ReD_v1 red
+```
+
+Variables: `BRAIN_CLAUDE_TOKEN_FILE` (default
+`~/.config/brain-v42/clients/workstation-claude.token`) and `BRAIN_AGENT_MAP_FILE`
+(default `~/.config/brain-v42/clients/agent-map`). Sessions pick the new helper up when
+they reconnect. Check the effect on the metrics sidecar: the `mcp_auth_agent_unresolved`
+counters stop growing, and the per-agent view shows the mapped projects.
+
 ## Network trust boundary (detailed)
 
 MCP HTTP binds to loopback by default. A non-loopback `MCP_HTTP_HOST` requires
@@ -971,6 +1020,53 @@ identical repeat. On a period the alternative is 96 identical lines a day, per p
 forever. The suppression is a LOG volume decision only: `brain_reindex_plans` still
 names every rejected path in its `Fichiers non indexés` list on every single run, and
 so does each sweep's `plan_index_refresher.sweep_done` error count.
+
+## Delivery observer: observation cadence
+
+A successful observation sets when the subject is looked at again:
+
+- an open pull request (no `integration_sha` yet): every
+  `BRAIN_DELIVERY_POLL_SECONDS` (default 60), so a merge is seen within a minute;
+- an integrated pull request and a ticket's repository contexts: after
+  `max(POLL_SECONDS, FRESHNESS_SECONDS // 2 - <duration of the collection>)`, 300 s at the
+  defaults for a quick collection. Before its next confirmation lands, evidence ages by
+  that delay, up to one poll interval before the loop picks the job, and the next
+  collection, which is sequential requests plus admission waits and can last minutes
+  for a large context set. Waiting the whole window would leave it stale at the end of
+  every cycle and refuse a resolve in that gap; subtracting the collection keeps a
+  uniformly slow one no worse than the poll cadence.
+
+With `D_prev` and `D_next` the durations of two consecutive collections, the next
+confirmation of a settled subject lands at age:
+
+- `FRESHNESS_SECONDS / 2 + POLL_SECONDS + (D_next - D_prev)` while
+  `FRESHNESS_SECONDS / 2 - D_prev >= POLL_SECONDS`: evidence stays fresh while a collection
+  slows by at most `FRESHNESS_SECONDS / 2 - POLL_SECONDS` (240 s at the defaults) against the
+  previous one, for example when GitHub's responses go from one to nine seconds across a
+  large context set;
+- `2 × POLL_SECONDS + D_next` once the delay is floored at the poll interval (a previous
+  collection longer than 240 s at the defaults): the poll cadence's own bound, fresh while
+  `D_next <= FRESHNESS_SECONDS - 2 × POLL_SECONDS` (480 s).
+
+Past either bound evidence reads stale for at most one cycle: a resolve in that window is refused
+with `delivery_requirements_unsatisfied` until the next confirmation lands, and nothing is
+lost. This residual is accepted (coordination ruling, 2026-10-13): no cadence slower than
+the poll interval could tolerate an arbitrary slowdown.
+
+The observer paces itself with its own `BRAIN_DELIVERY_FRESHNESS_SECONDS`, while the MCP
+server judges freshness with its own: give both processes the same value. An observer
+value above the server's leaves evidence stale between two observations.
+
+A failed observation retries on its own schedule. An outage, a rate limit or an invalid
+response backs off up to 300 s, or longer when GitHub names a longer `Retry-After` (capped
+at an hour). A repository or pull request the App cannot see (`provider_not_found`,
+`provider_forbidden`) waits `300 × 4^n` seconds, `n` being the failures since its last
+success (300 s, 20 min, 80 min, 5 h 20, 21 h 20, then a day), so a forgotten installation
+case stops spending the shared request budget. From its fourth
+consecutive failure the observer also writes an `observation_backoff` line on stderr
+(`subject`, `error_code`, `prior_failures`, `delay_seconds`): that subject now waits on an
+operator fix. Once it is fixed, `brain_delivery_refresh` on the ticket makes its
+contexts and active bindings due at once instead of waiting out the backoff.
 
 ## Delivery observer: releases and deployments
 

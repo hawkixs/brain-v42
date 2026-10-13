@@ -5,13 +5,15 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from collections.abc import AsyncIterator, Callable
+import traceback
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from brain_v42.delivery_config import DeliverySettings
@@ -44,6 +46,8 @@ class ObservationRunResult(BaseModel):
     deferred: int = Field(default=0, ge=0)
     last_success_at: datetime | None = None
     max_lag_seconds: float = Field(default=0, ge=0)
+    # Failures caused by the observer's own code, a subset of `failed` (ticket e8c26eed).
+    internal_errors: int = Field(default=0, ge=0)
     exit_code: Literal[0, 1, 2] = 0  # success / provider failures / ownership conflict or loss
 
 
@@ -51,6 +55,7 @@ class ObservationRunResult(BaseModel):
 class _Outcome:
     status: Literal["collected", "failed", "deferred"]
     finished_at: datetime | None = None
+    internal: bool = False
 
 
 _MAX_DECODED_JOBS_PER_PASS = 100
@@ -60,6 +65,32 @@ _MAX_RELEASE_COMPARES_PER_PASS = 10
 
 class _UndecodableScanLimitReached(Exception):
     pass
+
+
+_INTERNAL_ERROR = "observer_internal_error"
+_MAX_FAULT_FRAMES = 3
+# A repository or pull request the App cannot see stays unseen until someone fixes the
+# installation: retrying it every 300 s spent the shared request budget forever with
+# nothing turning red (ticket bd1879f6). Its retry quadruples up to a day, which the
+# queue's failure count (capped at 6) reaches at its fifth prior failure.
+_UNREACHABLE_CODES = frozenset({"provider_not_found", "provider_forbidden"})
+_UNREACHABLE_BASE_SECONDS = 300.0
+_UNREACHABLE_MAX_SECONDS = 86400.0
+_BACKOFF_ALERT_PRIOR_FAILURES = 3
+
+
+def _fault_location(error: BaseException) -> str:
+    """Name the exception and its innermost frames, never its message.
+
+    An exception message can carry a provider body or a credential; the type and
+    the code location are enough to find a defect from the journal.
+    """
+    frames = traceback.extract_tb(error.__traceback__)[-_MAX_FAULT_FRAMES:]
+    where = " <- ".join(
+        f"{frame.filename.rsplit('/', 1)[-1]}:{frame.lineno} {frame.name}"
+        for frame in reversed(frames)
+    )
+    return f"{type(error).__name__} at {where}" if where else type(error).__name__
 
 
 def _diagnose(
@@ -84,6 +115,29 @@ def _diagnose(
     # broken stderr is the journal's problem, not the attempt's. The write is
     # synchronous, like the stdout protocol of this process; the caller runs
     # it only once the attempt is persisted.
+    _write_stderr_line(line)
+
+
+def _diagnose_backoff(
+    subject: str, code: str, *, prior_failures: int, delay_seconds: float
+) -> None:
+    """One JSON line on stderr when an unreachable subject's retry grows long.
+
+    The per-attempt ``observation_error`` line becomes rare once the retry spans
+    hours; this line says the subject is now waiting on an operator fix.
+    """
+    _write_stderr_line(
+        {
+            "event": "observation_backoff",
+            "subject": subject,
+            "error_code": code,
+            "prior_failures": prior_failures,
+            "delay_seconds": delay_seconds,
+        }
+    )
+
+
+def _write_stderr_line(line: Mapping[str, object]) -> None:
     with suppress(OSError, ValueError):
         sys.stderr.write(json.dumps(line) + "\n")
         sys.stderr.flush()
@@ -192,7 +246,7 @@ class DeliveryObserverRuntime:
     async def _cycle(
         self, stop_event: asyncio.Event, *, project_key: str | None = None
     ) -> ObservationRunResult:
-        collected = failed = deferred = 0
+        collected = failed = deferred = internal = 0
         latest: datetime | None = None
         lag = 0.0
         seen: set[str] = set()
@@ -255,6 +309,7 @@ class DeliveryObserverRuntime:
                     deferred += len(jobs)
                     break
                 for outcome in outcomes:
+                    internal += outcome.internal
                     if outcome.status == "collected":
                         collected += 1
                         if outcome.finished_at is not None:
@@ -281,6 +336,7 @@ class DeliveryObserverRuntime:
                 deferred=deferred,
                 last_success_at=latest,
                 max_lag_seconds=lag,
+                internal_errors=internal,
                 exit_code=2,
             )
         finally:
@@ -294,6 +350,7 @@ class DeliveryObserverRuntime:
             deferred=deferred,
             last_success_at=latest,
             max_lag_seconds=lag,
+            internal_errors=internal,
             exit_code=exit_code,
         )
 
@@ -473,6 +530,37 @@ class DeliveryObserverRuntime:
                     diagnostic=type(error).__name__,
                 )
 
+    def _settled_delay(
+        self,
+        evidence: PullRequestEvidence | RepositoryContextEvidence | None,
+        collection_seconds: float,
+    ) -> float:
+        """How long a successful observation stays good enough not to repeat.
+
+        An open pull request keeps the poll cadence so its merge is seen within a
+        minute. An integrated pull request and a repository context only need to stay
+        fresh, so they wait half the freshness window minus the time this collection
+        took (ticket bd1879f6). The evidence is aged by three things before its next
+        confirmation lands: this delay, up to one poll interval before the loop picks
+        the job, and the next collection, which is many sequential requests plus
+        admission waits. Waiting the whole window would leave it stale at the end of
+        every cycle; subtracting this collection keeps a uniformly slow one no worse
+        than the poll cadence. The caller floors the delay at poll_seconds.
+
+        Accepted residual (coordination ruling A on #362). While freshness/2 - D_prev
+        >= poll, the next confirmation lands at age freshness/2 + poll + (D_next -
+        D_prev): evidence stays fresh while a collection slows by at most
+        freshness/2 - poll (240 s at the defaults) against the previous one. Once
+        the delay is floored at poll, the age is 2 * poll + D_next, the poll
+        cadence's own bound (D_next up to freshness - 2 * poll, 480 s). Past either
+        bound evidence reads stale for at most one cycle, and the only effect is a
+        resolve refused until the next confirmation. No delay longer than
+        poll_seconds could tolerate an arbitrary slowdown.
+        """
+        if isinstance(evidence, PullRequestEvidence) and evidence.integration_sha is None:
+            return 0.0
+        return self.settings.freshness_seconds // 2 - collection_seconds
+
     async def _observe(self, job: ObservationJob) -> _Outcome:
         started_at = datetime.now(UTC)
         evidence: PullRequestEvidence | RepositoryContextEvidence | None = None
@@ -497,12 +585,29 @@ class DeliveryObserverRuntime:
                 if error.code in SAFE_OBSERVATION_ERROR_CODES
                 else "provider_invalid_response"
             )
-            retry = max(error.retry_after_seconds, min(300.0, 5.0 * 2 ** min(job.failure_count, 6)))
+            if error.code in _UNREACHABLE_CODES:
+                retry = min(
+                    _UNREACHABLE_MAX_SECONDS,
+                    _UNREACHABLE_BASE_SECONDS * 4 ** min(job.failure_count, 6),
+                )
+            else:
+                retry = min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
+            retry = max(error.retry_after_seconds, retry)
             provider_code, diagnostic = error.code, error.diagnostic
-        except Exception as error:
+        except (httpx.HTTPError, TimeoutError) as error:
+            # The transport already maps these to ProviderError; this keeps a network
+            # failure that escapes it an outage rather than a defect.
             code, retry = "provider_unavailable", min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
             diagnostic = type(error).__name__
+        except Exception as error:
+            # Anything else is a defect of this code (AttributeError, KeyError, ...):
+            # recording it as provider_unavailable would read as a GitHub outage.
+            code, retry = _INTERNAL_ERROR, min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
+            diagnostic = _fault_location(error)
         finished_at = max(started_at, datetime.now(UTC))
+        if code is None:
+            retry = self._settled_delay(evidence, (finished_at - started_at).total_seconds())
+        delay = min(86400, max(self.settings.poll_seconds, retry))
         try:
             async with self.owner.transaction() as session:
                 repo = self.evidence_repository
@@ -545,24 +650,41 @@ class DeliveryObserverRuntime:
                     session,
                     job,
                     expected_version=job.version + 1,
-                    delay_seconds=min(86400, max(self.settings.poll_seconds, retry)),
+                    delay_seconds=delay,
                 )
             if code is not None:
                 # After the attempt is persisted and rescheduled: stderr is
                 # synchronous, and a journal that stalls may delay only what
                 # comes next, never the record of this attempt.
                 _diagnose(job.identity, code, provider_code=provider_code, diagnostic=diagnostic)
+                if (
+                    provider_code in _UNREACHABLE_CODES
+                    and job.failure_count >= _BACKOFF_ALERT_PRIOR_FAILURES
+                ):
+                    _diagnose_backoff(
+                        job.identity,
+                        code,
+                        prior_failures=job.failure_count,
+                        delay_seconds=delay,
+                    )
             return _Outcome(
-                "collected" if code is None else "failed", finished_at if code is None else None
+                "collected" if code is None else "failed",
+                finished_at if code is None else None,
+                internal=code == _INTERNAL_ERROR,
             )
         except DeliveryError as error:
+            internal = code == _INTERNAL_ERROR
+            if internal:
+                # The attempt was not recorded, but the defect behind it must not
+                # vanish with it: say where it happened before handling the record.
+                _diagnose(job.identity, _INTERNAL_ERROR, provider_code=None, diagnostic=diagnostic)
             if error.code in {
                 "binding_conflict",
                 "binding_superseded",
                 "repository_context_conflict",
                 "repository_context_superseded",
             }:
-                return _Outcome("deferred")
+                return _Outcome("deferred", internal=internal)
             # Any other domain error is confined to this one job: re-raising
             # would end the process, and the oldest due job being retried
             # first, every restart would die on the same one (ticket b78b5144).
@@ -573,4 +695,4 @@ class DeliveryObserverRuntime:
                 provider_code=None,
                 diagnostic=type(error).__name__,
             )
-            return _Outcome("failed")
+            return _Outcome("failed", internal=internal)

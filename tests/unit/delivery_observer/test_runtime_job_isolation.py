@@ -103,7 +103,9 @@ class FakeClient:
     async def collect(self, binding, contract, previous=None):
         if binding.id in self.failing:
             raise ProviderError("provider_unavailable")
-        return MagicMock(spec=PullRequestEvidence)
+        # spec= does not see pydantic fields; the runtime reads this one to pace
+        # the next observation, and a real open pull request carries None.
+        return MagicMock(spec=PullRequestEvidence, integration_sha=None)
 
 
 def runtime_for(jobs, repo, *, undecodable=(), failing_jobs=()):
