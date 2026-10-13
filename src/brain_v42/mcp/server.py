@@ -1567,6 +1567,15 @@ def build_server() -> BuiltServer:
 
     register_claim_tools(mcp, claim_verification_svc, claim_read_svc)
 
+    # Programme progress (contract docs/contracts/programmes_v1.md): four writes
+    # signed by the credential's project, one read. The sidecar publishes the same
+    # rows on GET /programmes for the cockpit.
+    from brain_v42.mcp.tools.programme_tools import register_programme_tools  # noqa: PLC0415
+    from brain_v42.repositories.pg_programme import PgProgrammeRepo  # noqa: PLC0415
+    from brain_v42.services.programme_service import ProgrammeService  # noqa: PLC0415
+
+    register_programme_tools(mcp, ProgrammeService(PgProgrammeRepo(_session_factory)))
+
     if settings.brain_code_mode:
         server = maybe_apply_code_mode(mcp, settings)
     else:

@@ -74,6 +74,7 @@ from brain_v42.mcp.tools.formatters import (
 from brain_v42.models.brain_session import BrainSessionError
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.models.delivery import DeliveryError
+from brain_v42.models.programme import ProgrammeError
 from brain_v42.services.claim_read_service import ClaimReadError
 from brain_v42.services.consolidation import ConsolidationEntityNotFoundError
 from brain_v42.services.entity_maintenance_service import UnknownEntityTypeError
@@ -103,6 +104,9 @@ SURFACED_BUSINESS_ERRORS: tuple[type[Exception], ...] = (
     # Same closed-code shape, read side (`services/claim_read_service.py`): a
     # missing/out-of-scope claim and an unavailable read carry no row content.
     ClaimReadError,
+    # Closed codes; the message names a field, a rule or a project key, never a
+    # database detail (`models/programme.py`, `repositories/pg_programme.py`).
+    ProgrammeError,
 )
 
 _SURFACED_MARKER = "__brain_business_errors_surfaced__"

@@ -40,7 +40,8 @@ def _expected_checks() -> list[dict[str, Any]]:
             # `knowledge_*` claim ledgers with 055, the three `focus_slot*`
             # tables with 060, `brain_session_connections` with 061 and the
             # four `brain_client_credentials` / `brain_admin_elevations` /
-            # `brain_schema_compat` / `brain_credential_audit` tables with 063 — all long after the 035
+            # `brain_schema_compat` / `brain_credential_audit` tables with 063 and
+            # `programmes` / `programme_gates` with 065 — all long after the 035
             # this asset describes. See the revision-by-revision review in
             # test_recovery_contract.py.
             if name
@@ -68,6 +69,8 @@ def _expected_checks() -> list[dict[str, Any]]:
                 "focus_slot_anchors",
                 "focus_slot_history",
                 "focus_slots",
+                "programme_gates",
+                "programmes",
                 "project_focus_history",
                 "ticket_extraction_attempts",
             }

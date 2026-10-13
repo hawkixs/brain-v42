@@ -300,6 +300,10 @@ class MetricsServer:
             app.cleanup_ctx.append(self._credential_registry_lifecycle)
         app.router.add_get("/metrics", self._handle_metrics)
         app.router.add_get("/api/cockpit", self._handle_cockpit)
+        # Programme progress (contract docs/contracts/programmes_v1.md): its own
+        # route, so the /metrics payload red-monitor stores on every probe does not
+        # carry it. Same listener and same read exposure as /metrics.
+        app.router.add_get("/programmes", self._handle_programmes)
         # Always registered, including on a bind that has no receivers: it is the
         # ONLY place a monitor can read that they are missing. The startup line
         # below says it once, to whoever reads a boot; nobody greps a log to build
@@ -401,6 +405,19 @@ class MetricsServer:
                 "metrics_receiver.refused", receiver=receiver, reason=reason, status=status
             )
         return response
+
+    async def _handle_programmes(self, _request: web.Request) -> web.Response:
+        """`{"programmes": <block>}`, or `{}` while this cycle's read failed (contract §3).
+
+        Memoised with the slow blocks (decision 1669d429): one read per TTL for every
+        poller, `generated_at` stamped by the cache. The attribute lookup happens
+        inside the cache's protected `compute`, as for the tickets block: a collector
+        lacking the method degrades to `{}`, never to a 500.
+        """
+        block = await self._slow_block_cache.get(
+            "programmes", lambda: self._collector.collect_programmes()
+        )
+        return web.json_response({"programmes": block} if block else {})
 
     async def _handle_healthz(self, _request: web.Request) -> web.Response:
         """Whether the three POST receivers are being served, in one field.
