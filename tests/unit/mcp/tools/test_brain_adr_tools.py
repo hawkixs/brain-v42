@@ -326,6 +326,21 @@ class TestBrainDeprecateAdr:
         mock_svc.deprecate.assert_called_once_with(UUID(adr_id), reason="No longer relevant")
 
     @pytest.mark.asyncio
+    async def test_deprecate_adr_logs_reason_length_without_reason_text(self) -> None:
+        from structlog.testing import capture_logs
+
+        mcp, mock_svc = _make_mcp_with_adr_tools()
+        adr = _make_adr(status="deprecated")
+        mock_svc.deprecate = AsyncMock(return_value=adr)
+        reason = "private explanation that must not be logged"
+        fn = await _get_tool_fn(mcp, "brain_deprecate_adr")
+        with capture_logs() as records:
+            await fn(adr_id=str(adr.id), reason=reason)
+        event = next(record for record in records if record["event"] == "mcp.brain_deprecate_adr")
+        assert event["reason_chars"] == len(reason)
+        assert reason not in repr(records)
+
+    @pytest.mark.asyncio
     async def test_deprecate_adr_returns_confirmation_string(self) -> None:
         """brain_deprecate_adr returns confirmation with ADR number and title."""
         mcp, mock_svc = _make_mcp_with_adr_tools()

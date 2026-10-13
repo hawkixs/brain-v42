@@ -15,12 +15,13 @@ import yaml
 
 from brain_v42.config import Settings
 from brain_v42.delivery_observer.config import load_observer_settings
+from brain_v42.maintenance.session_sweep import build_parser as session_sweep_parser
 from brain_v42.mcp.server import version_check
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / "deploy" / "compose.yaml"
 ONE_SHOTS = {"restore", "migrate", "graph-bootstrap"}
-SERVERS = {"mcp", "metrics", "delivery-observer", "graph-recon"}
+SERVERS = {"mcp", "metrics", "delivery-observer", "graph-recon", "session-sweep"}
 BRAIN_SERVICES = ONE_SHOTS | SERVERS
 SERVICES = BRAIN_SERVICES | {"postgres", "neo4j"}
 RAIL_VARIABLES = {
@@ -180,6 +181,7 @@ def test_memory_budgets_have_headroom(compose: dict[str, Any]) -> None:
         "metrics": "384m",
         "delivery-observer": "256m",
         "graph-recon": "256m",
+        "session-sweep": "256m",
     }
     assert {name: service["mem_limit"] for name, service in compose["services"].items()} == limits
     neo4j = compose["services"]["neo4j"]["environment"]
@@ -427,6 +429,40 @@ def test_graph_recon_sleeps_before_each_weekly_inventory(compose: dict[str, Any]
         compose["services"]["graph-recon"]["environment"]
         == compose["services"]["graph-bootstrap"]["environment"]
     )
+
+
+def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
+    compose: dict[str, Any], clean_settings_env: pytest.MonkeyPatch
+) -> None:
+    """Ticket 888660a9: red-base had no runner for the seven-day rule.
+
+    The MCP server's own net closes idle agent traces every fifteen minutes, so
+    this loop carries the seven-day rule only, and ships dry: wetting it is a
+    separate configuration pull request, after a dry night's journal was read.
+    """
+    service = compose["services"]["session-sweep"]
+    assert service["container_name"] == "brain-v42-session-sweep"
+    command = service["command"]
+    assert command[:2] == ["/bin/sh", "-c"]
+    match = re.fullmatch(
+        r"while :; do\s+python -m brain_v42\.maintenance\.session_sweep(?P<args>[^|]*)"
+        r"\|\| echo \"session-sweep: run failed[^\"]*\" >&2;\s+sleep 86400;\s*done\s*",
+        command[2],
+    )
+    assert match, command[2]
+    arguments = session_sweep_parser().parse_args(match["args"].split())
+    assert arguments.wet is False
+    assert arguments.older_than_days == 7
+    assert service["env_file"] == ["/etc/brain-v42/postgres-app.env"]
+    assert service["environment"] == compose["x-brain-env"]
+    assert "secrets" not in service
+    probe = service["healthcheck"]["test"]
+    assert probe[:3] == ["CMD", "python", "-c"]
+    assert "brain_v42.maintenance.session_sweep" in probe[3]
+    assert "/proc/1/cmdline" in probe[3]
+    for key, value in service["environment"].items():
+        clean_settings_env.setenv(key, value)
+    assert Settings(_env_file=None).brain_session_inactive_sweep_enabled is False
 
 
 def test_projector_is_private_to_the_graph_processes(compose: dict[str, Any]) -> None:

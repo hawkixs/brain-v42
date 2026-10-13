@@ -37,6 +37,27 @@ def test_constructor_accepts_no_calibration_argument() -> None:
         RerankerClient(calibration=object())
 
 
+def test_client_created_log_redacts_base_url() -> None:
+    from structlog.testing import capture_logs
+
+    client = RerankerClient(base_url="https://user:secret@rerank.test/api?token=hidden")
+    try:
+        with capture_logs() as records:
+            client._get_client()
+        created = next(
+            record for record in records if record["event"] == "reranker_client.client_created"
+        )
+        assert created["base_url"] == "https://rerank.test/api"
+        # Only the logged value is redacted: the client still calls the configured URL.
+        assert client._client is not None
+        assert client._client.base_url.userinfo == b"user:secret"
+        assert client._client.base_url.host == "rerank.test"
+    finally:
+        import asyncio
+
+        asyncio.run(client.close())
+
+
 @pytest.fixture
 def client():
     return RerankerClient(base_url="http://localhost:8004")

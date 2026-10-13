@@ -914,6 +914,8 @@ class Settings(BaseSettings):
             raise ValueError("otel_endpoint must be a readable http(s) URL") from exc
         if parsed.scheme not in {"http", "https"}:
             raise ValueError(f"otel_endpoint must be http(s) (got scheme {parsed.scheme!r})")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("otel_endpoint must not contain user information")
         host = parsed.hostname
         if not _is_loopback_host(host):
             # Only the host is copied over: a URL can carry credentials.
@@ -984,7 +986,7 @@ class Settings(BaseSettings):
     decay_enabled: bool = Field(default=True, validation_alias=_brain_alias("DECAY_ENABLED"))
     decay_floor: float = Field(default=0.3, validation_alias=_brain_alias("DECAY_FLOOR"))
     decay_flush_interval_seconds: int = Field(
-        default=300, validation_alias=_brain_alias("DECAY_FLUSH_INTERVAL_SECONDS")
+        default=300, gt=0, validation_alias=_brain_alias("DECAY_FLUSH_INTERVAL_SECONDS")
     )
     # §5.5 of the dream v2 spec — the ONLY change in this project a human would
     # feel the same day, hence shipped closed. Open, the decay reads
@@ -1004,7 +1006,7 @@ class Settings(BaseSettings):
 
     # --- Consolidation ---
     consolidation_interval_seconds: int = Field(
-        default=21600, validation_alias=_brain_alias("CONSOLIDATION_INTERVAL_SECONDS")
+        default=21600, gt=0, validation_alias=_brain_alias("CONSOLIDATION_INTERVAL_SECONDS")
     )
     consolidation_similarity_threshold: float = Field(
         default=0.92, validation_alias=_brain_alias("CONSOLIDATION_SIMILARITY_THRESHOLD")

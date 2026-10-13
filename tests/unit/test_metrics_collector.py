@@ -197,6 +197,12 @@ class TestEndpointHostMalformedUrl:
 
 @patch("brain_v42.metrics.collector.get_settings", return_value=_mock_settings())
 class TestGetMetrics:
+    def test_embedding_service_url_is_redacted(self, _mock: MagicMock) -> None:
+        _mock.return_value.embedding_service_url = "https://user:secret@embed.test/api?token=hidden"
+        collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
+        metrics = collector.get_metrics()
+        assert metrics["embedding_service"]["url"] == "https://embed.test/api"
+
     def test_get_metrics_returns_complete_structure(self, _mock: MagicMock) -> None:
         collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
         collector.record_tool_call("brain_search", latency_ms=100.0)
