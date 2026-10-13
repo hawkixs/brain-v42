@@ -163,6 +163,7 @@ def test_build_services_exposes_the_registry() -> None:
     session_factory = MagicMock()
     mock_settings = MagicMock(
         brain_embedding_token_file=None,
+        rerank_fallback_model="",
         embedding_service_url="http://localhost:8003",
         embedding_dimension=1536,
         metrics_enabled=False,

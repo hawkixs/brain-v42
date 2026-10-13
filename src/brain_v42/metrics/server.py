@@ -648,9 +648,12 @@ class MetricsServer:
         # These counters belong to MCP's single emitter, not this sidecar.
         metrics["search_rerank"] = process_agg.pop("search_rerank", {})
         metrics.pop("search", None)
-        metrics.setdefault("reranker", {})["chain"] = (
-            process_agg.get("tools", {}).get("_reranker", {}).get("chain", {})
-        )
+        # Persisted by MCP's emitter; this sidecar's own collector never reranks.
+        aggregated_chain = process_agg.get("tools", {}).get("_reranker", {}).get("chain")
+        if aggregated_chain is not None:
+            metrics.setdefault("reranker", {})["chain"] = aggregated_chain
+        else:
+            metrics.setdefault("reranker", {}).setdefault("chain", {})
         # Read MCP's persisted snapshot, never this sidecar's in-memory counter.
         # Structural zero stays present before the first event/flush and on DB failure.
         metrics["mcp_auth_refused"] = process_agg.pop("mcp_auth_refused", {})
