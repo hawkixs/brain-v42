@@ -1156,6 +1156,8 @@ class PgBrainSessionRepo(BasePgRepository):
             .where(
                 brain_session_artifacts.c.knowledge_id == produced.c.id,
                 sa.or_(owner.c.nature.is_(None), owner.c.nature != "agent"),
+                # An abandoned holder is a donor, not an attribution (974f46f3).
+                owner.c.status != "abandoned",
             )
         )
         statement = sa.select(sa.func.count()).select_from(produced).where(~attributed_to_a_human)
@@ -2067,11 +2069,11 @@ class PgBrainSessionRepo(BasePgRepository):
         existing: Sequence[Row],
         session_id: UUID,
     ) -> frozenset[UUID]:
-        """Among these rows, those an `agent` tracer holds — and only those.
+        """Reclaim tracer-held and abandoned operator-held artifacts (974f46f3).
 
-        The bound is the holder's NATURE, never its age nor its status: a swept
-        tracer is still the server. A non-`agent` holder is never taken over
-        here, whatever UUID is named.
+        A swept tracer still holds artifacts for the server. An abandoned
+        operator is also a donor; open and ended operators retain ownership.
+        The caller keeps the reclaim in the existing capture transaction.
         """
         foreign = {
             artifact["session_id"] for artifact in existing if artifact["session_id"] != session_id
@@ -2083,7 +2085,16 @@ class PgBrainSessionRepo(BasePgRepository):
                 await session.execute(
                     sa.select(brain_sessions.c.id).where(
                         brain_sessions.c.id.in_(foreign),
-                        brain_sessions.c.nature == "agent",
+                        sa.or_(
+                            brain_sessions.c.nature == "agent",
+                            sa.and_(
+                                brain_sessions.c.status == "abandoned",
+                                sa.or_(
+                                    brain_sessions.c.nature.is_(None),
+                                    brain_sessions.c.nature != "agent",
+                                ),
+                            ),
+                        ),
                     )
                 )
             )
@@ -2419,9 +2430,10 @@ class PgBrainSessionRepo(BasePgRepository):
     ) -> set[UUID]:
         """What this session already holds — and what it may take back.
 
-        `reclaimable` contains ONLY artifacts parked in an `agent` tracer, that
-        is, with the server. A conflict with another HUMAN stays an error:
-        ledger exclusivity exists for that.
+        `reclaimable` contains ONLY artifacts parked in an `agent` tracer (with
+        the server) or in an abandoned operator session, which released them
+        (decision 974f46f3). A conflict with an open or ended operator session
+        stays an error: ledger exclusivity exists for that.
         """
         conflicts = [
             artifact
