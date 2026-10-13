@@ -414,6 +414,8 @@ boundary; they are not independently authenticated project identities. Dream
 principals cannot invoke the delivery mutations, including through compact
 catalog gateways.
 
+The declared `actor_project` is not yet bound to the transport actor's resolved project. Each write whose declared project differs from it (`mismatch`), whose credential resolves no project (`unresolved_actor`) or that carries no verified principal (`unauthenticated`: shared token, stdio) is counted in `/metrics` under `author_binding_candidates`, keyed `<tool>:<cause>`, without introducing refusals.
+
 | Operation | Other arguments | Structured result |
 | --- | --- | --- |
 | `brain_delivery_contract_set` | `ticket_id`, `contract`, `expected_revision` (0 for create), `idempotency_key`, required `reason` | `ContractRevision` |
@@ -1339,6 +1341,8 @@ Write a `BELONGS_TO_DOMAIN` edge from an entity to a Domain node. Called by the 
 ## Tickets (addressed coordination) — 6 tools (`ticket_tools.py`)
 
 **Coordination** family — orthogonal to the memory family. Tickets are addressed (a sender `from_project`, a recipient `to_project`), stateful (state machine), and **excluded** from `brain_search`, embeddings, decay, domain classification, and Neo4j sync.
+
+The declared `from_project` or `author_project` is not yet bound to the transport actor's resolved project. Each write whose declared project differs from it (`mismatch`), whose credential resolves no project (`unresolved_actor`) or that carries no verified principal (`unauthenticated`: shared token, stdio) is counted in `/metrics` under `author_binding_candidates`, keyed `<tool>:<cause>`, without introducing refusals.
 
 > Note: these 6 tools do NOT participate in `brain_search` / embeddings — coordination family, not memory.
 

@@ -42,6 +42,7 @@ DYNAMIC_MAPS = {
     "/metrics.mcp_auth_refused": "MCP refusal causes persisted by emitting processes",
     "/metrics.elevation_refused": "elevation refusal causes persisted by emitting processes",
     "/metrics.mcp_auth_agent_unresolved": "identity-resolution causes persisted by processes",
+    "/metrics.author_binding_candidates": "tool:cause pairs persisted by emitting processes",
     "/metrics.database.embedding_backlog.worker_last_24h.unavailable_by_kind": (
         "unavailability kinds present in embedding_backfill timeseries rows"
     ),
@@ -195,6 +196,7 @@ METRICS_SCHEMA = {
     "mcp_auth_refused": {"*": None},
     "elevation_refused": {"*": None},
     "mcp_auth_agent_unresolved": {"*": None},
+    "author_binding_candidates": {"*": None},
     "cross_process": {
         "active_processes": None,
         "active_agents": None,
@@ -645,6 +647,7 @@ def populated_server(
         "_mcp_auth_refused": {"missing_token": 1},
         "_elevation_refused": {"not_allowed": 1},
         "_mcp_auth_agent_unresolved": {"missing_agent": 1},
+        "_author_binding_candidates": {"brain_ticket_create:unauthenticated": 1},
     }
     # Exercise both sides of the handler's override: local collector fields
     # must stay pinned even when live process rows would normally replace them.

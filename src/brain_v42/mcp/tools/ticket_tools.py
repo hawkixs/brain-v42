@@ -15,6 +15,7 @@ import structlog
 from pydantic import ValidationError
 
 from brain_v42.facts.sources import running_release_sha
+from brain_v42.mcp.author_binding import observe_declared_project
 from brain_v42.mcp.tools.formatters import (
     format_confirmation,
     format_error,
@@ -259,6 +260,7 @@ def register_ticket_tools(
         knowledge-extraction job — use it for high-volume operational/job
         tickets (e.g. a factory daemon) that are noise, not durable knowledge.
         """
+        observe_declared_project("brain_ticket_create", from_project)
         if kind not in _VALID_KINDS:
             return format_error(f"Invalid kind '{kind}'. Valid: {list(_VALID_KINDS)}")
         if extraction is not None and extraction != ExtractionStatus.SKIPPED.value:
@@ -311,6 +313,7 @@ def register_ticket_tools(
         `body` then carries the reason and is mandatory; an identical body is
         refused.
         """
+        observe_declared_project("brain_ticket_reply", author_project)
         tid = parse_uuid(ticket_id)
         if tid is None:
             return format_error(f"Invalid UUID: {ticket_id}")
@@ -342,6 +345,7 @@ def register_ticket_tools(
         resolve, wontfix, ack (fyi). Requester (from_project): confirm,
         reopen, cancel. Optional message is appended to the thread.
         """
+        observe_declared_project("brain_ticket_transition", author_project)
         tid = parse_uuid(ticket_id)
         if tid is None:
             return format_error(f"Invalid UUID: {ticket_id}")
@@ -388,6 +392,7 @@ def register_ticket_tools(
             target_release: Version X.Y.Z without the tag's v (e.g. "0.6.3");
                 omit or null to unplan.
         """
+        observe_declared_project("brain_ticket_plan", author_project)
         tid = parse_uuid(ticket_id)
         if tid is None:
             return format_error(f"Invalid UUID: {ticket_id}")
