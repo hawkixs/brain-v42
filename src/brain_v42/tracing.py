@@ -32,6 +32,7 @@ import logging
 from typing import Any
 
 from brain_v42.provenance import UNKNOWN_ACTOR
+from brain_v42.safe_logging import redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +188,7 @@ def init_tracing(endpoint: str, *, service_name: str = "brain-v42-mcp") -> bool:
         from opentelemetry.sdk.trace.export import BatchSpanProcessor  # noqa: PLC0415
     except ImportError:
         # The `tracing` extra is not installed: a NORMAL state, not a failure.
-        logger.info("tracing.sdk_absent endpoint=%s", endpoint)
+        logger.info("tracing.sdk_absent endpoint=%s", redact_url(endpoint))
         return False
     try:
         provider = TracerProvider(
@@ -210,7 +211,7 @@ def init_tracing(endpoint: str, *, service_name: str = "brain-v42-mcp") -> bool:
         set_tracer(provider.get_tracer(__name__))
         return True
     except Exception:
-        logger.warning("tracing.init_failed endpoint=%s", endpoint, exc_info=True)
+        logger.warning("tracing.init_failed endpoint=%s", redact_url(endpoint), exc_info=True)
         return False
 
 

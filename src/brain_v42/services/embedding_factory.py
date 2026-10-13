@@ -18,6 +18,7 @@ import structlog
 from pydantic import ValidationError
 
 from brain_v42.config import Settings, get_settings
+from brain_v42.safe_logging import redact_url
 from brain_v42.services.embedding_wire import EmbeddingWire, OpenAIWire, ShimWire
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
@@ -254,7 +255,7 @@ def build_embedding_service(settings: Settings) -> GPUEmbeddingService:
     logger.info(
         "embedding_factory.built",
         backend=settings.embedding_backend,
-        base_url=settings.embedding_service_url,
+        base_url=redact_url(settings.embedding_service_url),
         model=settings.embedding_model if settings.embedding_backend == "openai" else None,
         query_prefixed=bool(settings.embedding_query_prefix),
         document_prefixed=bool(settings.embedding_document_prefix),

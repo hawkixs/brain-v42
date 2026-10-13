@@ -83,7 +83,7 @@ from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.repositories.pg_runbook import PgRunbookRepo
 from brain_v42.repositories.pg_snippet import PgSnippetRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
-from brain_v42.safe_logging import build_logging_processors, configure_json_logging
+from brain_v42.safe_logging import build_logging_processors, configure_json_logging, redact_url
 from brain_v42.services.adr_service import ADRService
 from brain_v42.services.agent_trace_net import AgentTraceNet, agent_trace_net_is_armed
 from brain_v42.services.auto_linker import AutoLinker
@@ -218,7 +218,9 @@ async def app_lifecycle(
     if settings.otel_tracing_enabled:
         tracing_armed = init_tracing(settings.otel_endpoint)
         logger.info(
-            "brain_v42.server.tracing", armed=tracing_armed, endpoint=settings.otel_endpoint
+            "brain_v42.server.tracing",
+            armed=tracing_armed,
+            endpoint=redact_url(settings.otel_endpoint),
         )
 
     async def _background_plan_index() -> None:
