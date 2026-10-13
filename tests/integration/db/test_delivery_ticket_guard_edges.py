@@ -231,7 +231,13 @@ async def test_actual_gateway_refuses_contracted_self_completion(session_factory
             headers={"Authorization": f"Bearer {GATEWAY_TOKEN}"},
         )
     assert response.status_code == status, response.text
-    assert "delivery_" in response.json()["detail"]
+    detail = response.json()["detail"]
+    if actor == "outsider":
+        # Since ticket 4ec68979 the ticket service refuses a non-participant
+        # before the delivery guard runs: same status, more precise reason.
+        assert "reserved to the ticket's project ('executor')" in detail
+    else:
+        assert "delivery_" in detail
     if status == 409:
         assert "resolve" in response.json()["allowed_actions"]
     assert (await repo.get_by_id(ticket.id)).status is TicketStatus.OPEN
