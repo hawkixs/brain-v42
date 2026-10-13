@@ -50,6 +50,7 @@ from brain_v42.db.neo4j import close_neo4j_driver, create_neo4j_driver
 from brain_v42.facts.definitions_startup import register_fact_definitions
 from brain_v42.mcp.activity_reporter import close_activity_reporter
 from brain_v42.mcp.admin_elevations import ELEVATION_PATH, AdminElevations
+from brain_v42.mcp.argument_guidance import ArgumentGuidanceMiddleware
 from brain_v42.mcp.business_errors import surface_business_errors
 from brain_v42.mcp.credentials_http import CredentialGuard, CredentialTokenVerifier
 from brain_v42.mcp.dream_capabilities import (
@@ -437,6 +438,8 @@ def create_mcp_instance() -> FastMCP:
     # `apply_tool_catalog_profile` and `maybe_apply_code_mode` return the SAME
     # object, so this middleware survives both.
     instance.add_middleware(ProvenanceMiddleware())
+    # This middleware sees raw Pydantic argument errors above masking.
+    instance.add_middleware(ArgumentGuidanceMiddleware())
     return instance
 
 
