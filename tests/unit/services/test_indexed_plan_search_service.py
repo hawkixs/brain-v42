@@ -107,3 +107,29 @@ async def test_parent_archive_filter_is_applied_before_limit(
     else:
         assert archive_clause in rendered_sql
         assert rendered_sql.index(archive_clause) < rendered_sql.index("LIMIT")
+
+
+@pytest.mark.asyncio
+async def test_vector_search_sets_hnsw_scan_params_before_the_select() -> None:
+    """Plan chunks go through the same HNSW settings as the knowledge tables."""
+    service, session = _search_service()
+    session.execute.return_value.scalar.return_value = "0.8.1"
+
+    await service.semantic_search("usage", embedding=[0.1] * 1536, limit=50)
+
+    calls = session.execute.await_args_list
+    texts = [str(c.args[0]) for c in calls]
+    select_at = next(i for i, t in enumerate(texts) if "ORDER BY" in t)
+    assert any("hnsw.ef_search" in t for t in texts[:select_at])
+    assert any("hnsw.iterative_scan" in t for t in texts[:select_at])
+    ef_call = next(c for c in calls if "ef_search" in str(c.args[0]))
+    assert ef_call.args[1] == {"v": "50"}
+
+
+@pytest.mark.asyncio
+async def test_fts_search_leaves_hnsw_settings_alone() -> None:
+    service, session = _search_service()
+
+    await service.search("usage", limit=50)
+
+    assert not any("set_config" in str(c.args[0]) for c in session.execute.await_args_list)
