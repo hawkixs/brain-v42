@@ -14,12 +14,17 @@
 #     processes claim no project: no X-Brain-Agent at all, so the call runs under
 #     the client actor without counting a miss;
 #   - a path that cannot be carried safely in the JSON line claims no project.
-# Fails (non-zero, nothing on stdout) when the token file is missing or empty.
+# Fails (non-zero, nothing on stdout) when the token file is missing or empty, or
+# when the token holds a character JSON cannot carry unescaped.
 set -eu
 file="${BRAIN_CLAUDE_TOKEN_FILE:-$HOME/.config/brain-v42/clients/workstation-claude.token}"
 map="${BRAIN_AGENT_MAP_FILE:-$HOME/.config/brain-v42/clients/agent-map}"
 token=$(tr -d '[:space:]' < "$file")
 [ -n "$token" ] || { echo "brain-v42 headersHelper: empty token file $file" >&2; exit 1; }
+case "$token" in
+  *[\"\\]*|*[[:cntrl:]]*)
+    echo "brain-v42 headersHelper: unusable token in $file" >&2; exit 1 ;;
+esac
 
 claude_cwd() {
   pid=$PPID
@@ -34,13 +39,22 @@ claude_cwd() {
   done
 }
 
-# A map writable by anyone but its owner could redirect attribution: ignore it.
+# Only a regular file owned by this user and closed to group and others is trusted:
+# anyone else able to write it, or to own it, could redirect attribution.
 map_is_private() {
-  [ -f "$map" ] && [ -r "$map" ] && [ -z "$(find "$map" -prune -perm /022 2>/dev/null)" ]
+  [ -f "$map" ] && [ ! -L "$map" ] && [ -r "$map" ] &&
+    [ -n "$(find "$map" -prune -type f -user "$(id -u)" ! -perm /077 2>/dev/null)" ]
+}
+
+# The server's project key syntax: ^[a-z0-9]+([:-][a-z0-9]+)*$
+is_project_key() {
+  case "$1" in
+    ''|*[!a-z0-9:-]*|[:-]*|*[:-]|*[:-][:-]*) return 1 ;;
+  esac
 }
 
 mapped_project() {
-  best="" best_len=0
+  best="" best_len=-1
   map_is_private || return 0
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
@@ -48,19 +62,25 @@ mapped_project() {
     path=${line% *}
     [ "$path" != "$line" ] || continue
     case "$path" in /*) ;; *) continue ;; esac
-    path=${path%/}
-    case "$key" in *[!a-z0-9-]*|-*|'') continue ;; esac
-    case "$1" in
-      "$path"|"$path"/*)
-        if [ "${#path}" -gt "$best_len" ]; then best=$key best_len=${#path}; fi ;;
-    esac
+    is_project_key "$key" || continue
+    while [ "$path" != "/" ] && [ "${path%/}" != "$path" ]; do path=${path%/}; done
+    if [ "$path" = "/" ]; then
+      matched=yes   # the root prefixes every absolute path
+    else
+      case "$1" in "$path"|"$path"/*) matched=yes ;; *) matched=no ;; esac
+    fi
+    if [ "$matched" = yes ] && [ "${#path}" -gt "$best_len" ]; then
+      best=$key best_len=${#path}
+    fi
   done < "$map"
   printf '%s' "$best"
 }
 
 agent=$(claude_cwd)
+home=$HOME
+while [ "$home" != "/" ] && [ "${home%/}" != "$home" ]; do home=${home%/}; done
 case "$agent" in
-  "$HOME"|/tmp/cc-daemon-*/spare) agent="" ;;
+  "$home"|/tmp/cc-daemon-*/spare) agent="" ;;
 esac
 case "$agent" in
   /*)

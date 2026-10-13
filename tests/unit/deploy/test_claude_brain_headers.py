@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -118,15 +119,67 @@ def test_map_lines_with_an_invalid_key_are_ignored(tmp_path, claude, env) -> Non
     assert headers(run(claude, red, env))["X-Brain-Agent"] == str(red.resolve())
 
 
-def test_a_map_writable_by_others_is_ignored(tmp_path, claude, env) -> None:
+@pytest.mark.parametrize("mode", [0o622, 0o644, 0o640, 0o604])
+def test_a_map_open_to_group_or_others_is_ignored(tmp_path, claude, env, mode) -> None:
     red = tmp_path / "ReD_v1"
     red.mkdir()
-    write_map(env, f"{red.resolve()} red", mode=0o622)
+    write_map(env, f"{red.resolve()} red", mode=mode)
     assert headers(run(claude, red, env))["X-Brain-Agent"] == str(red.resolve())
+
+
+def test_a_symlinked_map_is_ignored(tmp_path, claude, env) -> None:
+    red = tmp_path / "ReD_v1"
+    red.mkdir()
+    target = tmp_path / "real-map"
+    target.write_text(f"{red.resolve()} red\n")
+    target.chmod(0o600)
+    Path(env["BRAIN_AGENT_MAP_FILE"]).symlink_to(target)
+    assert headers(run(claude, red, env))["X-Brain-Agent"] == str(red.resolve())
+
+
+@pytest.mark.parametrize("key", ["red--skills", "red-", "-red", "red:", "Red", "red_skills"])
+def test_a_key_the_server_would_refuse_never_overrides_a_valid_mapping(
+    tmp_path, claude, env, key
+) -> None:
+    red = tmp_path / "ReD_v1"
+    skills = red / "skills"
+    skills.mkdir(parents=True)
+    write_map(env, f"{red.resolve()} red", f"{skills.resolve()} {key}")
+    assert headers(run(claude, skills, env))["X-Brain-Agent"] == "red"
+
+
+def test_colon_separated_keys_are_valid(tmp_path, claude, env) -> None:
+    red = tmp_path / "ReD_v1"
+    red.mkdir()
+    write_map(env, f"{red.resolve()} team:red")
+    assert headers(run(claude, red, env))["X-Brain-Agent"] == "team:red"
+
+
+def test_a_root_mapping_applies_and_loses_to_longer_prefixes(tmp_path, claude, env) -> None:
+    red = tmp_path / "ReD_v1"
+    other = tmp_path / "other"
+    red.mkdir()
+    other.mkdir()
+    write_map(env, "/ fallback", f"{red.resolve()} red")
+    assert headers(run(claude, other, env))["X-Brain-Agent"] == "fallback"
+    assert headers(run(claude, red, env))["X-Brain-Agent"] == "red"
+
+
+def test_map_paths_may_contain_spaces(tmp_path, claude, env) -> None:
+    spaced = tmp_path / "My Projects" / "ReD_v1"
+    spaced.mkdir(parents=True)
+    write_map(env, f"{spaced.resolve()} red")
+    assert headers(run(claude, spaced, env))["X-Brain-Agent"] == "red"
 
 
 def test_home_directory_claims_no_project(claude, env) -> None:
     assert headers(run(claude, Path(env["HOME"]), env)) == {"Authorization": f"Bearer {TOKEN}"}
+
+
+def test_home_directory_with_a_trailing_slash_claims_no_project(claude, env) -> None:
+    home = Path(env["HOME"])
+    env["HOME"] = env["HOME"] + "/"
+    assert headers(run(claude, home, env)) == {"Authorization": f"Bearer {TOKEN}"}
 
 
 def test_home_directory_is_matched_before_the_map(claude, env) -> None:
@@ -134,8 +187,10 @@ def test_home_directory_is_matched_before_the_map(claude, env) -> None:
     assert "X-Brain-Agent" not in headers(run(claude, Path(env["HOME"]), env))
 
 
-def test_daemon_spare_claims_no_project(tmp_path, claude, env) -> None:
-    root = Path("/tmp") / f"cc-daemon-{os.getuid()}-test-{tmp_path.name}"
+def test_daemon_spare_claims_no_project(claude, env) -> None:
+    # The helper matches /tmp/cc-daemon-*/spare literally, so the fixture must live
+    # under /tmp; mkdtemp allocates a name no concurrent run can share.
+    root = Path(tempfile.mkdtemp(prefix=f"cc-daemon-{os.getuid()}-test-", dir="/tmp"))
     spare = root / "0123abcd" / "spare"
     spare.mkdir(parents=True)
     try:
@@ -148,6 +203,14 @@ def test_a_path_unsafe_for_json_claims_no_project(tmp_path, claude, env) -> None
     odd = tmp_path / 'quote"dir'
     odd.mkdir()
     assert "X-Brain-Agent" not in headers(run(claude, odd, env))
+
+
+@pytest.mark.parametrize("token", ['tok"en', "tok\\en"])
+def test_a_token_json_cannot_carry_fails_closed(tmp_path, claude, env, token) -> None:
+    Path(env["BRAIN_CLAUDE_TOKEN_FILE"]).write_text(token)
+    result = run(claude, tmp_path, env)
+    assert result.returncode != 0 and result.stdout == ""
+    assert token not in result.stderr
 
 
 def test_missing_or_empty_token_fails_closed(tmp_path, claude, env) -> None:
