@@ -20,7 +20,8 @@
 # read by mcp only; primary rerank link, Voyage's own API: decisions fa3b6abc, 7d36a08c).
 # /etc/brain-v42/rerank-api-key: uid 1000, mode 0600 (OpenRouter key, value only; read by
 # mcp only; fallback link cohere/rerank-4-fast with data collection denied, used when Voyage
-# fails within the 2.5 s budget; RRF order only when both links fail, go 742e7a05).
+# fails within its 1.6 s share of the 3.0 s budget; RRF order only when both links fail
+# (go 742e7a05).
 # Rerank rollback: set the x-rerank-env block to BRAIN_RERANK_BACKEND "none" alone (the
 # settings validator refuses any other rerank line next to it), then redeploy through the
 # rail. A rotated key needs an explicit recreate.
@@ -89,8 +90,8 @@ x-rerank-env: &rerank-env
   BRAIN_RERANK_FALLBACK_PROVIDER: '{"only":["cohere"],"allow_fallbacks":false,"data_collection":"deny"}'
   BRAIN_RERANK_FALLBACK_URL: https://openrouter.ai/api
   BRAIN_RERANK_FALLBACK_API_KEY_FILE: /run/secrets/rerank_api_key
-  BRAIN_RERANK_BUDGET_SECONDS: "2.5"
-  BRAIN_RERANK_PRIMARY_BUDGET_SECONDS: "1.0"
+  BRAIN_RERANK_BUDGET_SECONDS: "3.0"
+  BRAIN_RERANK_PRIMARY_BUDGET_SECONDS: "1.6"
 
 x-server: &server
   restart: unless-stopped

@@ -388,8 +388,10 @@ HOSTED_RERANK = {
     "BRAIN_RERANK_FALLBACK_PROVIDER": '{"only":["cohere"],"allow_fallbacks":false,"data_collection":"deny"}',
     "BRAIN_RERANK_FALLBACK_URL": "https://openrouter.ai/api",
     "BRAIN_RERANK_FALLBACK_API_KEY_FILE": "/run/secrets/rerank_api_key",
-    "BRAIN_RERANK_BUDGET_SECONDS": "2.5",
-    "BRAIN_RERANK_PRIMARY_BUDGET_SECONDS": "1.0",
+    # Measured 2026-10-13 on 0.6.14: Voyage direct answers in about 1 s, so a 1.0 s primary
+    # budget cut half the calls, and each cut closed the pooled connection (cold TLS next).
+    "BRAIN_RERANK_BUDGET_SECONDS": "3.0",
+    "BRAIN_RERANK_PRIMARY_BUDGET_SECONDS": "1.6",
 }
 RERANK_SECRETS = {
     "voyage_api_key": "/etc/brain-v42/voyage-api-key",
@@ -438,11 +440,14 @@ def test_hosted_rerank_block_passes_the_settings_policy(
     assert settings.rerank_fallback_provider.allow_fallbacks is False
     assert settings.rerank_fallback_provider.data_collection == "deny"
     assert settings.rerank_primary_budget_seconds < settings.rerank_budget_seconds
+    # The fallback keeps at least 1.4 s (Cohere rerank-4-fast measured 0.6-1.0 s, one 1.85 s).
+    assert settings.rerank_budget_seconds - settings.rerank_primary_budget_seconds >= 1.4
 
 
 def test_rerank_rollback_is_documented_for_the_operator() -> None:
     header = COMPOSE.read_text(encoding="utf-8").split("name:", 1)[0]
     assert "/etc/brain-v42/voyage-api-key: uid 1000, mode 0600" in header
+    assert "3.0 s budget" in header
     assert "cohere/rerank-4-fast" in header
     assert "BRAIN_RERANK_BACKEND" in header and "none" in header
 
