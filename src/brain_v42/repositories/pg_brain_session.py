@@ -1176,13 +1176,16 @@ class PgBrainSessionRepo(BasePgRepository):
         """End atomically while treating a stale shared focus as data.
 
         An UNBOUND end writes `next_focus` as the project's whole base focus, so it
-        meets the relay's destructive-shrink guard (ticket 91faa1a8) unless the
-        operator passes `allow_focus_shrink`. The refusal is raised before any write
-        and leaves the session open, like the identity and capture errors: closing it
-        would lose the hand-off, and the caller can fix the text and retry. It applies
-        only where the base would actually be written: a stale revision is recorded as
-        a conflict first (nothing destroyed, `next_focus` stays on the session row),
-        and a bound or already-ended session never reaches it.
+        meets the relay's destructive-shrink guard (ticket 91faa1a8); a BOUND end
+        replaces the whole slot body and meets the same guard on the slot
+        (`slot_focus_shrink`, ticket 7eab4e35, in `_end_bound`). `allow_focus_shrink`
+        opens either guard, and the service accepts it only from a /brain-admin
+        elevated connection. The refusal is raised before any write and leaves the
+        session open, like the identity and capture errors: closing it would lose
+        the hand-off, and the caller can fix the text and retry. It applies only
+        where a body would actually be written: a stale base revision is recorded
+        as a conflict first (nothing destroyed, `next_focus` stays on the session
+        row), and an already-ended session replays without meeting it.
         """
         normalized_summary = summary.strip()
         normalized_focus = next_focus.strip()
@@ -1217,6 +1220,7 @@ class PgBrainSessionRepo(BasePgRepository):
                     normalized_focus,
                     expected_focus_revision,
                     normalized_reason,
+                    allow_focus_shrink=allow_focus_shrink,
                 )
 
             focus_before = await self._load_focus(
@@ -1386,6 +1390,15 @@ class PgBrainSessionRepo(BasePgRepository):
                     f"slot {slot_id} is at revision {slot['revision']}, "
                     f"not {expected_slot_revision}",
                 )
+            if not allow_focus_shrink:
+                refusal = focus_shrink_refusal(
+                    slot["body"],
+                    handover,
+                    subject=f"the handover for slot {slot_id}",
+                    target="slot body",
+                )
+                if refusal is not None:
+                    raise FocusSlotError("slot_focus_shrink", refusal)
             ledger = await self._relay_ledger(session, model, capture_ids)
             updated = await cas_slot_body(
                 session, slot_id=slot_id, expected=expected_slot_revision, body=handover
@@ -2195,6 +2208,8 @@ class PgBrainSessionRepo(BasePgRepository):
         next_focus: str,
         expected: int,
         reason: str | None,
+        *,
+        allow_focus_shrink: bool = False,
     ) -> BrainSessionEndResult:
         """End a bound session onto its slot; the base is neither locked nor written (S1).
 
@@ -2203,7 +2218,9 @@ class PgBrainSessionRepo(BasePgRepository):
         requires `focus_revision_at_end <> end_expected_focus_revision`), so the
         end refuses `slot_closed` and the session stays open: end with the
         pre-close revision (`expected - 1`, since a close bumps it by exactly 1;
-        recorded as `conflict`), or abandon.
+        recorded as `conflict`), or abandon. `next_focus` REPLACES the whole slot
+        body: a replacement under 70% of it is refused `slot_focus_shrink` before
+        any write unless `allow_focus_shrink` (ticket 7eab4e35).
         """
         if len(next_focus) > SLOT_BODY_MAX_LENGTH:
             raise FocusSlotError(
@@ -2222,6 +2239,15 @@ class PgBrainSessionRepo(BasePgRepository):
                 f"expected_focus_revision={expected - 1} (the pre-close slot revision) to "
                 "record a conflict, or abandon the session",
             )
+        if not allow_focus_shrink and not closed and slot_before["revision"] == expected:
+            refusal = focus_shrink_refusal(
+                slot_before["body"],
+                next_focus,
+                subject=f"next_focus for slot {slot_id}",
+                target="slot body",
+            )
+            if refusal is not None:
+                raise FocusSlotError("slot_focus_shrink", refusal)
         capture_ids = await self._load_session_artifact_ids(session, model.id)
         if capture_ids:
             await self._validate_captures(session, model, capture_ids)
