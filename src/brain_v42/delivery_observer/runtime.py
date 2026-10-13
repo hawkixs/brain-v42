@@ -6,7 +6,7 @@ import asyncio
 import json
 import sys
 import traceback
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -69,6 +69,14 @@ class _UndecodableScanLimitReached(Exception):
 
 _INTERNAL_ERROR = "observer_internal_error"
 _MAX_FAULT_FRAMES = 3
+# A repository or pull request the App cannot see stays unseen until someone fixes the
+# installation: retrying it every 300 s spent the shared request budget forever with
+# nothing turning red (ticket bd1879f6). Its retry quadruples up to a day, which the
+# queue's failure count (capped at 6) reaches at its fifth prior failure.
+_UNREACHABLE_CODES = frozenset({"provider_not_found", "provider_forbidden"})
+_UNREACHABLE_BASE_SECONDS = 300.0
+_UNREACHABLE_MAX_SECONDS = 86400.0
+_BACKOFF_ALERT_PRIOR_FAILURES = 3
 
 
 def _fault_location(error: BaseException) -> str:
@@ -107,6 +115,29 @@ def _diagnose(
     # broken stderr is the journal's problem, not the attempt's. The write is
     # synchronous, like the stdout protocol of this process; the caller runs
     # it only once the attempt is persisted.
+    _write_stderr_line(line)
+
+
+def _diagnose_backoff(
+    subject: str, code: str, *, prior_failures: int, delay_seconds: float
+) -> None:
+    """One JSON line on stderr when an unreachable subject's retry grows long.
+
+    The per-attempt ``observation_error`` line becomes rare once the retry spans
+    hours; this line says the subject is now waiting on an operator fix.
+    """
+    _write_stderr_line(
+        {
+            "event": "observation_backoff",
+            "subject": subject,
+            "error_code": code,
+            "prior_failures": prior_failures,
+            "delay_seconds": delay_seconds,
+        }
+    )
+
+
+def _write_stderr_line(line: Mapping[str, object]) -> None:
     with suppress(OSError, ValueError):
         sys.stderr.write(json.dumps(line) + "\n")
         sys.stderr.flush()
@@ -499,6 +530,22 @@ class DeliveryObserverRuntime:
                     diagnostic=type(error).__name__,
                 )
 
+    def _settled_delay(
+        self, evidence: PullRequestEvidence | RepositoryContextEvidence | None
+    ) -> float:
+        """How long a successful observation stays good enough not to repeat.
+
+        An open pull request keeps the poll cadence so its merge is seen within a
+        minute. An integrated pull request and a repository context only need to stay
+        fresh: they are reobserved at half the freshness window, because the loop
+        picks due work only every poll_seconds and evidence refreshed at exactly
+        freshness_seconds would read stale at the end of every cycle (ticket
+        bd1879f6). The caller still floors the delay at poll_seconds.
+        """
+        if isinstance(evidence, PullRequestEvidence) and evidence.integration_sha is None:
+            return 0.0
+        return float(self.settings.freshness_seconds // 2)
+
     async def _observe(self, job: ObservationJob) -> _Outcome:
         started_at = datetime.now(UTC)
         evidence: PullRequestEvidence | RepositoryContextEvidence | None = None
@@ -523,7 +570,14 @@ class DeliveryObserverRuntime:
                 if error.code in SAFE_OBSERVATION_ERROR_CODES
                 else "provider_invalid_response"
             )
-            retry = max(error.retry_after_seconds, min(300.0, 5.0 * 2 ** min(job.failure_count, 6)))
+            if error.code in _UNREACHABLE_CODES:
+                retry = min(
+                    _UNREACHABLE_MAX_SECONDS,
+                    _UNREACHABLE_BASE_SECONDS * 4 ** min(job.failure_count, 6),
+                )
+            else:
+                retry = min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
+            retry = max(error.retry_after_seconds, retry)
             provider_code, diagnostic = error.code, error.diagnostic
         except (httpx.HTTPError, TimeoutError) as error:
             # The transport already maps these to ProviderError; this keeps a network
@@ -536,6 +590,9 @@ class DeliveryObserverRuntime:
             code, retry = _INTERNAL_ERROR, min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
             diagnostic = _fault_location(error)
         finished_at = max(started_at, datetime.now(UTC))
+        if code is None:
+            retry = self._settled_delay(evidence)
+        delay = min(86400, max(self.settings.poll_seconds, retry))
         try:
             async with self.owner.transaction() as session:
                 repo = self.evidence_repository
@@ -578,13 +635,23 @@ class DeliveryObserverRuntime:
                     session,
                     job,
                     expected_version=job.version + 1,
-                    delay_seconds=min(86400, max(self.settings.poll_seconds, retry)),
+                    delay_seconds=delay,
                 )
             if code is not None:
                 # After the attempt is persisted and rescheduled: stderr is
                 # synchronous, and a journal that stalls may delay only what
                 # comes next, never the record of this attempt.
                 _diagnose(job.identity, code, provider_code=provider_code, diagnostic=diagnostic)
+                if (
+                    provider_code in _UNREACHABLE_CODES
+                    and job.failure_count >= _BACKOFF_ALERT_PRIOR_FAILURES
+                ):
+                    _diagnose_backoff(
+                        job.identity,
+                        code,
+                        prior_failures=job.failure_count,
+                        delay_seconds=delay,
+                    )
             return _Outcome(
                 "collected" if code is None else "failed",
                 finished_at if code is None else None,
