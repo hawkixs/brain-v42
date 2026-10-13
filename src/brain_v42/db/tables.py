@@ -2152,9 +2152,9 @@ project_focus_history = Table(
         server_default=sa.text("now()"),
     ),
     sa.PrimaryKeyConstraint("project_key", "focus_revision", name="project_focus_history_pkey"),
-    # An exact mirror of the CHECK 050 installs. Six sources for seven writers:
-    # `focus_tool` covers the roadmap CAS and the repository's `update_focus`,
-    # `context_upsert` covers `create` and `get_or_create`.
+    # An exact mirror of the CHECK 050 installs. `focus_tool` is the roadmap CAS,
+    # `context_upsert` covers `create` and the insert branch of `get_or_create`;
+    # `generic_update` has had no writer since ticket 7eab4e35.
     sa.CheckConstraint(
         "source IN ('session_end', 'focus_tool', 'context_upsert', "
         "'generic_update', 'maintenance_scrub', 'migration_seed')",
@@ -2299,5 +2299,175 @@ focus_slot_history = Table(
         "COALESCE((source IN ('session_end', 'session_relay') AND session_id IS NOT NULL) "
         "OR (source IN ('slot_open', 'slot_close') AND session_id IS NULL), false)",
         name="focus_slot_history_session_valid",
+    ),
+)
+
+# Programme progress (migration 065, contract docs/contracts/programmes_v1.md). The
+# CHECK texts are built exactly as the migration builds them: the fresh-head yardstick
+# compares `create_all()` against the chain constraint by constraint.
+_PROGRAMME_STATES = "('active', 'paused', 'done')"
+_GATE_STATES = "('todo', 'in_progress', 'blocked', 'done')"
+#: The key grammars of contract section 2, as whole-string regexes.
+_PROGRAMME_KEY_RE = "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+_GATE_KEY_RE = "[A-Za-z0-9][A-Za-z0-9._-]{0,31}"
+#: A published project identity: a canonical brain project key (models/project_key.py).
+_PROJECT_RE = "^[a-z0-9]+([:-][a-z0-9]+)*$"
+#: Contract section 2's forbidden characters: C0 and C1 controls, DEL, zero-width,
+#: line and paragraph separators, bidi overrides and isolates. The service refuses a
+#: wider set (whole Unicode categories); this is the floor a write that skipped it
+#: still meets. Written with regex escapes only: this source carries none of them.
+_PROGRAMME_FORBIDDEN = (
+    "[\\x01-\\x1f\\x7f-\\x9f\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]"
+)
+
+#: Unicode spaces (category Zs) refused at either end of a line: btrim() alone
+#: strips U+0020 only (review round 2 of #376). Tabs and line breaks at an end are
+#: already forbidden anywhere.
+_PROGRAMME_EDGE_SPACE = "[\\x20\\xa0\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000]"
+
+
+def _programme_line(column: str, limit: int) -> str:
+    """One declared line: no outer space, 1 to `limit` characters, no forbidden one."""
+    return (
+        f"{column} !~ '^{_PROGRAMME_EDGE_SPACE}|{_PROGRAMME_EDGE_SPACE}$' AND {column} <> '' "
+        f"AND char_length({column}) <= {limit} AND {column} !~ '{_PROGRAMME_FORBIDDEN}'"
+    )
+
+
+#: Each dependency is a gate key on its own: the joined string matches the grammar
+#: element by element, and splitting it back must give as many elements as stored,
+#: so an element holding a comma, or an empty one, is refused.
+_PROGRAMME_DEPENDS_ON = (
+    "cardinality(depends_on) <= 12 AND array_position(depends_on, NULL) IS NULL "
+    "AND cardinality(string_to_array(array_to_string(depends_on, ','), ',')) "
+    "= cardinality(depends_on) "
+    f"AND array_to_string(depends_on, ',') ~ '^({_GATE_KEY_RE}(,{_GATE_KEY_RE})*)?$' "
+    "AND NOT (key = ANY (depends_on))"
+)
+
+
+programmes = Table(
+    "programmes",
+    METADATA,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+    Column("key", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column(
+        "coordinator_project",
+        String(50),
+        sa.ForeignKey(
+            "project_contexts.project_key",
+            ondelete="RESTRICT",
+            name="programmes_coordinator_project_fkey",
+        ),
+        nullable=False,
+    ),
+    Column("state", String(16), nullable=False),
+    Column("position", Integer, nullable=False),
+    Column("last_change_gate", Text, nullable=True),
+    Column("last_change_from", String(16), nullable=True),
+    Column("last_change_to", String(16), nullable=True),
+    Column("last_change_at", DateTime(timezone=True), nullable=True),
+    Column("last_change_by", String(50), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("updated_by", String(50), nullable=False),
+    UniqueConstraint("key", name="programmes_key_key"),
+    sa.CheckConstraint(
+        f"COALESCE(key ~ '{_PROGRAMME_KEY_RE}', false)", name="programmes_key_valid"
+    ),
+    sa.CheckConstraint(
+        f"COALESCE({_programme_line('title', 120)}, false)", name="programmes_title_valid"
+    ),
+    sa.CheckConstraint(
+        f"COALESCE(state IN {_PROGRAMME_STATES}, false)", name="programmes_state_valid"
+    ),
+    sa.CheckConstraint("COALESCE(position >= 0, false)", name="programmes_position_valid"),
+    sa.CheckConstraint(
+        f"COALESCE(updated_by ~ '{_PROJECT_RE}', false)", name="programmes_updated_by_valid"
+    ),
+    sa.CheckConstraint(
+        "COALESCE("
+        "(last_change_gate IS NULL AND last_change_from IS NULL AND last_change_to IS NULL "
+        "AND last_change_at IS NULL AND last_change_by IS NULL) "
+        f"OR (last_change_gate ~ '^{_GATE_KEY_RE}$' AND last_change_at IS NOT NULL "
+        f"AND last_change_by ~ '{_PROJECT_RE}' "
+        f"AND last_change_from IN {_GATE_STATES} AND last_change_to IN {_GATE_STATES} "
+        "AND last_change_from <> last_change_to), false)",
+        name="programmes_last_change_valid",
+    ),
+)
+
+programme_gates = Table(
+    "programme_gates",
+    METADATA,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+    Column(
+        "programme_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey(
+            "programmes.id", ondelete="CASCADE", name="programme_gates_programme_id_fkey"
+        ),
+        nullable=False,
+    ),
+    Column("key", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column(
+        "owner_project",
+        String(50),
+        sa.ForeignKey(
+            "project_contexts.project_key",
+            ondelete="RESTRICT",
+            name="programme_gates_owner_project_fkey",
+        ),
+        nullable=False,
+    ),
+    Column("state", String(16), nullable=False),
+    Column("depends_on", ARRAY(Text), nullable=False, server_default=sa.text("'{}'")),
+    Column("weight", Integer, nullable=False, server_default=sa.text("1")),
+    Column("waiting_ask", Text, nullable=True),
+    Column("waiting_since", DateTime(timezone=True), nullable=True),
+    Column("progress_done", Integer, nullable=True),
+    Column("progress_total", Integer, nullable=True),
+    Column("progress_unit", Text, nullable=True),
+    Column("note", Text, nullable=True),
+    Column("position", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("updated_by", String(50), nullable=False),
+    UniqueConstraint("programme_id", "key", name="programme_gates_programme_id_key_key"),
+    sa.CheckConstraint(
+        f"COALESCE(key ~ '^{_GATE_KEY_RE}$', false)", name="programme_gates_key_valid"
+    ),
+    sa.CheckConstraint(
+        f"COALESCE({_programme_line('title', 120)}, false)", name="programme_gates_title_valid"
+    ),
+    sa.CheckConstraint(
+        f"COALESCE(state IN {_GATE_STATES}, false)", name="programme_gates_state_valid"
+    ),
+    sa.CheckConstraint(
+        f"COALESCE({_PROGRAMME_DEPENDS_ON}, false)", name="programme_gates_depends_on_valid"
+    ),
+    sa.CheckConstraint(
+        "COALESCE(weight BETWEEN 1 AND 100, false)", name="programme_gates_weight_valid"
+    ),
+    sa.CheckConstraint(
+        "COALESCE((waiting_ask IS NULL AND waiting_since IS NULL) "
+        f"OR ({_programme_line('waiting_ask', 200)} AND waiting_since IS NOT NULL), false)",
+        name="programme_gates_waiting_valid",
+    ),
+    sa.CheckConstraint(
+        "COALESCE((progress_done IS NULL AND progress_total IS NULL AND progress_unit IS NULL) "
+        "OR (progress_total BETWEEN 1 AND 100000 AND progress_done BETWEEN 0 AND progress_total "
+        f"AND {_programme_line('progress_unit', 24)}), false)",
+        name="programme_gates_progress_valid",
+    ),
+    sa.CheckConstraint(
+        f"COALESCE(note IS NULL OR ({_programme_line('note', 200)}), false)",
+        name="programme_gates_note_valid",
+    ),
+    sa.CheckConstraint("COALESCE(position >= 0, false)", name="programme_gates_position_valid"),
+    sa.CheckConstraint(
+        f"COALESCE(updated_by ~ '{_PROJECT_RE}', false)", name="programme_gates_updated_by_valid"
     ),
 )

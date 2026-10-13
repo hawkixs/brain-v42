@@ -320,7 +320,7 @@ class TestUpdate:
         from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 
         mock_session = _make_mock_session()
-        row = _make_row(current_focus="new focus")
+        row = _make_row(current_focus="stored focus")
 
         mock_result = MagicMock()
         mock_result.mappings.return_value.first.return_value = row
@@ -328,10 +328,15 @@ class TestUpdate:
 
         repo = PgProjectContextRepo()
         with _patch_factory(mock_session):
-            result = await repo.update(row["id"], ProjectContextUpdate(current_focus="new focus"))
+            result = await repo.update(
+                row["id"], ProjectContextUpdate(name="Renamed", current_focus="new focus")
+            )
 
         assert isinstance(result, ProjectContext)
-        assert result.current_focus == "new focus"
+        stmt = mock_session.execute.await_args.args[0]
+        set_clause = str(stmt.compile()).split(" SET ", 1)[1].split(" WHERE ", 1)[0]
+        assert "current_focus" not in set_clause
+        assert stmt.compile().params["name"] == "Renamed"
 
     @pytest.mark.asyncio
     async def test_update_returns_none_when_not_found(self):
@@ -347,7 +352,9 @@ class TestUpdate:
 
         repo = PgProjectContextRepo()
         with _patch_factory(mock_session):
-            result = await repo.update(uuid.uuid4(), ProjectContextUpdate(current_focus="x"))
+            result = await repo.update(
+                uuid.uuid4(), ProjectContextUpdate(name="Renamed", current_focus="x")
+            )
 
         assert result is None
 
@@ -484,6 +491,49 @@ class TestListAll:
 
 class TestGetOrCreate:
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("submitted", "stored"),
+        [(" focus ", "focus"), ("focus", " focus \n"), (" focus\n", "\tfocus ")],
+    )
+    async def test_set_context_accepts_whitespace_only_focus_difference(
+        self, submitted: str, stored: str
+    ) -> None:
+        """The MCP upsert accepts equivalent prose without replacing the stored focus."""
+        from brain_v42.mcp.tools.project_context_tools import register_project_context_tools
+        from brain_v42.repositories.pg_project_context import PgProjectContextRepo
+        from brain_v42.services.project_context_service import ProjectContextService
+
+        mock_session = _make_mock_session()
+        row = _make_row(project_key="brain-v42", current_focus=stored, focus_revision=7)
+        mock_session.execute.return_value.mappings.return_value.one.return_value = row
+        registered: dict[str, Any] = {}
+        mcp = MagicMock()
+
+        def collect(**kwargs: Any) -> Any:
+            def decorate(function: Any) -> Any:
+                registered[function.__name__] = function
+                return function
+
+            return decorate
+
+        mcp.tool.side_effect = collect
+        register_project_context_tools(mcp, ProjectContextService(PgProjectContextRepo()))
+        with _patch_factory(mock_session):
+            result = await registered["brain_set_project_context"](
+                project_key="brain-v42",
+                name="Renamed",
+                description="Metadata",
+                current_focus=submitted,
+            )
+
+        assert "Project context set" in result
+        stmt = mock_session.execute.await_args_list[0].args[0]
+        set_clause = str(stmt.compile()).split("DO UPDATE SET ", 1)[1].split(" RETURNING", 1)[0]
+        assert "current_focus" not in set_clause
+        assert "focus_revision" not in set_clause
+        assert "focus_updated_at" not in set_clause
+
+    @pytest.mark.asyncio
     async def test_get_or_create_upserts_existing(self):
         """get_or_create() upserts (INSERT...ON CONFLICT DO UPDATE) and returns result."""
         from brain_v42.models.project_context import ProjectContext, ProjectContextCreate
@@ -603,70 +653,6 @@ class TestGetOrCreate:
 
         assert isinstance(result, ProjectContext)
         assert result.gitlab_project_path == "hawkixs_project/brain_v42"
-
-
-# ===========================================================================
-# 9. update_focus()
-# ===========================================================================
-
-
-class TestUpdateFocus:
-    @pytest.mark.asyncio
-    async def test_update_focus_returns_model_when_found(self):
-        """update_focus() returns updated ProjectContext when project_key exists."""
-        from brain_v42.models.project_context import ProjectContext
-        from brain_v42.repositories.pg_project_context import PgProjectContextRepo
-
-        mock_session = _make_mock_session()
-        row = _make_row(current_focus="new focus")
-
-        mock_result = MagicMock()
-        mock_result.mappings.return_value.first.return_value = row
-        mock_session.execute = AsyncMock(return_value=mock_result)
-
-        repo = PgProjectContextRepo()
-        with _patch_factory(mock_session):
-            result = await repo.update_focus("brain_v42", "new focus")
-
-        assert isinstance(result, ProjectContext)
-        assert result.current_focus == "new focus"
-
-    @pytest.mark.asyncio
-    async def test_update_focus_returns_none_when_key_not_found(self):
-        """update_focus() returns None when project_key does not exist."""
-        from brain_v42.repositories.pg_project_context import PgProjectContextRepo
-
-        mock_session = _make_mock_session()
-
-        mock_result = MagicMock()
-        mock_result.mappings.return_value.first.return_value = None
-        mock_session.execute = AsyncMock(return_value=mock_result)
-
-        repo = PgProjectContextRepo()
-        with _patch_factory(mock_session):
-            result = await repo.update_focus("nonexistent", "focus")
-
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_update_focus_with_blockers(self):
-        """update_focus() updates blockers when provided."""
-        from brain_v42.models.project_context import ProjectContext
-        from brain_v42.repositories.pg_project_context import PgProjectContextRepo
-
-        mock_session = _make_mock_session()
-        row = _make_row(current_focus="focus", blockers=["blocker1"])
-
-        mock_result = MagicMock()
-        mock_result.mappings.return_value.first.return_value = row
-        mock_session.execute = AsyncMock(return_value=mock_result)
-
-        repo = PgProjectContextRepo()
-        with _patch_factory(mock_session):
-            result = await repo.update_focus("brain_v42", "focus", blockers=["blocker1"])
-
-        assert isinstance(result, ProjectContext)
-        assert result.blockers == ["blocker1"]
 
 
 # ===========================================================================

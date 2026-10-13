@@ -138,10 +138,10 @@ class MinimalCollector:
     async def collect_process_metrics(self) -> dict[str, object]:
         return {"active_processes": 0, "tools": {}, "embedding": {}}
 
-    async def collect_dream_metrics(self) -> dict[str, object]:
+    async def collect_dream_metrics(self, **_: object) -> dict[str, object]:
         return {}
 
-    async def collect_nightly_ops(self) -> dict[str, object]:
+    async def collect_nightly_ops(self, **_: object) -> dict[str, object]:
         return {}
 
 

@@ -246,6 +246,33 @@ def test_recent_log_processor_push_on_call(collector: MetricsCollector) -> None:
     assert "metrics.test.event" in log[0]["msg"]
 
 
+@pytest.mark.parametrize(
+    "exc_info",
+    [
+        ValueError("pw=s3cret"),
+        True,
+        None,
+        (None, ValueError("pw=s3cret"), None),
+        ("not-a-class", ValueError("pw=s3cret"), None),
+    ],
+)
+def test_recent_log_processor_renders_exc_info_as_its_type_only(
+    collector: MetricsCollector, exc_info: object
+) -> None:
+    """The recent-log buffer runs before the renderers: it must not print a message."""
+    proc = RecentLogProcessor(collector, min_level="info")
+    try:
+        raise KeyError("dsn=postgresql://brain:s3cret@db/brain")
+    except KeyError:
+        proc(None, "error", {"event": "db.failed", "level": "error", "exc_info": exc_info})
+
+    msg = collector.get_recent_log()[-1]["msg"]
+    assert "s3cret" not in msg
+    assert "db.failed" in msg
+    if isinstance(exc_info, (ValueError, tuple)):
+        assert "exc_info=ValueError" in msg
+
+
 def test_recent_log_processor_min_level_filters_debug(collector: MetricsCollector) -> None:
     """Debug events below min_level='info' must be silently dropped."""
     proc = RecentLogProcessor(collector, min_level="info")
@@ -515,7 +542,9 @@ def test_sidecar_exception_has_traceback_and_syslog_priority(collector: MetricsC
         structlog.reset_defaults()
     rendered = output.getvalue()
     assert rendered.startswith("<3>")
-    assert "ValueError: sidecar failure" in rendered
+    # The type and the traceback stay; the message is redacted (ticket bb65719f).
+    assert "ValueError: <message redacted>" in rendered
+    assert "sidecar failure" not in rendered
     assert "Traceback (most recent call last)" in rendered
     error_lines = rendered.split("<4>", maxsplit=1)[0].splitlines()
     assert all(line.startswith("<3>") for line in error_lines)

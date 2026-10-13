@@ -90,6 +90,16 @@ def test_value_rule_allows_only_bounded_non_float_scalars() -> None:
     assert _input(expected={"path": "/a", "op": "eq", "value": [None, True, "x", 1]})
 
 
+@pytest.mark.parametrize("bad", ["a\x00b", "a\ud800b"])
+def test_text_rules_refuse_what_canonical_json_cannot_store(bad: str) -> None:
+    """NUL and surrogates are refused at input, not as an internal canonical failure."""
+    assert "statement rule refuses NUL" in _error_for(statement=bad)
+    assert "value rule refuses NUL" in _error_for(expected={"path": "/a", "op": "eq", "value": bad})
+    assert "value rule refuses NUL" in _error_for(
+        expected={"path": "/a", "op": "in", "value": ["ok", bad]}
+    )
+
+
 def test_in_rule_requires_a_value_array() -> None:
     """Membership has one valid right-hand-side domain: an array of scalars."""
     assert "in rule" in _error_for(expected={"path": "/a", "op": "in", "value": 1})

@@ -7,7 +7,7 @@ public API (``collector.collect_*`` / ``collector.record_search_log``) is
 unchanged.
 
 These methods depend only on ``self._session_factory`` and never crash the
-sidecar — every query degrades to an empty/zero result on error. (Pool / row
+sidecar — failed measurements are null with separate block health. (Pool / row
 counts that also need ``self._engine`` + ``get_settings`` stay in
 ``collector.py`` as ``collect_db_stats``.)
 
@@ -22,7 +22,8 @@ returning it plainly, so the cache retries under the short
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+import hashlib
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -33,7 +34,7 @@ from brain_v42.metrics.retention import (
     PROCESS_METRICS_FRESH_SQL,
     PROCESS_METRICS_IS_LIVE_SQL,
 )
-from brain_v42.metrics.slow_block_cache import CollectorDegraded
+from brain_v42.metrics.slow_block_cache import BlockHealth, CollectorDegraded
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -60,8 +61,8 @@ _PG_LABEL_MAP: dict[str, str] = {
 # wins" (by `updated_at`) instead of by summing.
 _GAUGE_PSEUDO_TOOLS: frozenset[str] = frozenset({"_decay"})
 
-# Structural zeros: a missing _decay row (fresh deploy, or the collect_process_metrics
-# except-branch) still returns a shaped decay block, per the "zero on a source that
+# Structural zeros: a missing _decay row after a successful read (fresh deploy)
+# still returns a shaped decay block, per the "zero on a source that
 # counts nothing says nothing" convention used elsewhere in this module.
 _DECAY_ZERO: dict[str, int] = {"stale_count": 0, "archived_count": 0, "access_log_size": 0}
 
@@ -72,6 +73,14 @@ class _DbCollectorsMixin:
     # Provided by MetricsCollector.__init__ (declared for type-checkers only).
     if TYPE_CHECKING:
         _session_factory: async_sessionmaker[AsyncSession]
+        _block_health_tracker: BlockHealth
+
+    @property
+    def _block_health(self) -> BlockHealth:
+        """Initialize lazily because standalone mixin consumers have no constructor."""
+        if not hasattr(self, "_block_health_tracker"):
+            self._block_health_tracker = BlockHealth()
+        return self._block_health_tracker
 
     async def record_search_log(
         self,
@@ -157,17 +166,20 @@ class _DbCollectorsMixin:
                         """)
                     )
                 ).one()
-                return {
+                result = {
                     "searches_total": row[0],
                     "searches_with_zero_results": row[1],
                     "avg_score": round(row[2], 2) if row[2] is not None else 0.0,
                 }
-        except Exception:
+            self._block_health.record("search_quality", "ok")
+            return result
+        except Exception as exc:
             logger.warning("metrics.collect_search_quality.failed", exc_info=True)
+            self._block_health.record("search_quality", "degraded", type(exc).__name__)
             return {
-                "searches_total": 0,
-                "searches_with_zero_results": 0,
-                "avg_score": 0.0,
+                "searches_total": None,
+                "searches_with_zero_results": None,
+                "avg_score": None,
             }
 
     async def collect_process_metrics(self) -> dict[str, Any]:
@@ -175,6 +187,12 @@ class _DbCollectorsMixin:
 
         The read window is ``retention.PROCESS_METRICS_FRESH_SQL`` — the exact complement
         of the purge predicate, so a row that survives the purge is always readable.
+
+        A deployment has exactly one ``_process`` emitter: ``agent_name`` is the
+        primary key and the flusher's upsert replaces that row. Chain and search
+        counters are snapshots from that row, never sums across agent rows.
+        ``search_rerank.emitter_started_at`` identifies the counter generation;
+        readers reset their baseline only when it changes, never on a counter drop.
 
         Returns:
             active_processes: distinct pid count (back-compat — dashboard already reads this).
@@ -214,13 +232,18 @@ class _DbCollectorsMixin:
                 ).all()
 
             agg_tools: dict[str, dict[str, Any]] = {}
+            search_rerank: dict[str, Any] = {}
+            tool_latency: dict[str, dict[str, Any]] = {}
+            contributing_processes: dict[str, datetime | None] = {}
             mcp_auth_refused: dict[str, int] = {}
             elevation_refused: dict[str, int] = {}
             mcp_auth_agent_unresolved: dict[str, int] = {}
+            author_binding_candidates: dict[str, int] = {}
             process_counts = {
                 "_mcp_auth_refused": mcp_auth_refused,
                 "_elevation_refused": elevation_refused,
                 "_mcp_auth_agent_unresolved": mcp_auth_agent_unresolved,
+                "_author_binding_candidates": author_binding_candidates,
             }
             agg_emb: dict[str, Any] = {
                 "total_requests": 0,
@@ -261,9 +284,38 @@ class _DbCollectorsMixin:
                 emb_stats = row[5]
                 rss = row[6]
                 is_live = row[7]
+                started_at = row[2]
+                if isinstance(started_at, datetime):
+                    started_at = (
+                        started_at.replace(tzinfo=UTC)
+                        if started_at.tzinfo is None
+                        else started_at.astimezone(UTC)
+                    )
+                    contributing_processes[str(row[1]) + ":" + started_at.isoformat()] = started_at
+                else:
+                    # Legacy/test rows may omit the start time; they still contribute.
+                    contributing_processes.setdefault(str(row[1]) + ":", None)
+
+                if agent_name == "_process" and is_live:
+                    for tool, observed in tool_stats.get("_tool_latency", {}).items():
+                        combined = tool_latency.setdefault(
+                            tool, {"p50": None, "p95": None, "p99": None, "samples": 0}
+                        )
+                        combined["samples"] += observed.get("samples", 0)
+                        for key in ("p50", "p95", "p99"):
+                            value = observed.get(key)
+                            previous = combined[key]
+                            if previous is None:
+                                combined[key] = value
+                            elif value is not None:
+                                combined[key] = max(previous, value)
 
                 # Aggregate tools across ALL rows (real tools + pseudo-tools are disjoint)
                 for name, stats in tool_stats.items():
+                    if name == "_search_rerank":
+                        if agent_name == "_process":
+                            search_rerank = dict(stats)
+                        continue
                     if name in process_counts:
                         # Cumulative snapshots belong to the emitting process,
                         # never to individual agents or generic tool reducers.
@@ -300,6 +352,8 @@ class _DbCollectorsMixin:
                     agg_tools[name]["total_latency"] += stats.get("total_latency", 0.0)
                     agg_tools[name]["total_candidates"] += stats.get("total_candidates", 0)
                     if name == "_reranker" and agent_name == "_process":
+                        if "chain" in stats:
+                            agg_tools[name]["chain"] = stats["chain"]
                         if stats.get("backend") is not None and (
                             "backend" not in agg_tools[name]
                             or rerank_backend_updated_at is None
@@ -341,7 +395,11 @@ class _DbCollectorsMixin:
                                 for latency in ("attempt_latency_ms", "operation_latency_ms"):
                                     percentiles = combined[latency]
                                     for key, value in observed.get(latency, {}).items():
-                                        percentiles[key] = max(percentiles.get(key, value), value)
+                                        previous = percentiles.get(key)
+                                        if previous is None:
+                                            percentiles[key] = value
+                                        elif value is not None:
+                                            percentiles[key] = max(previous, value)
                         probe = stats.get("last_probe")
                         latest_probe = agg_tools[name].get("last_probe")
                         if probe is not None and (
@@ -414,6 +472,7 @@ class _DbCollectorsMixin:
             active_agents = len({row[0] for row in rows if row[0] != "_process"})
 
             # Compute avg latencies for the global tools block
+            agg_tools.pop("_tool_latency", None)
             tools_with_avg: dict[str, Any] = {}
             for name, stats in agg_tools.items():
                 calls = stats["calls"]
@@ -423,6 +482,12 @@ class _DbCollectorsMixin:
                     "recent_errors": stats["recent_errors"],
                     "avg_latency_ms": round(stats["total_latency"] / calls, 1) if calls else 0.0,
                 }
+                if not name.startswith("_"):
+                    entry.update(
+                        tool_latency.get(
+                            name, {"p50": None, "p95": None, "p99": None, "samples": 0}
+                        )
+                    )
                 if stats.get("total_candidates"):
                     entry["total_candidates"] = stats["total_candidates"]
                 if "by_identity" in stats:
@@ -442,6 +507,8 @@ class _DbCollectorsMixin:
                         entry["by_identity"] = {}
                         entry.pop("last_probe", None)
                         entry["recent_errors"] = 0
+                if "chain" in stats:
+                    entry["chain"] = stats["chain"]
                 tools_with_avg[name] = entry
 
             # by_agent: per-agent breakdown with avg_latency_ms
@@ -468,14 +535,25 @@ class _DbCollectorsMixin:
                 }
 
             emb_total = agg_emb["total_requests"]
-            return {
+            starts = [value for value in contributing_processes.values() if value is not None]
+            result = {
+                "counters": {
+                    "epoch": hashlib.sha256(
+                        "\n".join(sorted(contributing_processes)).encode()
+                    ).hexdigest()[:16],
+                    "since": max(starts).isoformat() if starts else None,
+                    "processes": len(contributing_processes),
+                    "tool_latency_window_s": 300.0,
+                },
                 "active_processes": active_processes,
                 "active_agents": active_agents,
                 "total_memory_rss_bytes": total_rss,
                 "tools": tools_with_avg,
+                "search_rerank": search_rerank,
                 "mcp_auth_refused": mcp_auth_refused,
                 "elevation_refused": elevation_refused,
                 "mcp_auth_agent_unresolved": mcp_auth_agent_unresolved,
+                "author_binding_candidates": author_binding_candidates,
                 "embedding": {
                     "total_requests": emb_total,
                     "total_errors": agg_emb["total_errors"],
@@ -495,31 +573,37 @@ class _DbCollectorsMixin:
                 "decay": dict(gauge_latest.get("_decay", _DECAY_ZERO)),
                 "embedding_identity": embedding_identity,
             }
-        except Exception:
+            self._block_health.record("cross_process", "ok")
+            return result
+        except Exception as exc:
             logger.warning("metrics.collect_process_metrics.failed", exc_info=True)
+            self._block_health.record("cross_process", "degraded", type(exc).__name__)
             return {
-                "active_processes": 0,
-                "active_agents": 0,
-                "total_memory_rss_bytes": 0,
-                "tools": {},
-                "mcp_auth_refused": {},
-                "elevation_refused": {},
-                "mcp_auth_agent_unresolved": {},
-                "decay": dict(_DECAY_ZERO),
+                "counters": dict.fromkeys(("epoch", "since", "processes", "tool_latency_window_s")),
+                "active_processes": None,
+                "active_agents": None,
+                "total_memory_rss_bytes": None,
+                "tools": None,
+                "search_rerank": None,
+                "mcp_auth_refused": None,
+                "elevation_refused": None,
+                "mcp_auth_agent_unresolved": None,
+                "author_binding_candidates": None,
+                "decay": dict.fromkeys(_DECAY_ZERO),
                 "embedding_identity": None,
                 "embedding": {
-                    "total_requests": 0,
-                    "total_errors": 0,
-                    "gpu_busy_errors": 0,
-                    "unreachable_errors": 0,
-                    "recent_errors": 0,
-                    "avg_latency_ms": 0.0,
+                    "total_requests": None,
+                    "total_errors": None,
+                    "gpu_busy_errors": None,
+                    "unreachable_errors": None,
+                    "recent_errors": None,
+                    "avg_latency_ms": None,
                     "usage": {
-                        "read": {"total_tokens": 0, "reported_requests": 0},
-                        "write": {"total_tokens": 0, "reported_requests": 0},
+                        "read": {"total_tokens": None, "reported_requests": None},
+                        "write": {"total_tokens": None, "reported_requests": None},
                     },
                 },
-                "by_agent": {},
+                "by_agent": None,
             }
 
     async def collect_graph_inventory(self, graph_svc: Any) -> dict[str, Any]:

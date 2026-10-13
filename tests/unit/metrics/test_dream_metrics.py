@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,6 +10,17 @@ import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
 from brain_v42.metrics.slow_block_cache import CollectorDegraded, SlowBlockCache
+
+
+@pytest.fixture(autouse=True)
+def scheduler_reader() -> Iterator[AsyncMock]:
+    """Existing night-judgment tests explicitly observe an armed scheduler."""
+    with patch(
+        "brain_v42.metrics.collector_dream.read_dream_scheduler_state",
+        new_callable=AsyncMock,
+        return_value={"state": "armed"},
+    ) as reader:
+        yield reader
 
 
 def _make_collector_with_dream_data(
@@ -45,6 +57,49 @@ class TestCollectDreamMetrics:
             yield
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", ["suspended", "absent", "not_measured"])
+    async def test_manual_sweep_is_not_judged_as_a_partial_night(
+        self, state: str, scheduler_reader: AsyncMock
+    ) -> None:
+        scheduler_reader.return_value = {"state": state}
+        rows = [("sweep", None, "done", 1.0, 0, 0, 0, 0, 0.0, 0, 0, date(2026, 10, 5), None, False)]
+        collector = _make_collector_with_dream_data(rows)
+        with patch(
+            "brain_v42.metrics.collector_dream.expected_dream_phases",
+            return_value={"promote", "sweep"},
+        ) as expectations:
+            result = await collector.collect_dream_metrics()
+        assert result["last_run"]["status"] == "success"
+        assert result["last_run"]["judged"] is False
+        assert result["last_run"]["scheduler_state"] == state
+        assert result["last_run"]["phases_fail"] == 0
+        assert set(result["last_run"]["phases"]) == {"sweep"}
+        assert result["state"] == state
+        scheduler_reader.assert_awaited_once_with("systemd_user")
+        expectations.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("state", ["suspended", "absent", "not_measured"])
+    async def test_unjudged_recorded_failure_is_failed(
+        self, state: str, scheduler_reader: AsyncMock
+    ) -> None:
+        scheduler_reader.return_value = {"state": state}
+        rows = [
+            ("sweep", None, "fail", 1.0, 0, 0, 0, 0, 0.0, 0, 0, date(2026, 10, 5), "error", False)
+        ]
+        history = [(date(2026, 10, 5), 0.0, 0, "partial")]
+        result = await _make_collector_with_dream_data(rows, history).collect_dream_metrics()
+        assert result["last_run"]["status"] == "failed"
+        assert result["last_run"]["judged"] is False
+        assert result["history"][0]["status"] == "partial"
+
+    @pytest.mark.asyncio
+    async def test_scheduler_mode_is_forwarded(self, scheduler_reader: AsyncMock) -> None:
+        collector = _make_collector_with_dream_data([])
+        await collector.collect_dream_metrics(scheduler_mode="none")
+        scheduler_reader.assert_awaited_once_with("none")
+
+    @pytest.mark.asyncio
     async def test_missing_expected_phase_is_partial_with_terminal_cause(self) -> None:
         rows = [
             (
@@ -73,6 +128,9 @@ class TestCollectDreamMetrics:
             result = await collector.collect_dream_metrics()
 
         assert result["last_run"]["status"] == "partial"
+        assert result["last_run"]["judged"] is True
+        assert result["last_run"]["scheduler_state"] == "armed"
+        assert result["state"] == "armed"
         assert result["last_run"]["phases_fail"] == 1
         assert result["last_run"]["phases"]["extract"] == {
             "status": "partial",
@@ -87,8 +145,12 @@ class TestCollectDreamMetrics:
         }
 
     @pytest.mark.asyncio
-    async def test_returns_empty_when_no_runs(self) -> None:
-        """Returns empty dict when dream_runs table has no data."""
+    @pytest.mark.parametrize("state", ["armed", "suspended", "absent", "not_measured"])
+    async def test_returns_empty_block_when_no_runs(
+        self, state: str, scheduler_reader: AsyncMock
+    ) -> None:
+        """Scheduler state alone must not publish a Dream block without run data."""
+        scheduler_reader.return_value = {"state": state}
         collector = _make_collector_with_dream_data([])
         result = await collector.collect_dream_metrics()
         assert result == {}
@@ -138,6 +200,7 @@ class TestCollectDreamMetrics:
         collector = _make_collector_with_dream_data(rows, history)
         result = await collector.collect_dream_metrics()
 
+        assert result["state"] == "armed"
         assert result["last_run"]["date"] == "2026-04-05"
         assert result["last_run"]["status"] == "success"
         assert result["last_run"]["phases_ok"] == 2
@@ -410,8 +473,8 @@ class TestCollectDreamMetrics:
         assert "promote_outcome" not in result["last_run"]
 
     @pytest.mark.asyncio
-    async def test_exception_raises_collector_degraded_with_empty_payload(self) -> None:
-        """A SQL failure signals CollectorDegraded({}), not a plain {} return --
+    async def test_exception_preserves_empty_payload_in_collector_degraded(self) -> None:
+        """A SQL failure signals CollectorDegraded, not a plain dict return --
         SlowBlockCache (slow_block_cache.py) needs the raise to memoize it under
         the short error_ttl_seconds instead of the full TTL (MAJOR review finding,
         PR #201): a returned {} is indistinguishable from "no dream runs yet"."""
@@ -484,7 +547,7 @@ class TestCollectDreamMetrics:
         # Still inside the error TTL: no retry yet.
         time_box[0] = 4.9
         still_degraded = await cache.get("dream", collector.collect_dream_metrics)
-        assert still_degraded == {}
+        assert still_degraded == first
         assert mock_session.execute.call_count == 1
 
         # Past the error TTL (5s, not the 30s success TTL): recomputes and recovers.

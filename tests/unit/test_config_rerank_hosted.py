@@ -10,7 +10,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
+
+from brain_v42.config import Settings
 
 DSN = "postgresql+asyncpg://brain:brain@localhost:5433/brain"
 OPENROUTER = "https://openrouter.ai/api"
@@ -26,6 +28,12 @@ _RERANK_ENV = (
     "RERANK_PROVIDER",
     "RERANK_PROBE_INTERVAL_SECONDS",
     "RERANKER_URL",
+    "RERANK_FALLBACK_MODEL",
+    "RERANK_FALLBACK_PROVIDER",
+    "RERANK_FALLBACK_URL",
+    "RERANK_FALLBACK_API_KEY_FILE",
+    "RERANK_PRIMARY_BUDGET_SECONDS",
+    "RERANK_BUDGET_SECONDS",
 )
 
 
@@ -254,3 +262,188 @@ class TestOpenRouterKeyComesFromAFileOnly:
 
     def test_the_shim_path_keeps_its_inline_key(self) -> None:
         assert _settings(rerank_api_key=SENTINEL).rerank_api_key.get_secret_value() == SENTINEL
+
+
+def _fallback(**overrides: object):  # type: ignore[no-untyped-def]
+    values = {
+        "rerank_fallback_model": "cohere/rerank-4-fast",
+        "rerank_fallback_provider": {"only": ["cohere"]},
+    }
+    values.update(overrides)
+    return _openrouter(**values)
+
+
+def test_fallback_settings_parse_environment_json(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BRAIN_RERANK_FALLBACK_MODEL", "cohere/rerank-4-fast")
+    monkeypatch.setenv("BRAIN_RERANK_FALLBACK_PROVIDER", '{"only": ["cohere"]}')
+    monkeypatch.setenv("BRAIN_RERANK_PRIMARY_BUDGET_SECONDS", "0.8")
+    settings = _openrouter()
+    assert settings.rerank_fallback_model == "cohere/rerank-4-fast"
+    assert settings.rerank_fallback_provider.only == ["cohere"]
+    assert settings.rerank_primary_budget_seconds == 0.8
+
+
+@pytest.mark.parametrize(
+    "overrides,field",
+    [
+        ({"rerank_backend": "shim"}, "rerank_fallback_model"),
+        ({"rerank_fallback_model": MODEL}, "rerank_fallback_model"),
+        ({"rerank_fallback_provider": None}, "rerank_fallback_provider"),
+        (
+            {"rerank_fallback_provider": {"only": ["voyageai"]}},
+            "rerank_fallback_provider.only",
+        ),
+        (
+            {"rerank_fallback_provider": {"only": ["cohere", "x"]}},
+            "rerank_fallback_provider.only",
+        ),
+        (
+            {"rerank_fallback_provider": {"only": ["cohere"], "allow_fallbacks": True}},
+            "allow_fallbacks",
+        ),
+        (
+            {"rerank_fallback_provider": {"only": ["cohere"], "data_collection": "allow"}},
+            "data_collection",
+        ),
+        ({"rerank_primary_budget_seconds": 1.5}, "rerank_primary_budget_seconds"),
+        ({"rerank_primary_budget_seconds": 2}, "rerank_primary_budget_seconds"),
+        ({"rerank_primary_budget_seconds": 0}, "rerank_primary_budget_seconds"),
+    ],
+)
+def test_invalid_fallback_settings_are_refused(overrides: dict, field: str) -> None:
+    with pytest.raises(ValidationError, match=field):
+        _fallback(**overrides)
+
+
+def test_fallback_routing_accepts_zdr() -> None:
+    settings = _fallback(
+        rerank_fallback_provider={"only": ["cohere"], "data_collection": "allow", "zdr": True}
+    )
+    assert settings.rerank_fallback_provider.zdr is True
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("rerank_fallback_model", "cohere/rerank-4-fast"),
+        ("rerank_fallback_provider", {"only": ["cohere"]}),
+        ("rerank_primary_budget_seconds", 1.0),
+    ],
+)
+def test_none_refuses_fallback_settings(field: str, value: object) -> None:
+    with pytest.raises(ValidationError, match=field):
+        _settings(rerank_backend="none", **{field: value})
+
+
+def test_fallback_validation_never_renders_values() -> None:
+    with pytest.raises(ValidationError) as excinfo:
+        _fallback(
+            rerank_fallback_model=f"{SENTINEL}/model",
+            rerank_api_key=SecretStr(SENTINEL),
+            reranker_url="https://proxy.example",
+        )
+    assert "rerank_fallback_provider.only" in str(excinfo.value)
+    assert SENTINEL not in str(excinfo.value)
+
+
+def _voyage(**overrides: object) -> Settings:
+    values: dict[str, object] = {
+        "rerank_backend": "voyage",
+        "reranker_url": "https://api.voyageai.com",
+        "rerank_model": "rerank-3-lite",
+        "rerank_api_key_file": Path("voyage-key"),
+    }
+    values.update(overrides)
+    return _settings(**values)
+
+
+def test_valid_voyage_settings() -> None:
+    settings = _voyage()
+    assert settings.rerank_backend == "voyage"
+    assert settings.rerank_model == "rerank-3-lite"
+    assert settings.rerank_api_key_file == Path("voyage-key")
+
+
+@pytest.mark.parametrize(
+    "overrides,field",
+    [
+        ({"reranker_url": "https://other.example"}, "reranker_url"),
+        ({"reranker_url": "http://api.voyageai.com"}, "reranker_url"),
+        ({"reranker_url": "https://api.voyageai.com.evil.example"}, "reranker_url"),
+        ({"rerank_api_key_file": None}, "rerank_api_key_file"),
+        ({"rerank_api_key": SENTINEL, "rerank_api_key_file": None}, "rerank_api_key"),
+        ({"rerank_provider": {"only": ["voyageai"]}}, "rerank_provider"),
+        ({"rerank_health_path": "/health"}, "rerank_health_path"),
+        ({"rerank_model": "voyageai/rerank-3-lite"}, "rerank_model"),
+        ({"rerank_model": ""}, "rerank_model"),
+        ({"rerank_model": "  "}, "rerank_model"),
+    ],
+)
+def test_voyage_refuses_invalid_primary_settings(overrides: dict[str, object], field: str) -> None:
+    with pytest.raises(ValidationError, match=field) as excinfo:
+        _voyage(**overrides)
+    assert SENTINEL not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("missing", ["rerank_fallback_url", "rerank_fallback_api_key_file"])
+def test_voyage_fallback_requires_its_own_transport(missing: str) -> None:
+    values = {
+        "rerank_fallback_model": "cohere/rerank-4-fast",
+        "rerank_fallback_url": OPENROUTER,
+        "rerank_fallback_api_key_file": Path("fallback-key"),
+        "rerank_fallback_provider": {"only": ["cohere"]},
+    }
+    values.pop(missing)
+    with pytest.raises(ValidationError, match=missing):
+        _voyage(**values)
+
+
+def test_voyage_openrouter_fallback_requires_routing() -> None:
+    with pytest.raises(ValidationError, match="rerank_fallback_provider"):
+        _voyage(
+            rerank_fallback_model="cohere/rerank-4-fast",
+            rerank_fallback_url=OPENROUTER,
+            rerank_fallback_api_key_file=Path("fallback-key"),
+        )
+
+
+def test_voyage_fallback_accepts_separate_transport_from_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("BRAIN_RERANK_FALLBACK_URL", OPENROUTER)
+    monkeypatch.setenv("BRAIN_RERANK_FALLBACK_API_KEY_FILE", "fallback-key")
+    settings = _voyage(
+        rerank_fallback_model="cohere/rerank-4-fast",
+        rerank_fallback_provider={"only": ["cohere"]},
+    )
+    assert settings.rerank_fallback_url == OPENROUTER
+    assert settings.rerank_fallback_api_key_file == Path("fallback-key")
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("rerank_fallback_url", OPENROUTER),
+        ("rerank_fallback_api_key_file", Path("fallback-key")),
+    ],
+)
+def test_none_refuses_separate_fallback_transport(field: str, value: object) -> None:
+    with pytest.raises(ValidationError, match=field):
+        _settings(rerank_backend="none", **{field: value})
+
+
+def test_cohere_fallback_keeps_legacy_transport_defaults() -> None:
+    settings = _fallback()
+    assert settings.rerank_fallback_url == ""
+    assert settings.rerank_fallback_api_key_file is None
+
+
+def test_cohere_checks_routing_against_separate_fallback_host() -> None:
+    with pytest.raises(ValidationError, match="rerank_fallback_provider"):
+        _settings(
+            rerank_backend="cohere",
+            rerank_model=MODEL,
+            rerank_fallback_model="cohere/rerank-4-fast",
+            rerank_fallback_url=OPENROUTER,
+            rerank_fallback_api_key_file=Path("fallback-key"),
+        )

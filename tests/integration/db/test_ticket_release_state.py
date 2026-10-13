@@ -5,10 +5,12 @@ from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from brain_v42.db.tables import delivery_artifact_bindings
 from brain_v42.repositories.pg_release_derivation import OBSERVER_IDENTITY
 from brain_v42.repositories.pg_ticket import PgTicketRepo
+from tests.integration.db.test_delivery_receipt_issuance import RID
 from tests.integration.db.test_delivery_requester_acceptance import _workflow
 
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
@@ -50,14 +52,14 @@ async def test_release_state_reads_only_observer_issued_attestations(session_fac
     for kind, payload, key, identity in (
         (
             "released",
-            {"repository_id": 1, "tag": "v0.6.3", "tag_sha": L, "integration_sha": L},
+            {"repository_id": RID, "tag": "v0.6.3", "tag_sha": L, "integration_sha": L},
             "released-observer",
             "brain-v42-delivery-observer",
         ),
         (
             "deployed",
             {
-                "repository_id": 1,
+                "repository_id": RID,
                 "live_release_sha": L,
                 "package_version": "0.6.3",
                 "integration_sha": L,
@@ -67,7 +69,7 @@ async def test_release_state_reads_only_observer_issued_attestations(session_fac
         ),
         (
             "released",
-            {"repository_id": 1, "tag": "v9.9.9", "tag_sha": L, "integration_sha": L},
+            {"repository_id": RID, "tag": "v9.9.9", "tag_sha": L, "integration_sha": L},
             "released-caller",
             "caller-declaration",
         ),
@@ -112,7 +114,7 @@ async def _released(
         actor_project=actor_project,
         caller_identity=identity,
         kind="released",
-        payload={"repository_id": 1, "tag": tag, "tag_sha": L, "integration_sha": L},
+        payload={"repository_id": RID, "tag": tag, "tag_sha": L, "integration_sha": L},
         idempotency_key=f"released-{tag}-{identity}-{ticket_id}{key}",
         emitted_at=NOW,
         contract_revision=1,
@@ -164,7 +166,7 @@ async def test_malformed_observer_rows_are_skipped_not_raised(session_factory):
         actor_project="executor",
         caller_identity=OBSERVER_IDENTITY,
         kind="deployed",
-        payload={"repository_id": 1, "package_version": "0.6.3", "integration_sha": L},
+        payload={"repository_id": RID, "package_version": "0.6.3", "integration_sha": L},
         idempotency_key=f"deployed-no-sha-{ticket.id}",
         emitted_at=NOW,
         contract_revision=1,
@@ -183,7 +185,7 @@ async def test_rows_of_a_merge_the_ticket_no_longer_stands_on_are_not_shown(sess
         caller_identity=OBSERVER_IDENTITY,
         kind="deployed",
         payload={
-            "repository_id": 1,
+            "repository_id": RID,
             "live_release_sha": L,
             "package_version": "7.3.0",
             "integration_sha": L,
@@ -222,7 +224,7 @@ async def test_observer_rows_issued_by_the_requester_project_are_not_shown(sessi
             caller_identity=OBSERVER_IDENTITY,
             kind="deployed",
             payload={
-                "repository_id": 1,
+                "repository_id": RID,
                 "live_release_sha": L if project == "executor" else STALE,
                 "package_version": "0.6.9",
                 "integration_sha": L,
@@ -236,7 +238,9 @@ async def test_observer_rows_issued_by_the_requester_project_are_not_shown(sessi
     assert await PgTicketRepo(session_factory).release_state(ticket.id) == (("v0.6.9",), (L,))
 
 
-async def _second_deliverable(session_factory, ticket_id, sha: str) -> None:
+async def _second_deliverable(
+    session_factory, ticket_id, sha: str, *, repository_id: int = RID
+) -> None:
     """A second active binding on the ticket, merged at `sha`."""
     b = delivery_artifact_bindings
     async with session_factory.begin() as session:
@@ -253,6 +257,10 @@ async def _second_deliverable(session_factory, ticket_id, sha: str) -> None:
                     "deliverable_key": "documentation",
                     "pr_number": first["pr_number"] + 1,
                     "integration_sha": sha,
+                    "repository_id": repository_id,
+                    "repository_name": first["repository_name"]
+                    if repository_id == first["repository_id"]
+                    else "example/other-repository",
                 }
             )
         )
@@ -265,7 +273,7 @@ async def _deployed(service, ticket_id, live_sha: str, integration_sha: str) -> 
         caller_identity=OBSERVER_IDENTITY,
         kind="deployed",
         payload={
-            "repository_id": 1,
+            "repository_id": RID,
             "live_release_sha": live_sha,
             "package_version": "0.6.9",
             "integration_sha": integration_sha,
@@ -291,6 +299,47 @@ async def test_deliverables_are_counted_against_the_release_that_is_live(session
 
     await _deployed(service, ticket.id, L, STALE)
     assert await repo.deployed_deliverables(ticket.id, L) == (2, 2)
+
+
+async def test_deployed_evidence_counts_only_the_repository_it_measures(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    ticket, _binding, service = await _workflow(session_factory)
+    await _merged_at(session_factory, ticket.id)
+    await _second_deliverable(session_factory, ticket.id, L, repository_id=RID + 1)
+    await _deployed(service, ticket.id, L, L)
+
+    # Shared history makes the SHA identical; the repository still owns its evidence.
+    assert await PgTicketRepo(session_factory).deployed_deliverables(ticket.id, L) == (1, 2)
+
+
+@pytest.mark.parametrize("kind", ["released", "deployed"])
+async def test_release_state_requires_an_active_binding_in_the_measured_repository(
+    session_factory: async_sessionmaker[AsyncSession], kind: str
+) -> None:
+    ticket, _binding, service = await _workflow(session_factory)
+    await _merged_at(session_factory, ticket.id)
+    await _second_deliverable(session_factory, ticket.id, L, repository_id=RID + 1)
+    if kind == "released":
+        await _released(service, ticket.id, "v0.6.11")
+        expected = (("v0.6.11",), ())
+    else:
+        await _deployed(service, ticket.id, L, L)
+        expected = ((), (L,))
+    repo = PgTicketRepo(session_factory)
+    assert await repo.release_state(ticket.id) == expected
+
+    async with session_factory.begin() as session:
+        await session.execute(
+            delivery_artifact_bindings.update()
+            .where(
+                delivery_artifact_bindings.c.ticket_id == ticket.id,
+                delivery_artifact_bindings.c.repository_id == RID,
+            )
+            .values(active=False)
+        )
+
+    assert await repo.release_state(ticket.id) == ((), ())
 
 
 async def test_lot_tag_is_not_known_from_a_row_the_requester_project_issued(session_factory):

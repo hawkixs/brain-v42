@@ -12,6 +12,7 @@ from brain_v42.mcp.tools.formatters import (
     format_error,
     format_id,
     format_roadmap,
+    format_validation_errors,
 )
 from brain_v42.mcp.tools.tool_annotations import (
     _DESTRUCTIVE_ANNOTATIONS,
@@ -69,15 +70,13 @@ def register_roadmap_tools(
                 pinned=pinned,
             )
         except ValidationError as exc:
-            details = "; ".join(
-                f"{'.'.join(str(part) for part in error['loc'])}: {error['msg']}"
-                for error in exc.errors(include_input=False, include_url=False)
-            )
+            details = format_validation_errors(exc)
             return format_error(f"Invalid feature: {details}")
 
         try:
             created = await feature_creation_svc.create(payload)
         except FeatureCreationError as exc:
+            # The service uses curated refusals and a fixed embedding-failure message.
             return format_error(str(exc))
         pin_label = "pinned" if created.pinned else "unpinned"
         logger.info(

@@ -105,6 +105,7 @@ from brain_v42.mcp.tools.formatters import (
 )
 from brain_v42.mcp.tools.parsing import parse_uuid
 from brain_v42.mcp.tools.project_context_tools import register_project_context_tools
+from brain_v42.mcp.tools.project_focus_read_tools import register_project_focus_read_tools
 from brain_v42.mcp.tools.runbook_tools import register_runbook_tools
 from brain_v42.mcp.tools.snippet_tools import register_snippet_tools
 from brain_v42.mcp.tools.workflow_guide_tools import register_workflow_guide_tools
@@ -216,6 +217,7 @@ def register_tools(
         **claim_write_arguments,
     )
     register_project_context_tools(mcp, project_context_svc, roadmap_svc=roadmap_svc)
+    register_project_focus_read_tools(mcp, project_context_svc)
 
     # ── Feature #629: Decision tools ─────────────────────────────────────────
 

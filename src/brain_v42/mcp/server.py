@@ -22,7 +22,6 @@ from __future__ import annotations
 import asyncio
 import ctypes
 import inspect
-import logging
 import os
 import signal
 import sys
@@ -83,7 +82,12 @@ from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.repositories.pg_runbook import PgRunbookRepo
 from brain_v42.repositories.pg_snippet import PgSnippetRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
-from brain_v42.safe_logging import build_logging_processors, configure_json_logging, redact_url
+from brain_v42.safe_logging import (
+    build_logging_processors,
+    configure_console_logging,
+    configure_json_logging,
+    redact_url,
+)
 from brain_v42.services.adr_service import ADRService
 from brain_v42.services.agent_trace_net import AgentTraceNet, agent_trace_net_is_armed
 from brain_v42.services.auto_linker import AutoLinker
@@ -100,7 +104,7 @@ from brain_v42.services.graph_projection_schema import ensure_graph_projection_s
 from brain_v42.services.graph_service import GraphService
 from brain_v42.services.learning_service import LearningService
 from brain_v42.services.project_context_service import ProjectContextService
-from brain_v42.services.reranker_client import run_rerank_probe_loop
+from brain_v42.services.reranker_client import RerankClientLike, run_rerank_probe_loop
 from brain_v42.services.roadmap_service import RoadmapService
 from brain_v42.services.runbook_service import RunbookService
 from brain_v42.services.snippet_service import SnippetService
@@ -137,7 +141,7 @@ def _configure_stdio_logging() -> None:
             logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
             processors=processors,
         )
-        logging.basicConfig(stream=sys.stderr, level=logging.INFO, force=True)
+        configure_console_logging(processors)
     structlog.get_logger(__name__).info(
         "logging.configured", renderer=log_format, service="brain-v42-mcp", pid=os.getpid()
     )
@@ -381,7 +385,7 @@ async def app_lifecycle(
         # without a periodic probe that only shows as searches quietly falling
         # back to RRF. Never awaited here: a probe that hangs must not delay
         # startup, and a probe error must not reach it (the loop swallows them).
-        reranker_client = services.get("reranker_client")
+        reranker_client: RerankClientLike | None = services.get("reranker_client")
         if reranker_client is not None:
             # Nothing else closes it. Pushed BEFORE the probe task so that, LIFO,
             # the probe is cancelled first and never meets a closed client.
@@ -676,7 +680,7 @@ def build_services() -> dict[str, Any]:
 
     # Reranker client (HTTP, for hybrid search)
 
-    reranker_client = build_reranker_client(
+    reranker_client: RerankClientLike | None = build_reranker_client(
         settings, observer=metrics_collector if settings.metrics_enabled else None
     )
     metrics_collector.record_rerank_backend(settings.rerank_backend)
@@ -1343,7 +1347,8 @@ async def _run_mcp(
                 "timeout_graceful_shutdown": 10,
                 "proxy_headers": False,
                 "forwarded_allow_ips": "",
-                **({"log_config": None} if settings.brain_log_format == "json" else {}),
+                # Preserve sanitized root handlers in both console and JSON modes.
+                "log_config": None,
             },
             middleware=plan.middleware,
             **banner_options,
@@ -1566,6 +1571,15 @@ def build_server() -> BuiltServer:
     from brain_v42.mcp.tools.claim_tools import register_claim_tools  # noqa: PLC0415
 
     register_claim_tools(mcp, claim_verification_svc, claim_read_svc)
+
+    # Programme progress (contract docs/contracts/programmes_v1.md): four writes
+    # signed by the credential's project, one read. The sidecar publishes the same
+    # rows on GET /programmes for the cockpit.
+    from brain_v42.mcp.tools.programme_tools import register_programme_tools  # noqa: PLC0415
+    from brain_v42.repositories.pg_programme import PgProgrammeRepo  # noqa: PLC0415
+    from brain_v42.services.programme_service import ProgrammeService  # noqa: PLC0415
+
+    register_programme_tools(mcp, ProgrammeService(PgProgrammeRepo(_session_factory)))
 
     if settings.brain_code_mode:
         server = maybe_apply_code_mode(mcp, settings)

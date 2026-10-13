@@ -271,10 +271,12 @@ def _absorb_router(
             return _result()
         if sql.startswith("select brain_sessions.id"):
             return _result(rows=[{"id": tracer}] if tracer is not None else [])
-        if "from brain_sessions" in sql:
-            return _result(scalar=tracer)
         if "count(" in sql:
             return _result(scalar=occupied)
+        if sql.startswith("select brain_session_artifacts.knowledge_id"):
+            return _tuple_result([])
+        if sql.startswith("select") and "from brain_sessions" in sql:
+            return _result(scalar=tracer)
         return _result(rows=[{"knowledge_id": item} for item in moved])
 
     return route
@@ -310,11 +312,10 @@ class TestAbsorption:
         update = next(item for item in statements if "update brain_session_artifacts" in _sql(item))
         assert target.id in _params(update).values()
 
-    async def test_the_donor_can_only_be_an_agent_tracer_of_a_seen_connection(
+    async def test_the_donor_is_a_tracer_or_abandoned_operator_of_a_seen_connection(
         self, _open_flag: None
     ) -> None:
-        """The donor is `agent` ONLY: absorbing an `operator` session would move
-        one human's ledger to another human.
+        """Decision 974f46f3 adds abandoned operators without taking live ledgers.
 
         Decision 44c0b6bd (03291fdc): the exact stage reads every connection the
         session was SEEN on, recorded first, and a `closed_inactive` tracer keeps
@@ -331,7 +332,7 @@ class TestAbsorption:
         values: list[Any] = []
         for value in _params(donors).values():
             values.extend(value if isinstance(value, list | tuple) else [value])
-        assert {_PROJECT, "open", "closed_inactive", "agent"} <= set(values)
+        assert {_PROJECT, "open", "closed_inactive", "agent", "abandoned"} <= set(values)
         assert "brain_session_connections" in _sql(donors)
 
     async def test_it_accepts_only_what_an_explicit_capture_would_have_accepted(
@@ -352,11 +353,14 @@ class TestAbsorption:
 
         # The bounds travel in the UPDATE's sub-select: a single statement, as
         # the settled shape required.
-        update = _sql(statements[-1])
+        statement = next(
+            item for item in statements if "update brain_session_artifacts" in _sql(item)
+        )
+        update = _sql(statement)
         for table_name in CAPTURE_TABLES:
             assert f"from {table_name}" in update, f"{table_name} hors du périmètre"
         assert update.count("created_at >=") == len(CAPTURE_TABLES)
-        assert _STARTED_AT in _params(statements[-1]).values()
+        assert _STARTED_AT in _params(statement).values()
 
     async def test_it_never_pushes_the_target_ledger_past_the_cap(self, _open_flag: None) -> None:
         from brain_v42.models.brain_session import MAX_CAPTURED_KNOWLEDGE_IDS
@@ -366,7 +370,7 @@ class TestAbsorption:
         )
         await _absorb(session)
 
-        update = statements[-1]
+        update = next(item for item in statements if "update brain_session_artifacts" in _sql(item))
         assert "limit" in _sql(update)
         assert MAX_CAPTURED_KNOWLEDGE_IDS - 98 in _params(update).values()
 
@@ -610,7 +614,8 @@ class TestTwoStageAbsorption:
         self, _open_flag: None
     ) -> None:
         """Decision 44c0b6bd: the exact stage is bounded to the session's SEEN set,
-        no longer to the current connection alone, and still to agent tracers."""
+        no longer to the current connection alone. Decision 974f46f3 also allows
+        abandoned operator donors."""
         session, statements = _session(
             _two_stage_router(connection_tracer=uuid4(), connection_moved=[uuid4()])
         )
@@ -667,9 +672,15 @@ class TestTwoStageAbsorption:
         session, statements = _session(_two_stage_router(window_moved=[uuid4()]))
         await _outcome(session)
 
-        window = _window_sql(statements)
-        assert "not (exists" in window or "not exists" in window
-        assert "ended_at" in window and "started_at" in window
+        # The rivalry EXISTS now sits inside an OR (decision 974f46f3 adds the
+        # tracer-holder branch), so SQLAlchemy renders it as `NOT ((EXISTS`.
+        selection = next(
+            _sql(item)
+            for item in statements
+            if _sql(item).startswith("select brain_session_artifacts.knowledge_id")
+        )
+        assert "not ((exists" in selection
+        assert "rival.ended_at" in selection and "rival.started_at" in selection
 
 
 class TestTheThreeZerosAreDistinguishable:
@@ -826,7 +837,7 @@ class TestTheWindowFiltersBeforeItBounds:
             if _sql(item).startswith("select brain_session_artifacts.knowledge_id")
         )
         assert "limit" in selection, "la sélection des candidats n'est plus bornée"
-        assert selection.index("not (exists") < selection.rindex("limit"), (
+        assert selection.index("not ((exists") < selection.rindex("limit"), (
             "le LIMIT précède le filtre de rivalité : il peut rendre un lot "
             "entièrement contesté et taire les lignes légitimes"
         )

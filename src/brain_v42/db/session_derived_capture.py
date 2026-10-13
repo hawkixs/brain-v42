@@ -275,7 +275,7 @@ def seen_connection(connection_id: str) -> str:
 
 
 def _donor_eligible_ids(
-    tracer: Any, project_key: str, started_at: datetime, limit: int
+    tracer: Any, project_key: str, started_at: datetime, limit: int, target_id: Any
 ) -> sa.Select[Any]:
     """This donor's ledger rows an explicit capture would accept, THEN bounded.
 
@@ -289,6 +289,9 @@ def _donor_eligible_ids(
         .where(
             brain_session_artifacts.c.session_id == tracer,
             brain_session_artifacts.c.knowledge_id.in_(_eligible_ids(project_key, started_at)),
+            sa.not_(
+                _covered_by_a_rival(project_key, target_id, sa.func.now(), connection_donor=tracer)
+            ),
         )
         .limit(limit)
     )
@@ -340,29 +343,57 @@ def _eligible_rows(project_key: str, started_at: datetime) -> sa.CompoundSelect[
 
 
 def _window_donors(project_key: str) -> sa.Select[Any]:
-    """The project's tracers whose ledger the window may take.
+    """Human-created tracers and abandoned operators may donate (974f46f3).
 
-    Three bounds, none decorative. ``nature='agent'``: we never take from a
-    human. The status includes ``closed_inactive``, otherwise the fix would go
-    silent again the day the 4 h sweep stops being inert. And the actor must be
-    human: a tracer opened by the dream is identified as such, and leaving it in
-    the common pool would drop the 03:00 `promote` into the window of every
-    session open that night.
+    Tracers retain their status and actor bounds: the Dream's ledger must not
+    enter an operator's window. An abandoned operator needs no actor inference.
     """
     actor = brain_sessions.c.started_by_actor
     return sa.select(brain_sessions.c.id).where(
         brain_sessions.c.project_key == project_key,
-        brain_sessions.c.nature == "agent",
-        brain_sessions.c.status.in_(_DONOR_STATUSES),
-        actor.is_not(None),
-        actor.not_in(_NON_HUMAN_ACTORS),
-        actor.not_in(_SYSTEM_ACTOR_NAMES),
-        *[sa.not_(actor.startswith(prefix)) for prefix in _SYSTEM_ACTOR_PREFIXES],
+        sa.or_(
+            _abandoned_operator(),
+            sa.and_(
+                brain_sessions.c.nature == "agent",
+                brain_sessions.c.status.in_(_DONOR_STATUSES),
+                actor.is_not(None),
+                actor.not_in(_NON_HUMAN_ACTORS),
+                actor.not_in(_SYSTEM_ACTOR_NAMES),
+                *[sa.not_(actor.startswith(prefix)) for prefix in _SYSTEM_ACTOR_PREFIXES],
+            ),
+        ),
+    )
+
+
+def _abandoned_operator() -> sa.ColumnElement[bool]:
+    """Abandonment makes both legacy and explicit operator natures donors."""
+    return sa.and_(
+        brain_sessions.c.status == "abandoned",
+        sa.or_(brain_sessions.c.nature.is_(None), brain_sessions.c.nature != "agent"),
+    )
+
+
+def _donor_connections(donor_id: Any) -> sa.CompoundSelect[Any]:
+    """Operators have no connection_id; their seen ledger supplies the match."""
+    donor = brain_sessions.alias("connection_donor")
+    seen = brain_session_connections.alias("donor_seen")
+    return sa.union(
+        sa.select(donor.c.connection_id)
+        .where(donor.c.id == donor_id, donor.c.nature == "agent")
+        .correlate(brain_sessions, brain_session_artifacts),
+        sa.select(seen.c.connection_id)
+        .where(seen.c.session_id == donor_id)
+        .correlate(brain_sessions, brain_session_artifacts),
     )
 
 
 def _covered_by_a_rival(
-    project_key: str, target_id: Any, created_at: Any
+    project_key: str,
+    target_id: Any,
+    created_at: Any,
+    *,
+    connection_donor: Any = None,
+    exclude_holder: Any = None,
 ) -> sa.ColumnElement[bool]:
     """Did ANOTHER non-`agent` session cover this instant?
 
@@ -375,13 +406,32 @@ def _covered_by_a_rival(
     instant did cover it and therefore stays a rival; a session closed BEFORE
     covers nothing. Judging "open NOW" would let the last one to close take
     everything.
+
+    With ``connection_donor``, stage 1 instead checks open claimants that saw
+    a connection shared by donor and target (974f46f3). An abandoned holder
+    is excluded from the window's rivals because it donates its own ledger.
     """
     rival = brain_sessions.alias("rival")
-    return sa.exists().where(_rivalry(rival, project_key, target_id, created_at))
+    return sa.exists().where(
+        _rivalry(
+            rival,
+            project_key,
+            target_id,
+            created_at,
+            connection_donor=connection_donor,
+            exclude_holder=exclude_holder,
+        )
+    )
 
 
 def _rivalry(
-    rival: Any, project_key: str, target_id: Any, created_at: Any
+    rival: Any,
+    project_key: str,
+    target_id: Any,
+    created_at: Any,
+    *,
+    connection_donor: Any = None,
+    exclude_holder: Any = None,
 ) -> sa.ColumnElement[bool]:
     """The rivalry condition itself, written ONCE.
 
@@ -390,13 +440,34 @@ def _rivalry(
     drift would be invisible — the refusal and the explanation of the refusal
     would simply stop being about the same sessions.
     """
-    return sa.and_(
+    condition = sa.and_(
         rival.c.project_key == project_key,
         rival.c.id != target_id,
         sa.or_(rival.c.nature.is_(None), rival.c.nature != "agent"),
         rival.c.started_at <= created_at,
         sa.func.coalesce(rival.c.ended_at, sa.func.now()) >= created_at,
     )
+    if exclude_holder is not None:
+        # The abandoned donor itself is not a competing claimant (974f46f3).
+        condition = sa.and_(condition, rival.c.id != exclude_holder)
+    if connection_donor is not None:
+        seen = brain_session_connections.alias("rival_seen")
+        shared_connection = sa.exists(
+            sa.select(sa.literal(1))
+            .select_from(seen)
+            .where(
+                seen.c.session_id == rival.c.id,
+                seen.c.connection_id.in_(_donor_connections(connection_donor)),
+                seen.c.connection_id.in_(
+                    sa.select(brain_session_connections.c.connection_id).where(
+                        brain_session_connections.c.session_id == target_id
+                    )
+                ),
+            )
+            .correlate(rival, brain_session_artifacts)
+        )
+        condition = sa.and_(condition, rival.c.status == "open", shared_connection)
+    return condition
 
 
 #: Ceiling on the NAMES brought back. The diagnosis needs the shape of the
@@ -406,13 +477,36 @@ def _rivalry(
 _RIVAL_NAMES_CAP: Final = 10
 
 
-def _rival_sessions(project_key: str, target_id: Any, parked: Any, eligible: Any) -> sa.Select[Any]:
-    """WHICH non-`agent` sessions covered the instants we just refused."""
+def _rival_sessions(
+    project_key: str, target_id: Any, parked: Any, eligible: Any, exact_donors: list[Any]
+) -> sa.Select[Any]:
+    """Name the temporal or shared-connection claimants behind an abstention."""
     rival = brain_sessions.alias("rival")
     return (
         sa.select(rival.c.id)
         .select_from(
-            parked.join(rival, _rivalry(rival, project_key, target_id, eligible.c.created_at))
+            parked.join(
+                rival,
+                sa.or_(
+                    _rivalry(
+                        rival,
+                        project_key,
+                        target_id,
+                        eligible.c.created_at,
+                        exclude_holder=brain_session_artifacts.c.session_id,
+                    ),
+                    sa.and_(
+                        brain_session_artifacts.c.session_id.in_(exact_donors),
+                        _rivalry(
+                            rival,
+                            project_key,
+                            target_id,
+                            sa.func.now(),
+                            connection_donor=brain_session_artifacts.c.session_id,
+                        ),
+                    ),
+                ),
+            )
         )
         .distinct()
         .limit(_RIVAL_NAMES_CAP)
@@ -434,8 +528,9 @@ async def absorb_tracer_ledger(
 
     **Stage 1 — every seen connection.** Lifecycle calls record their transport
     before matching. Idle eviction replaces the connection while the operator
-    session stays open; keeping its seen set preserves the EXACT match even
-    when a coordinating session covers every instant and blocks the window.
+    session stays open; keeping its seen set preserves the exact match.
+    Decision 974f46f3 reverses the deliberate rivalry bypass: an open operator
+    that saw the same connection makes stage 1 abstain, just as stage 2 does.
     ``started_at`` excludes artifacts a predecessor produced on the same
     connection, and the remaining ledger capacity bounds each move.
 
@@ -447,9 +542,8 @@ async def absorb_tracer_ledger(
     session of the project covering that instant. Under ambiguity it refuses —
     the artifact stays with the tracer, visible and not lost.
 
-    The donor stays `agent` ONLY, at both stages. Absorbing an `operator`
-    session would move a human's ledger to another human, which is what ledger
-    exclusivity exists to prevent.
+    Tracers and abandoned operators are donors at both stages (974f46f3).
+    Open and ended operators retain their ledgers.
 
     The explicit-capture ceiling of 100 is respected and DECREMENTED between
     stages: crossing it would make ``brain_session_capture`` refusable for a
@@ -499,13 +593,23 @@ async def absorb_tracer_ledger(
                     await session.execute(
                         sa.select(brain_sessions.c.id)
                         .where(
-                            brain_sessions.c.nature == "agent",
                             brain_sessions.c.project_key == target.project_key,
-                            brain_sessions.c.status.in_(_DONOR_STATUSES),
-                            brain_sessions.c.connection_id.in_(
-                                sa.select(brain_session_connections.c.connection_id).where(
-                                    brain_session_connections.c.session_id == target.id
+                            sa.or_(
+                                sa.and_(
+                                    brain_sessions.c.nature == "agent",
+                                    brain_sessions.c.status.in_(_DONOR_STATUSES),
+                                ),
+                                _abandoned_operator(),
+                            ),
+                            sa.exists(
+                                sa.select(brain_session_connections.c.connection_id)
+                                .where(
+                                    brain_session_connections.c.session_id == target.id,
+                                    brain_session_connections.c.connection_id.in_(
+                                        _donor_connections(brain_sessions.c.id)
+                                    ),
                                 )
+                                .correlate(brain_sessions)
                             ),
                             brain_sessions.c.id != target.id,
                         )
@@ -550,7 +654,11 @@ async def absorb_tracer_ledger(
                                 brain_session_artifacts.c.session_id == tracer,
                                 brain_session_artifacts.c.knowledge_id.in_(
                                     _donor_eligible_ids(
-                                        tracer, target.project_key, target.started_at, remaining
+                                        tracer,
+                                        target.project_key,
+                                        target.started_at,
+                                        remaining,
+                                        target.id,
                                     )
                                 ),
                             )
@@ -564,16 +672,33 @@ async def absorb_tracer_ledger(
                 moved_connection.extend(moved)
                 remaining -= len(moved)
 
-            if remaining > 0:
+            if remaining > 0 or tracers:
                 eligible = _eligible_rows(target.project_key, target.started_at).subquery()
-                contested = _covered_by_a_rival(
-                    target.project_key, target.id, eligible.c.created_at
+                contested = sa.or_(
+                    _covered_by_a_rival(
+                        target.project_key,
+                        target.id,
+                        eligible.c.created_at,
+                        exclude_holder=brain_session_artifacts.c.session_id,
+                    ),
+                    sa.and_(
+                        brain_session_artifacts.c.session_id.in_(tracers),
+                        _covered_by_a_rival(
+                            target.project_key,
+                            target.id,
+                            sa.func.now(),
+                            connection_donor=brain_session_artifacts.c.session_id,
+                        ),
+                    ),
                 )
                 parked = brain_session_artifacts.join(
                     eligible, eligible.c.id == brain_session_artifacts.c.knowledge_id
                 )
                 in_a_tracer = brain_session_artifacts.c.session_id.in_(
                     _window_donors(target.project_key)
+                )
+                reportable_donor = sa.or_(
+                    in_a_tracer, brain_session_artifacts.c.session_id.in_(tracers)
                 )
 
                 # BEFORE the move, and that ordering is the whole point: the
@@ -583,7 +708,7 @@ async def absorb_tracer_ledger(
                 held_by_tracers = int(
                     (
                         await session.execute(
-                            sa.select(sa.func.count()).select_from(parked).where(in_a_tracer)
+                            sa.select(sa.func.count()).select_from(parked).where(reportable_donor)
                         )
                     ).scalar_one()
                     or 0
@@ -595,16 +720,20 @@ async def absorb_tracer_ledger(
                 # matters — the inferred stage is the one we will want to undo
                 # (A2b).
                 candidates = (
-                    await session.execute(
-                        sa.select(
-                            brain_session_artifacts.c.knowledge_id,
-                            brain_session_artifacts.c.session_id,
+                    (
+                        await session.execute(
+                            sa.select(
+                                brain_session_artifacts.c.knowledge_id,
+                                brain_session_artifacts.c.session_id,
+                            )
+                            .select_from(parked)
+                            .where(in_a_tracer, sa.not_(contested))
+                            .limit(remaining)
                         )
-                        .select_from(parked)
-                        .where(in_a_tracer, sa.not_(contested))
-                        .limit(remaining)
-                    )
-                ).all()
+                    ).all()
+                    if remaining > 0
+                    else []
+                )
 
                 if candidates:
                     taken = [row[0] for row in candidates]
@@ -632,7 +761,7 @@ async def absorb_tracer_ledger(
                         await session.execute(
                             sa.select(sa.func.count())
                             .select_from(parked)
-                            .where(in_a_tracer, contested)
+                            .where(reportable_donor, contested)
                         )
                     ).scalar_one()
                     or 0
@@ -646,7 +775,13 @@ async def absorb_tracer_ledger(
                         UUID(str(item))
                         for item in (
                             await session.execute(
-                                _rival_sessions(target.project_key, target.id, parked, eligible)
+                                _rival_sessions(
+                                    target.project_key,
+                                    target.id,
+                                    parked,
+                                    eligible,
+                                    list(tracers),
+                                ).where(reportable_donor, contested)
                             )
                         )
                         .scalars()
