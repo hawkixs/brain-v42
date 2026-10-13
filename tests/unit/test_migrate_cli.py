@@ -19,17 +19,22 @@ from brain_v42.config import Settings
 from brain_v42.db import engine as db_engine
 from brain_v42.db import scram
 from brain_v42.db.engine import pg_server_settings
+from brain_v42.release import shipped_alembic_head
 from brain_v42.scripts import migrate_cli, restore_cli
 
 ROOT = Path(__file__).parents[2]
 PASSWORD = "unit-only-password-'\\-never-log"
 OWNER_URL = "postgresql+asyncpg://owner:unit-only-owner-password@localhost:5432/test"
+#: The repository head, read like the CLI reads it: a literal here broke 33 tests the
+#: day 065 landed. NEWER is one revision past it, which no code head knows.
+HEAD = shipped_alembic_head()
+NEWER = f"{int(HEAD) + 1:03d}"
 RESTORE_COMMENT = "brain-v42-restore sha256=" + "a" * 64 + " at=2026-10-09T12:00:00Z"
 
 
 @dataclass
 class Database:
-    heads: tuple[str, ...] = ("064",)
+    heads: tuple[str, ...] = (HEAD,)
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     receipt: dict[str, Any] = field(
         default_factory=lambda: {
@@ -83,7 +88,7 @@ class Database:
         self.calls.append(("dispose", {}))
 
 
-def write_binding(directory: Path, *, head: str = "064") -> Path:
+def write_binding(directory: Path, *, head: str = HEAD) -> Path:
     directory.mkdir()
     manifest = {
         "contract_id": "unit/recovery/v1",
@@ -125,7 +130,7 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         assert config.config_file_name == str(ROOT / "alembic.ini")
         assert migrate_cli.os.environ["POSTGRES_URL"] == OWNER_URL
         database.calls.append(("upgrade", {}))
-        database.heads = ("064",)
+        database.heads = (HEAD,)
 
     monkeypatch.setattr(migrate_cli.command, "upgrade", upgrade)
     return database, ["--recovery-dir", str(binding)], password_file, binding
@@ -152,7 +157,7 @@ def test_restore_and_migrate_share_the_restore_marker_pattern() -> None:
 
 def test_loaded_contract_carries_the_verified_restored_sql(runtime) -> None:
     _, _, _, directory = runtime
-    contract = migrate_cli._load_contract(directory, "064")
+    contract = migrate_cli._load_contract(directory, HEAD)
     assert contract.restored_sql == (directory / "restored.sql").read_text()
 
 
@@ -223,7 +228,7 @@ def test_marked_database_proves_restored_then_live_sandbox_gaps(
     assert_restored_proof(database)
     log.info.assert_called_once_with(
         "migration_contract_proven",
-        code_head="064",
+        code_head=HEAD,
         contract_id="unit/recovery/v1",
         attestation="restored",
     )
@@ -333,7 +338,7 @@ def test_comments_without_a_full_restore_marker_use_only_live_proof(
     assert "SELECT 'restored-receipt'" not in [sql for sql, _ in database.calls]
     log.info.assert_called_once_with(
         "migration_contract_proven",
-        code_head="064",
+        code_head=HEAD,
         contract_id="unit/recovery/v1",
         attestation="live",
     )
@@ -346,14 +351,14 @@ def test_ancestor_upgrades_then_records_head_pinned_compat_before_proving(runtim
     compat = [(sql, params) for sql, params in database.calls if "INSERT INTO" in sql]
     assert len(compat) == 1
     assert "public.brain_schema_compat" in compat[0][0]
-    assert compat[0][1]["schema_head"] == "064"
-    assert compat[0][1]["oldest_compatible_code_head"] == "064"
+    assert compat[0][1]["schema_head"] == HEAD
+    assert compat[0][1]["oldest_compatible_code_head"] == HEAD
     assert compat[0][1]["recorded_by_version"]
     sql = [call[0] for call in database.calls]
     assert sql.index("upgrade") < sql.index(compat[0][0]) < sql.index("SELECT 'fixture-receipt'")
 
 
-@pytest.mark.parametrize("head", ["065", "unrecognized-revision"])
+@pytest.mark.parametrize("head", [NEWER, "unrecognized-revision"])
 def test_newer_or_unknown_database_refuses_without_changes_and_names_both_heads(
     runtime, head: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -362,7 +367,7 @@ def test_newer_or_unknown_database_refuses_without_changes_and_names_both_heads(
     assert migrate_cli.main(arguments) == 1
     output = capsys.readouterr()
     assert head in output.out + output.err
-    assert "064" in output.out + output.err
+    assert HEAD in output.out + output.err
     assert all(sql == "dispose" for sql, _ in database.calls)
 
 

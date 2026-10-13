@@ -41,7 +41,7 @@ from brain_v42.metrics.credential_registry import ReadOnlyCredentialRegistry
 from brain_v42.metrics.recent_log import RecentLogProcessor
 from brain_v42.metrics.retention import PROCESS_METRICS_STALE_SQL
 from brain_v42.metrics.server import MetricsServer
-from brain_v42.safe_logging import build_logging_processors
+from brain_v42.safe_logging import build_logging_processors, safe_format_exc_info
 from brain_v42.services.brain_graph_projection import (
     BrainGraphProjectionService,
     Neo4jGraphSnapshotReader,
@@ -54,6 +54,7 @@ from brain_v42.services.embedding_factory import (
 from brain_v42.services.feature_dedup_job import FeatureDedupJob
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 from brain_v42.services.graph_service import GraphService
+from brain_v42.services.reranker_client import RerankClientLike
 from brain_v42.services.status_engine import StatusEngine
 
 logger = structlog.get_logger(__name__)
@@ -73,7 +74,7 @@ class AsyncDisposer(Protocol):
 class LegacyAutomationResources:
     """Business resources constructed only after the legacy lease is acquired."""
 
-    reranker: AsyncCloser | None
+    reranker: RerankClientLike | None
     dedup_job: FeatureDedupJobProtocol
     gitlab_ingestor: GitLabEventProcessor | None
     project_key_resolver: ProjectKeyResolver | None
@@ -90,7 +91,7 @@ class MetricsResources:
     server: MetricsServer | None
     neo4j_driver: AsyncDriver | None = None
     lease: AutomationOwnershipLease | None = None
-    reranker: AsyncCloser | None = None
+    reranker: RerankClientLike | None = None
     dedup_job: FeatureDedupJobProtocol | None = None
     legacy_factory: Callable[[AutomationOwnershipLease], LegacyAutomationResources] | None = None
     server_factory: (
@@ -286,7 +287,7 @@ def build_sidecar_structlog_processors(
         return "\n".join(f"<{priority}> {line}" if line.strip() else line for line in lines)
 
     processors[-1] = render_lines
-    processors.insert(-1, structlog.processors.format_exc_info)
+    processors.insert(-1, safe_format_exc_info)
     return processors
 
 
@@ -428,6 +429,10 @@ def build_metrics_runtime(
         neo4j_source=(Neo4jGraphSnapshotReader(neo4j_driver) if neo4j_driver is not None else None),
     )
 
+    async def database_probe() -> None:
+        async with runtime_engine.connect() as connection:
+            await connection.execute(text("SELECT 1"))
+
     def server_factory(
         gitlab_ingestor: GitLabEventProcessor | None,
         project_key_resolver: ProjectKeyResolver | None,
@@ -452,6 +457,7 @@ def build_metrics_runtime(
             slow_block_cache_error_ttl_seconds=(
                 effective_settings.metrics_slow_block_cache_error_ttl_seconds
             ),
+            database_probe=database_probe,
         )
 
     lease = (

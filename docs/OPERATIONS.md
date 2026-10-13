@@ -66,9 +66,10 @@ is refused. This provenance is client-declared, not cryptographic proof of autho
 
 Every result that exposes a session also carries `attributed_knowledge_ids`, a view
 rehydrated from the ledger. Captures stay visible after a start retry, a resume, a
-heartbeat, a list, or an abandon. Abandoning a session does not release its
-attributions: their provenance stays exclusive, and an exact retry of `capture` stays
-idempotent even after abandonment.
+heartbeat, a list, or an abandon. Abandoning a session keeps its ledger in place,
+but makes its artifacts reclaimable by a later explicit capture or absorption
+(decision 974f46f3). Open and ended operator holders remain protected. An exact retry
+of `capture` stays idempotent while the abandoned session still owns the artifact.
 
 `brain_session_end` no longer accepts capture identifiers directly: it reads this
 ledger. Since migration 047 a closure no longer needs a non-empty ledger or a
@@ -147,17 +148,24 @@ that carries a connection identifier, so never under stdio or in stateless HTTP 
 The connection stage records each connection seen by one of those lifecycle calls
 in `brain_session_connections` and takes artifacts from the project's `open` or
 `closed_inactive` traces on every recorded connection, bounded by the session's start.
-That start excludes artifacts produced by a predecessor on the same connection; the
-exact match works even when a coordinating session makes every instant ambiguous.
+Abandoned operator sessions are also donors, matched through their seen connections
+because operator rows carry no `connection_id`. That start excludes artifacts produced
+by a predecessor on the same connection. Decision 974f46f3 makes the connection stage
+abstain when another open operator of the same project saw the same connection; a
+coordinating session on a different connection still does not block the exact match.
 A connection that saw no lifecycle call still falls back to the window stage.
 The window stage then runs whenever ledger capacity
 remains (100 artifacts per session, minus those already attributed), whether or not the
 current connection still has a trace. Its donors are the project's `open` or
-`closed_inactive` traces opened by a human actor, never an abandoned trace and never one
-opened by a system actor such as the Dream. It takes an artifact only if no other
+`closed_inactive` traces opened by a human actor and abandoned operator sessions,
+never an abandoned trace and never a trace opened by a system actor such as the Dream.
+The abandoned donor itself is not a rival. It takes an artifact only if no other
 session of the project that is not an agent trace covered the instant of its creation,
 whether that session is still open or has finished since; under that ambiguity the
-artifact stays with the trace. The server never promotes a trace into an operator
+artifact stays with its donor. Connection-stage abstentions also apply to the fallback,
+and both stages report refused artifacts and rival session identifiers. Artifacts on
+abandoned operator holders count as unattributed in the closing receipt.
+The server never promotes a trace into an operator
 session. Migration 047 removed the "non-empty ledger XOR `nothing_to_capture_reason`"
 constraint on `ended`, because a ledger can now be filled without an explicit capture,
 and migration 048 records in `attribution_mode` which key attributed each artifact
@@ -203,8 +211,16 @@ followed by a rail deploy. Each run prints its report to `docker logs brain-v42-
 and records a `dream_runs` row (`phase = 'sweep'`, `phase_dry_run` set accordingly) on a
 best-effort basis: a run that fails before reaching the database (invalid configuration,
 PostgreSQL down) or whose INSERT fails leaves no row, so a missing row does not prove the
-loop is dead. A failed run is retried the next day; the healthcheck proves only that the
-loop process exists, not that a run completed.
+loop is dead. A failed run is retried the next day.
+After the sweep, the same loop runs `python -m brain_v42.maintenance.trace_retention`
+(see "Agent trace and graph outbox retention"), dry unless its command line carries
+`--execute`; its two report lines go to the same container log.
+Each of the two jobs touches its own heartbeat file when it succeeds
+(`/tmp/brain-v42-session-sweep.heartbeat`, `/tmp/brain-v42-trace-retention.heartbeat`).
+The healthcheck fails once either is missing or older than 26 hours (a day between runs
+plus two hours for the runs), after a 15-minute start period that covers the first runs,
+so `brain-v42-session-sweep` turns `unhealthy` when a job stops completing, not only
+when the loop dies.
 
 **Arming state is measured, not documented.** This document deliberately does not
 state whether the four flags are armed: drop-ins change, and a copied value cannot
@@ -294,6 +310,28 @@ Focus slots (ADR #34) carry the topics in flight; the tools are described in
   for it, then refuses with `anchor_already_received`; it never leaves an open slot with
   `receipt_pending=true`. A slot found in that state came from a missed hook call: close it with
   `brain_slot_close`.
+
+## Programme progress (`GET /programmes`)
+
+Programmes and their gates are written by the `brain_programme_*` tools
+([MCP tools](MCP_TOOLS.md#brain_programme_upsert)) and read by the cockpit through red-monitor.
+The contract is `docs/contracts/programmes_v1.md`. Three things to know when operating it:
+
+- **Where it is served.** `GET /programmes` on the metrics sidecar answers
+  `{"programmes": <block>}`, or `{}` when the block's read failed. The failure is memoised
+  for 5 s, and the next request retries. The block is not in `/metrics`. It shares the
+  sidecar's listener and its read boundary: unauthenticated, behind the WireGuard perimeter
+  (decision 94771690). Its exact fields are pinned with the other public reads by
+  `tests/unit/metrics/test_read_exposure_pinned.py`. A release older than 065 answers `404`,
+  which red-monitor reports as `no_publisher`.
+- **How fresh it is.** The block is memoised for 30 s with the other slow blocks.
+  `generated_at` is its computation time, so a block served 25 s after it was computed reads
+  25 s old. That is not a stuck publisher.
+- **Who may write.** Writes need the HTTP transport with a client credential: the writer is the
+  project the credential resolves. A write under the shared token or stdio is refused with
+  `caller_unidentified`. When a coordinating session ends, a programme stays readable and
+  writable by its coordinating project. Mark a finished programme `done`: it stays published
+  for seven days, then leaves the block but remains readable through `brain_programme_list`.
 
 ## Admin elevation hook (`/brain-admin`)
 
@@ -389,6 +427,19 @@ Variables: `BRAIN_CLAUDE_TOKEN_FILE` (default
 they reconnect. Check the effect on the metrics sidecar: the `mcp_auth_agent_unresolved`
 counters stop growing, and the per-agent view shows the mapped projects.
 
+## Metrics sidecar health
+
+`GET /healthz` on the metrics sidecar (`:9200`) runs `SELECT 1` on its own engine, bounded
+by two seconds. PostgreSQL answering gives `200` with `"database": "reachable"`; an error
+or a stall gives `503` with `"status": "degraded"` and `"database": "unreachable"`, and a
+`metrics_healthz.database_unreachable` warning naming only the error type. The compose
+healthcheck reads this endpoint, so a PostgreSQL outage now turns `brain-v42-metrics`
+`unhealthy`, which red-agent reports in the container's health field. The answer still
+carries `ingest_receivers`. Unlike the MCP server's `/healthz`, this one does touch the
+database. The answer is decided at the two-second bound: a probe cancelled there finishes
+tearing down its connection in the background, so the endpoint stays within the
+healthcheck's three-second client timeout even when that teardown is slow.
+
 ## Network trust boundary (detailed)
 
 MCP HTTP binds to loopback by default. A non-loopback `MCP_HTTP_HOST` requires
@@ -447,6 +498,22 @@ a hosted Cohere-style API (`BRAIN_RERANK_BACKEND=cohere`, for example OpenRouter
 `BRAIN_RERANKER_URL=https://openrouter.ai/api`) uses the settings below. None of
 them changes the shim deployment.
 
+For direct Voyage, set `BRAIN_RERANK_BACKEND=voyage`,
+`BRAIN_RERANKER_URL=https://api.voyageai.com`,
+`BRAIN_RERANK_MODEL=rerank-3-lite` and `BRAIN_RERANK_API_KEY_FILE` to the
+operator's Voyage key file. The HTTPS origin is pinned; other hosts are refused.
+The model must be non-empty and have no author prefix. An inline key,
+`BRAIN_RERANK_PROVIDER` and an explicitly configured `BRAIN_RERANK_HEALTH_PATH`
+are refused. Voyage has no free GET probe: availability sends a one-document
+`POST /v1/rerank` with query and document `ping`, costing about 10 tokens per
+300-second interval (plus the startup probe).
+
+**Direct Voyage data policy:** training exclusion depends on the Voyage account's
+training opt-out (operator decision `d4648d84`, Q4). OpenRouter's
+`data_collection` routing setting does not govern a direct Voyage call; verify
+the account opt-out before switching. The Cohere fallback through OpenRouter
+keeps its enforced routing policy.
+
 `BRAIN_RERANK_BACKEND=none` is the hosted reranker's configuration rollback:
 no reranking, RRF order, `rerank_mode="disabled"`, no reranker client and no
 background probe. This is an intended state, so it adds no degraded banner.
@@ -456,19 +523,41 @@ a caller supplies an explicit threshold. No reranker key file is read.
 For this rollback, clear non-empty `BRAIN_RERANK_MODEL` and `BRAIN_RERANK_API_KEY`,
 unset `BRAIN_RERANK_API_KEY_FILE` and `BRAIN_RERANK_PROVIDER`, and unset explicitly
 configured `BRAIN_RERANKER_URL` / `RERANKER_URL` and `BRAIN_RERANK_HEALTH_PATH`.
+Also clear `BRAIN_RERANK_FALLBACK_MODEL` and `BRAIN_RERANK_FALLBACK_URL`, and
+unset `BRAIN_RERANK_FALLBACK_PROVIDER`, `BRAIN_RERANK_FALLBACK_API_KEY_FILE` and
+any explicitly configured `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS`.
 Startup refuses these fields, even when an explicit URL or health path equals
 its default, and names the offending fields without their values.
 The sidecar reports `reranker.backend="none"`, empty `by_identity` and null
-`last_probe_*` fields. The configured backend (`shim`, `cohere` or `none`) is
+`last_probe_*` fields. The configured backend (`shim`, `cohere`, `voyage` or `none`) is
 persisted even without calls; the latest process report wins across processes.
 
 | Setting | Default | Role |
 |---|---|---|
 | `BRAIN_RERANK_API_KEY_FILE` | unset | **Path** of the API key, read once at startup. Never a value: `systemctl show` and `docker inspect` print an environment verbatim. Mutually exclusive with `BRAIN_RERANK_API_KEY`, and refused with the shim backend. |
-| `BRAIN_RERANK_HEALTH_PATH` | `/health` | GET path of the availability probe. Hosted APIs have no liveness route: for OpenRouter set `/v1/key`, which is free and answers 200 only with a valid key (401 otherwise), so it proves the route and the key. |
+| `BRAIN_RERANK_HEALTH_PATH` | `/health` | GET path of the shim or Cohere availability probe. For OpenRouter set `/v1/key`, which is free and answers 200 only with a valid key (401 otherwise). Must stay unset for Voyage, which uses its POST probe. |
 | `BRAIN_RERANK_PROVIDER` | unset | Provider routing sent with every request, as JSON: `{"only": ["voyageai"]}`. Keys: `only`, `allow_fallbacks` (default `false`), `data_collection` (`deny` by default, or `allow`), `zdr`. Unknown keys are refused. |
 | `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
-| `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole Cohere operation: connection, write, read, parsing and backoff sleeps. |
+| `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole hosted operation: connection, write, read, parsing and backoff sleeps. |
+| `BRAIN_RERANK_FALLBACK_MODEL` | empty | Optional second Cohere model, such as `cohere/rerank-4-fast`; must differ from the primary and have a measured calibration. |
+| `BRAIN_RERANK_FALLBACK_PROVIDER` | unset | JSON routing for the fallback, such as `{"only": ["cohere"]}`; required on OpenRouter and subject to the same author and privacy policy as the primary. |
+| `BRAIN_RERANK_FALLBACK_URL` | empty | Fallback Cohere endpoint, such as `https://openrouter.ai/api`. Required with a Voyage primary and a configured fallback; otherwise defaults to the primary URL. |
+| `BRAIN_RERANK_FALLBACK_API_KEY_FILE` | unset | Fallback key file, with the same format and permissions as the primary key file. Required with a Voyage primary and a configured fallback; otherwise reuses the primary key. |
+| `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS` | `1.0` | Positive primary-link budget; must be strictly below the overall budget when a fallback is configured. |
+
+With a fallback configured, the primary gets one attempt, with no retry sleep,
+bounded by its primary budget. Any HTTP, transport or response parsing failure
+hands over to the fallback, which may retry within the overall budget measured
+from the start of the primary call. Each configured key file is read once at
+startup. A Cohere primary keeps the shared URL, probe path and key unless the
+fallback transport is overridden. A Voyage primary requires a separate fallback
+URL and key file; an OpenRouter fallback probes `/v1/key`, and another Cohere
+fallback probes `/health`. Fallback logits are shifted by the difference between the
+two calibrated floor logits so the primary's search floor also applies to fallback
+scores after sigmoid. Search falls back to RRF only when both links fail; without
+a configured fallback, the single-client behaviour below still applies. The chain
+reports the primary's calibration and probe state, and neither hosted calibration
+enables feature deduplication signalling.
 
 The key file must be mode `0600` or stricter and have one of two shapes: the bare key value (one token: no whitespace, no `=`, at most
 512 characters), or a dotenv-style file with exactly one `BRAIN_RERANK_API_KEY=<value>`
@@ -477,7 +566,7 @@ ignored and never sent anywhere). Anything else is refused, so an env fragment i
 never forwarded;
 anything readable beyond its owner, malformed, empty, or unreadable stops the runtime at construction with a `RerankKeyError` that
 names the path, never the content. Create it the way the shim bearer is created, with
-a redirection under a tight `umask`. The cohere backend never reads
+a redirection under a tight `umask`. The cohere and voyage backends never read
 `BRAIN_EMBEDDING_TOKEN_FILE`: that file is the shim's bearer and must not reach a
 hosted vendor.
 
@@ -497,7 +586,7 @@ or `transport_<ExceptionName>`) when it starts failing and
 rejected or revoked key shows up there as `http_401` rather than as search results
 silently falling back to RRF ordering.
 
-The Cohere backend retries HTTP 429, 500, 502, 503 and 504, and connection errors,
+The Cohere and Voyage backends retry HTTP 429, 500, 502, 503 and 504, and connection errors,
 at most twice. `Retry-After` accepts seconds or an HTTP-date and is never shortened;
 without a usable header, full jitter chooses a delay between zero and
 `0.1 * 2**attempt` seconds (the first attempt is zero). If the delay cannot fit in
@@ -510,7 +599,7 @@ HTTP timeout. It has no elapsed-time budget; a 503 without the header fails at o
 
 With MCP metrics enabled, the sidecar's `/metrics` `reranker.by_identity` reports operations,
 `operations_by_outcome`, attempts, retries, `status_429`, `status_5xx` and
-`budget_exhausted`. Identities are `shim` or `cohere:<model>` and carry `backend` and
+`budget_exhausted`. Identities are `shim`, `cohere:<model>` or `voyage:<model>` and carry `backend` and
 `model` labels. `fallback_rate` is non-ok operations divided by operations (zero
 before any operation), recomputed from counters summed across processes for each
 identity. `operations_by_outcome` is also summed per outcome. `attempt_latency_ms`
@@ -526,6 +615,32 @@ it to zero and rounds to 0.1 seconds. Flush data keeps per-identity probe state 
 `{ok, reason, at, identity}` even without operations, along with `by_identity` when
 present. Existing legacy metrics retain their meanings; observer failures log once
 and never fail a search.
+
+`reranker.chain` counts chain operations separately from link attempts:
+`operations`, `served_by` (counts keyed by the serving identity), `handovers`
+(primary failures that pass to the fallback), and `failed_all`. A successful
+fallback counts as a served operation; it does not count as RRF. Missing chain
+observations appear as `{}` on `/metrics`.
+
+`search_rerank` counts each search once, including grouped output:
+`rerank_searches` counts all searches, `rerank_eligible` counts searches where at
+least one shard actually passed candidates to the reranker, and `rerank_rrf`
+counts eligible searches where at least one invoked shard returned `rrf_fallback`.
+Empty candidate sets, FTS fallback, backend `none` (`disabled`) and `rrf_only`
+are not eligible. Eligibility is measured before result limits and score
+filtering, so an invoked search returning no hits can still be eligible. The
+acceptance ratio is `rerank_rrf / rerank_eligible`; with a zero denominator it is
+undefined, not evidence that reranking succeeded.
+
+The MCP collector snapshot and flush store these search counters under `search`;
+the flusher persists them as the `_search_rerank` pseudo-tool and chain counters
+inside `_reranker`. The sidecar reads both from the single `_process` row:
+`agent_name` is the primary key and each upsert replaces that row, so these
+counters are never summed across agents. `search_rerank.emitter_started_at` is
+the emitter's construction time (`time.time()`), stable for its process lifetime
+and persisted even before its first search. Readers reset their baseline when
+this generation changes, never merely because a counter drops. Missing search
+observations appear as `{}`; the sidecar never substitutes its own generation.
 
 ### Embedding shim static bearer
 
@@ -715,7 +830,7 @@ on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text)
 
 ## Migration history
 
-The repository migration target is 064. No page in this repository proves a live
+The repository migration target is 065. No page in this repository proves a live
 schema head; read `alembic_version` in the target database.
 
 `brain-v42-migrate` uses the owner credentials from `POSTGRES_URL` and the
@@ -1018,6 +1133,53 @@ forever. The suppression is a LOG volume decision only: `brain_reindex_plans` st
 names every rejected path in its `Fichiers non indexés` list on every single run, and
 so does each sweep's `plan_index_refresher.sweep_done` error count.
 
+## Delivery observer: observation cadence
+
+A successful observation sets when the subject is looked at again:
+
+- an open pull request (no `integration_sha` yet): every
+  `BRAIN_DELIVERY_POLL_SECONDS` (default 60), so a merge is seen within a minute;
+- an integrated pull request and a ticket's repository contexts: after
+  `max(POLL_SECONDS, FRESHNESS_SECONDS // 2 - <duration of the collection>)`, 300 s at the
+  defaults for a quick collection. Before its next confirmation lands, evidence ages by
+  that delay, up to one poll interval before the loop picks the job, and the next
+  collection, which is sequential requests plus admission waits and can last minutes
+  for a large context set. Waiting the whole window would leave it stale at the end of
+  every cycle and refuse a resolve in that gap; subtracting the collection keeps a
+  uniformly slow one no worse than the poll cadence.
+
+With `D_prev` and `D_next` the durations of two consecutive collections, the next
+confirmation of a settled subject lands at age:
+
+- `FRESHNESS_SECONDS / 2 + POLL_SECONDS + (D_next - D_prev)` while
+  `FRESHNESS_SECONDS / 2 - D_prev >= POLL_SECONDS`: evidence stays fresh while a collection
+  slows by at most `FRESHNESS_SECONDS / 2 - POLL_SECONDS` (240 s at the defaults) against the
+  previous one, for example when GitHub's responses go from one to nine seconds across a
+  large context set;
+- `2 × POLL_SECONDS + D_next` once the delay is floored at the poll interval (a previous
+  collection longer than 240 s at the defaults): the poll cadence's own bound, fresh while
+  `D_next <= FRESHNESS_SECONDS - 2 × POLL_SECONDS` (480 s).
+
+Past either bound evidence reads stale for at most one cycle: a resolve in that window is refused
+with `delivery_requirements_unsatisfied` until the next confirmation lands, and nothing is
+lost. This residual is accepted (coordination ruling, 2026-10-13): no cadence slower than
+the poll interval could tolerate an arbitrary slowdown.
+
+The observer paces itself with its own `BRAIN_DELIVERY_FRESHNESS_SECONDS`, while the MCP
+server judges freshness with its own: give both processes the same value. An observer
+value above the server's leaves evidence stale between two observations.
+
+A failed observation retries on its own schedule. An outage, a rate limit or an invalid
+response backs off up to 300 s, or longer when GitHub names a longer `Retry-After` (capped
+at an hour). A repository or pull request the App cannot see (`provider_not_found`,
+`provider_forbidden`) waits `300 × 4^n` seconds, `n` being the failures since its last
+success (300 s, 20 min, 80 min, 5 h 20, 21 h 20, then a day), so a forgotten installation
+case stops spending the shared request budget. From its fourth
+consecutive failure the observer also writes an `observation_backoff` line on stderr
+(`subject`, `error_code`, `prior_failures`, `delay_seconds`): that subject now waits on an
+operator fix. Once it is fixed, `brain_delivery_refresh` on the ticket makes its
+contexts and active bindings due at once instead of waiting out the backoff.
+
 ## Delivery observer: releases and deployments
 
 Besides confirming pull requests, the delivery observer
@@ -1100,6 +1262,28 @@ running from a checkout says "live release unmeasured" instead of guessing.
 whether `v0.6.3` was observed, the tickets planned but not shipped in it, and those
 shipped under another tag.
 
+## Delivery observer: liveness
+
+Two signals say whether the observer is still observing, not merely running.
+
+**Heartbeat (container health).** With `BRAIN_DELIVERY_HEARTBEAT_PATH` set (Compose sets
+`/tmp/brain-v42-delivery-observer.heartbeat`), the observer rewrites that file, atomically,
+after every completed cycle, after every persisted observation attempt, and while the
+release and deployed passes page through their candidates. A cycle cut short by ownership
+loss or a shutdown does not refresh it at its end (a release pass may still refresh once
+before it notices, and the process exits right after). The `delivery-observer` healthcheck fails when the
+file is missing or older than 600 s (start period 120 s), so `brain-v42-delivery-observer`
+turns `unhealthy` and red-agent reports it. A failed write never stops observation; it is
+reported as one `observer_heartbeat_write_failed` JSON line on stderr with the error type.
+
+**Fact `delivery_observer_liveness` (briefing).** Measured on the production database:
+`lock_held` (the observer's session advisory lock is granted to a backend of this
+database), `overdue` (subjects the observer queue considers due for more than 600 s),
+`last_confirmation_age_seconds` (newest confirmation, any outcome; null when none) and
+`healthy` = lock held and nothing overdue. A dead observer shows as `lock_held = false`; a
+live but stalled one as `overdue > 0`. Read it with
+`brain_fact_get("delivery_observer_liveness")`.
+
 ## Delivery confirmation retention
 
 The maintenance CLI keeps every error confirmation (observer backoff depends on
@@ -1141,6 +1325,10 @@ SELECT count(*) FROM delivery_confirmations;
 
 Deleted successes remain recoverable from the preceding backup dump.
 
+## Agent trace and graph outbox retention
+
+`python -m brain_v42.maintenance.trace_retention` previews old, unreferenced closed agent traces and delivered graph outbox rows; deletion is dry by default and requires `--execute`. Trace retention has a 30-day minimum window, and outbox retention has a seven-day minimum (both default to 30 days). It keeps open and operator sessions, traces referenced by artifacts, checkpoints, slot history or relay children, and every undelivered outbox row. Batches default to 5000 rows, with at most 100 batches per purge. A dry run counts every candidate; an execute run is capped at `--max-batches` × `--batch-size` rows. Locked candidates are skipped, and later invocations can process the remainder.
+
 ## Automation service
 
 The `brain-v42-automation.service` unit is generated and verified, but stays dormant.
@@ -1148,6 +1336,13 @@ It listens on `AUTOMATION_PORT` (default 9201), loopback-only. The cutover witho
 dual-run, lease proof and rollback are described in the
 [systemd runbook](../deploy/systemd/README.md). Deploying the code with
 `METRICS_LEGACY_AUTOMATION_ENABLED=true` does not change the live automation owner.
+
+On red-base the Compose file sets `METRICS_LEGACY_AUTOMATION_ENABLED=false` and no
+automation service runs, so the legacy automation lease and the jobs it carried, among
+them the six-hourly `feature_dedup`, run nowhere. This is accepted (operator ruling of
+2026-10-13): the roadmap feature those jobs serve is being retired (ticket `0f008a1c`).
+The legacy lease path stays in the code, dormant, until that retirement removes it; do
+not re-enable it to bring `feature_dedup` back.
 
 ## Codex gateway
 

@@ -44,9 +44,12 @@ shrink guard applies; a refusal writes nothing, including roadmap changes.
 
 Ending an unbound operator session can replace the project's base focus using
 compare-and-swap. The new focus must be at least 70% of the current focus length;
-shorter replacements fail with `base_focus_shrink` before writing. The explicit
-operator override is `allow_focus_shrink=true`. Bound sessions write their slot's
-focus and do not use this base-focus guard.
+shorter replacements fail with `base_focus_shrink` before writing. The override,
+`allow_focus_shrink=true`, is accepted only from an MCP connection holding an active
+`/brain-admin` elevation, or in an operator relay; anywhere else it is refused
+before any mutation (`focus_shrink_override_refused`, or
+`relay_shrink_override_operator_only` for a relay the guard mod initiated). Bound sessions write their
+slot's body instead, under the same 70% rule on the slot (`slot_focus_shrink`).
 
 ## Focus slots and session relay
 

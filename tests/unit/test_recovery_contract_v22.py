@@ -106,15 +106,9 @@ def test_restore_contract_has_no_application_role_or_acl_requirement():
     assert "runtime_expected_" not in sql
 
 
-def test_current_binding_names_v22_and_pins_each_asset():
+def test_current_binding_has_moved_past_v22():
+    """v22 is frozen for head 064; 065 moved the binding to v23 (its own test pins it)."""
     current = json.loads((RECOVERY / "current.json").read_text())
-    assert current["contract_id"] == "brain-v42/postgresql-recovery/v22"
-    assert current["contract_version"] == 22
-    assert current["schema_head"] == "064"
-    for key, name in (
-        ("attestation_sql", "brain-v42-v22.sql"),
-        ("restored_attestation_sql", "brain-v42-v22-pgrestore.sql"),
-        ("manifest", "brain-v42-v22.json"),
-    ):
-        assert current[key]["path"] == f"ops/recovery/{name}"
-        assert current[key]["sha256"] == hashlib.sha256((RECOVERY / name).read_bytes()).hexdigest()
+    assert current["contract_version"] > 22
+    assert current["schema_head"] != "064"
+    assert "brain-v42-v22" not in json.dumps(current)

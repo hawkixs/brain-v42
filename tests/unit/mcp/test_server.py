@@ -86,6 +86,7 @@ def test_build_services_returns_all_services() -> None:
         # embedding bearer would read as "configured" and fail closed on a path
         # that does not exist. Declare it unset, like the other settings here.
         brain_embedding_token_file=None,
+        rerank_fallback_model="",
         embedding_service_url="http://localhost:8003",
         embedding_dimension=1536,
         metrics_enabled=False,
@@ -298,6 +299,7 @@ def test_build_services_includes_graph_service_when_enabled() -> None:
         # embedding bearer would read as "configured" and fail closed on a path
         # that does not exist. Declare it unset, like the other settings here.
         brain_embedding_token_file=None,
+        rerank_fallback_model="",
         embedding_service_url="http://localhost:8003",
         embedding_dimension=1536,
         metrics_enabled=False,
@@ -444,6 +446,7 @@ def test_build_services_graph_service_none_when_disabled() -> None:
         # embedding bearer would read as "configured" and fail closed on a path
         # that does not exist. Declare it unset, like the other settings here.
         brain_embedding_token_file=None,
+        rerank_fallback_model="",
         embedding_service_url="http://localhost:8003",
         embedding_dimension=1536,
         metrics_enabled=False,
@@ -479,6 +482,7 @@ def test_build_services_still_returns_all_existing_services_with_graph() -> None
         # embedding bearer would read as "configured" and fail closed on a path
         # that does not exist. Declare it unset, like the other settings here.
         brain_embedding_token_file=None,
+        rerank_fallback_model="",
         embedding_service_url="http://localhost:8003",
         embedding_dimension=1536,
         metrics_enabled=False,
@@ -592,6 +596,7 @@ def test_build_services_wires_the_project_guard_into_every_knowledge_service() -
         # embedding bearer would read as "configured" and fail closed on a path
         # that does not exist. Declare it unset, like the other settings here.
         brain_embedding_token_file=None,
+        rerank_fallback_model="",
         embedding_service_url="http://localhost:8003",
         embedding_dimension=1536,
         metrics_enabled=False,

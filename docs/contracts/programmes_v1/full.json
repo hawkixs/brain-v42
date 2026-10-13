@@ -1,0 +1,106 @@
+{
+  "version": "programmes/v1",
+  "generated_at": "2026-10-06T16:40:00+00:00",
+  "programmes": [
+    {
+      "key": "lot-0.7.0",
+      "title": "Search and embedding quality",
+      "coordinator": "brain-v42",
+      "state": "active",
+      "last_change": null,
+      "gates": [
+        {
+          "key": "plan",
+          "title": "Plan approved",
+          "owner": "brain-v42",
+          "state": "done",
+          "depends_on": [],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T10:00:00+00:00",
+          "updated_by": "brain-v42"
+        },
+        {
+          "key": "mistral",
+          "title": "Mistral client merged",
+          "owner": "brain-v42",
+          "state": "blocked",
+          "depends_on": [
+            "plan"
+          ],
+          "weight": 2,
+          "waiting_on_operator": {
+            "ask": "regenerate the Mistral key",
+            "since": "2026-10-06T15:00:00+00:00"
+          },
+          "progress": null,
+          "note": "key revoked upstream",
+          "updated_at": "2026-10-06T15:00:00+00:00",
+          "updated_by": "brain-v42"
+        }
+      ]
+    },
+    {
+      "key": "dr-v7",
+      "title": "Workstation disaster recovery",
+      "coordinator": "red-backup",
+      "state": "paused",
+      "last_change": {
+        "gate": "drill",
+        "from": "in_progress",
+        "to": "blocked",
+        "at": "2026-10-05T09:00:00.250000+00:00",
+        "by": "red-backup"
+      },
+      "gates": [
+        {
+          "key": "drill",
+          "title": "Rollback drill",
+          "owner": "red-backup",
+          "state": "blocked",
+          "depends_on": [],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": {
+            "done": 0,
+            "total": 1,
+            "unit": "drill"
+          },
+          "note": null,
+          "updated_at": "2026-10-05T09:00:00.250000+00:00",
+          "updated_by": "red-backup"
+        }
+      ]
+    },
+    {
+      "key": "lot-0.6.10",
+      "title": "Hosted reranker",
+      "coordinator": "brain-v42",
+      "state": "done",
+      "last_change": {
+        "gate": "switch",
+        "from": "in_progress",
+        "to": "done",
+        "at": "2026-10-06T11:00:00+00:00",
+        "by": "brain-v42"
+      },
+      "gates": [
+        {
+          "key": "switch",
+          "title": "Reranker switched to the hosted backend",
+          "owner": "brain-v42",
+          "state": "done",
+          "depends_on": [],
+          "weight": 1,
+          "waiting_on_operator": null,
+          "progress": null,
+          "note": null,
+          "updated_at": "2026-10-06T11:00:00+00:00",
+          "updated_by": "brain-v42"
+        }
+      ]
+    }
+  ]
+}

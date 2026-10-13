@@ -12,6 +12,7 @@ from pydantic import Field, SecretStr
 
 from brain_v42.credentials.reasons import emit_refusal
 from brain_v42.db.focus_slots import OBSERVER_IDENTITY
+from brain_v42.mcp.author_binding import observe_declared_project
 from brain_v42.mcp.client_principal import resolve_client_principal
 from brain_v42.mcp.delivery_transport import _DeliveryRegistry
 from brain_v42.mcp.tools.tool_annotations import (
@@ -139,6 +140,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         reason: Reason,
     ) -> ContractRevision:
         """Create or amend the requester's delivery contract and retain its reason."""
+        observe_declared_project("brain_delivery_contract_set", actor_project)
         return await delivery_svc.set_contract(
             UUID(ticket_id),
             actor_project=actor_project,
@@ -165,6 +167,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         `brain_delivery_get`. It advances on every observer poll, so read the view
         and bind back to back; on `revision_conflict` re-read the view and retry.
         """
+        observe_declared_project("brain_delivery_bind_pr", actor_project)
         return await delivery_svc.bind_pr(
             UUID(ticket_id),
             actor_project=actor_project,
@@ -227,6 +230,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         ticket_id: TicketId, actor_project: Project
     ) -> DeliveryRefreshResult:
         """Queue independent observation and return the currently persisted delivery view."""
+        observe_declared_project("brain_delivery_refresh", actor_project)
         view = await delivery_svc.refresh(UUID(ticket_id), actor_project=actor_project)
         return DeliveryRefreshResult(view=view)
 
@@ -249,6 +253,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         on every observer poll, so on `revision_conflict` re-read the view and
         retry rather than reuse a minute-old read.
         """
+        observe_declared_project("brain_delivery_claim", actor_project)
         return await delivery_svc.claim(
             UUID(ticket_id),
             actor_project=actor_project,
@@ -269,6 +274,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         ttl_seconds: TTL = 900,
     ) -> ClaimState:
         """Renew only the matching, unexpired external owner's token and fencing epoch."""
+        observe_declared_project("brain_delivery_claim_renew", actor_project)
         return await delivery_svc.renew_claim(
             UUID(ticket_id),
             actor_project=actor_project,
@@ -287,6 +293,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         epoch: Positive,
     ) -> ClaimState:
         """Release only the exact live claim; a stale external owner cannot release its successor."""
+        observe_declared_project("brain_delivery_claim_release", actor_project)
         return await delivery_svc.release_claim(
             UUID(ticket_id),
             actor_project=actor_project,
@@ -311,6 +318,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         issuer through their issuer patterns; shared-token callers keep their actor.
         An unknown caller cannot approve a delivery.
         """
+        observe_declared_project("brain_delivery_accept", actor_project)
         caller = get_current_actor() if issuer is None else issuer
         if not caller.strip() or caller in {UNKNOWN_ACTOR, UNEXPANDED_ACTOR}:
             raise DeliveryError("invalid_acceptance", "a declared requester caller is required")
@@ -349,6 +357,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         (a naive instant). Replaying the same idempotency_key with identical content
         returns the stored row; different content is refused with `idempotency_key_reused`.
         """
+        observe_declared_project("brain_delivery_attest", actor_project)
         caller = get_current_actor() if issuer is None else issuer
         if not caller.strip() or caller in {UNKNOWN_ACTOR, UNEXPANDED_ACTOR}:
             raise DeliveryError("invalid_issuer", "a declared issuer caller is required")

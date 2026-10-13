@@ -3,7 +3,7 @@
 import asyncio
 import json
 from datetime import UTC, datetime
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -84,6 +84,16 @@ async def test_negative_compare_does_not_starve_the_next_candidate(kind, monkeyp
     ]
     record = getattr(runtime.releases, f"record_{kind}")
     assert [call.args[1] for call in record.call_args_list] == [second]
+
+
+@pytest.mark.parametrize("kind", ["released", "deployed"])
+async def test_derivation_pass_refreshes_heartbeat_for_each_processed_candidate(kind):
+    runtime = make_runtime([candidate(), candidate("c" * 40)])
+    runtime._write_heartbeat = MagicMock()  # type: ignore[method-assign]
+
+    await run_pass(runtime, kind)
+
+    assert runtime._write_heartbeat.call_count == 2
 
 
 @pytest.mark.parametrize("kind", ["released", "deployed"])

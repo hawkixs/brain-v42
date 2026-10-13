@@ -47,6 +47,7 @@ class DeliverySettings(BaseSettings):
     observer_env_path: Path = Field(
         default=Path("~/.config/brain-v42/delivery-observer.env").expanduser(), repr=False
     )
+    heartbeat_path: Path | None = None
 
     @field_validator("postgres_url")
     @classmethod

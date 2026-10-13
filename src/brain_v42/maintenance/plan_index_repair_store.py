@@ -280,7 +280,15 @@ if TYPE_CHECKING:
 # and default privileges change. No column, constraint, index or trigger changes
 # on indexed_plans, indexed_plan_chunks or project_contexts. The repair's DELETEs
 # and context UPDATEs retain their behavior; 064 is inert on their schema shape.
-_REQUIRED_ALEMBIC_HEAD = "064"
+#
+# Bumped to 065 after reviewing the complete migration, inert by TABLE as 060 was:
+# it adds `programmes` and `programme_gates`, whose `coordinator_project` and
+# `owner_project` reference `project_contexts.project_key` ON DELETE RESTRICT.
+# The repair's UPDATEs set `plan_scan_paths` and `updated_at`, never `project_key`,
+# and delete no `project_contexts` row, so a referencing RESTRICT key cannot fire
+# on anything it issues. No trigger, CHECK or column on `project_contexts`,
+# `indexed_plans` or `indexed_plan_chunks` (`grep -c` → 0 for the latter two).
+_REQUIRED_ALEMBIC_HEAD = "065"
 
 
 class RepairStore:

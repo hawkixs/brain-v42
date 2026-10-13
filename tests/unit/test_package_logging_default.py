@@ -66,7 +66,9 @@ def _run(code: str) -> str:
 def _assert_traceback_without_locals(output: str) -> None:
     assert "Traceback" in output, output
     assert "ConnectionRefusedError" in output, output
-    assert "postgres down" in output, output
+    # The type and the frames stay; the message is redacted (ticket bb65719f).
+    assert "ConnectionRefusedError: <message redacted>" in output, output
+    assert "postgres down" not in output, output
     assert _SENTINEL not in output, "frame local leaked into the rendered traceback"
 
 
