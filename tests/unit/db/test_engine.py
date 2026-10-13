@@ -51,6 +51,22 @@ def test_get_engine_returns_async_engine():
     assert isinstance(engine, AsyncEngine)
 
 
+def test_neo4j_driver_creation_log_redacts_url(monkeypatch) -> None:
+    from structlog.testing import capture_logs
+
+    import brain_v42.db.neo4j as neo4j_module
+
+    monkeypatch.setattr(neo4j_module.AsyncGraphDatabase, "driver", lambda *_a, **_kw: object())
+    with capture_logs() as records:
+        neo4j_module.create_neo4j_driver(
+            "bolt://user:secret@db.test:7687/graph?token=hidden", password="db-secret"
+        )
+    event = next(record for record in records if record["event"] == "neo4j.driver.creating")
+    assert event["url"] == "bolt://db.test:7687/graph"
+    assert "secret" not in repr(records)
+    assert "hidden" not in repr(records)
+
+
 def test_get_engine_singleton():
     """get_engine() returns the same engine on multiple calls (singleton)."""
     from brain_v42.db.engine import get_engine

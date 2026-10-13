@@ -26,6 +26,7 @@ from typing import TypeVar
 import httpx
 import structlog
 
+from brain_v42.safe_logging import redact_url
 from brain_v42.services.embedding_usage import record_embedding_usage
 from brain_v42.services.embedding_wire import EmbeddingWire, ShimWire
 
@@ -129,7 +130,7 @@ class GPUEmbeddingService:
             )
             logger.info(
                 "gpu_embedding_service.client_created",
-                base_url=self._base_url,
+                base_url=redact_url(self._base_url),
                 timeout=self._timeout,
             )
         return self._client

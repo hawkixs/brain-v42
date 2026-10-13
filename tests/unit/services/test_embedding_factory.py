@@ -97,6 +97,24 @@ class TestRerankerBackendSelection:
         assert client._base_url == "http://tei.test:8080"
         assert client._timeout == 3.0
 
+    def test_reranker_url_query_is_preserved_for_requests(self) -> None:
+        url = "https://rerank.test/v1?deployment=private"
+        client = build_reranker_client(_settings(reranker_url=url))
+        assert client._base_url == url
+
+    def test_embedding_factory_log_redacts_userinfo_and_query(self) -> None:
+        from structlog.testing import capture_logs
+
+        settings = _settings(
+            embedding_service_url="https://user:secret@embed.test/api?token=hidden"
+        )
+        with capture_logs() as records:
+            build_embedding_service(settings)
+        event = next(record for record in records if record["event"] == "embedding_factory.built")
+        assert event["base_url"] == "https://embed.test/api"
+        assert "secret" not in repr(records)
+        assert "hidden" not in repr(records)
+
 
 class TestTheBuiltClientActuallySpeaksToAnOpenAIEndpoint:
     @pytest.mark.asyncio

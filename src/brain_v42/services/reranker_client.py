@@ -25,6 +25,7 @@ import httpx
 import structlog
 
 from brain_v42.config import is_relative_request_path
+from brain_v42.safe_logging import redact_url
 from brain_v42.services.rerank_calibration import RerankCalibration, calibration_for_identity
 from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
 
@@ -144,7 +145,7 @@ class RerankerClient:
             )
             logger.info(
                 "reranker_client.client_created",
-                base_url=self._base_url,
+                base_url=redact_url(self._base_url),
                 timeout=self._timeout,
             )
         return self._client

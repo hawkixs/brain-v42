@@ -997,7 +997,11 @@ def register_tools(
         adr = await adr_svc.deprecate(deprecate_uid, reason=reason)
         if adr is None:
             return format_error(f"ADR '{format_id(adr_id)}' not found")
-        logger.info("mcp.brain_deprecate_adr", adr_id=adr_id, reason=reason)
+        logger.info(
+            "mcp.brain_deprecate_adr",
+            adr_id=adr_id,
+            reason_chars=len(reason) if reason is not None else 0,
+        )
         return format_confirmation(
             f"ADR #{adr.number} deprecated",
             adr.title,

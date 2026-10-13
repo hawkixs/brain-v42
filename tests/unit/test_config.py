@@ -855,6 +855,31 @@ class TestOtelTracingConfig:
             self._settings(otel_endpoint="http://user:motdepasse@10.0.0.5:4318/v1/traces")
         assert "motdepasse" not in str(excinfo.value)
 
+    def test_userinfo_is_refused_and_query_is_allowed(self) -> None:
+        with pytest.raises(ValidationError, match="user information"):
+            self._settings(otel_endpoint="http://user:secret@127.0.0.1:4318/traces")
+        assert self._settings(otel_endpoint="http://127.0.0.1:4318/traces?token=secret")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("decay_flush_interval_seconds", 0),
+        ("decay_flush_interval_seconds", -1),
+        ("consolidation_interval_seconds", 0),
+        ("consolidation_interval_seconds", -1),
+    ],
+)
+def test_background_flush_intervals_must_be_positive(field, value) -> None:
+    from brain_v42.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(
+            postgres_url="postgresql+asyncpg://u:p@localhost/db",
+            _env_file=None,
+            **{field: value},
+        )
+
 
 # --- BRAIN_ prefix standardisation (open-source prep, ticket bdc4db73) ---
 #

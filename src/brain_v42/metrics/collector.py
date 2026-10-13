@@ -21,6 +21,7 @@ from brain_v42.metrics.collector_nightly import _NightlyCollectorsMixin
 from brain_v42.metrics.collector_session_slots import _SessionSlotCollectorsMixin
 from brain_v42.metrics.collector_tickets import _TicketCollectorsMixin
 from brain_v42.repositories.pg_graph_ledger import projection_health, read_projection_state
+from brain_v42.safe_logging import redact_url
 
 logger = structlog.get_logger(__name__)
 
@@ -668,7 +669,7 @@ class MetricsCollector(
         # the sidecar's own settings are what is shown, honestly labelled as such.
         embedding_service = {
             "status": "unknown",
-            "url": settings.embedding_service_url,
+            "url": redact_url(settings.embedding_service_url),
             "avg_latency_ms": round(self._embedding_stats["total_latency"] / emb_total, 1)
             if emb_total
             else 0.0,
