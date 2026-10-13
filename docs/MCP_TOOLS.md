@@ -894,6 +894,7 @@ brain_session_resume(session_id, expected_client_key)
     current_focus_revision, slot_closed, briefing}
 ```
 Attach to an existing `open` session after the UUID/client-key guard passes, without mutating it. Ended and abandoned sessions cannot be resumed. Resume does not refresh liveness; issue an explicit heartbeat for a long-running session. Use the returned current focus revision before attempting `brain_session_end`.
+An agent trace is refused with `session_is_agent_trace`.
 For a bound session, `current_focus` and `current_focus_revision` are the slot's body and revision.
 `slot_closed` is true when a receipt has closed that slot (always false for an unbound session): `brain_session_end` and `brain_session_relay` then refuse with `slot_closed`, and the way out is the one the refusal names (`expected_focus_revision` set to the pre-close revision records a conflict, or abandon the session).
 The nested session also restores every existing ledger attribution in
@@ -913,6 +914,7 @@ brain_session_capture(session_id, expected_client_key, knowledge_ids)
     replayed_knowledge_ids, replayed}
 ```
 Persist client-declared provenance in the `brain_session_artifacts` ledger and refresh the session heartbeat. This is an explicit attribution by the caller, not automatic discovery or proof that the same client created the artifact.
+An agent trace is refused with `session_is_agent_trace`.
 
 Each UUID must resolve unambiguously to a decision, learning, snippet, runbook, ADR, or indexed plan in the same project, created at or after the session start. One knowledge UUID can belong to only one session globally. Replaying IDs already owned by the same session is safe; an ID owned by another session conflicts, and mixed batches report newly captured and replayed IDs separately.
 An exact retry remains read-only and successful after that owning session has ended or been
@@ -924,6 +926,7 @@ brain_session_heartbeat(session_id, expected_client_key)
 -> {session}
 ```
 Refresh `last_heartbeat_at` and `updated_at` for an `open` session without changing its lifecycle status or project focus. Terminal sessions reject heartbeats.
+An agent trace is refused with `session_is_agent_trace`.
 
 ### brain_session_checkpoint
 ```
@@ -931,6 +934,7 @@ brain_session_checkpoint(session_id, expected_client_key, seq, progress, next_st
 -> {session_id, seq, created_at, replayed, checkpoint_count}
 ```
 Publish one semantic checkpoint of an `open` session, in a single call, into the append-only `brain_session_checkpoints` table (migration 052). It records JUDGMENT — where the work stands, what blocks it, what comes next — published together so a reader can tell a complete snapshot from a partial one.
+An agent trace is refused with `session_is_agent_trace`.
 
 The repository migration target is migration 063; this does not enable delivery operations in MCP.
 
@@ -944,6 +948,7 @@ brain_session_list(project_key=None, status="open", limit=20, offset=0)
 -> {sessions, total, limit, offset}
 ```
 List sessions in reverse start order. `status` is one of `open | stale | ended | abandoned | all`; `limit` is bounded to 1–100.
+An agent trace's `client_key` is shown masked as `auto:<masked>`.
 Every listed session includes its current ledger view in `attributed_knowledge_ids`, including
 abandoned sessions whose terminal `captured_knowledge_ids` snapshot must remain empty.
 
@@ -959,6 +964,7 @@ brain_session_end(session_id, expected_client_key, summary, next_focus,
     focus_at_end, focus_revision_at_end}
 ```
 End a session and attempt the shared project-focus update in one transaction. `summary` and `next_focus` must be non-blank. End reads and revalidates the persistent capture ledger; it no longer accepts captured UUIDs in its own payload.
+An agent trace is refused with `session_is_agent_trace`.
 
 The capture outcome is an exclusive choice:
 
@@ -969,7 +975,7 @@ Invalid or missing capture evidence rolls back the transaction and leaves the se
 
 For a session bound to a focus slot (`brain_session_bind`), `expected_focus_revision` is the slot revision and `next_focus` becomes the slot body (at most 4,000 characters, else `slot_body_too_long` before any write); the project base is not written. A stale revision or a closed slot closes the session with `conflict` and leaves the slot untouched, except a closed slot at exactly `expected_focus_revision`, which refuses `slot_closed` and leaves the session open: end with `expected_focus_revision` minus 1 (the pre-close slot revision; a close bumps the revision by exactly 1) to record a conflict, or abandon it.
 
-For an unbound session, `next_focus` REPLACES the project's whole base focus, so the relay's shrink guard applies: a `next_focus` shorter than 70% of the current base focus is refused `base_focus_shrink` before any write, and the message gives the proposed length, the current length and the floor. The refusal is fail-closed like the identity and capture errors: the session stays `open`, so the caller carries the durable content over and ends again. `allow_focus_shrink=true` lifts the guard; `end` is only ever an operator command, so the flag is an operator gesture (the guard mod may relay but never end, and the relay's own override stays operator-only). An empty current focus is never guarded. The guard only runs where the base would be written: a stale `expected_focus_revision` is still recorded as a `conflict` (nothing is destroyed; `next_focus` stays on the session row), a bound session writes its slot and never meets the base guard, and a replay of an already ended session is not re-evaluated.
+For an unbound session, `next_focus` REPLACES the project's whole base focus; for a bound session it REPLACES the whole slot body. A replacement shorter than 70% of the stored text is refused before writing (`base_focus_shrink` or `slot_focus_shrink`), leaving the session open. The message gives the current and proposed lengths, floor, characters dropped and share kept. `allow_focus_shrink=true` requires an active /brain-admin elevation for the verified credential and current MCP connection; otherwise `focus_shrink_override_refused` is raised before any mutation, including derived capture. Shared-token and stdio callers cannot override. An operator relay remains the other explicit override path. An empty current focus is never guarded. A stale revision still closes with `conflict`, since nothing is destroyed, and an already-ended replay does not re-evaluate the content guard.
 
 Replaying the exact terminal payload returns `replayed=true` and the original persisted focus outcome/snapshot; a different payload conflicts. `current_focus` and `current_focus_revision` report the project state at response time (for a bound session, the slot body and revision) and may therefore differ from the persisted end snapshot on a later replay.
 
@@ -986,7 +992,7 @@ Two forms, and exactly one revision per call (`relay_expects_one_revision` other
 
 **Base form** (an open, unbound operator session; `expected_focus_revision`, the BASE revision, and no slot). One transaction: captures `knowledge_ids`, writes `handover` as the project's whole base focus (compare-and-swap on the base revision, history source `session_end`), ends the old session with `focus_outcome = applied` and opens an unbound successor whose `started_focus*` is the new base; a base relay's successor is linked by client_key and start boundary, not by relayed_from_session_id (the 060 CHECK keeps that column slot-only). `slot` is null and `focus_revision` is the new base revision. A stale revision refuses `focus_revision_conflict`, changes nothing and leaves the session open (unlike `end`, which closes anyway). Shrink guard: a handover shorter than 70% of the current base focus is refused `base_focus_shrink`, whose message gives both lengths, because the handover REPLACES the base; `allow_focus_shrink = true` lifts it for an `operator` relay only (`relay_shrink_override_operator_only` for a `guard_mod`). The `initiator` is declared by the caller, not proven, like the client_key: the guarantee that the mod never overrides the guard rests on the mod sending `guard_mod`. A refusal changes nothing except the derived-capture absorption the service commits before the transaction, as for `end`. `handover` is bounded at 10,000 characters here, as `end`'s `next_focus`.
 
-**Slot form** (a session bound to a focus slot; `expected_slot_revision`, `handover` at most 4,000 characters, `focus_revision` null). Ends the session and starts its successor on the same slot in one transaction: captures `knowledge_ids` into the old session, writes `handover` as the slot body (compare-and-swap on `expected_slot_revision`, history source `session_relay`), ends the old session with `focus_outcome = applied`, and opens the successor under `new_client_key` with `relayed_from_session_id`, `started_by_actor = relay:<initiator>` and the base snapshot in `started_focus*`; the successor's briefing is built after commit. Unlike `end`, a closed slot or a stale revision changes nothing and leaves the session open. An equal replay returns the same successor with `replayed = true`; any other payload on an ended session is `terminal_conflict` naming the successor. Explicit user command, or the standing command of an operator-enabled guard mod (Amendment — slot relay (ADR #34), `docs/OPERATIONS.md` § Session lifecycle); `initiator = 'guard_mod'` is refused while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Refusals: `relay_guard_mod_disabled`, `relay_shrink_override_operator_only`, `relay_same_client_key`, `relay_expects_one_revision`, `relay_expects_slot_revision`, `relay_expects_focus_revision`, `session_is_agent_trace`, `slot_closed`, `slot_revision_conflict`, `focus_revision_conflict`, `base_focus_shrink`, `terminal_conflict`, `client_key_conflict`, `slot_body_too_long`, plus the capture errors.
+**Slot form** (a session bound to a focus slot; `expected_slot_revision`, `handover` at most 4,000 characters, `focus_revision` null). Ends the session and starts its successor on the same slot in one transaction: captures `knowledge_ids` into the old session, writes `handover` as the whole slot body (compare-and-swap on `expected_slot_revision`, history source `session_relay`), ends the old session with `focus_outcome = applied`, and opens the successor under `new_client_key` with `relayed_from_session_id`, `started_by_actor = relay:<initiator>` and the base snapshot in `started_focus*`; the successor's briefing is built after commit. A handover under 70% of the current slot body is refused as `slot_focus_shrink` before writing; only initiator='operator' may pass `allow_focus_shrink=true`, without elevation, and guard_mod cannot override even if elevated. Unlike `end`, a closed slot or a stale revision changes nothing and leaves the session open. An equal replay returns the same successor with `replayed = true`; any other payload on an ended session is `terminal_conflict` naming the successor. Explicit user command, or the standing command of an operator-enabled guard mod (Amendment — slot relay (ADR #34), `docs/OPERATIONS.md` § Session lifecycle); `initiator = 'guard_mod'` is refused while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Refusals: `relay_guard_mod_disabled`, `relay_shrink_override_operator_only`, `relay_same_client_key`, `relay_expects_one_revision`, `relay_expects_slot_revision`, `relay_expects_focus_revision`, `session_is_agent_trace`, `slot_closed`, `slot_revision_conflict`, `focus_revision_conflict`, `base_focus_shrink`, `slot_focus_shrink`, `terminal_conflict`, `client_key_conflict`, `slot_body_too_long`, plus the capture errors.
 
 ### brain_session_abandon
 ```
@@ -994,6 +1000,7 @@ brain_session_abandon(session_id, expected_client_key, reason)
 -> {session, replayed, remaining_open_session_count}
 ```
 After the UUID/client-key guard passes, explicitly mark an open session `abandoned` without updating project focus. `reason` must be non-blank. Retrying the same abandonment reason returns `replayed=true`; a different terminal request conflicts.
+An agent trace is refused with `session_is_agent_trace`.
 Abandon does not delete or release ledger ownership. The returned session therefore retains
 those UUIDs in `attributed_knowledge_ids`.
 
@@ -1048,7 +1055,9 @@ brain_set_project_context(project_key, name, description,
                           related_projects=None, plan_scan_paths=None,
                           gitlab_project_path=None, project_group=None)
 ```
-Upsert by `project_key`. `plan_scan_paths` drive `PlanIndexer`; `gitlab_project_path` drives webhook ingestion; `project_group` allows cross-project search.
+Upsert metadata by `project_key`. Creation may set `current_focus`; an existing project's different supplied focus is refused as `focus_write_requires_update_project_focus`, pointing to `brain_update_project_focus` with its revision CAS and shrink guard. Focus comparison ignores leading and trailing whitespace; equivalent prose preserves the stored focus. Omitting focus preserves it and allows other fields to update. `plan_scan_paths` drive `PlanIndexer`; `gitlab_project_path` drives webhook ingestion; `project_group` allows cross-project search.
+
+The remaining focus replacement exception is `src/brain_v42/scripts/scrub_xml_tool_call_leak.py`: this operator maintenance script, dry by default, rewrites `current_focus` without a revision CAS or shrink guard when run with `--live`.
 
 ### brain_update_project_focus (`project_context_tools.py`)
 ```
@@ -1056,7 +1065,7 @@ brain_update_project_focus(project_key, current_focus, expected_focus_revision,
                            blockers=None, feature_status=None, unpin=None,
                            allow_focus_shrink=False)
 ```
-Compare `expected_focus_revision` to the current project revision, then apply focus, blockers, feature statuses, and pins in one PostgreSQL transaction. `current_focus` REPLACES the whole project focus, so the same shrink guard as an unbound `brain_session_end` and a base `brain_session_relay` applies: after the revision check and before any write, a `current_focus` shorter than 70% of the current focus is refused `base_focus_shrink` (both lengths and the floor in the message) and the whole batch, roadmap changes included, is left unwritten. `allow_focus_shrink=true` is the operator's override. `feature_status` uses exact feature names and the canonical statuses `planned | research | design | building | deployed | done | archived`. An invalid status, missing or ambiguous feature, merged-feature reactivation, overlap with `unpin`, or revision conflict rolls back the complete batch. Every successful composite mutation consumes the revision, even when the focus text is unchanged. The project's dynamic CLAUDE.md section is updated afterward on a best-effort basis and is not part of the transaction.
+Compare `expected_focus_revision` to the current project revision, then apply focus, blockers, feature statuses, and pins in one PostgreSQL transaction. `current_focus` REPLACES the whole project focus, so the same shrink guard as an unbound `brain_session_end` and a base `brain_session_relay` applies: after the revision check and before any write, a `current_focus` shorter than 70% of the current focus is refused `base_focus_shrink` (both lengths and the floor in the message) and the whole batch, roadmap changes included, is left unwritten. `allow_focus_shrink=true` requires an active /brain-admin elevation for the verified credential and current MCP connection, checked before any mutation. Without it, `focus_shrink_override_refused` leaves the entire batch unwritten; shared-token and stdio callers cannot override. Refusal messages name the characters dropped and share kept. `feature_status` uses exact feature names and the canonical statuses `planned | research | design | building | deployed | done | archived`. An invalid status, missing or ambiguous feature, merged-feature reactivation, overlap with `unpin`, or revision conflict rolls back the complete batch. Every successful composite mutation consumes the revision, even when the focus text is unchanged. The project's dynamic CLAUDE.md section is updated afterward on a best-effort basis and is not part of the transaction.
 
 ### brain_list_projects (`project_context_tools.py`)
 ```
@@ -1081,7 +1090,7 @@ every learning, decision, snippet, runbook, ADR and plan; it stops appearing in
 the session briefing, the roadmap and an unscoped `brain_search`, and stays
 fully readable through `brain_search(project_key=...)`. Writes `archived_at` and
 `archived_reason` and nothing else — deliberately NOT through
-`brain_set_project_context`, which is not a PATCH and would overwrite focus,
+`brain_set_project_context`, which is not a PATCH and would overwrite
 blockers, group and metadata. `reason` is required. Idempotent: `archived_at`
 records when the project was archived, not when the command was last re-run.
 

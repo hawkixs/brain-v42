@@ -4,9 +4,20 @@ from __future__ import annotations
 
 import os
 import signal
+from collections.abc import Iterator
+from contextlib import contextmanager
+from unittest.mock import AsyncMock, patch
+from uuid import uuid4
 
 import pytest
 
+from brain_v42.provenance import (
+    get_current_principal,
+    get_current_transport,
+    set_current_principal,
+    set_current_transport,
+)
+from brain_v42.repositories.pg_client_credentials import PgClientCredentialRepo
 from tests.database_guards import (
     UnsafeTestDatabase,
     enforce_database_isolation,
@@ -35,6 +46,45 @@ def pytest_configure(config: pytest.Config) -> None:
 
 
 FAKE_EMBEDDING: list[float] = [0.1] * 1536
+
+
+@contextmanager
+def elevated_focus_writer() -> Iterator[None]:
+    """Seed through the protected service as an elevated credential."""
+    principal, transport = get_current_principal(), get_current_transport()
+    set_current_principal("workstation-claude")
+    set_current_transport(uuid4().hex)
+    try:
+        with patch.object(
+            PgClientCredentialRepo, "has_active_elevation", AsyncMock(return_value=True)
+        ):
+            yield
+    finally:
+        set_current_principal(principal)
+        set_current_transport(transport)
+
+
+@pytest.fixture
+def caller(monkeypatch: pytest.MonkeyPatch) -> Iterator[AsyncMock]:
+    """Restore request identity so authorization never leaks between tests."""
+    principal, transport = get_current_principal(), get_current_transport()
+    checker = AsyncMock(return_value=False)
+    monkeypatch.setattr(PgClientCredentialRepo, "has_active_elevation", checker)
+    set_current_principal(None)
+    set_current_transport("a" * 32)
+    try:
+        yield checker
+    finally:
+        set_current_principal(principal)
+        set_current_transport(transport)
+
+
+@pytest.fixture
+def elevated_caller(caller: AsyncMock) -> AsyncMock:
+    """Grant only the credential and connection used by the current test."""
+    set_current_principal("workstation-claude")
+    caller.return_value = True
+    return caller
 
 
 def require_test_db_url() -> str:
