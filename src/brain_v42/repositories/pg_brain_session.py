@@ -620,7 +620,12 @@ class PgBrainSessionRepo(BasePgRepository):
             last_checkpoint_at=last_checkpoints,
             sessions=[
                 self._to_model(
-                    row,
+                    {
+                        **row,
+                        "client_key": (
+                            "auto:<masked>" if row.get("nature") == "agent" else row["client_key"]
+                        ),
+                    },
                     now=now,
                     attributed_ids=attributed_by_session.get(row["id"], []),
                 )
@@ -643,6 +648,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 raise BrainSessionNotFoundError(f"Session {session_id} was not found")
             model = self._to_model(row)
             self._assert_identity(model, expected_client_key)
+            self._assert_operator_session(model)
             if model.status != "open":
                 raise BrainSessionStateError(f"Session {session_id} is {model.status}, not open")
 
@@ -692,13 +698,10 @@ class PgBrainSessionRepo(BasePgRepository):
                 raise BrainSessionNotFoundError(f"Session {session_id} was not found")
             model = self._to_model(row)
             self._assert_identity(model, expected_client_key)
+            self._assert_operator_session(model)
             if model.status != "open":
                 raise FocusSlotError(
                     "session_not_open", f"session {model.id} is {model.status.value}, not open"
-                )
-            if model.nature == "agent":
-                raise FocusSlotError(
-                    "session_is_agent_trace", f"session {model.id} is an agent trace"
                 )
             if connection_id is not None:
                 await self.record_seen_connection(
@@ -770,6 +773,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 raise BrainSessionNotFoundError(f"Session {session_id} was not found")
             model = self._to_model(row)
             self._assert_identity(model, expected_client_key)
+            self._assert_operator_session(model)
 
             if model.status != "open":
                 existing = await self._load_artifact_rows(session, capture_ids)
@@ -974,6 +978,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 raise BrainSessionNotFoundError(f"Session {session_id} was not found")
             model = self._to_model(row)
             self._assert_identity(model, expected_client_key)
+            self._assert_operator_session(model)
             if model.status != "open":
                 raise BrainSessionStateError(f"Session {session_id} is {model.status}, not open")
 
@@ -1086,6 +1091,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 raise BrainSessionNotFoundError(f"Session {session_id} was not found")
             model = self._to_model(row)
             self._assert_identity(model, expected_client_key)
+            self._assert_operator_session(model)
             if model.status != "open":
                 raise BrainSessionStateError(f"Session {session_id} is {model.status}, not open")
 
@@ -1187,6 +1193,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 raise BrainSessionNotFoundError(f"Session {session_id} was not found")
             model = self._to_model(row)
             self._assert_identity(model, expected_client_key)
+            self._assert_operator_session(model)
 
             if model.status != "open":
                 return await self._replay_end(
@@ -1320,6 +1327,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 raise BrainSessionNotFoundError(f"Session {session_id} was not found")
             model = self._to_model(row)
             self._assert_identity(model, expected_client_key)
+            self._assert_operator_session(model)
             if model.status != "open":
                 return await self._replay_relay(
                     session,
@@ -1331,10 +1339,6 @@ class PgBrainSessionRepo(BasePgRepository):
                     new_client_key=new_client_key,
                     knowledge_ids=capture_ids,
                     was_bound=row.get("slot_id") is not None,
-                )
-            if model.nature == "agent":
-                raise FocusSlotError(
-                    "session_is_agent_trace", f"session {model.id} is an agent trace"
                 )
             slot_id = row.get("slot_id")
             if slot_id is None:
@@ -1742,6 +1746,7 @@ class PgBrainSessionRepo(BasePgRepository):
                 raise BrainSessionNotFoundError(f"Session {session_id} was not found")
             model = self._to_model(row)
             self._assert_identity(model, expected_client_key)
+            self._assert_operator_session(model)
 
             if model.status != "open":
                 if model.status == "abandoned" and model.abandonment_reason == normalized_reason:
@@ -2390,6 +2395,12 @@ class PgBrainSessionRepo(BasePgRepository):
             key=str,
         )
         return BrainSession.model_validate(payload)
+
+    @staticmethod
+    def _assert_operator_session(model: BrainSession) -> None:
+        """Keep server-owned traces outside the operator lifecycle, including replays."""
+        if model.nature == "agent":
+            raise FocusSlotError("session_is_agent_trace", f"session {model.id} is an agent trace")
 
     @staticmethod
     def _assert_identity(model: BrainSession, expected_client_key: str) -> None:
