@@ -21,12 +21,10 @@ project_key is NULL (written before migration 042) or blank (the second,
 unfixed dream_runs writer — ticket 7336a2d5) — so a reader is never left
 guessing, or worse, assuming a failure belongs to brain-v42 when it does not.
 
-collector_dream pattern: NEVER crashes the sidecar — each block (killswitch
-file, DB) degrades independently. A DB failure raises `CollectorDegraded`
-carrying the already-assembled degraded value (`{}`, or `{"killswitches":
-...}` when the file read succeeded first) so `SlowBlockCache` can retry it
-under the short `error_ttl_seconds` instead of the full TTL, while the server
-still sees the same shape it always did and omits the section on `{}`.
+Each source (scheduler, killswitch file, DB) degrades independently. A DB
+failure raises `CollectorDegraded` carrying the independent scheduler and
+killswitch measurements so `SlowBlockCache` can retry under the short error
+TTL while still publishing the available state.
 """
 
 from __future__ import annotations
@@ -37,6 +35,7 @@ import structlog
 from sqlalchemy import text
 
 from brain_v42.dream_killswitches import KILLSWITCHES_PATH, parse_killswitches
+from brain_v42.metrics.dream_scheduler import DreamSchedulerMode, read_dream_scheduler_state
 from brain_v42.metrics.slow_block_cache import CollectorDegraded
 
 if TYPE_CHECKING:
@@ -50,6 +49,10 @@ logger = structlog.get_logger(__name__)
 #: project's cockpit page, even though the pool it observes (dream_runs,
 #: ticket_extraction_proposals) spans ~10 projects (ticket 69949ffc).
 _SIDECAR_PROJECT_KEY = "brain-v42"
+# An absent killswitch file means Dream is not deployed on this host (red-base runs
+# none, 52c96594): said once per process, never as a warning on every collection
+# (ticket c206929f). An existing but unreadable file is still a warning.
+_KILLSWITCHES_ABSENT_NOTED = False
 
 
 class _NightlyCollectorsMixin:
@@ -63,18 +66,31 @@ class _NightlyCollectorsMixin:
         self,
         killswitches_path: Path | None = None,
         project_key: str = _SIDECAR_PROJECT_KEY,
+        scheduler_mode: DreamSchedulerMode = "systemd_user",
     ) -> dict[str, Any]:
-        """The /metrics payload's `nightly` section — {} if all is unavailable."""
-        result: dict[str, Any] = {}
+        """Keep scheduler state visible even when the DB cannot be measured."""
+        scheduler = await read_dream_scheduler_state(scheduler_mode)
+        result: dict[str, Any] = {
+            "scheduler": scheduler,
+            "dream_state": scheduler["state"],
+            "killswitches_source": "declared",
+        }
 
         # ── killswitches (fichier local, hors DB) ────────────────────────
         ks_path = killswitches_path or KILLSWITCHES_PATH
         killswitches: dict[str, bool] | None
         try:
             killswitches = parse_killswitches(ks_path.read_text())
+        except FileNotFoundError:
+            global _KILLSWITCHES_ABSENT_NOTED
+            if not _KILLSWITCHES_ABSENT_NOTED:
+                _KILLSWITCHES_ABSENT_NOTED = True
+                logger.info("metrics.nightly.killswitches_absent", path=str(ks_path))
+            killswitches = None
         except OSError:
             logger.warning("metrics.nightly.killswitches_unreadable", path=str(ks_path))
             killswitches = None
+        result["killswitches"] = killswitches
 
         # ── DB : extract / last failure ───────────────────────────────────
         # Assembly lives INSIDE the try: a row of unexpected shape degrades
@@ -104,7 +120,6 @@ class _NightlyCollectorsMixin:
                     )
                 ).first()
 
-            result["killswitches"] = killswitches
             result["extract"] = {"proposed_pending": int(extract_pending)}
             if failure_row is not None:
                 row_project_key, run_date, phase, error_message, created_at = failure_row
@@ -119,6 +134,11 @@ class _NightlyCollectorsMixin:
                 result["last_failure"] = None
         except Exception as exc:
             logger.warning("metrics.collect_nightly_ops.db_failed", exc_info=True)
-            payload = {} if killswitches is None else {"killswitches": killswitches}
+            payload = {
+                "scheduler": scheduler,
+                "dream_state": scheduler["state"],
+                "killswitches_source": "declared",
+                "killswitches": killswitches,
+            }
             raise CollectorDegraded(payload) from exc
         return result

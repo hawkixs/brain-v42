@@ -55,6 +55,14 @@ class RankedCandidate:
     text: str
 
 
+class _ShardResults(list[tuple[Any, float]]):
+    """Keep invocation provenance even if the caller asks for zero returned hits."""
+
+    def __init__(self, items: list[tuple[Any, float]], *, rerank_invoked: bool) -> None:
+        super().__init__(items)
+        self.rerank_invoked = rerank_invoked
+
+
 def rrf_fuse(
     fts_results: list[RankedCandidate],
     vec_results: list[RankedCandidate],
@@ -369,6 +377,7 @@ class HybridSearcher:
         ]
 
         fused = rrf_fuse(fts_candidates, vec_candidates, k=60)[:20]
+        rerank_invoked = bool(self._reranker and fused)
 
         if self._reranker:
             if fused and ticket is not None:
@@ -399,4 +408,9 @@ class HybridSearcher:
         else:
             rerank_mode = RERANK_MODE_DISABLED if self._reranking_disabled else RERANK_MODE_RRF_ONLY
 
-        return [(c.entity, c.score) for c in fused[:limit]], rerank_mode
+        return (
+            _ShardResults(
+                [(c.entity, c.score) for c in fused[:limit]], rerank_invoked=rerank_invoked
+            ),
+            rerank_mode,
+        )

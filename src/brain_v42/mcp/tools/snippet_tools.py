@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 import structlog
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
+from brain_v42.mcp.tools.capture_rule import CAPTURE_RULE
 from brain_v42.mcp.tools.claim_writes import (
     claim_write_log_fields,
     claims_confirmation,
@@ -69,7 +70,20 @@ def register_snippet_tools(
         extraction_enabled and fact_registry is not None and session_factory is not None
     )
 
-    @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    # Published description: the `description=` below, not this docstring.
+    @mcp.tool(
+        version="1.0",
+        annotations=_HEARTBEAT_ANNOTATIONS,
+        description=(
+            "Capture reusable code, a query or a config, retrievable by what it is for.\n\n"
+            f"{CAPTURE_RULE}\n\n"
+            "Use for code patterns/queries/configs you'd want to retrieve later\n"
+            "by purpose, not by name. ``intention`` is the embedded field — write\n"
+            "it as a sentence describing WHEN to use the snippet.\n\n"
+            'related_to items: {"id": UUID, "type": MOTIVATED_BY | IMPLEMENTS\n'
+            "| DOCUMENTS | USES | RELATED_TO}."
+        ),
+    )
     async def brain_save_snippet(
         title: str,
         intention: KnowledgeText,
@@ -83,15 +97,7 @@ def register_snippet_tools(
         related_to: RelationList | None = None,
         claims: list[dict] | None = None,
     ) -> str:
-        """Save a reusable code snippet keyed by its intention (semantic).
-
-        Use for code patterns/queries/configs you'd want to retrieve later
-        by purpose, not by name. ``intention`` is the embedded field — write
-        it as a sentence describing WHEN to use the snippet.
-
-        related_to items: {"id": UUID, "type": MOTIVATED_BY | IMPLEMENTS
-        | DOCUMENTS | USES | RELATED_TO}.
-        """
+        """Save a reusable code snippet keyed by its intention (semantic)."""
         from brain_v42.models.snippet import SnippetCreate
 
         data = SnippetCreate(

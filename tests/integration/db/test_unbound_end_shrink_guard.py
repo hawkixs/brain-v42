@@ -60,7 +60,7 @@ async def test_the_floor_is_inclusive_and_the_session_can_retry_after_a_refusal(
 
 
 async def test_the_operator_may_override_the_guard_and_the_base_is_still_written(
-    session_factory, slot_project
+    session_factory, slot_project, elevated_caller
 ):
     revision = await set_base(session_factory, slot_project, "x" * 100)
     session_id, key = await started(session_factory, slot_project)
@@ -92,7 +92,7 @@ async def test_an_empty_current_focus_has_nothing_to_guard(session_factory, slot
     assert result.focus_outcome is BrainSessionFocusOutcome.APPLIED
 
 
-async def test_a_replayed_end_is_not_guarded_again(session_factory, slot_project):
+async def test_a_replayed_end_is_not_guarded_again(session_factory, slot_project, elevated_caller):
     revision = await set_base(session_factory, slot_project, "x" * 100)
     session_id, key = await started(session_factory, slot_project)
     await end(session_factory, session_id, key, revision, "short", allow_focus_shrink=True)
@@ -126,7 +126,7 @@ async def test_a_bound_end_writes_its_slot_and_never_meets_the_base_guard(
     session_id, key, _ = await bound(session_factory, slot_project)
     before = await base_state(session_factory, slot_project)
 
-    result = await end(session_factory, session_id, key, 0, "short")
+    result = await end(session_factory, session_id, key, 0, "next body")
 
     assert result.focus_outcome is BrainSessionFocusOutcome.APPLIED
     assert await base_state(session_factory, slot_project) == before

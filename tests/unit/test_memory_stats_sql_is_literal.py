@@ -108,12 +108,43 @@ def test_table_constant_is_never_reassigned(name: str) -> None:
 
 
 def test_collect_memory_stats_accepts_no_table_name_argument() -> None:
-    """No caller-supplied value exists that could reach the SQL string."""
-    params = list(inspect.signature(memory_stats.collect_memory_stats).parameters)
-    assert params == ["session_factory"], (
+    """No caller-supplied value exists that could reach the SQL string.
+
+    `health` (lot 0.6.13, block_status) is the one argument proven harmless:
+    keyword-only, and `test_health_argument_never_reaches_the_sql` pins that it
+    appears in no SQL-bearing expression.
+    """
+    signature = inspect.signature(memory_stats.collect_memory_stats)
+    params = list(signature.parameters)
+    assert params == ["session_factory", "health"], (
         f"collect_memory_stats now takes {params} — any new argument must be proven "
         "unable to reach the interpolated SQL before the # nosec B608 stays"
     )
+    assert signature.parameters["health"].kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_health_argument_never_reaches_the_sql() -> None:
+    """The health recorder is used for bookkeeping only, never inside the SQL."""
+    func = _collect_memory_stats_node()
+    sql_roots: list[ast.AST] = [
+        node
+        for node in ast.walk(func)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "text"
+    ]
+    sql_roots += [
+        node
+        for node in ast.walk(func)
+        if isinstance(node, ast.Assign)
+        and any(isinstance(t, ast.Name) and t.id.endswith("_inlist") for t in node.targets)
+    ]
+    assert sql_roots, "expected SQL-bearing expressions in collect_memory_stats"
+    leaked = [
+        node.lineno
+        for root in sql_roots
+        for node in ast.walk(root)
+        if isinstance(node, ast.Name) and node.id == "health"
+    ]
+    assert not leaked, f"`health` reaches SQL-bearing expressions at lines {leaked}"
 
 
 def test_sql_placeholders_only_reference_the_table_constants() -> None:

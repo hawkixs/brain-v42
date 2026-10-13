@@ -15,9 +15,9 @@ def collector() -> MetricsCollector:
     return MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
 
 
-def test_tool_percentiles_returns_zero_without_samples(collector: MetricsCollector) -> None:
+def test_tool_percentiles_returns_null_without_samples(collector: MetricsCollector) -> None:
     p = collector.tool_percentiles(window_s=300)
-    assert p == {"p50": 0.0, "p95": 0.0, "p99": 0.0}
+    assert p == {"p50": None, "p95": None, "p99": None}
 
 
 def test_tool_percentiles_computed_from_recent_samples(collector: MetricsCollector) -> None:

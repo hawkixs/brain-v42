@@ -26,6 +26,7 @@ def _repo() -> MagicMock:
     repo.capture = AsyncMock()
     repo.heartbeat = AsyncMock()
     repo.end = AsyncMock()
+    repo.absorb_derived_capture_outcome = AsyncMock(return_value=None)
     repo.list = AsyncMock()
     repo.abandon = AsyncMock()
     return repo
@@ -217,7 +218,7 @@ async def test_end_accepts_explicit_nothing_to_capture_reason() -> None:
     assert actual is expected
 
 
-async def test_end_forwards_the_operator_shrink_override() -> None:
+async def test_end_forwards_the_operator_shrink_override(elevated_caller: AsyncMock) -> None:
     repo = _repo()
     repo.end.return_value = _result(replayed=False)
 

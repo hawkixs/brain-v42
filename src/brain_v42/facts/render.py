@@ -39,6 +39,7 @@ _SUBJECTS: Mapping[str, str] = {
     "dream_killswitches_declared": "Killswitches déclarés",
     "dream_last_night": "Dernière nuit Dream",
     "claims_verification_last_night": "Vérification des claims",
+    "delivery_observer_liveness": "Observer de livraison",
 }
 
 
@@ -203,6 +204,25 @@ def _render_claims_verification_last_night(measured: Measured, descriptor: FactD
     )
 
 
+def _render_delivery_observer_liveness(measured: Measured, descriptor: FactDescriptor) -> str:
+    value = measured.value
+    if value.get("healthy") is True:
+        return "- Observer de livraison : vivant, aucun retard"
+    issues: list[str] = []
+    if value.get("lock_held") is not True:
+        issues.append("verrou absent")
+    overdue = _int(value.get("overdue"))
+    if overdue:
+        issues.append(f"{overdue} sujet{'s' if overdue != 1 else ''} en retard")
+    age = value.get("last_confirmation_age_seconds")
+    age_text = (
+        "aucune confirmation"
+        if age is None
+        else f"dernière confirmation il y a {_duration(_int(age))}"
+    )
+    return f"- Observer de livraison : {', '.join(issues) or 'en anomalie'} — {age_text}"
+
+
 _RENDERERS: Mapping[str, Callable[[Measured, FactDescriptor], str]] = {
     "graph_projection_lag": _render_graph_projection_lag,
     "alembic_head": _render_alembic_head,
@@ -210,6 +230,7 @@ _RENDERERS: Mapping[str, Callable[[Measured, FactDescriptor], str]] = {
     "alembic_head_shipped": _render_alembic_head_shipped,
     "dream_killswitches_declared": _render_dream_killswitches_declared,
     "claims_verification_last_night": _render_claims_verification_last_night,
+    "delivery_observer_liveness": _render_delivery_observer_liveness,
 }
 
 

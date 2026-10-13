@@ -83,4 +83,4 @@ async def test_collector_keeps_unavailable_projection_sentinels_on_database_fail
     result = await collector.collect_db_stats()
 
     assert result["graph_outbox"]["available"] is False
-    assert result["graph_outbox"]["projector"]["healthy"] is False
+    assert result["graph_outbox"]["projector"]["healthy"] is None
