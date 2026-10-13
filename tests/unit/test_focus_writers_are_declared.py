@@ -95,6 +95,11 @@ FOCUS_WRITERS: dict[str, tuple[str, bool | None, str]] = {
     ),
     "src/brain_v42/services/project_context_service.py": ("reader", None, "delegates"),
     "src/brain_v42/mcp/tools/project_context_tools.py": ("reader", None, "tool surface"),
+    "src/brain_v42/mcp/tools/project_focus_read_tools.py": (
+        "reader",
+        None,
+        "read-before-write: focus + revision in one row; never writes",
+    ),
     "src/brain_v42/mcp/tools/session_tools.py": ("reader", None, "briefing"),
     "src/brain_v42/mcp/tools/formatters.py": ("reader", None, "rendering"),
     "src/brain_v42/maintenance/plan_index_repair_store.py": (
