@@ -266,7 +266,6 @@ def _base_collector_stubs(collector: MetricsCollector) -> None:
     )
     collector.collect_dream_metrics = AsyncMock(return_value={})  # type: ignore[method-assign]
     collector.collect_dream_promotions = AsyncMock(return_value={})  # type: ignore[method-assign]
-    collector.collect_dream_promoted_health = AsyncMock(return_value=[])  # type: ignore[method-assign]
     collector.collect_nightly_ops = AsyncMock(return_value={})  # type: ignore[method-assign]
     collector.collect_session_slots = AsyncMock(return_value={})  # type: ignore[method-assign]
     # Left real, the ticket block ran on a mocked session and failed on a

@@ -42,7 +42,6 @@ def _collector() -> MagicMock:
     )
     collector.collect_dream_metrics = AsyncMock(return_value={"history": []})
     collector.collect_dream_promotions = AsyncMock(return_value={})
-    collector.collect_dream_promoted_health = AsyncMock(return_value=[])
     collector.collect_nightly_ops = AsyncMock(return_value={"state": "ok"})
     collector.collect_ticket_counts = AsyncMock(return_value={"projects": []})
     collector.collect_session_slots = AsyncMock(return_value={"projects": []})
@@ -171,8 +170,7 @@ async def test_representative_payload_size(include_slots: bool) -> None:
             "p50": 10.0 + index,
             "p95": 20.0 + index,
             "p99": 30.0 + index,
-            "calls_total": 100 + index,
-            "errors_total": 2 + index,
+            "samples": 100 + index,
         }
 
     tools = {f"tool_{index}": tool_payload(index) for index in range(26)}
@@ -190,6 +188,12 @@ async def test_representative_payload_size(include_slots: bool) -> None:
         for index, direction in enumerate(("read", "write"))
     }
     cross_process = {
+        "counters": {
+            "epoch": "0123456789abcdef",
+            "since": "2026-10-12T12:00:00+00:00",
+            "processes": 8,
+            "tool_latency_window_s": 300.0,
+        },
         "active_processes": 8,
         "tools": {name: tool_payload(index) for index, name in enumerate(tools)},
         "by_agent": by_agent,

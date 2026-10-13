@@ -558,6 +558,16 @@ pull request in the consuming repository (`red-monitor`, `red-cockpit`).
 keys return HTTP 400, and requests without `exclude` retain the full payload.
 The representative `?exclude=session_slots` payload is pinned at no more than 24 KiB.
 
+`tools.<name>.p50/p95/p99` summarize latency in milliseconds over a 300-second window;
+`samples` sums window samples. Percentiles come from the `_process` row of the
+latest-flushing MCP process (300-second window); if several rows ever contribute,
+the merge takes their maximum, an approximation. Percentiles are null without
+samples (then `samples = 0`).
+`cross_process.counters` exposes latest start (`since`), process count and window length;
+its epoch changes with the process/start set: rates = counter delta / elapsed seconds within one epoch.
+The counter epoch and `since` come from `process_metrics.started_at`, refreshed on every flush.
+Cockpit `cost.yesterday` is null: no 7-day rollup measures it.
+
 `nightly.scheduler` measures Dream's timer/service state independently of declared
 killswitches. `nightly` is always published when the sidecar can read the scheduler:
 its scheduler keys make the block non-empty, while `extract` and `last_failure`

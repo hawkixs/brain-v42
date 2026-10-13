@@ -158,7 +158,7 @@ class CockpitCollector:
                 # None when no record_cost caller exists — honest 'no data source'.
                 # Becomes a float once record_cost is wired in the MCP lifecycle.
                 "today": round(total_cost, 2) if has_cost_data else None,
-                "yesterday": 0.0,  # deferred: 7-day rollup
+                "yesterday": None,  # not measured: no 7-day rollup exists
                 "week": 0.0,
                 "month": 0.0,
                 "byModel": by_model,

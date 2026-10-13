@@ -38,6 +38,7 @@ _DB_KEYS = {
 }
 _SEARCH_KEYS = {"searches_total", "searches_with_zero_results", "avg_score"}
 _PROCESS_KEYS = {
+    "counters",
     "active_processes",
     "active_agents",
     "total_memory_rss_bytes",
@@ -213,8 +214,11 @@ async def test_process_failure_preserves_keys_with_nulls() -> None:
     collector = _collector(factory)
     block = await collector.collect_process_metrics()
     assert set(block) == _PROCESS_KEYS
-    for key in _PROCESS_KEYS - {"embedding", "decay"}:
+    for key in _PROCESS_KEYS - {"embedding", "decay", "counters"}:
         assert block[key] is None
+    assert block["counters"] == dict.fromkeys(
+        ("epoch", "since", "processes", "tool_latency_window_s")
+    )
     assert all(value is None for value in block["decay"].values())
     assert set(block["embedding"]) == {
         "total_requests",
