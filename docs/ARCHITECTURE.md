@@ -549,6 +549,28 @@ When legacy automation is enabled, metrics gives PostgreSQL lease acquisition tw
 On timeout it cancels that attempt and binds metrics-only, without the webhook or dedup
 scheduler, so a database outage cannot hold `:9200` behind asyncpg's connection timeout.
 
+### Payload contract
+
+Lot 0.6.13 adopts an additive-only contract for the JSON payloads of `/metrics`
+and `/api/cockpit`: no existing key is removed or renamed without a coordinated
+pull request in the consuming repository (`red-monitor`, `red-cockpit`).
+
+The top-level `block_status` map reports health separately from existing block
+fields. `/metrics` covers database, search quality, cross-process aggregates and
+cached slow blocks (graph inventory only when configured); `/api/cockpit` covers
+memory and retrieval percentiles. Each entry has the shape
+`{"status": "ok|degraded|not_measured", "error_type": null, "as_of": "UTC ISO-8601", "last_ok_at": null}`.
+`ok` means the measurement succeeded, `degraded` means its collector failed, and
+`not_measured` means no evaluation or no samples exist. `error_type` holds the
+exception class name or a short fixed reason such as `no_samples`, or null.
+`as_of` identifies the evaluation; `last_ok_at` retains the last successful
+measurement in this process, or null. Cached health keeps its computation time.
+Failed measured values become null, never fabricated zeros, while existing keys
+and independent live measurements remain available. Empty percentile windows
+also return null; the timeseries flusher omits their p95 row.
+On a database failure, the `graph_outbox` projector fields (`generation`, `healthy`)
+are null rather than -1/false; read `block_status.database`.
+
 ## Automation runtime (port 9201)
 
 `src/brain_v42/automation/` is an independently managed bounded context. It serves only

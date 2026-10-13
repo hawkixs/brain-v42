@@ -7,7 +7,7 @@ public API (``collector.collect_*`` / ``collector.record_search_log``) is
 unchanged.
 
 These methods depend only on ``self._session_factory`` and never crash the
-sidecar — every query degrades to an empty/zero result on error. (Pool / row
+sidecar — failed measurements are null with separate block health. (Pool / row
 counts that also need ``self._engine`` + ``get_settings`` stay in
 ``collector.py`` as ``collect_db_stats``.)
 
@@ -33,7 +33,7 @@ from brain_v42.metrics.retention import (
     PROCESS_METRICS_FRESH_SQL,
     PROCESS_METRICS_IS_LIVE_SQL,
 )
-from brain_v42.metrics.slow_block_cache import CollectorDegraded
+from brain_v42.metrics.slow_block_cache import BlockHealth, CollectorDegraded
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -60,8 +60,8 @@ _PG_LABEL_MAP: dict[str, str] = {
 # wins" (by `updated_at`) instead of by summing.
 _GAUGE_PSEUDO_TOOLS: frozenset[str] = frozenset({"_decay"})
 
-# Structural zeros: a missing _decay row (fresh deploy, or the collect_process_metrics
-# except-branch) still returns a shaped decay block, per the "zero on a source that
+# Structural zeros: a missing _decay row after a successful read (fresh deploy)
+# still returns a shaped decay block, per the "zero on a source that
 # counts nothing says nothing" convention used elsewhere in this module.
 _DECAY_ZERO: dict[str, int] = {"stale_count": 0, "archived_count": 0, "access_log_size": 0}
 
@@ -72,6 +72,14 @@ class _DbCollectorsMixin:
     # Provided by MetricsCollector.__init__ (declared for type-checkers only).
     if TYPE_CHECKING:
         _session_factory: async_sessionmaker[AsyncSession]
+        _block_health_tracker: BlockHealth
+
+    @property
+    def _block_health(self) -> BlockHealth:
+        """Initialize lazily because standalone mixin consumers have no constructor."""
+        if not hasattr(self, "_block_health_tracker"):
+            self._block_health_tracker = BlockHealth()
+        return self._block_health_tracker
 
     async def record_search_log(
         self,
@@ -157,17 +165,20 @@ class _DbCollectorsMixin:
                         """)
                     )
                 ).one()
-                return {
+                result = {
                     "searches_total": row[0],
                     "searches_with_zero_results": row[1],
                     "avg_score": round(row[2], 2) if row[2] is not None else 0.0,
                 }
-        except Exception:
+            self._block_health.record("search_quality", "ok")
+            return result
+        except Exception as exc:
             logger.warning("metrics.collect_search_quality.failed", exc_info=True)
+            self._block_health.record("search_quality", "degraded", type(exc).__name__)
             return {
-                "searches_total": 0,
-                "searches_with_zero_results": 0,
-                "avg_score": 0.0,
+                "searches_total": None,
+                "searches_with_zero_results": None,
+                "avg_score": None,
             }
 
     async def collect_process_metrics(self) -> dict[str, Any]:
@@ -356,7 +367,11 @@ class _DbCollectorsMixin:
                                 for latency in ("attempt_latency_ms", "operation_latency_ms"):
                                     percentiles = combined[latency]
                                     for key, value in observed.get(latency, {}).items():
-                                        percentiles[key] = max(percentiles.get(key, value), value)
+                                        previous = percentiles.get(key)
+                                        if previous is None:
+                                            percentiles[key] = value
+                                        elif value is not None:
+                                            percentiles[key] = max(previous, value)
                         probe = stats.get("last_probe")
                         latest_probe = agg_tools[name].get("last_probe")
                         if probe is not None and (
@@ -485,7 +500,7 @@ class _DbCollectorsMixin:
                 }
 
             emb_total = agg_emb["total_requests"]
-            return {
+            result = {
                 "active_processes": active_processes,
                 "active_agents": active_agents,
                 "total_memory_rss_bytes": total_rss,
@@ -514,33 +529,36 @@ class _DbCollectorsMixin:
                 "decay": dict(gauge_latest.get("_decay", _DECAY_ZERO)),
                 "embedding_identity": embedding_identity,
             }
-        except Exception:
+            self._block_health.record("cross_process", "ok")
+            return result
+        except Exception as exc:
             logger.warning("metrics.collect_process_metrics.failed", exc_info=True)
+            self._block_health.record("cross_process", "degraded", type(exc).__name__)
             return {
-                "active_processes": 0,
-                "active_agents": 0,
-                "total_memory_rss_bytes": 0,
-                "tools": {},
-                "search_rerank": {},
-                "mcp_auth_refused": {},
-                "elevation_refused": {},
-                "mcp_auth_agent_unresolved": {},
-                "author_binding_candidates": {},
-                "decay": dict(_DECAY_ZERO),
+                "active_processes": None,
+                "active_agents": None,
+                "total_memory_rss_bytes": None,
+                "tools": None,
+                "search_rerank": None,
+                "mcp_auth_refused": None,
+                "elevation_refused": None,
+                "mcp_auth_agent_unresolved": None,
+                "author_binding_candidates": None,
+                "decay": dict.fromkeys(_DECAY_ZERO),
                 "embedding_identity": None,
                 "embedding": {
-                    "total_requests": 0,
-                    "total_errors": 0,
-                    "gpu_busy_errors": 0,
-                    "unreachable_errors": 0,
-                    "recent_errors": 0,
-                    "avg_latency_ms": 0.0,
+                    "total_requests": None,
+                    "total_errors": None,
+                    "gpu_busy_errors": None,
+                    "unreachable_errors": None,
+                    "recent_errors": None,
+                    "avg_latency_ms": None,
                     "usage": {
-                        "read": {"total_tokens": 0, "reported_requests": 0},
-                        "write": {"total_tokens": 0, "reported_requests": 0},
+                        "read": {"total_tokens": None, "reported_requests": None},
+                        "write": {"total_tokens": None, "reported_requests": None},
                     },
                 },
-                "by_agent": {},
+                "by_agent": None,
             }
 
     async def collect_graph_inventory(self, graph_svc: Any) -> dict[str, Any]:

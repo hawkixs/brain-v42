@@ -74,13 +74,16 @@ async def test_aggregation_ignores_agent_copies_and_tool_reducers() -> None:
     assert "_elevation_refused" not in result["tools"]
 
 
-async def test_aggregation_keeps_both_maps_before_flush_and_on_database_failure() -> None:
+async def test_aggregation_keeps_empty_before_flush_and_null_on_database_failure() -> None:
     failed = MetricsCollector(
         engine=MagicMock(), session_factory=MagicMock(side_effect=OSError("unavailable"))
     )
-    for result in (await _collect([]), await failed.collect_process_metrics()):
-        assert result["mcp_auth_refused"] == {}
-        assert result["elevation_refused"] == {}
+    empty = await _collect([])
+    assert empty["mcp_auth_refused"] == {}
+    assert empty["elevation_refused"] == {}
+    degraded = await failed.collect_process_metrics()
+    assert degraded["mcp_auth_refused"] is None
+    assert degraded["elevation_refused"] is None
 
 
 @pytest.mark.parametrize("counts", [{}, {"session_not_operator": 1}])
