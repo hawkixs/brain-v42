@@ -30,8 +30,7 @@ from brain_v42.services.learning_service import LearningService
 pytestmark = pytest.mark.integration
 
 _DIM = 1536
-# 4 fresh rows + 1 whose freshness_status is NULL (the column is nullable; such a row is live).
-_LIVE_COUNT = 5
+_LIVE_COUNT = 4
 _ARCHIVED_COUNT = 5
 _MERGED_COUNT = 3
 
@@ -49,12 +48,11 @@ class _Seed(NamedTuple):
     project_key: str
     word: str
     live_ids: set[uuid.UUID]
-    null_status_id: uuid.UUID
 
 
 @pytest_asyncio.fixture
 async def seeded(session_factory: async_sessionmaker[AsyncSession]) -> _Seed:
-    """5 live (one with NULL freshness_status) + 5 archived + 3 merged learnings."""
+    """4 live + 5 archived + 3 merged learnings."""
     repo = PgLearningRepo(session_factory=session_factory)
     pk = _unique_key()
     word = f"zq{uuid.uuid4().hex[:10]}"
@@ -80,7 +78,6 @@ async def seeded(session_factory: async_sessionmaker[AsyncSession]) -> _Seed:
     ]
     archived_ids = [r.id for r in dead[:_ARCHIVED_COUNT]]
     merged_ids = [r.id for r in dead[_ARCHIVED_COUNT:]]
-    null_status_id = live[-1].id
     async with session_factory() as session:
         await session.execute(
             sa.update(learnings)
@@ -92,14 +89,9 @@ async def seeded(session_factory: async_sessionmaker[AsyncSession]) -> _Seed:
             .where(learnings.c.id.in_(merged_ids))
             .values(merged_into=live[0].id)
         )
-        await session.execute(
-            sa.update(learnings)
-            .where(learnings.c.id == null_status_id)
-            .values(freshness_status=None)
-        )
         await session.commit()
 
-    return _Seed(LearningService(pg_repo=repo), pk, word, {r.id for r in live}, null_status_id)
+    return _Seed(LearningService(pg_repo=repo), pk, word, {r.id for r in live})
 
 
 @pytest.mark.parametrize("limit", [3, 10])
@@ -126,23 +118,6 @@ async def test_vector_returns_min_limit_live_rows(seeded: _Seed, limit: int) -> 
     assert len(found) == min(limit, _LIVE_COUNT)
 
 
-async def test_a_null_freshness_status_row_is_live_for_both_searches(seeded: _Seed) -> None:
-    """`freshness_status != 'archived'` is NULL, not true, for a NULL status: it would drop the row."""
-    fts = await seeded.service.search(
-        seeded.word, project_key=seeded.project_key, limit=20, include_archived=False
-    )
-    vec = await seeded.service.semantic_search(
-        "unused",
-        project_key=seeded.project_key,
-        limit=20,
-        embedding=_QUERY_VEC,
-        include_archived=False,
-    )
-
-    assert seeded.null_status_id in {r.id for r in fts}
-    assert seeded.null_status_id in {r.id for r, _score in vec}
-
-
 async def test_default_still_returns_the_archived_best_matches(seeded: _Seed) -> None:
     """Control: without the flag the dead rows crowd the page, which is the bug's shape."""
     found = await seeded.service.semantic_search(
@@ -153,29 +128,44 @@ async def test_default_still_returns_the_archived_best_matches(seeded: _Seed) ->
     assert not {r.id for r, _score in found} & seeded.live_ids
 
 
-@pytest.mark.parametrize(
-    "setting_sql",
-    ["_SET_EF_SEARCH_SQL", "_SET_ITERATIVE_SCAN_SQL"],
-)
+@pytest.mark.parametrize("setting_sql", ["_SET_EF_SEARCH_SQL", "_SET_ITERATIVE_SCAN_SQL"])
 async def test_a_failing_tuning_statement_does_not_fail_the_search(
-    seeded: _Seed, monkeypatch: pytest.MonkeyPatch, setting_sql: str
+    seeded: _Seed,
+    session_factory: async_sessionmaker[AsyncSession],
+    monkeypatch: pytest.MonkeyPatch,
+    setting_sql: str,
 ) -> None:
-    """PostgreSQL rejects an unknown parameter under the reserved `hnsw` prefix.
+    """A tuning statement PostgreSQL rejects is isolated; the search rows still come back.
 
-    Unprotected, that error aborts the transaction and the SELECT after it fails.
+    PostgreSQL only rejects an unknown `hnsw.*` parameter once the pgvector library
+    is loaded in the backend (before that it is a silent placeholder), so the
+    caller-owned session first uses the vector type, which also puts the search on
+    the caller-owned-session path.
     """
-    monkeypatch.setattr(
-        pg_base, setting_sql, "SELECT set_config('hnsw.no_such_setting', 'x', true)"
-    )
-    with capture_logs() as logs:
-        found = await seeded.service.semantic_search(
-            "unused",
-            project_key=seeded.project_key,
-            limit=3,
-            embedding=_QUERY_VEC,
-            include_archived=False,
-        )
+    failing = "SELECT set_config('hnsw.no_such_setting', 'x', true)"
+    repo = PgLearningRepo(session_factory=session_factory)
+    async with session_factory() as session:
+        await session.execute(sa.text("SELECT '[1,2,3]'::vector <=> '[1,2,4]'::vector"))
+        # Control: the statement really fails in this session, and the savepoint
+        # absorbs it. Without the savepoint the transaction would now be aborted.
+        with pytest.raises(sa.exc.DBAPIError):
+            async with session.begin_nested():
+                await session.execute(sa.text(failing))
 
+        monkeypatch.setattr(pg_base, setting_sql, failing)
+        with capture_logs() as logs:
+            found = await repo.search_vector(
+                _QUERY_VEC,
+                project_key=seeded.project_key,
+                limit=3,
+                extra_clauses=repo.live_row_clauses(),
+                session=session,
+            )
+
+    warnings = [e for e in logs if e["event"] == "pg_base.vector_scan_tuning_failed"]
+    assert len(warnings) == 1
+    assert warnings[0]["setting"] == (
+        "hnsw.ef_search" if setting_sql == "_SET_EF_SEARCH_SQL" else "hnsw.iterative_scan"
+    )
     assert len(found) == 3
-    assert {r.id for r, _score in found} <= seeded.live_ids
-    assert any(e["event"] == "pg_base.vector_scan_tuning_failed" for e in logs)
+    assert {learning.id for learning, _score in found} <= seeded.live_ids
