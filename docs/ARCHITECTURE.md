@@ -555,6 +555,23 @@ Lot 0.6.13 adopts an additive-only contract for the JSON payloads of `/metrics`
 and `/api/cockpit`: no existing key is removed or renamed without a coordinated
 pull request in the consuming repository (`red-monitor`, `red-cockpit`).
 
+`nightly.scheduler` measures Dream's timer/service state independently of declared
+killswitches. `nightly` is always published when the sidecar can read the scheduler:
+its scheduler keys make the block non-empty, while `extract` and `last_failure`
+are optional. `nightly.killswitches_source = "declared"` identifies the phase
+switches as declarations, not measurements of scheduler arming.
+`dream` stays absent without runs or when its collector degrades. With run data,
+`dream.state` and `dream.last_run.scheduler_state` expose the scheduler state
+read by the Dream collector. `dream.state` and `nightly.dream_state` are read
+independently and may differ for up to one cache TTL.
+`dream.last_run.judged` is true only when the scheduler is armed; otherwise the
+last run reports recorded phases alone, without inventing missing-phase failures.
+`dream.last_run.status = "failed"` reports a recorded failure only when the run
+is not judged; judged failures retain `"partial"`, and runs without failures
+retain `"success"`.
+`METRICS_DREAM_SCHEDULER` defaults to `systemd_user`; `none` declares no scheduler
+for a containerised sidecar or a host where Dream is not installed.
+
 The top-level `block_status` map reports health separately from existing block
 fields. `/metrics` covers database, search quality, cross-process aggregates and
 cached slow blocks (graph inventory only when configured); `/api/cockpit` covers

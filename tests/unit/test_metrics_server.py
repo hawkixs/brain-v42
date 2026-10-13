@@ -184,6 +184,40 @@ async def test_metrics_endpoint_returns_json(
     assert data["database"]["graph_outbox"]["projector"]["healthy"] is True
 
 
+@pytest.mark.parametrize("db_failed", [False, True])
+async def test_metrics_omits_dream_without_run_data(
+    collector: MetricsCollector, mock_embedding_svc: MagicMock, db_failed: bool
+) -> None:
+    """Exercise the real Dream collector through response assembly and its cache."""
+    del collector.collect_dream_metrics
+    session = AsyncMock()
+    session.__aenter__.return_value = session
+    result = MagicMock()
+    result.all.return_value = []
+    session.execute = AsyncMock(return_value=result)
+    if db_failed:
+        session.execute.side_effect = RuntimeError("DB unavailable")
+    collector._session_factory.return_value = session
+    collector.collect_nightly_ops.return_value = {
+        "scheduler": {"state": "armed"},
+        "dream_state": "armed",
+    }
+    server = MetricsServer(collector, mock_embedding_svc)
+    with patch(
+        "brain_v42.metrics.collector_dream.read_dream_scheduler_state",
+        new_callable=AsyncMock,
+        return_value={"state": "armed"},
+    ):
+        response = await server._handle_metrics(MagicMock())
+
+    data = json.loads(response.body)
+    assert response.status == 200
+    assert "dream" not in data
+    assert data["nightly"]["scheduler"]["state"] == "armed"
+    assert data["nightly"]["dream_state"] == "armed"
+    assert data["block_status"]["dream"]["status"] == ("degraded" if db_failed else "ok")
+
+
 @pytest.mark.parametrize("backend", ["none", "cohere", "shim"])
 async def test_metrics_exposes_configured_backend_without_operations(
     collector: MetricsCollector,

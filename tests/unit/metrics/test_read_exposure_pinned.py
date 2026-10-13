@@ -243,9 +243,12 @@ METRICS_SCHEMA = {
         },
     },
     "dream": {
+        "state": None,
         "last_run": {
             "date": None,
             "status": None,
+            "judged": None,
+            "scheduler_state": None,
             "phases_ok": None,
             "phases_fail": None,
             "total_cost_usd": None,
@@ -276,6 +279,15 @@ METRICS_SCHEMA = {
         "generated_at": None,
     },
     "nightly": {
+        "scheduler": {
+            "state": None,
+            "source": None,
+            "timer": {"unit_file_state": None, "active_state": None, "next_elapse": None},
+            "service": {"active_state": None},
+            "error_type": None,
+        },
+        "dream_state": None,
+        "killswitches_source": None,
         "killswitches": {
             "promote": None,
             "reorg": None,

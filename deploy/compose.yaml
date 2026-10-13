@@ -261,6 +261,8 @@ services:
       <<: [*brain-env, *embedding-env]
       METRICS_HOST: "0.0.0.0"
       METRICS_PORT: "9200"
+      # The sidecar cannot see host systemd; red-base runs no Dream unit (decision 52c96594).
+      METRICS_DREAM_SCHEDULER: none
       METRICS_ALLOW_NON_LOOPBACK: "yes"
       METRICS_RECEIVER_AUTH: credentials
       # This runtime refuses the projector role and exposes no facts registry.

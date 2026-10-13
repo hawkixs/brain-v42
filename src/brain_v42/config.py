@@ -683,6 +683,11 @@ class Settings(BaseSettings):
     # --- Metrics sidecar ---
     metrics_enabled: bool = Field(default=False, validation_alias=_brain_alias("METRICS_ENABLED"))
     metrics_port: int = Field(default=9200, validation_alias=_brain_alias("METRICS_PORT"))
+    metrics_dream_scheduler: Literal["systemd_user", "none"] = Field(
+        default="systemd_user", validation_alias=_brain_alias("METRICS_DREAM_SCHEDULER")
+    )
+    """`none` declares that this host runs no Dream scheduler (a containerised
+    sidecar, or a host where Dream is not installed)."""
     metrics_receiver_auth: Literal["none", "credentials"] = Field(
         default="none", validation_alias=_brain_alias("METRICS_RECEIVER_AUTH")
     )

@@ -34,6 +34,7 @@ from brain_v42.metrics.codex_telemetry import (
     CodexTelemetryMalformedError,
 )
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.metrics.dream_scheduler import DreamSchedulerMode
 from brain_v42.metrics.slow_block_cache import SlowBlockCache
 
 logger = structlog.get_logger(__name__)
@@ -253,6 +254,7 @@ class MetricsServer:
         receiver_bucket: TokenBucket | None = None,
         database_probe: Callable[[], Awaitable[object]] | None = None,
         database_probe_timeout_seconds: float = 2.0,
+        dream_scheduler: DreamSchedulerMode = "systemd_user",
     ) -> None:
         if receiver_auth not in {"none", "credentials"}:
             raise ValueError("METRICS_RECEIVER_AUTH must be none or credentials")
@@ -267,6 +269,7 @@ class MetricsServer:
         self._database_probe_timeout_seconds = database_probe_timeout_seconds
         self._probe_cleanups: set[asyncio.Future[object]] = set()
         self._collector = collector
+        self._dream_scheduler = dream_scheduler
         self._embedding_svc = embedding_svc
         self._port = port
         self._fail_on_bind_error = fail_on_bind_error
@@ -616,7 +619,9 @@ class MetricsServer:
         otherwise a partial refresh could mix a fresh `last_run` with a stale
         `promotions` sub-block.
         """
-        dream_metrics = await self._collector.collect_dream_metrics()
+        dream_metrics = await self._collector.collect_dream_metrics(
+            scheduler_mode=self._dream_scheduler
+        )
         if not dream_metrics:
             return {}
         promo_counts = await self._collector.collect_dream_promotions()
@@ -840,7 +845,8 @@ class MetricsServer:
         # absent, never 500 the whole endpoint (a real incident: a `MinimalCollector`
         # test double raised AttributeError here, outside any try/except).
         nightly = await self._slow_block_cache.get(
-            "nightly", lambda: self._collector.collect_nightly_ops()
+            "nightly",
+            lambda: self._collector.collect_nightly_ops(scheduler_mode=self._dream_scheduler),
         )
         if nightly:
             metrics["nightly"] = nightly
