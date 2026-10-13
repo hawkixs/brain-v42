@@ -46,7 +46,7 @@ The following aliases are accepted for the named tool. The canonical name remain
 | `brain_ticket_transition` | `note`, `comment` | `message` |
 | `brain_ticket_transition` | `actor_project`, `project_key` | `author_project` |
 | `brain_ticket_plan` | `project_key` | `author_project` |
-| `brain_ticket_create` | `author_project` | `from_project` |
+| `brain_ticket_create` | `author_project`, `target_project` | `from_project`, `to_project` |
 
 Passing an alias together with its canonical name, or passing two aliases for the same canonical name, is ambiguous and returns a safe error. Pass exactly one name for each parameter; argument values are never included in that error.
 

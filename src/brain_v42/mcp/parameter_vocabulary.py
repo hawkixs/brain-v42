@@ -29,7 +29,9 @@ PARAMETER_ALIASES: Mapping[str, Mapping[str, str]] = MappingProxyType(
             }
         ),
         "brain_ticket_plan": MappingProxyType({"project_key": "author_project"}),
-        "brain_ticket_create": MappingProxyType({"author_project": "from_project"}),
+        "brain_ticket_create": MappingProxyType(
+            {"author_project": "from_project", "target_project": "to_project"}
+        ),
     }
 )
 

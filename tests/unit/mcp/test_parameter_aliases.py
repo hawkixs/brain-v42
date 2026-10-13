@@ -63,6 +63,40 @@ async def test_two_aliases_for_one_canonical_are_ambiguous() -> None:
     assert "pass only 'intention'" in message
 
 
+async def test_ticket_target_project_alias_reaches_handler() -> None:
+    server = _server()
+    seen: dict[str, Any] = {}
+
+    @server.tool()
+    async def brain_ticket_create(from_project: str, to_project: str) -> str:
+        seen.update(from_project=from_project, to_project=to_project)
+        return "ok"
+
+    async with Client(server) as client:
+        await client.call_tool(
+            "brain_ticket_create", {"from_project": "source", "target_project": "target"}
+        )
+    assert seen == {"from_project": "source", "to_project": "target"}
+
+
+async def test_ticket_target_project_and_to_project_are_ambiguous_without_values() -> None:
+    server = _server()
+
+    @server.tool()
+    async def brain_ticket_create(from_project: str, to_project: str) -> str:
+        return "ok"
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as caught:
+            await client.call_tool(
+                "brain_ticket_create",
+                {"from_project": "source", "target_project": "PRIVATE", "to_project": "OTHER"},
+            )
+    message = str(caught.value)
+    assert "'target_project' and 'to_project'" in message
+    assert "PRIVATE" not in message and "OTHER" not in message
+
+
 async def test_alias_works_through_compact_gateway() -> None:
     server = _server()
     seen: dict[str, Any] = {}
