@@ -16,10 +16,15 @@
 # /etc/brain-v42/neo4j-auth: uid 7474, mode 0600 (neo4j/password; _FILE pattern)
 # /etc/brain-v42/brain-app-password: uid 1000, mode 0600 (matches runtime DSN password)
 # /etc/brain-v42/embedding-token: uid 1000, mode 0600 (hosted embedding API key)
-# /etc/brain-v42/rerank-api-key: uid 1000, mode 0600 (OpenRouter rerank key, value only;
-# read by mcp only). Rerank rollback: set the x-rerank-env block to BRAIN_RERANK_BACKEND
-# "none" alone (the settings validator refuses any other rerank line next to it), then
-# redeploy through the rail. A rotated key needs an explicit recreate.
+# /etc/brain-v42/voyage-api-key: uid 1000, mode 0600 (operator's Voyage key, value only;
+# read by mcp only; primary rerank link, Voyage's own API: decisions fa3b6abc, 7d36a08c).
+# /etc/brain-v42/rerank-api-key: uid 1000, mode 0600 (OpenRouter key, value only; read by
+# mcp only; fallback link cohere/rerank-4-fast with data collection denied, used when Voyage
+# fails within its 1.6 s share of the 3.0 s budget; RRF order only when both links fail
+# (go 742e7a05).
+# Rerank rollback: set the x-rerank-env block to BRAIN_RERANK_BACKEND "none" alone (the
+# settings validator refuses any other rerank line next to it), then redeploy through the
+# rail. A rotated key needs an explicit recreate.
 # /etc/brain-v42/github-app-key.pem: uid 1000, mode 0600 (GitHub App private key)
 # /etc/brain-v42/delivery-observer.env: uid 1000, mode 0600 (the real observer config,
 # read via --env-file; BRAIN_DELIVERY_ENABLED=true, BRAIN_DELIVERY_POSTGRES_URL for brain_app,
@@ -74,15 +79,19 @@ x-embedding-env: &embedding-env
   EMBEDDING_DIMENSION: "1536"
   BRAIN_EMBEDDING_TOKEN_FILE: /run/secrets/embedding_token
 
-# Hosted reranker (lot 0.6.10, ruling 26208df8): Voyage rerank-3-lite through OpenRouter,
-# provider pinned, data collection denied. Rollback: keep only BRAIN_RERANK_BACKEND: "none".
+# Hosted reranker (lot 0.6.10): Voyage's own API first (operator key, own quota), Cohere
+# through OpenRouter as the fallback link. Rollback: keep only BRAIN_RERANK_BACKEND: "none".
 x-rerank-env: &rerank-env
-  BRAIN_RERANK_BACKEND: "cohere"
-  BRAIN_RERANKER_URL: https://openrouter.ai/api
-  BRAIN_RERANK_MODEL: voyageai/rerank-3-lite
-  BRAIN_RERANK_HEALTH_PATH: /v1/key
-  BRAIN_RERANK_PROVIDER: '{"only":["voyageai"],"allow_fallbacks":false,"data_collection":"deny"}'
-  BRAIN_RERANK_API_KEY_FILE: /run/secrets/rerank_api_key
+  BRAIN_RERANK_BACKEND: "voyage"
+  BRAIN_RERANKER_URL: https://api.voyageai.com
+  BRAIN_RERANK_MODEL: rerank-3-lite
+  BRAIN_RERANK_API_KEY_FILE: /run/secrets/voyage_api_key
+  BRAIN_RERANK_FALLBACK_MODEL: cohere/rerank-4-fast
+  BRAIN_RERANK_FALLBACK_PROVIDER: '{"only":["cohere"],"allow_fallbacks":false,"data_collection":"deny"}'
+  BRAIN_RERANK_FALLBACK_URL: https://openrouter.ai/api
+  BRAIN_RERANK_FALLBACK_API_KEY_FILE: /run/secrets/rerank_api_key
+  BRAIN_RERANK_BUDGET_SECONDS: "3.0"
+  BRAIN_RERANK_PRIMARY_BUDGET_SECONDS: "1.6"
 
 x-server: &server
   restart: unless-stopped
@@ -228,6 +237,7 @@ services:
       BRAIN_CLIENT_ACTIVITY_ALLOWED_HOST: "metrics"
     secrets:
       - embedding_token
+      - voyage_api_key
       - rerank_api_key
     volumes:
       - /etc/brain-v42/activity:/etc/brain-v42/activity:ro
@@ -251,10 +261,14 @@ services:
       <<: [*brain-env, *embedding-env]
       METRICS_HOST: "0.0.0.0"
       METRICS_PORT: "9200"
+      # The sidecar cannot see host systemd; red-base runs no Dream unit (decision 52c96594).
+      METRICS_DREAM_SCHEDULER: none
       METRICS_ALLOW_NON_LOOPBACK: "yes"
       METRICS_RECEIVER_AUTH: credentials
       # This runtime refuses the projector role and exposes no facts registry.
       GRAPH_PROJECTOR_ENABLED: "false"
+      # Dormant by decision: feature_dedup runs nowhere, the roadmap is being retired
+      # (0f008a1c, operator ruling 2026-10-13). See OPERATIONS, "Automation service".
       METRICS_LEGACY_AUTOMATION_ENABLED: "false"
     secrets:
       - embedding_token
@@ -315,18 +329,19 @@ services:
     # Runs the seven-day rule of the workstation's Dream sweep phase (auto_stale_7d),
     # once at start and then daily (ticket 888660a9). The MCP server's own net already
     # closes idle agent traces every fifteen minutes, so the four-hour rule stays off
-    # here. DRY: without --wet it only enumerates and records a dream_runs row; arming
-    # it is a separate pull request, after a dry run's journal was read. The same loop
-    # then runs the retention of closed agent traces and delivered graph_outbox rows
-    # (ticket 8f319827), dry as well until a pull request passes --execute. A failed run
-    # is retried the next day instead of crash-looping the container.
+    # here. The same loop then runs the retention of closed agent traces and delivered
+    # graph_outbox rows (ticket 8f319827). Both shipped dry and were armed by the
+    # operator on 2026-10-13 after the dry run of the 0.6.12 deploy: --wet abandons the
+    # stale sessions, --execute deletes. Disarming is removing the flag, through a pull
+    # request and a rail deploy. A failed run is retried the next day instead of
+    # crash-looping the container.
     command:
       - /bin/sh
       - -c
       - |
         while :; do
-          python -m brain_v42.maintenance.session_sweep && touch /tmp/brain-v42-session-sweep.heartbeat || echo "session-sweep: run failed, next attempt in 24 h" >&2;
-          python -m brain_v42.maintenance.trace_retention && touch /tmp/brain-v42-trace-retention.heartbeat || echo "trace-retention: run failed, next attempt in 24 h" >&2;
+          python -m brain_v42.maintenance.session_sweep --wet && touch /tmp/brain-v42-session-sweep.heartbeat || echo "session-sweep: run failed, next attempt in 24 h" >&2;
+          python -m brain_v42.maintenance.trace_retention --execute && touch /tmp/brain-v42-trace-retention.heartbeat || echo "trace-retention: run failed, next attempt in 24 h" >&2;
           sleep 86400;
         done
     env_file:
@@ -352,6 +367,8 @@ secrets:
     file: /etc/brain-v42/brain-app-password
   embedding_token:
     file: /etc/brain-v42/embedding-token
+  voyage_api_key:
+    file: /etc/brain-v42/voyage-api-key
   rerank_api_key:
     file: /etc/brain-v42/rerank-api-key
   github_app_key:

@@ -96,8 +96,12 @@ async def test_failed_finalization_rolls_back_entity_and_retry_creates_once(
         decision_service,
     )
 
-    with pytest.raises(ProposalApplyError, match="injected proposal finalization failure"):
+    # The client sees the class and a log ref, never the driver text (ticket 2bb6f20b).
+    with pytest.raises(
+        ProposalApplyError, match=r"apply failed: internal error RuntimeError \(ref [0-9a-f]{12}\)$"
+    ) as refused:
         await failing_service.apply_ticket_extraction(proposal_id)
+    assert "injected proposal finalization failure" not in str(refused.value)
 
     async with session_factory() as observer:
         count_after_failure = (

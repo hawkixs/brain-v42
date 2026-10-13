@@ -1,19 +1,62 @@
 # MCP Tools — brain_v42
 
-**Repository target: 064.** The tool catalogue is registered by `build_server()` in `src/brain_v42/mcp/server.py`, through the `register_*_tools()` functions in `src/brain_v42/mcp/tools/`.
-**Repository registry:** 79 always-on + 2 graph-gated = 81 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository target: 065.** The tool catalogue is registered by `build_server()` in `src/brain_v42/mcp/server.py`, through the `register_*_tools()` functions in `src/brain_v42/mcp/tools/`.
+**Repository registry:** 84 always-on + 2 graph-gated = 86 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Profiles:** `compact` is the default presentation profile: the nine session lifecycle tools remain visible, while other tools are found with `brain_find_tool` and invoked with `brain_call_tool`. `native` exposes the registered catalogue. Dream capability principals receive only the phase allowlist and cannot use the catalog gateways. The `x-brain-tool-profile: native` request header selects native presentation when permitted. `brain_code_mode`, when enabled, installs its own profile only while Dream capability enforcement is off; HTTP security rejects code mode at startup when enforcement is enabled.
 **Transports:** the server supports HTTP and stdio. Authentication and HTTP request limits are enforced at the HTTP transport boundary; they do not change tool signatures.
 
 ### Catalog gateways (`compact` profile)
 
-`brain_find_tool` is the FastMCP search gateway: pass a natural-language search query to find registered tools. `brain_call_tool(name, arguments)` invokes a discovered tool with its ordinary arguments and preserves that tool's result shape. The search transform returns at most five matches. These gateways are presentation tools and are unavailable to scoped Dream principals.
+`brain_find_tool` is the FastMCP search gateway: pass a natural-language search query to find registered tools. Each match is summarized as `name`, a one-line `description`, a `required` object mapping parameter names to short types, and an `optional` list of parameter names. Pass an exact tool name to get its full description and `input_schema`; output schemas are never included. The search transform returns at most five matches. `brain_call_tool(name, arguments)` invokes a discovered tool with its ordinary arguments and preserves that tool's result shape. These gateways are presentation tools and are unavailable to scoped Dream principals.
+
+Calling either gateway through `brain_call_tool` is refused with direct usage guidance. Unknown names return up to three suggestions from the caller's authorized catalogue, followed by the `brain_find_tool(query=...)` hint; project-shaped names also point to the session briefing, `brain_focus_history`, and `brain_list_projects`. Additive aliases resolve common names before dispatch. `brain_recall` resolves to `brain_search`. `brain_get_decision` resolves to `brain_get` with `entity_type="decision"`. `brain_get_learning` resolves to `brain_get` with `entity_type="learning"`. `brain_get_snippet` resolves to `brain_get` with `entity_type="snippet"`. `brain_get_runbook` resolves to `brain_get` with `entity_type="runbook"` only when no real registered tool has that name. `brain_get_adr` resolves to `brain_get` with `entity_type="adr"`. `brain_get_plan` resolves to `brain_get` with `entity_type="plan"`. A conflicting caller supplied `entity_type` is refused. An alias resolves only when its target tool is visible to the caller.
 
 Tools generally return formatted text; lifecycle, fact and delivery tools also expose structured outputs. Through `brain_call_tool`, structured results remain objects and text results use FastMCP's wrapped result shape. Clients should follow each tool's declared output.
 
+Unexpected tool failures return `<operation> failed: internal error <Class> (ref <id>)`, with the same reference in the server log.
+
+### Argument errors
+
+Invalid arguments produce a concise message naming unexpected or missing parameters and showing the expected signature when available. Shape errors identify the failing field and expected type. Messages never echo argument values; caller-supplied names (parameter names and dictionary keys) are echoed only when they look like identifiers.
+
+### Parameter vocabulary
+
+Tool schemas publish canonical parameter names in these families, for example (the complete set is maintained by `VOCABULARY` in `src/brain_v42/mcp/parameter_vocabulary.py`):
+
+- **Entity references:** `entity_type`, `entity_id`, `source_id`, `target_id`, and the typed entity IDs such as `decision_id`, `learning_id`, `runbook_id`, `snippet_id`, and `claim_id`.
+- **Project and actor:** `project_key`, `author_project`, `from_project`, `to_project`, `actor_project`, and `project_group`.
+- **Free text:** `title`, `topic`, `intention`, `context`, `decision_made`, `insight`, `description`, `body`, `message`, and `reason`.
+- **List filters and paging:** `query`, `types`, `tags`, `status`, `limit`, `offset`, and `cursor`.
+- **Lifecycle (session, slot, and focus revisions):** `session_id`, `slot_id`, `expected_client_key`, `expected_revision`, `expected_slot_revision`, and `expected_focus_revision`.
+- **Delivery:** `ticket_id`, `deliverable_key`, `expected_workflow_version`, `expected_assessment_id`, and `expected_delivery_digest`.
+- **Claims:** `claim_id`, `idempotency_key`, `expected_active_claim_ids`, and `after_seq`.
+- **Other:** `max_age_seconds`, `include_archived`, `dream_run_id`, `payload`, and `contract_revision`.
+
+The following aliases are accepted for the named tool. The canonical name remains published in its schema.
+
+| Tool | Accepted alias | Canonical name |
+| --- | --- | --- |
+| `brain_get` | `id` | `entity_id` |
+| `brain_get` | `type`, `item_type` | `entity_type` |
+| `brain_list` | `type` | `entity_type` |
+| `brain_log_decision` | `decision` | `decision_made` |
+| `brain_log_decision` | `description` | `context` |
+| `brain_learn` | `title` | `topic` |
+| `brain_learn` | `content` | `insight` |
+| `brain_save_snippet` | `description`, `purpose` | `intention` |
+| `brain_fact_get` | `key` | `name` |
+| `brain_ticket_reply` | `message` | `body` |
+| `brain_ticket_reply` | `from_project`, `project_key` | `author_project` |
+| `brain_ticket_transition` | `note`, `comment` | `message` |
+| `brain_ticket_transition` | `actor_project`, `project_key` | `author_project` |
+| `brain_ticket_plan` | `project_key` | `author_project` |
+| `brain_ticket_create` | `author_project`, `target_project` | `from_project`, `to_project` |
+
+Passing an alias together with its canonical name, or passing two aliases for the same canonical name, is ambiguous and returns a safe error. Pass exactly one name for each parameter; argument values are never included in that error.
+
 Lifecycle v4 has run in production since 24 July 2026.
 
-Migration 064 is the repository target: runtime role ACLs with no new MCP surface. Migration 063 adds four tables for the client credential registry, admin elevations and the schema compatibility ledger, with no MCP surface yet. Migration 062: two partial error indexes on `delivery_confirmations` and `pg_stat_statements` in schema `monitoring`, no new table and no MCP surface. Migration 061: `brain_session_connections` retains the connections seen by operator lifecycle calls for exact absorption across transport changes. Migration 060: focus slots (ADR #34), three tables and two nullable `brain_sessions` columns, plus the 16314b31 CHECK fix; downgrade refuses to destroy slots without `-x allow_focus_slots_downgrade=yes`. Migration 059: `tickets.target_release`, nullable with no default or backfill, validated as `major.minor.patch` and indexed for planned tickets; downgrade refuses to erase plans without `-x allow_target_release_downgrade=yes`. Migration 058: the `knowledge_claims` provenance CHECK also accepts `extracted` (claims the server derives from knowledge prose, decision f99ca46f); its downgrade refuses while such rows exist. Migration 057 before it: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
+Migration 065 is the repository target: `programmes` and `programme_gates`, the programme progress of contract `docs/contracts/programmes_v1.md`, behind the five `brain_programme_*` tools. Migration 064: runtime role ACLs with no new MCP surface. Migration 063 adds four tables for the client credential registry, admin elevations and the schema compatibility ledger, with no MCP surface yet. Migration 062: two partial error indexes on `delivery_confirmations` and `pg_stat_statements` in schema `monitoring`, no new table and no MCP surface. Migration 061: `brain_session_connections` retains the connections seen by operator lifecycle calls for exact absorption across transport changes. Migration 060: focus slots (ADR #34), three tables and two nullable `brain_sessions` columns, plus the 16314b31 CHECK fix; downgrade refuses to destroy slots without `-x allow_focus_slots_downgrade=yes`. Migration 059: `tickets.target_release`, nullable with no default or backfill, validated as `major.minor.patch` and indexed for planned tickets; downgrade refuses to erase plans without `-x allow_target_release_downgrade=yes`. Migration 058: the `knowledge_claims` provenance CHECK also accepts `extracted` (claims the server derives from knowledge prose, decision f99ca46f); its downgrade refuses while such rows exist. Migration 057 before it: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
 so a reader can tell a PROVEN attribution (`derived_connection`, same connection) from a DEDUCED
 one (`derived_window`, sole covering session at the instant of creation) — and undo the second
 kind. Migration 047 removes the closing XOR, so a session whose ledger
@@ -86,6 +129,8 @@ rollout, and rollback are documented in
 | See one claim's complete verdict history | `brain_claim_history` |
 
 `brain_learn` is the last-resort tool, never the default.
+
+Which capture tool: a choice between options -> `brain_log_decision`; a procedure -> `brain_create_runbook`; code -> `brain_save_snippet`; durable architecture -> `brain_propose_adr`; anything else -> `brain_learn`.
 
 ## Measured facts
 
@@ -412,6 +457,8 @@ boundary; they are not independently authenticated project identities. Dream
 principals cannot invoke the delivery mutations, including through compact
 catalog gateways.
 
+The declared `actor_project` is not yet bound to the transport actor's resolved project. Each write whose declared project differs from it (`mismatch`), whose credential resolves no project (`unresolved_actor`) or that carries no verified principal (`unauthenticated`: shared token, stdio) is counted in `/metrics` under `author_binding_candidates`, keyed `<tool>:<cause>`, without introducing refusals.
+
 | Operation | Other arguments | Structured result |
 | --- | --- | --- |
 | `brain_delivery_contract_set` | `ticket_id`, `contract`, `expected_revision` (0 for create), `idempotency_key`, required `reason` | `ContractRevision` |
@@ -712,9 +759,13 @@ Increment `use_count`, set `last_used_at = now()`. Raises `Invalid UUID: <value>
 ### brain_propose_adr
 ```
 brain_propose_adr(title, context, decision, consequences, project_key,
-                  alternatives_considered=None, tags=None)
+                  alternatives_considered=None, tags=None, claims=None,
+                  alternatives=None)
 ```
 Propose an Architecture Decision Record (`status=proposed`).
+`alternatives` accepts strings like `brain_log_decision`; each string is used
+as both the alternative title and description. Pass it or
+`alternatives_considered` (objects with title and description), never both.
 
 The Dream promotion path is `brain_promote_adr`, a separate tool. Until
 2026-09-03 this signature also published `source_learning_id`, `auto_accept`
@@ -766,7 +817,10 @@ brain_create_runbook(title, description, project_key, trigger, steps,
                      prerequisites=None, rollback_steps=None,
                      estimated_duration=None, tags=None)
 ```
-`steps` is a list of `{order?, description, command?, verification?}`.
+`steps` is a list of step objects or strings. A string supplies the step title;
+steps without an explicit `order` are numbered by position. Empty strings are
+rejected. Objects retain the existing `{order?, title, command?, description?}`
+shape.
 
 The Dream promotion path is `brain_promote_runbook`, a separate tool. Until
 2026-09-04 this signature also published `source_learning_id` and
@@ -808,6 +862,17 @@ Increment `execution_count`, stamp `last_executed_at`, set `last_execution_statu
 
 ---
 
+## Accepted shapes
+
+List-of-text fields such as `tags`, `alternatives` and search `types` accept a
+single non-empty string as a one-element list. JSON-encoded lists are parsed as
+lists; malformed strings beginning with `[` and empty or whitespace-only strings
+are refused. Runbook `steps` and `rollback_steps` also accept a single string as
+a one-element list of step titles, or string items in a list. For
+`brain_propose_adr`, `alternatives` accepts strings while
+`alternatives_considered` accepts structured objects; passing both is refused as
+ambiguous.
+
 ## Global search — 1 tool (`brain_tools.py`)
 
 ### brain_search
@@ -817,6 +882,8 @@ brain_search(query, types=None, project_key=None, project_group=None,
              group_by_type=False, tags=None, include_related=False)
 ```
 Hybrid semantic search: pgvector fan-out across services + `BatchingRerankerClient` rerank (20 ms coalescing window). `types` subset of {decision, learning, snippet, runbook, adr, plan}. `project_key` XOR `project_group` scope. `tags` filter by overlap. Results render with `[s:score]` prefix sorted by score desc. `group_by_type=True` groups output into sections (former `brain_what_do_i_know_about`); `types` still scopes which sections are searched and rendered in grouped mode. `include_related=True` appends a `### Related` graph-neighbour block.
+
+`types` accepts either a list of knowledge types or one type string.
 
 `min_score` defaults to the active reranker's calibrated floor (0.2 shim, 0.50 Voyage rerank-3-lite); diagnostics report the threshold applied and the reranker identity. An explicit caller value overrides this default.
 
@@ -897,6 +964,7 @@ brain_session_resume(session_id, expected_client_key)
     current_focus_revision, slot_closed, briefing}
 ```
 Attach to an existing `open` session after the UUID/client-key guard passes, without mutating it. Ended and abandoned sessions cannot be resumed. Resume does not refresh liveness; issue an explicit heartbeat for a long-running session. Use the returned current focus revision before attempting `brain_session_end`.
+An agent trace is refused with `session_is_agent_trace`.
 For a bound session, `current_focus` and `current_focus_revision` are the slot's body and revision.
 `slot_closed` is true when a receipt has closed that slot (always false for an unbound session): `brain_session_end` and `brain_session_relay` then refuse with `slot_closed`, and the way out is the one the refusal names (`expected_focus_revision` set to the pre-close revision records a conflict, or abandon the session).
 The nested session also restores every existing ledger attribution in
@@ -916,6 +984,7 @@ brain_session_capture(session_id, expected_client_key, knowledge_ids)
     replayed_knowledge_ids, replayed}
 ```
 Persist client-declared provenance in the `brain_session_artifacts` ledger and refresh the session heartbeat. This is an explicit attribution by the caller, not automatic discovery or proof that the same client created the artifact.
+An agent trace is refused with `session_is_agent_trace`.
 
 Each UUID must resolve unambiguously to a decision, learning, snippet, runbook, ADR, or indexed plan in the same project, created at or after the session start. One knowledge UUID can belong to only one session globally. Replaying IDs already owned by the same session is safe; an ID owned by another session conflicts, and mixed batches report newly captured and replayed IDs separately.
 An exact retry remains read-only and successful after that owning session has ended or been
@@ -927,6 +996,7 @@ brain_session_heartbeat(session_id, expected_client_key)
 -> {session}
 ```
 Refresh `last_heartbeat_at` and `updated_at` for an `open` session without changing its lifecycle status or project focus. Terminal sessions reject heartbeats.
+An agent trace is refused with `session_is_agent_trace`.
 
 ### brain_session_checkpoint
 ```
@@ -934,6 +1004,7 @@ brain_session_checkpoint(session_id, expected_client_key, seq, progress, next_st
 -> {session_id, seq, created_at, replayed, checkpoint_count}
 ```
 Publish one semantic checkpoint of an `open` session, in a single call, into the append-only `brain_session_checkpoints` table (migration 052). It records JUDGMENT — where the work stands, what blocks it, what comes next — published together so a reader can tell a complete snapshot from a partial one.
+An agent trace is refused with `session_is_agent_trace`.
 
 The repository migration target is migration 063; this does not enable delivery operations in MCP.
 
@@ -947,6 +1018,7 @@ brain_session_list(project_key=None, status="open", limit=20, offset=0)
 -> {sessions, total, limit, offset}
 ```
 List sessions in reverse start order. `status` is one of `open | stale | ended | abandoned | all`; `limit` is bounded to 1–100.
+An agent trace's `client_key` is shown masked as `auto:<masked>`.
 Every listed session includes its current ledger view in `attributed_knowledge_ids`, including
 abandoned sessions whose terminal `captured_knowledge_ids` snapshot must remain empty.
 
@@ -962,6 +1034,7 @@ brain_session_end(session_id, expected_client_key, summary, next_focus,
     focus_at_end, focus_revision_at_end}
 ```
 End a session and attempt the shared project-focus update in one transaction. `summary` and `next_focus` must be non-blank. End reads and revalidates the persistent capture ledger; it no longer accepts captured UUIDs in its own payload.
+An agent trace is refused with `session_is_agent_trace`.
 
 The capture outcome is an exclusive choice:
 
@@ -972,7 +1045,7 @@ Invalid or missing capture evidence rolls back the transaction and leaves the se
 
 For a session bound to a focus slot (`brain_session_bind`), `expected_focus_revision` is the slot revision and `next_focus` becomes the slot body (at most 4,000 characters, else `slot_body_too_long` before any write); the project base is not written. A stale revision or a closed slot closes the session with `conflict` and leaves the slot untouched, except a closed slot at exactly `expected_focus_revision`, which refuses `slot_closed` and leaves the session open: end with `expected_focus_revision` minus 1 (the pre-close slot revision; a close bumps the revision by exactly 1) to record a conflict, or abandon it.
 
-For an unbound session, `next_focus` REPLACES the project's whole base focus, so the relay's shrink guard applies: a `next_focus` shorter than 70% of the current base focus is refused `base_focus_shrink` before any write, and the message gives the proposed length, the current length and the floor. The refusal is fail-closed like the identity and capture errors: the session stays `open`, so the caller carries the durable content over and ends again. `allow_focus_shrink=true` lifts the guard; `end` is only ever an operator command, so the flag is an operator gesture (the guard mod may relay but never end, and the relay's own override stays operator-only). An empty current focus is never guarded. The guard only runs where the base would be written: a stale `expected_focus_revision` is still recorded as a `conflict` (nothing is destroyed; `next_focus` stays on the session row), a bound session writes its slot and never meets the base guard, and a replay of an already ended session is not re-evaluated.
+For an unbound session, `next_focus` REPLACES the project's whole base focus; for a bound session it REPLACES the whole slot body. A replacement shorter than 70% of the stored text is refused before writing (`base_focus_shrink` or `slot_focus_shrink`), leaving the session open. The message gives the current and proposed lengths, floor, characters dropped and share kept. `allow_focus_shrink=true` requires an active /brain-admin elevation for the verified credential and current MCP connection; otherwise `focus_shrink_override_refused` is raised before any mutation, including derived capture. Shared-token and stdio callers cannot override. An operator relay remains the other explicit override path. An empty current focus is never guarded. A stale revision still closes with `conflict`, since nothing is destroyed, and an already-ended replay does not re-evaluate the content guard.
 
 Replaying the exact terminal payload returns `replayed=true` and the original persisted focus outcome/snapshot; a different payload conflicts. `current_focus` and `current_focus_revision` report the project state at response time (for a bound session, the slot body and revision) and may therefore differ from the persisted end snapshot on a later replay.
 
@@ -989,7 +1062,7 @@ Two forms, and exactly one revision per call (`relay_expects_one_revision` other
 
 **Base form** (an open, unbound operator session; `expected_focus_revision`, the BASE revision, and no slot). One transaction: captures `knowledge_ids`, writes `handover` as the project's whole base focus (compare-and-swap on the base revision, history source `session_end`), ends the old session with `focus_outcome = applied` and opens an unbound successor whose `started_focus*` is the new base; a base relay's successor is linked by client_key and start boundary, not by relayed_from_session_id (the 060 CHECK keeps that column slot-only). `slot` is null and `focus_revision` is the new base revision. A stale revision refuses `focus_revision_conflict`, changes nothing and leaves the session open (unlike `end`, which closes anyway). Shrink guard: a handover shorter than 70% of the current base focus is refused `base_focus_shrink`, whose message gives both lengths, because the handover REPLACES the base; `allow_focus_shrink = true` lifts it for an `operator` relay only (`relay_shrink_override_operator_only` for a `guard_mod`). The `initiator` is declared by the caller, not proven, like the client_key: the guarantee that the mod never overrides the guard rests on the mod sending `guard_mod`. A refusal changes nothing except the derived-capture absorption the service commits before the transaction, as for `end`. `handover` is bounded at 10,000 characters here, as `end`'s `next_focus`.
 
-**Slot form** (a session bound to a focus slot; `expected_slot_revision`, `handover` at most 4,000 characters, `focus_revision` null). Ends the session and starts its successor on the same slot in one transaction: captures `knowledge_ids` into the old session, writes `handover` as the slot body (compare-and-swap on `expected_slot_revision`, history source `session_relay`), ends the old session with `focus_outcome = applied`, and opens the successor under `new_client_key` with `relayed_from_session_id`, `started_by_actor = relay:<initiator>` and the base snapshot in `started_focus*`; the successor's briefing is built after commit. Unlike `end`, a closed slot or a stale revision changes nothing and leaves the session open. An equal replay returns the same successor with `replayed = true`; any other payload on an ended session is `terminal_conflict` naming the successor. Explicit user command, or the standing command of an operator-enabled guard mod (Amendment — slot relay (ADR #34), `docs/OPERATIONS.md` § Session lifecycle); `initiator = 'guard_mod'` is refused while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Refusals: `relay_guard_mod_disabled`, `relay_shrink_override_operator_only`, `relay_same_client_key`, `relay_expects_one_revision`, `relay_expects_slot_revision`, `relay_expects_focus_revision`, `session_is_agent_trace`, `slot_closed`, `slot_revision_conflict`, `focus_revision_conflict`, `base_focus_shrink`, `terminal_conflict`, `client_key_conflict`, `slot_body_too_long`, plus the capture errors.
+**Slot form** (a session bound to a focus slot; `expected_slot_revision`, `handover` at most 4,000 characters, `focus_revision` null). Ends the session and starts its successor on the same slot in one transaction: captures `knowledge_ids` into the old session, writes `handover` as the whole slot body (compare-and-swap on `expected_slot_revision`, history source `session_relay`), ends the old session with `focus_outcome = applied`, and opens the successor under `new_client_key` with `relayed_from_session_id`, `started_by_actor = relay:<initiator>` and the base snapshot in `started_focus*`; the successor's briefing is built after commit. A handover under 70% of the current slot body is refused as `slot_focus_shrink` before writing; only initiator='operator' may pass `allow_focus_shrink=true`, without elevation, and guard_mod cannot override even if elevated. Unlike `end`, a closed slot or a stale revision changes nothing and leaves the session open. An equal replay returns the same successor with `replayed = true`; any other payload on an ended session is `terminal_conflict` naming the successor. Explicit user command, or the standing command of an operator-enabled guard mod (Amendment — slot relay (ADR #34), `docs/OPERATIONS.md` § Session lifecycle); `initiator = 'guard_mod'` is refused while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Refusals: `relay_guard_mod_disabled`, `relay_shrink_override_operator_only`, `relay_same_client_key`, `relay_expects_one_revision`, `relay_expects_slot_revision`, `relay_expects_focus_revision`, `session_is_agent_trace`, `slot_closed`, `slot_revision_conflict`, `focus_revision_conflict`, `base_focus_shrink`, `slot_focus_shrink`, `terminal_conflict`, `client_key_conflict`, `slot_body_too_long`, plus the capture errors.
 
 ### brain_session_abandon
 ```
@@ -997,6 +1070,7 @@ brain_session_abandon(session_id, expected_client_key, reason)
 -> {session, replayed, remaining_open_session_count}
 ```
 After the UUID/client-key guard passes, explicitly mark an open session `abandoned` without updating project focus. `reason` must be non-blank. Retrying the same abandonment reason returns `replayed=true`; a different terminal request conflicts.
+An agent trace is refused with `session_is_agent_trace`.
 Abandon does not delete or release ledger ownership. The returned session therefore retains
 those UUIDs in `attributed_knowledge_ids`.
 
@@ -1040,6 +1114,48 @@ brain_slot_close(slot_id, expected_revision>=0, note[1..2000]) -> {slot}
 ```
 Explicit user command; `close_reason = 'explicit'`, revision + 1, a `slot_close` history row. Refusals: `slot_not_found`, `slot_closed`, `slot_revision_conflict` (names the current revision), `slot_bound` (an open session is bound: end, relay or abandon it first).
 
+## Programme progress — 5 tools (`programme_tools.py`)
+
+A programme is a multi-session effort the operator follows in the cockpit; a gate is one declared step of it. The rows are published unchanged on the metrics sidecar's `GET /programmes` and relayed by red-monitor; the contract, with every limit and refusal, is `docs/contracts/programmes_v1.md`. One report replaces a message to the coordinating session.
+
+**Who writes.** The caller's project, as the credential layer resolved it (a verified principal and its accepted actor's project), signs every write: no argument names the writer. A call with no resolved project is refused with `caller_unidentified`, so the shared-token and stdio transports cannot write programmes. A credential's issuer patterns are its authority here, as they are for delivery attestations: a credential holding `@project` writes as any existing project it declares, and one holding a prefix pattern (`red-lab*`) writes as every existing project that pattern matches. Issue credentials with that in mind. The project that creates a programme coordinates it: only it changes the programme and the structure of its gates. A gate's owner and the coordinator report it and raise or lift its request. The cockpit and red-monitor never write.
+
+**Text.** Titles hold at most 120 characters, notes and asks at most 200. A value is refused with `invalid_text`, never cut, when it has an outer blank or carries a character of the Unicode categories Cc, Cf, Cs, Co, Cn, Zl or Zp: controls and line breaks, format characters such as zero-width, bidi marks, soft hyphen and tag characters, surrogates, private use, unassigned code points, and line or paragraph separators. Blank fillers (U+034F, U+115F, U+1160, U+2800, U+3164, U+FFA0) are refused too. This is stricter than the contract's minimum: no invisible payload reaches a reader.
+
+**Quotas.** At most 8 programmes are active or paused at once. One coordinating project holds at most 4 of them, and at most 40 programmes in any state; past that, the write is refused with `coordinator_limit_reached`. Positions run from 0 to 9999.
+
+### brain_programme_upsert
+```
+brain_programme_upsert(key, title=None, state=None, position=None) -> programme
+```
+Creates a programme (needs a title; starts `active`) or changes its title, state (`active`, `paused`, `done`) or order. Refusals: `invalid_key`, `invalid_text`, `invalid_state`, `invalid_position`, `programme_incomplete`, `not_coordinator`, `programme_limit_reached` (at most 8 active or paused), `coordinator_limit_reached` (4 live or 40 in all per coordinator), `programme_too_large`, `caller_unidentified`.
+
+### brain_programme_gate_upsert
+```
+brain_programme_gate_upsert(programme, gate, title=None, owner=None, depends_on=None,
+                            weight=None, position=None, state=None) -> programme
+```
+Coordinator only. A new gate needs a title and an owner (a project key) and starts `todo`. `depends_on` (at most 12 keys) names gates of the same programme; a self-edge or a cycle is refused. `weight` (1 to 100, default 1) is the relative remaining effort the cockpit's critical path uses. A state change through this tool is recorded like a report. Refusals: `not_coordinator`, `programme_not_found`, `gate_incomplete`, `invalid_owner`, `owner_unknown`, `unknown_dependency`, `invalid_dependencies`, `dependency_cycle`, `invalid_weight`, `gate_limit_reached` (32 gates), `programme_too_large` (16 KiB as published).
+
+### brain_programme_gate_report
+```
+brain_programme_gate_report(programme, gate, state=None, progress=None, clear_progress=False,
+                            note=None, clear_note=False) -> programme
+```
+The gate's owner or the coordinator. A state change (`todo`, `in_progress`, `blocked`, `done`) becomes the programme's `last_change`; every accepted report refreshes the gate's `updated_at` and `updated_by`, so reporting the same state keeps the gate from reading stale. `progress` is `{done, total, unit}` with `0 <= done <= total <= 100000`. Refusals: `not_gate_owner`, `programme_not_found`, `gate_not_found`, `invalid_state`, `invalid_progress`, `invalid_text`, `nothing_to_report`, `conflicting_arguments`, `programme_too_large`.
+
+### brain_programme_request
+```
+brain_programme_request(programme, gate, ask=None) -> programme
+```
+The gate's owner or the coordinator raises a request to the operator (`ask`, one line) or lifts it (no `ask`). The same ask raised again keeps its `since`; a different ask is a new request. The request stays in the operator's "for you" list until it is lifted. Refusals: `not_gate_owner`, `programme_not_found`, `gate_not_found`, `invalid_text`.
+
+### brain_programme_list
+```
+brain_programme_list(include_done=False, key=None) -> {programmes}
+```
+Read only. Active and paused programmes in brain's order, each in the published shape; `include_done` adds every done programme, `key` reads one programme whatever its state.
+
 ## Project context — 4 tools
 
 ### brain_set_project_context (`project_context_tools.py`)
@@ -1051,7 +1167,9 @@ brain_set_project_context(project_key, name, description,
                           related_projects=None, plan_scan_paths=None,
                           gitlab_project_path=None, project_group=None)
 ```
-Upsert by `project_key`. `plan_scan_paths` drive `PlanIndexer`; `gitlab_project_path` drives webhook ingestion; `project_group` allows cross-project search.
+Upsert metadata by `project_key`. Creation may set `current_focus`; an existing project's different supplied focus is refused as `focus_write_requires_update_project_focus`, pointing to `brain_update_project_focus` with its revision CAS and shrink guard. Focus comparison ignores leading and trailing whitespace; equivalent prose preserves the stored focus. Omitting focus preserves it and allows other fields to update. `plan_scan_paths` drive `PlanIndexer`; `gitlab_project_path` drives webhook ingestion; `project_group` allows cross-project search.
+
+The remaining focus replacement exception is `src/brain_v42/scripts/scrub_xml_tool_call_leak.py`: this operator maintenance script, dry by default, rewrites `current_focus` without a revision CAS or shrink guard when run with `--live`.
 
 ### brain_update_project_focus (`project_context_tools.py`)
 ```
@@ -1059,7 +1177,7 @@ brain_update_project_focus(project_key, current_focus, expected_focus_revision,
                            blockers=None, feature_status=None, unpin=None,
                            allow_focus_shrink=False)
 ```
-Compare `expected_focus_revision` to the current project revision, then apply focus, blockers, feature statuses, and pins in one PostgreSQL transaction. `current_focus` REPLACES the whole project focus, so the same shrink guard as an unbound `brain_session_end` and a base `brain_session_relay` applies: after the revision check and before any write, a `current_focus` shorter than 70% of the current focus is refused `base_focus_shrink` (both lengths and the floor in the message) and the whole batch, roadmap changes included, is left unwritten. `allow_focus_shrink=true` is the operator's override. `feature_status` uses exact feature names and the canonical statuses `planned | research | design | building | deployed | done | archived`. An invalid status, missing or ambiguous feature, merged-feature reactivation, overlap with `unpin`, or revision conflict rolls back the complete batch. Every successful composite mutation consumes the revision, even when the focus text is unchanged. The project's dynamic CLAUDE.md section is updated afterward on a best-effort basis and is not part of the transaction.
+Compare `expected_focus_revision` to the current project revision, then apply focus, blockers, feature statuses, and pins in one PostgreSQL transaction. `current_focus` REPLACES the whole project focus, so the same shrink guard as an unbound `brain_session_end` and a base `brain_session_relay` applies: after the revision check and before any write, a `current_focus` shorter than 70% of the current focus is refused `base_focus_shrink` (both lengths and the floor in the message) and the whole batch, roadmap changes included, is left unwritten. `allow_focus_shrink=true` requires an active /brain-admin elevation for the verified credential and current MCP connection, checked before any mutation. Without it, `focus_shrink_override_refused` leaves the entire batch unwritten; shared-token and stdio callers cannot override. Refusal messages name the characters dropped and share kept. `feature_status` uses exact feature names and the canonical statuses `planned | research | design | building | deployed | done | archived`. An invalid status, missing or ambiguous feature, merged-feature reactivation, overlap with `unpin`, or revision conflict rolls back the complete batch. Every successful composite mutation consumes the revision, even when the focus text is unchanged. The project's dynamic CLAUDE.md section is updated afterward on a best-effort basis and is not part of the transaction.
 
 ### brain_list_projects (`project_context_tools.py`)
 ```
@@ -1092,7 +1210,7 @@ every learning, decision, snippet, runbook, ADR and plan; it stops appearing in
 the session briefing, the roadmap and an unscoped `brain_search`, and stays
 fully readable through `brain_search(project_key=...)`. Writes `archived_at` and
 `archived_reason` and nothing else — deliberately NOT through
-`brain_set_project_context`, which is not a PATCH and would overwrite focus,
+`brain_set_project_context`, which is not a PATCH and would overwrite
 blockers, group and metadata. `reason` is required. Idempotent: `archived_at`
 records when the project was archived, not when the command was last re-run.
 
@@ -1332,6 +1450,8 @@ Write a `BELONGS_TO_DOMAIN` edge from an entity to a Domain node. Called by the 
 
 **Coordination** family — orthogonal to the memory family. Tickets are addressed (a sender `from_project`, a recipient `to_project`), stateful (state machine), and **excluded** from `brain_search`, embeddings, decay, domain classification, and Neo4j sync.
 
+The declared `from_project` or `author_project` is not yet bound to the transport actor's resolved project. Each write whose declared project differs from it (`mismatch`), whose credential resolves no project (`unresolved_actor`) or that carries no verified principal (`unauthenticated`: shared token, stdio) is counted in `/metrics` under `author_binding_candidates`, keyed `<tool>:<cause>`, without introducing refusals.
+
 > Note: these 6 tools do NOT participate in `brain_search` / embeddings — coordination family, not memory.
 
 | Tool | Signature | Role |
@@ -1416,6 +1536,7 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `runbook_tools.py` | runbooks | 4 |
 | `session_lifecycle_tools.py` | persistent session lifecycle | 10 |
 | `focus_slot_tools.py` | focus slots (ADR #34) | 3 |
+| `programme_tools.py` | programme progress (contract programmes/v1) | 5 |
 | `snippet_tools.py` | snippets | 2 |
 | `ticket_tools.py` | tickets cross-projet (coordination) | 6 |
 | `workflow_guide_tools.py` | bounded workflow guidance | 1 |
@@ -1423,4 +1544,4 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `fact_tools.py` | measured facts (registered by later server composition) | 2 |
 | `claim_tools.py` | claim verification + reads (registered by later server composition) | 3 |
 | `project_focus_read_tools.py` | current project focus read | 1 |
-| **Total** | | **79 always-on + 2 graph-gated = 81** |
+| **Total** | | **84 always-on + 2 graph-gated = 86** |

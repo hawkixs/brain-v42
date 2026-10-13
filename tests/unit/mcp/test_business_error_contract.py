@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
@@ -107,7 +109,9 @@ async def test_uncaught_internal_exception_stays_masked(
 
     text = str(exc_info.value)
     assert _DSN_FRAGMENT not in text, f"DSN leaked to the client: {text!r}"
-    assert "RuntimeError" not in text, f"internal class name leaked to the client: {text!r}"
+    assert re.search(r"internal error RuntimeError \(ref [0-9a-f]{12}\)", text), (
+        f"internal failure must expose its class and log reference: {text!r}"
+    )
 
 
 @pytest.mark.parametrize(

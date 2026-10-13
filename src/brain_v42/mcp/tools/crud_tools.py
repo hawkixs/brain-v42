@@ -37,12 +37,14 @@ from brain_v42.mcp.tools.formatters import (
     format_decision_detail,
     format_decisions,
     format_error,
+    format_internal_error,
     format_learning_detail,
     format_learnings,
     format_runbook,
     format_runbooks,
     format_snippet_detail,
     format_snippets,
+    format_validation_errors,
 )
 from brain_v42.mcp.tools.parsing import resolve_entity_id
 from brain_v42.mcp.tools.tool_annotations import (
@@ -53,6 +55,7 @@ from brain_v42.mcp.tools.tool_annotations import (
 from brain_v42.models.adr import ADRUpdate
 from brain_v42.models.brain import ALL_TYPES, KnowledgeType, MutableKnowledgeType
 from brain_v42.models.brain_session import KnowledgeCapturedError
+from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.models.decision import DecisionUpdate
 from brain_v42.models.indexed_plan import IndexedPlan
 from brain_v42.models.indexed_plan_chunk import IndexedPlanChunk
@@ -394,6 +397,7 @@ def register_crud_tools(
                 entity_id=entity_id,
                 session_id=str(refused.session_id),
             )
+            # Only the capture session UUID is read; exception text is never rendered.
             return format_error(_captured_refusal(entity_type, entity_id, refused.session_id))
 
         if not deleted:
@@ -458,7 +462,9 @@ def register_crud_tools(
             valid = ", ".join(
                 name for name in update_cls.model_fields if name not in _SERVER_ONLY_UPDATE_FIELDS
             )
-            return format_error(f"Invalid fields: {e}. Valid fields: {valid}")
+            return format_error(
+                f"Invalid fields: {format_validation_errors(e)}. Valid fields: {valid}"
+            )
 
         svc = _services[entity_type]
         scope = get_dream_project_scope()
@@ -590,8 +596,14 @@ def register_crud_tools(
                     # replacement is followed by the edited prose, explicit facts first.
                     if prose_written and claims:
                         await reconcile_prose(session, updated)
-            except (ClaimMutationError, ValueError) as exc:
+            except ValidationError as exc:
+                return format_error(format_validation_errors(exc))
+            except (ClaimMutationError, ClaimVerificationError) as exc:
+                # Claim mutation guards curate key/state refusals, never driver failures;
+                # a verification error carries a closed code and its constant text.
                 return format_error(str(exc))
+            except ValueError as exc:
+                return format_internal_error("claim replacement", exc)
 
         if updated is None:
             return format_error(f"{entity_type} {entity_id} not found")

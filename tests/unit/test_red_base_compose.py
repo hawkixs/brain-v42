@@ -377,33 +377,48 @@ def test_restore_input_and_bootstrap_marker_source(compose: dict[str, Any]) -> N
 
 
 HOSTED_RERANK = {
-    "BRAIN_RERANK_BACKEND": "cohere",
-    "BRAIN_RERANKER_URL": "https://openrouter.ai/api",
-    "BRAIN_RERANK_MODEL": "voyageai/rerank-3-lite",
-    "BRAIN_RERANK_HEALTH_PATH": "/v1/key",
-    "BRAIN_RERANK_PROVIDER": '{"only":["voyageai"],"allow_fallbacks":false,"data_collection":"deny"}',
-    "BRAIN_RERANK_API_KEY_FILE": "/run/secrets/rerank_api_key",
+    # Operator decision fa3b6abc: Voyage's own API with the operator's key (own quota);
+    # data policy 7d36a08c (training opt-out on the Voyage account).
+    "BRAIN_RERANK_BACKEND": "voyage",
+    "BRAIN_RERANKER_URL": "https://api.voyageai.com",
+    "BRAIN_RERANK_MODEL": "rerank-3-lite",
+    "BRAIN_RERANK_API_KEY_FILE": "/run/secrets/voyage_api_key",
+    # Operator go 742e7a05: a second rerank link instead of RRF.
+    "BRAIN_RERANK_FALLBACK_MODEL": "cohere/rerank-4-fast",
+    "BRAIN_RERANK_FALLBACK_PROVIDER": '{"only":["cohere"],"allow_fallbacks":false,"data_collection":"deny"}',
+    "BRAIN_RERANK_FALLBACK_URL": "https://openrouter.ai/api",
+    "BRAIN_RERANK_FALLBACK_API_KEY_FILE": "/run/secrets/rerank_api_key",
+    # Measured 2026-10-13 on 0.6.14: Voyage direct answers in about 1 s, so a 1.0 s primary
+    # budget cut half the calls, and each cut closed the pooled connection (cold TLS next).
+    "BRAIN_RERANK_BUDGET_SECONDS": "3.0",
+    "BRAIN_RERANK_PRIMARY_BUDGET_SECONDS": "1.6",
+}
+RERANK_SECRETS = {
+    "voyage_api_key": "/etc/brain-v42/voyage-api-key",
+    "rerank_api_key": "/etc/brain-v42/rerank-api-key",
 }
 
 
-def test_rerank_is_the_hosted_voyage_block_on_mcp_only(compose: dict[str, Any]) -> None:
-    """Ruling 26208df8: Voyage through OpenRouter is active from the cutover."""
+def test_rerank_is_voyage_direct_with_a_cohere_fallback_on_mcp_only(
+    compose: dict[str, Any],
+) -> None:
     text = COMPOSE.read_text(encoding="utf-8")
     assert "x-rerank-env: &rerank-env" in text
     assert compose["x-rerank-env"] == HOSTED_RERANK
     mcp = compose["services"]["mcp"]
     for key, value in HOSTED_RERANK.items():
         assert mcp["environment"][key] == value
-    assert "rerank_api_key" in mcp["secrets"]
-    assert compose["secrets"]["rerank_api_key"] == {"file": "/etc/brain-v42/rerank-api-key"}
+    for secret, source in RERANK_SECRETS.items():
+        assert secret in mcp["secrets"]
+        assert compose["secrets"][secret] == {"file": source}
     # The metrics runtime builds a reranker only for legacy automation, which is off:
-    # it gets neither the settings nor the key (least privilege).
+    # it gets neither the settings nor the keys (least privilege).
     metrics = compose["services"]["metrics"]
     assert metrics["environment"]["METRICS_LEGACY_AUTOMATION_ENABLED"] == "false"
     assert not any(
         key.startswith(("BRAIN_RERANK", "BRAIN_RERANKER")) for key in metrics["environment"]
     )
-    assert "rerank_api_key" not in metrics["secrets"]
+    assert not set(RERANK_SECRETS) & set(metrics["secrets"])
     assert ":8003" not in text
 
 
@@ -413,16 +428,27 @@ def test_hosted_rerank_block_passes_the_settings_policy(
     for key, value in compose["x-rerank-env"].items():
         clean_settings_env.setenv(key, value)
     settings = Settings(_env_file=None)
-    assert settings.rerank_backend == "cohere"
-    assert settings.rerank_provider is not None
-    assert settings.rerank_provider.only == ["voyageai"]
-    assert settings.rerank_provider.allow_fallbacks is False
-    assert settings.rerank_provider.data_collection == "deny"
-    assert str(settings.rerank_api_key_file) == "/run/secrets/rerank_api_key"
+    assert settings.rerank_backend == "voyage"
+    assert settings.reranker_url == "https://api.voyageai.com"
+    assert settings.rerank_provider is None
+    assert str(settings.rerank_api_key_file) == "/run/secrets/voyage_api_key"
+    assert settings.rerank_fallback_model == "cohere/rerank-4-fast"
+    assert settings.rerank_fallback_url == "https://openrouter.ai/api"
+    assert str(settings.rerank_fallback_api_key_file) == "/run/secrets/rerank_api_key"
+    assert settings.rerank_fallback_provider is not None
+    assert settings.rerank_fallback_provider.only == ["cohere"]
+    assert settings.rerank_fallback_provider.allow_fallbacks is False
+    assert settings.rerank_fallback_provider.data_collection == "deny"
+    assert settings.rerank_primary_budget_seconds < settings.rerank_budget_seconds
+    # The fallback keeps at least 1.4 s (Cohere rerank-4-fast measured 0.6-1.0 s, one 1.85 s).
+    assert settings.rerank_budget_seconds - settings.rerank_primary_budget_seconds >= 1.4
 
 
 def test_rerank_rollback_is_documented_for_the_operator() -> None:
     header = COMPOSE.read_text(encoding="utf-8").split("name:", 1)[0]
+    assert "/etc/brain-v42/voyage-api-key: uid 1000, mode 0600" in header
+    assert "3.0 s budget" in header
+    assert "cohere/rerank-4-fast" in header
     assert "BRAIN_RERANK_BACKEND" in header and "none" in header
 
 
@@ -447,8 +473,9 @@ def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
     """Ticket 888660a9: red-base had no runner for the seven-day rule.
 
     The MCP server's own net closes idle agent traces every fifteen minutes, so
-    this loop carries the seven-day rule only, and ships dry: wetting it is a
-    separate configuration pull request, after a dry night's journal was read.
+    this loop carries the seven-day rule only. It shipped dry; the operator armed it
+    on 2026-10-13 after the dry run of the 0.6.12 deploy (5 sessions, 3625 traces,
+    3185 outbox rows), so the sweep runs --wet and the retention --execute.
     """
     service = compose["services"]["session-sweep"]
     assert service["container_name"] == "brain-v42-session-sweep"
@@ -469,12 +496,12 @@ def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
     )
     assert match, command[2]
     arguments = session_sweep_parser().parse_args(match["args"].split())
-    assert arguments.wet is False
+    assert arguments.wet is True
     assert arguments.older_than_days == 7
-    # Ticket 8f319827: retention runs after the sweep in the same daily loop, dry
-    # until a separate configuration pull request passes --execute.
+    # Ticket 8f319827: retention runs after the sweep in the same daily loop, armed
+    # by the operator on 2026-10-13 together with the sweep.
     retention = trace_retention_parser().parse_args(match["retention"].split())
-    assert retention.execute is False
+    assert retention.execute is True
     assert (retention.trace_older_than_days, retention.outbox_older_than_days) == (30, 30)
     assert service["env_file"] == ["/etc/brain-v42/postgres-app.env"]
     assert service["environment"] == compose["x-brain-env"]

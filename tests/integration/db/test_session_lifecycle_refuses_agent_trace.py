@@ -194,3 +194,48 @@ async def test_list_masks_trace_keys_and_preserves_operator_keys(
     assert by_id[operator.session.id].client_key == operator.session.client_key
     assert trace_key not in listed.model_dump_json()
     assert await trace_state(session_factory, trace_id) == before
+
+
+@pytest.mark.parametrize(
+    ("status", "abandonment_reason"),
+    [("closed_inactive", None), ("abandoned", "auto_stale_7d")],
+)
+@pytest.mark.parametrize("operation", ["resume", "capture", "heartbeat", "end", "abandon"])
+async def test_a_closed_trace_is_refused_before_any_replay_branch(
+    session_factory: SessionFactory,
+    slot_project: str,
+    agent_trace: tuple[UUID, str],
+    status: str,
+    abandonment_reason: str | None,
+    operation: str,
+) -> None:
+    """A terminal trace gets the trace refusal, not a replay or terminal conflict."""
+    trace_id, key = agent_trace
+    async with session_factory.begin() as session:
+        await session.execute(
+            brain_sessions.update()
+            .where(brain_sessions.c.id == trace_id)
+            .values(status=status, ended_at=sa.func.now(), abandonment_reason=abandonment_reason)
+        )
+    before = await trace_state(session_factory, trace_id)
+    focus_before = await base_state(session_factory, slot_project)
+    svc = sessions(session_factory)
+    calls = {
+        "resume": lambda: svc.resume(trace_id, key),
+        "capture": lambda: svc.capture(trace_id, key, [uuid4()]),
+        "heartbeat": lambda: svc.heartbeat(trace_id, key),
+        "end": lambda: svc.end(
+            trace_id,
+            key,
+            summary="attempted operator close",
+            next_focus="a replacement of the entire project base focus",
+            expected_focus_revision=focus_before[1],
+            nothing_to_capture_reason="no operator artifacts",
+        ),
+        "abandon": lambda: svc.abandon(trace_id, key, "attempted operator abandonment"),
+    }
+    with pytest.raises(FocusSlotError) as refusal:
+        await calls[operation]()
+    assert refusal.value.code == "session_is_agent_trace"
+    assert await trace_state(session_factory, trace_id) == before
+    assert await base_state(session_factory, slot_project) == focus_before

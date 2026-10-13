@@ -1,0 +1,46 @@
+{
+  "digest": "sha256:3ee0b9df9deaa43658efdd69c4c3605ef29e8e7a1da0257a21176bf50caf21a5",
+  "idempotency_key": "released:0.6.17",
+  "issuer": "agent:claude-code:88f2f5e6-43c4-4e92-9480-777ab6dc2efe",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "changelog": [
+        "chore(release): 0.6.17",
+        "test(mcp): re-snapshot the knowledge tool schema base on current main",
+        "test(metrics): pin per-tool percentiles and the counter epoch in the read exposure",
+        "fix(metrics): make main's two aggregate blocks excludable",
+        "fix(metrics): give local tool entries the same percentile keys",
+        "feat(metrics): per-tool latency percentiles and a reset-detectable counter epoch",
+        "feat(metrics): let /metrics callers exclude top-level blocks",
+        "test(metrics): pin the retrieval log health in the cockpit read exposure",
+        "fix(metrics): null the last fabricated values on degraded metrics paths",
+        "test(metrics): pin Dream's scheduler state in the read exposure",
+        "feat(metrics): report Dream's measured scheduler state, judge nights only when armed",
+        "fix(metrics): null the rerank and author-binding aggregates on database failure",
+        "test(metrics): pin block_status in the read exposure",
+        "fix(metrics): null aggregate-sourced blocks when the cross-process aggregate is degraded",
+        "test(metrics): prove the memory stats health argument cannot reach the SQL",
+        "feat(metrics): report collector health in block_status, null instead of zeros",
+        "test(metrics): pin the OTLP conversation eviction counters in the read exposure",
+        "feat(metrics): count OTLP conversation evictions by reason and agent",
+        "chore(receipts): record the deployment of 0.6.16",
+        "chore(receipts): record the release of 0.6.16",
+        "feat(mcp): capture tool descriptions open with the routing rule",
+        "test(mcp): prove the shape tolerance only widens published input schemas",
+        "feat(mcp): accept the shapes models send for lists and runbook steps",
+        "feat(mcp): answer invented tool names and nested gateway calls with what to do"
+      ],
+      "digest": "sha256:78de5867bfed1c00d945460041a63eefc515ed6077244dd84fe7e1bd8ac5b6e3",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:78de5867bfed1c00d945460041a63eefc515ed6077244dd84fe7e1bd8ac5b6e3",
+      "platform": "linux/amd64",
+      "sha": "546ca6a812763ce61fb3d172cbb7104df03dce52",
+      "tag": "v0.6.17",
+      "version": "0.6.17"
+    },
+    "kind": "released"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T22:11:46.562414Z",
+  "schema_version": 1
+}

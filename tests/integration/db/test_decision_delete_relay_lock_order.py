@@ -95,7 +95,7 @@ async def test_scoped_delete_and_relay_naming_the_same_pair_do_not_deadlock(
                     session_id,
                     key,
                     summary="s",
-                    handover="h",
+                    handover="handover",
                     expected_slot_revision=0,
                     new_client_key=f"next-{uuid4().hex[:8]}",
                     initiator="operator",
