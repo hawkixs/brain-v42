@@ -115,10 +115,76 @@ async def test_database_failure_keeps_pool_and_nulls_source_fields() -> None:
     assert block["embedding_backlog"]["total"] is None
     assert block["embedding_backlog"]["by_entity_type"] is None
     assert "worker_last_24h" in block["embedding_backlog"]
+    worker = block["embedding_backlog"]["worker_last_24h"]
+    assert set(worker) == {
+        "attempted",
+        "stored",
+        "stale",
+        "missing",
+        "unavailable",
+        "timed_out",
+        "failed",
+        "unavailable_by_kind",
+    }
+    assert all(value is None for value in worker.values())
     assert block["pool"] == {"active": 2, "idle": 3, "overflow": 0, "max": 15}
     assert block["graph_outbox"]["pending"] is None
     _assert_health(collector.block_health("database"), "degraded", "ConnectionError")
     assert collector.block_health("database")["last_ok_at"] is None
+
+
+async def test_database_success_keeps_measured_zero_worker_counters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = _factory()
+    monkeypatch.setattr(
+        "brain_v42.metrics.collector.read_projection_state",
+        AsyncMock(
+            return_value=MagicMock(
+                pending=0,
+                ready=0,
+                claimed=0,
+                exhausted=0,
+                oldest_pending_age_seconds=0.0,
+                generation=None,
+                armed=False,
+                lease_active=False,
+                recovery_active=False,
+            )
+        ),
+    )
+    result = await _collector(factory).collect_db_stats()
+    worker = result["embedding_backlog"]["worker_last_24h"]
+    assert all(value == 0 or value == {} for value in worker.values())
+
+
+async def test_database_close_failure_keeps_successfully_read_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    factory = _factory()
+    factory.return_value.__aexit__.side_effect = RuntimeError("close failed")
+    monkeypatch.setattr(
+        "brain_v42.metrics.collector.read_projection_state",
+        AsyncMock(
+            return_value=MagicMock(
+                pending=1,
+                ready=1,
+                claimed=0,
+                exhausted=0,
+                oldest_pending_age_seconds=2.0,
+                generation=7,
+                armed=True,
+                lease_active=True,
+                recovery_active=False,
+            )
+        ),
+    )
+
+    result = await _collector(factory).collect_db_stats()
+
+    assert result["graph_outbox"]["available"] is True
+    assert result["graph_outbox"]["pending"] == 1
+    assert result["graph_outbox"]["projector"]["generation"] == 7
 
 
 async def test_search_failure_preserves_keys_with_nulls() -> None:
@@ -449,11 +515,37 @@ async def test_cockpit_empty_retrieval_is_not_measured() -> None:
     response = await server._handle_cockpit(MagicMock())
     assert response.status == 200
     payload = json.loads(response.body)
-    assert set(payload["block_status"]) == {"memory", "retrieval"}
+    assert set(payload["block_status"]) == {"memory", "retrieval", "retrieval_log"}
     assert payload["retrieval"]["p50"] is None
     assert payload["retrieval"]["p95"] is None
     _assert_health(payload["block_status"]["retrieval"], "not_measured", "no_samples")
     assert payload["block_status"]["retrieval"]["last_ok_at"] is None
+
+
+async def test_cockpit_search_log_failure_nulls_search_fields_and_reports_health() -> None:
+    factory = _factory()
+    factory.return_value.execute.side_effect = PermissionError("search log denied")
+    collector = _collector(factory)
+    collector.record_search_latency(12.0)
+    cockpit = CockpitCollector(collector, factory)
+
+    payload = await cockpit.snapshot()
+
+    assert payload["retrieval"]["hitRate"] is None
+    assert payload["retrieval"]["rerankUsed"] is None
+    assert payload["retrieval"]["queries24h"] is None
+    _assert_health(payload["block_status"]["retrieval_log"], "degraded", "PermissionError")
+
+
+async def test_cockpit_search_log_success_reports_health_and_numeric_fields() -> None:
+    factory = _factory()
+    cockpit = CockpitCollector(_collector(factory), factory)
+
+    payload = await cockpit.snapshot()
+
+    _assert_health(payload["block_status"]["retrieval_log"], "ok", None)
+    assert isinstance(payload["retrieval"]["hitRate"], float)
+    assert payload["retrieval"]["queries24h"] == 0
 
 
 async def test_cockpit_retrieval_health_remembers_samples_when_window_expires() -> None:

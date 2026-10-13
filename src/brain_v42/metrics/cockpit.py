@@ -151,6 +151,7 @@ class CockpitCollector:
             "block_status": {
                 "memory": self._block_health.health("memory"),
                 "retrieval": self._block_health.health("retrieval"),
+                "retrieval_log": self._block_health.health("retrieval_log"),
             },
             "latencyBuckets": buckets,
             "cost": {
@@ -243,17 +244,22 @@ class CockpitCollector:
                     )
                 ).one()
                 total, zero = int(row[0] or 0), int(row[1] or 0)
-        except Exception:
+        except Exception as exc:
             logger.warning("metrics.cockpit.retrieval_stats.failed", exc_info=True)
-            total, zero = 0, 0
+            total, zero = None, None
+            self._block_health.record("retrieval_log", "degraded", type(exc).__name__)
+        else:
+            self._block_health.record("retrieval_log", "ok")
 
         rer_total = self._collector._reranker_stats["total_calls"]
-        rer_ratio = rer_total / total if total else 0.0
+        rer_ratio = rer_total / total if total else (None if total is None else 0.0)
 
         return {
             "p50": pct["p50"],
             "p95": pct["p95"],
-            "hitRate": round(1 - (zero / total), 2) if total else 0.0,
-            "rerankUsed": round(rer_ratio, 2),
+            "hitRate": (
+                None if total is None else (round(1 - ((zero or 0) / total), 2) if total else 0.0)
+            ),
+            "rerankUsed": round(rer_ratio, 2) if rer_ratio is not None else None,
             "queries24h": total,
         }

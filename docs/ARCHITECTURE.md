@@ -587,6 +587,9 @@ and independent live measurements remain available. Empty percentile windows
 also return null; the timeseries flusher omits their p95 row.
 On a database failure, the `graph_outbox` projector fields (`generation`, `healthy`)
 are null rather than -1/false; read `block_status.database`.
+`database.embedding_backlog.worker_last_24h` counters and `unavailable_by_kind` are null on database failure.
+`/api/cockpit` `block_status.retrieval_log` covers search_log-derived retrieval fields, null on failure, separately from `block_status.retrieval` latency samples.
+`graph_outbox.available` retains the value read before a later database failure.
 
 ## Automation runtime (port 9201)
 
