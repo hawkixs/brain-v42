@@ -205,6 +205,9 @@ best-effort basis: a run that fails before reaching the database (invalid config
 PostgreSQL down) or whose INSERT fails leaves no row, so a missing row does not prove the
 loop is dead. A failed run is retried the next day; the healthcheck proves only that the
 loop process exists, not that a run completed.
+After the sweep, the same loop runs `python -m brain_v42.maintenance.trace_retention`
+(see "Agent trace and graph outbox retention"), dry unless its command line carries
+`--execute`; its two report lines go to the same container log.
 
 **Arming state is measured, not documented.** This document deliberately does not
 state whether the four flags are armed: drop-ins change, and a copied value cannot
