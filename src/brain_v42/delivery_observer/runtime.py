@@ -543,10 +543,16 @@ class DeliveryObserverRuntime:
         took (ticket bd1879f6). The evidence is aged by three things before its next
         confirmation lands: this delay, up to one poll interval before the loop picks
         the job, and the next collection, which is many sequential requests plus
-        admission waits and lasts about as long as this one. Waiting the whole window
-        would leave it stale at the end of every cycle; subtracting the collection
-        keeps a slow one no worse than the poll cadence. The caller floors the delay
-        at poll_seconds.
+        admission waits. Waiting the whole window would leave it stale at the end of
+        every cycle; subtracting this collection keeps a uniformly slow one no worse
+        than the poll cadence. The caller floors the delay at poll_seconds.
+
+        Accepted residual (coordination ruling A on #362): the next confirmation
+        lands at age freshness/2 + poll + (D_next - D_prev), so evidence stays fresh
+        while a collection slows by at most freshness/2 - poll (240 s at the
+        defaults) against the previous one. Past that it reads stale for at most one
+        cycle, and the only effect is a resolve refused until the next confirmation.
+        No delay longer than poll_seconds could tolerate an arbitrary slowdown.
         """
         if isinstance(evidence, PullRequestEvidence) and evidence.integration_sha is None:
             return 0.0

@@ -981,8 +981,18 @@ A successful observation sets when the subject is looked at again:
   that delay, up to one poll interval before the loop picks the job, and the next
   collection, which is sequential requests plus admission waits and can last minutes
   for a large context set. Waiting the whole window would leave it stale at the end of
-  every cycle and refuse a resolve in that gap; subtracting the collection keeps a slow
-  one no worse than the poll cadence.
+  every cycle and refuse a resolve in that gap; subtracting the collection keeps a
+  uniformly slow one no worse than the poll cadence.
+
+The next confirmation of a settled subject lands at age
+`FRESHNESS_SECONDS / 2 + POLL_SECONDS + (D_next - D_prev)`, `D` being the durations of two
+consecutive collections. Evidence therefore stays fresh while a collection slows by at most
+`FRESHNESS_SECONDS / 2 - POLL_SECONDS` (240 s at the defaults) against the previous one,
+for example when GitHub's responses go from one to nine seconds across a large context set.
+Past that bound it reads stale for at most one cycle: a resolve in that window is refused
+with `delivery_requirements_unsatisfied` until the next confirmation lands, and nothing is
+lost. This residual is accepted (coordination ruling, 2026-10-13): no cadence slower than
+the poll interval could tolerate an arbitrary slowdown.
 
 The observer paces itself with its own `BRAIN_DELIVERY_FRESHNESS_SECONDS`, while the MCP
 server judges freshness with its own: give both processes the same value. An observer

@@ -198,6 +198,30 @@ async def test_evidence_refreshed_at_the_settled_cadence_is_never_seen_stale(
     assert seen_by_the_evaluator(settings, worst_age) == ["fresh"]
 
 
+@pytest.mark.parametrize("job_factory", [lambda: make_job("merged"), context_job])
+@pytest.mark.parametrize("previous_seconds", [0.0, 61.0, 180.0, 240.0])
+@pytest.mark.parametrize(("past_the_bound", "expected"), [(0, ["fresh"]), (1, ["stale"])])
+async def test_a_collection_slower_than_the_previous_one_is_tolerated_up_to_an_exact_bound(
+    job_factory, previous_seconds, past_the_bound, expected, clock
+):
+    """Accepted residual (coordination ruling A, codex round 2 of #362): the delay is
+    planned from the collection that just finished, so the next confirmation lands
+    at age f/2 + poll + (D_next - D_prev). Evidence stays fresh while a collection
+    slows by at most f/2 - poll (240 s at the defaults) against the previous one;
+    one second more reads stale for at most one cycle, and the only effect is a
+    resolve refused until the next confirmation lands."""
+    settings = DeliverySettings(enabled=True)
+    tolerance = settings.freshness_seconds // 2 - settings.poll_seconds
+    client = SlowClient(clock, previous_seconds, integration_sha=INTEGRATION_SHA)
+    delay = await delay_after(job_factory(), client, settings)
+    next_seconds = previous_seconds + tolerance + past_the_bound
+    age = delay + settings.poll_seconds + next_seconds
+    assert age == settings.freshness_seconds // 2 + settings.poll_seconds + (
+        next_seconds - previous_seconds
+    )
+    assert seen_by_the_evaluator(settings, age) == expected
+
+
 @pytest.mark.parametrize("code", ["provider_not_found", "provider_forbidden"])
 @pytest.mark.parametrize(
     ("prior_failures", "expected"),
