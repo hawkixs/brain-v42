@@ -33,6 +33,7 @@ _UNREADABLE_LABELS: Mapping[str, str] = {"target_mismatch": "cible inattendue"}
 #: renders under its catalogue name. Catalogue order.
 _SUBJECTS: Mapping[str, str] = {
     "graph_projection_lag": "Projection graphe",
+    "merge_chains": "Fusions",
     "alembic_head": "Schéma",
     "live_release_sha": "Release vivante",
     "alembic_head_shipped": "Tête Alembic livrée",
@@ -94,6 +95,21 @@ def _render_graph_projection_lag(measured: Measured, descriptor: FactDescriptor)
     else:
         head = "EN RETARD"
     return f"- Projection graphe : {head} — {', '.join(details)}"
+
+
+def _render_merge_chains(measured: Measured, descriptor: FactDescriptor) -> str:
+    """Name only the affected tables so any recurrence stands out in the briefing."""
+    nonzero = [
+        (table, _int(measured.value.get(table)))
+        for table in descriptor.value_schema
+        if _int(measured.value.get(table)) != 0
+    ]
+    if not nonzero:
+        return "- Fusions : aucune chaîne de fusion"
+    total = sum(count for _, count in nonzero)
+    details = ", ".join(f"{table} {count}" for table, count in nonzero)
+    expected = descriptor.policies.get("expected", 0)
+    return f"- Fusions : {total} chaînes ({details}), attendu {expected}"
 
 
 #: A raw drop-in value is shown so a typo is visible, and cut there so a
@@ -225,6 +241,7 @@ def _render_delivery_observer_liveness(measured: Measured, descriptor: FactDescr
 
 _RENDERERS: Mapping[str, Callable[[Measured, FactDescriptor], str]] = {
     "graph_projection_lag": _render_graph_projection_lag,
+    "merge_chains": _render_merge_chains,
     "alembic_head": _render_alembic_head,
     "live_release_sha": _render_live_release_sha,
     "alembic_head_shipped": _render_alembic_head_shipped,

@@ -46,6 +46,68 @@ _ALEMBIC_DESCRIPTOR = FactDescriptor(
     value_schema={"revision": "string"},
 )
 
+_MERGE_CHAINS_DESCRIPTOR = replace(
+    _DESCRIPTOR,
+    name="merge_chains",
+    policies={"expected": 0},
+    value_schema=dict.fromkeys(
+        ("learnings", "decisions", "snippets", "runbooks", "adrs", "features"), "int"
+    ),
+)
+
+
+def _merge_chains_measured(**overrides: int) -> Measured:
+    value = dict.fromkeys(_MERGE_CHAINS_DESCRIPTOR.value_schema, 0) | overrides
+    return Measured.from_value(
+        fact="merge_chains",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        source=_IDENTITY,
+        value=value,
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=1,
+        ttl_seconds=15,
+    )
+
+
+def test_merge_chains_all_zero_renders_no_merge_chain() -> None:
+    assert (
+        render_fact_line(_merge_chains_measured(), _MERGE_CHAINS_DESCRIPTOR, age_seconds=None)
+        == "- Fusions : aucune chaîne de fusion"
+    )
+
+
+def test_merge_chains_renders_only_nonzero_tables_in_catalogue_order() -> None:
+    assert (
+        render_fact_line(
+            _merge_chains_measured(features=11, learnings=212),
+            _MERGE_CHAINS_DESCRIPTOR,
+            age_seconds=None,
+        )
+        == "- Fusions : 223 chaînes (learnings 212, features 11), attendu 0"
+    )
+
+
+def test_merge_chains_unreadable_renders_its_subject_and_failure() -> None:
+    unreadable = Unreadable(
+        fact="merge_chains",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        error_code="probe_error",
+        where=None,
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=1,
+        ttl_seconds=15,
+        source_kind="probe",
+    )
+    assert (
+        render_fact_line(unreadable, _MERGE_CHAINS_DESCRIPTOR, age_seconds=None)
+        == "- Fusions : illisible (probe_error)"
+    )
+
+
 _DREAM_DESCRIPTOR = FactDescriptor(
     name="dream_killswitches_declared",
     definition_version=2,

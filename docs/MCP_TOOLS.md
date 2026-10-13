@@ -169,7 +169,7 @@ age returns `invalid_argument`.
 
 ### The catalogue
 
-Seven facts, in registration order, each bound to a target the operator declared
+Eight facts, in registration order, each bound to a target the operator declared
 (`BRAIN_FACTS_PRODUCTION_IDENTITY`, `BRAIN_FACTS_LIVE_RELEASE_IDENTITY`,
 `BRAIN_FACTS_HOST_IDENTITY`); a fact whose target is undeclared is refused at
 start, named in the journal and in the briefing, and absent from
@@ -184,6 +184,7 @@ always carries the address it read.
 | Fact | Target | TTL / timeout | Briefing | Value |
 | --- | --- | --- | --- | --- |
 | `graph_projection_lag` | production | 15 s / 3 s | yes | outbox counts, `lag_seconds`, lease state, `healthy` |
+| `merge_chains` | production | 15 s / 3 s | yes | counts of rows pointing to an already-merged target in `learnings`, `decisions`, `snippets`, `runbooks`, `adrs`, and `features`; expected 0 for each table |
 | `alembic_head` | production | 60 s / 3 s | yes (`- Schéma : 054`, replaces the legacy read) | `revision`; an unstamped database is unreadable |
 | `live_release_sha` | live_release | process lifetime / 1 s | yes | `release_sha`, `package_version` of the running package; a checkout is unreadable |
 | `alembic_head_shipped` | live_release | process lifetime / 1 s | yes | `revision` from a strict read of the shipped migrations |
