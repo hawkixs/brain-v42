@@ -1,7 +1,7 @@
 # MCP Tools — brain_v42
 
 **Repository target: 064.** The tool catalogue is registered by `build_server()` in `src/brain_v42/mcp/server.py`, through the `register_*_tools()` functions in `src/brain_v42/mcp/tools/`.
-**Repository registry:** 78 always-on + 2 graph-gated = 80 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
+**Repository registry:** 79 always-on + 2 graph-gated = 81 in the native profile; the gated tools are `brain_get_neighbors` and `brain_graph_path`.
 **Profiles:** `compact` is the default presentation profile: the nine session lifecycle tools remain visible, while other tools are found with `brain_find_tool` and invoked with `brain_call_tool`. `native` exposes the registered catalogue. Dream capability principals receive only the phase allowlist and cannot use the catalog gateways. The `x-brain-tool-profile: native` request header selects native presentation when permitted. `brain_code_mode`, when enabled, installs its own profile only while Dream capability enforcement is off; HTTP security rejects code mode at startup when enforcement is enabled.
 **Transports:** the server supports HTTP and stdio. Authentication and HTTP request limits are enforced at the HTTP transport boundary; they do not change tool signatures.
 
@@ -1072,6 +1072,14 @@ One project's focus revisions, newest first, with the characters added and
 removed against the revision below. An erased focus reads `(erased)`. Read-only;
 the trail itself is append-only (migration 050).
 
+### brain_project_focus_get (`project_focus_read_tools.py`)
+```
+brain_project_focus_get(project_key)
+```
+Read the full current base focus with its revision in one read. Use this before
+replacing the project base focus; pass the returned `focus_revision` as
+`expected_focus_revision` to the write. Read-only and has no session lifecycle effect.
+
 ### brain_project_archive (`project_context_tools.py`)
 ```
 brain_project_archive(project_key, reason)
@@ -1411,4 +1419,5 @@ Before the INSERT, an exact vector gate scoped to the target project eliminates 
 | `delivery_tools.py` | observable delivery | 11 |
 | `fact_tools.py` | measured facts (registered by later server composition) | 2 |
 | `claim_tools.py` | claim verification + reads (registered by later server composition) | 3 |
-| **Total** | | **78 always-on + 2 graph-gated = 80** |
+| `project_focus_read_tools.py` | current project focus read | 1 |
+| **Total** | | **79 always-on + 2 graph-gated = 81** |

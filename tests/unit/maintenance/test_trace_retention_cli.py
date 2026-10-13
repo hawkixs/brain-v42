@@ -59,6 +59,26 @@ def test_outbox_failure_keeps_trace_report_visible(monkeypatch, capsys) -> None:
     dispose.assert_awaited()
 
 
+def test_a_failed_engine_disposal_keeps_both_reports_visible(monkeypatch, capsys) -> None:
+    """red-rail review of #357 (F-357-1): the outbox report was printed by main(),
+    after _run's finally. A dispose_engine() failure there lost it although the
+    outbox deletions were already committed."""
+    report = TraceRetentionReport(datetime(2026, 9, 1, tzinfo=UTC), 4, 2, False)
+    monkeypatch.setattr(cli, "get_session_factory", lambda: object())
+    monkeypatch.setattr(cli.PgTraceRetention, "purge_agent_traces", AsyncMock(return_value=report))
+    monkeypatch.setattr(
+        cli.PgTraceRetention, "purge_delivered_outbox", AsyncMock(return_value=report)
+    )
+    monkeypatch.setattr(cli, "dispose_engine", AsyncMock(side_effect=OSError("private")))
+    assert cli.main(["--execute"]) == 1
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == [
+        "trace retention [EXECUTE] cutoff=2026-09-01T00:00:00+00:00 candidates=4 deleted=2",
+        "graph outbox retention [EXECUTE] cutoff=2026-09-01T00:00:00+00:00 candidates=4 deleted=2",
+    ]
+    assert "OSError" in captured.err and "private" not in captured.err
+
+
 @pytest.mark.parametrize(
     "arguments", [["--trace-older-than-days", "invalid"], ["--outbox-older-than-days", "6"]]
 )

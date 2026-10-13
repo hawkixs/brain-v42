@@ -1,0 +1,50 @@
+{
+  "block": "programmes",
+  "version": "programmes/v1",
+  "source": "brain tickets 8a063256 and 24c1f172; GET /programmes of the brain metrics sidecar, member programmes (never in GET /metrics); prose contract docs/contracts/programmes_v1.md",
+  "rules": [
+    "every key below is always emitted; a type written a|b admits both, and null means none",
+    "the member programmes is absent when brain does not publish this cycle, never null",
+    "programmes: [] means published and nothing to show",
+    "timestamps are RFC 3339 date-times in UTC",
+    "brain never emits the top-level names served_at, source_age_s, source, available, reason or payload",
+    "no secret, prompt or log line travels in the block"
+  ],
+  "shape": {
+    "version": "string",
+    "generated_at": "string",
+    "programmes": [
+      {
+        "key": "string",
+        "title": "string",
+        "coordinator": "string",
+        "state": "string",
+        "last_change": "object|null",
+        "gates": [
+          {
+            "key": "string",
+            "title": "string",
+            "owner": "string",
+            "state": "string",
+            "depends_on": ["string"],
+            "weight": "integer",
+            "waiting_on_operator": "object|null",
+            "progress": "object|null",
+            "note": "string|null",
+            "updated_at": "string",
+            "updated_by": "string"
+          }
+        ]
+      }
+    ]
+  },
+  "objects": {
+    "last_change": {"gate": "string", "from": "string", "to": "string", "at": "string", "by": "string"},
+    "waiting_on_operator": {"ask": "string", "since": "string"},
+    "progress": {"done": "integer", "total": "integer", "unit": "string"}
+  },
+  "enums": {
+    "programme.state": ["active", "paused", "done"],
+    "gate.state": ["todo", "in_progress", "blocked", "done"]
+  }
+}

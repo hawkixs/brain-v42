@@ -72,6 +72,9 @@ async def _run(args: argparse.Namespace) -> tuple[TraceRetentionReport, TraceRet
         outbox = await retention.purge_delivered_outbox(
             older_than=timedelta(days=args.outbox_older_than_days), **options
         )
+        # Printed here, before the finally: a failing dispose_engine() must not
+        # hide the report of deletions already committed (red-rail F-357-1).
+        print(_render("graph outbox retention", outbox))
         return traces, outbox
     finally:
         await dispose_engine()
@@ -83,11 +86,10 @@ def main(argv: list[str] | None = None) -> int:
     except SystemExit as error:
         return int(error.code or 0)
     try:
-        traces, outbox = asyncio.run(_run(args))
+        asyncio.run(_run(args))
     except Exception as error:
         print(f"trace retention failed: {type(error).__name__}", file=sys.stderr)
         return 1
-    print(_render("graph outbox retention", outbox))
     return 0
 
 
