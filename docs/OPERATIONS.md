@@ -1400,6 +1400,28 @@ Deleted successes remain recoverable from the preceding backup dump.
 
 `python -m brain_v42.maintenance.trace_retention` previews old, unreferenced closed agent traces and delivered graph outbox rows; deletion is dry by default and requires `--execute`. Trace retention has a 30-day minimum window, and outbox retention has a seven-day minimum (both default to 30 days). It keeps open and operator sessions, traces referenced by artifacts, checkpoints, slot history or relay children, and every undelivered outbox row. Batches default to 5000 rows, with at most 100 batches per purge. A dry run counts every candidate; an execute run is capped at `--max-batches` × `--batch-size` rows. Locked candidates are skipped, and later invocations can process the remainder.
 
+## Historical merge chain repair
+
+`python scripts/repair_merge_chains.py` (or
+`python -m brain_v42.scripts.repair_merge_chains`) inventories merge chains in
+learnings, decisions, snippets, runbooks and ADRs. The default is a dry run in a
+read-only transaction and emits one JSON report. After reviewing that report,
+an explicit operator go is required to run `--execute --expect N`, where `N`
+must equal the measured `in_project_chained_count` across all five tables.
+Execution flattens those pointers to their roots, writes a `repointed` audit
+row per change and stages `MERGED_INTO` relations in the PostgreSQL ledger/outbox
+in the same transaction; it never writes Neo4j directly. Cycles, dangling roots,
+depths beyond 64, a changed count or failed final verification refuse the repair.
+The repair takes a share-row-exclusive lock on the five knowledge tables for its
+duration and refuses after 5 s if it cannot acquire it. Reads proceed, but every
+write to these tables waits, including the access-count flush (which updates
+freshness counters) and new knowledge writes, to keep the approved inventory stable.
+Chains rooted in another project are reported, not changed; `transits_other_project`
+counts rows whose path visits another project, including chains returning to their
+own project, which remain eligible for repair. All changes commit together or
+roll back together. The database URL comes only
+from the existing settings (`POSTGRES_URL`), never from a CLI argument.
+
 ## Automation service
 
 The `brain-v42-automation.service` unit is generated and verified, but stays dormant.
