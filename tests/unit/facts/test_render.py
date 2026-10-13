@@ -93,6 +93,23 @@ _CLAIMS_VERIFICATION_DESCRIPTOR = FactDescriptor(
         "eligible_now": "int",
     },
 )
+_DELIVERY_OBSERVER_DESCRIPTOR = FactDescriptor(
+    name="delivery_observer_liveness",
+    definition_version=1,
+    target=FactTarget.PRODUCTION,
+    ttl_seconds=15,
+    timeout_seconds=3,
+    queue_timeout_seconds=2,
+    deadline_seconds=5,
+    briefing=True,
+    policies={"overdue_after_seconds": 600},
+    value_schema={
+        "lock_held": "bool",
+        "overdue": "int",
+        "last_confirmation_age_seconds": "null|int",
+        "healthy": "bool",
+    },
+)
 
 
 def _claims_verification_measured(**overrides: object) -> Measured:
@@ -609,4 +626,68 @@ def test_unreadable_claim_verification_names_its_subject_and_code() -> None:
     )
     assert render_fact_line(unreadable, _CLAIMS_VERIFICATION_DESCRIPTOR, age_seconds=None) == (
         "- Vérification des claims : illisible (probe_error)"
+    )
+
+
+def test_delivery_observer_liveness_renders_health_and_failure_reasons() -> None:
+    healthy = Measured.from_value(
+        fact="delivery_observer_liveness",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        source=_IDENTITY,
+        value={
+            "lock_held": True,
+            "overdue": 0,
+            "last_confirmation_age_seconds": 0,
+            "healthy": True,
+        },
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=1,
+        ttl_seconds=15,
+    )
+    assert render_fact_line(healthy, _DELIVERY_OBSERVER_DESCRIPTOR, age_seconds=None) == (
+        "- Observer de livraison : vivant, aucun retard"
+    )
+    stale = Measured.from_value(
+        fact="delivery_observer_liveness",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        source=_IDENTITY,
+        value={
+            "lock_held": False,
+            "overdue": 2,
+            "last_confirmation_age_seconds": 720,
+            "healthy": False,
+        },
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=1,
+        ttl_seconds=15,
+    )
+    assert render_fact_line(stale, _DELIVERY_OBSERVER_DESCRIPTOR, age_seconds=None) == (
+        "- Observer de livraison : verrou absent, 2 sujets en retard — "
+        "dernière confirmation il y a 12 min"
+    )
+
+
+def test_delivery_observer_liveness_uses_singular_subject_for_one_overdue_item() -> None:
+    measured = Measured.from_value(
+        fact="delivery_observer_liveness",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        source=_IDENTITY,
+        value={
+            "lock_held": True,
+            "overdue": 1,
+            "last_confirmation_age_seconds": 0,
+            "healthy": False,
+        },
+        observation_id=uuid4(),
+        measured_at=_NOW,
+        duration_ms=1,
+        ttl_seconds=15,
+    )
+    assert render_fact_line(measured, _DELIVERY_OBSERVER_DESCRIPTOR, age_seconds=None) == (
+        "- Observer de livraison : 1 sujet en retard — dernière confirmation il y a 0 s"
     )
