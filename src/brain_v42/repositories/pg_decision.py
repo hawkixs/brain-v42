@@ -31,7 +31,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from brain_v42.db.tables import decisions
 from brain_v42.models.decision import Decision, DecisionCreate, DecisionUpdate
 from brain_v42.repositories.capture_guard import refuse_if_captured
-from brain_v42.repositories.pg_base import BasePgRepository, Row, project_scope
+from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, Row, project_scope
 
 logger = structlog.get_logger(__name__)
 
@@ -382,22 +382,24 @@ class PgDecisionRepo(BasePgRepository):
         tags: list[str] | None = None,
         limit: int = 20,
         offset: int = 0,
+        extra_clauses: ExtraClauses = None,
         session: AsyncSession | None = None,
     ) -> list[tuple[Decision, float]]:
         """Full-text search using tsvector search_vector column with ts_rank scoring.
 
         Returns list of (Decision, rank_score) tuples ordered by relevance DESC.
-        NOTE: does not filter archived rows — brain_service refilters in Python.
+        Archived rows are kept unless the caller passes ``live_row_clauses()``
+        as ``extra_clauses``.
         """
         scope = project_scope(project_key, project_keys)
         filters: dict[str, Any] = {
             "project_key": scope,
             "status": status,
         }
-        extra_clauses = []
+        clauses = list(extra_clauses or [])
         tags_clause = self._tags_clause(self.table.c.tags, tags)
         if tags_clause is not None:
-            extra_clauses.append(tags_clause)
+            clauses.append(tags_clause)
 
         rows, _total = await super().search_fts(
             query,
@@ -405,7 +407,7 @@ class PgDecisionRepo(BasePgRepository):
             offset=offset,
             limit=limit,
             skip_count=True,
-            extra_clauses=extra_clauses if extra_clauses else None,
+            extra_clauses=clauses if clauses else None,
             session=session,
         )
         return [(self._row_to_decision(r), float(r.get("rank", 0.0))) for r in rows]
@@ -419,6 +421,7 @@ class PgDecisionRepo(BasePgRepository):
         project_key: str | None = None,
         project_keys: list[str] | None = None,
         limit: int = 20,
+        extra_clauses: ExtraClauses = None,
         session: AsyncSession | None = None,
     ) -> list[tuple[Decision, float]]:
         """Semantic search using pgvector cosine distance (<=> operator).
@@ -436,6 +439,7 @@ class PgDecisionRepo(BasePgRepository):
             query_embedding,
             filters=filters,
             limit=limit,
+            extra_clauses=extra_clauses,
             session=session,
         )
         return [(self._row_to_decision(r), float(r.get("similarity", 0.0))) for r in rows]

@@ -43,6 +43,8 @@ logger = structlog.get_logger(__name__)
 
 T = TypeVar("T", bound=dict[str, Any])
 Row = dict[str, Any]
+# The generic WHERE extension every search accepts (see module docstring).
+ExtraClauses = Sequence[ColumnElement[Any]] | None
 
 
 @dataclass(frozen=True, slots=True)

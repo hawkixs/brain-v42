@@ -39,7 +39,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from brain_v42.db.tables import adrs
 from brain_v42.models.adr import ADR, ADRCreate, ADRUpdate
 from brain_v42.repositories.capture_guard import lock_unless_captured
-from brain_v42.repositories.pg_base import BasePgRepository, project_scope
+from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, project_scope
 from brain_v42.repositories.promotion import (
     SourceLearningNotFound,
     insert_promotion_audit,
@@ -500,6 +500,7 @@ class PgADRRepo(BasePgRepository):
         limit: int = 20,
         offset: int = 0,
         *,
+        extra_clauses: ExtraClauses = None,
         session: AsyncSession | None = None,
     ) -> list[ADR]:
         """Search ADRs with optional FTS, filters, and pagination.
@@ -507,8 +508,8 @@ class PgADRRepo(BasePgRepository):
         When `query` is provided, uses PostgreSQL FTS (plainto_tsquery + ts_rank)
         with optional tags filter (&&).
         Without `query`, returns all ADRs matching the optional filters ordered by
-        number DESC.  The no-query branch DOES NOT filter archived rows — the service
-        layer refilters in Python (filtering in SQL would break include_archived=True).
+        number DESC.  Neither branch filters archived rows on its own: the caller
+        passes ``live_row_clauses()`` as ``extra_clauses`` to exclude them in SQL.
 
         Args:
             query: Free-text search string (FTS via search_vector, optional).
@@ -518,6 +519,7 @@ class PgADRRepo(BasePgRepository):
             tags: Filter by tags overlap (optional, uses && operator).
             limit: Maximum number of results (default 20).
             offset: Number of rows to skip (default 0).
+            extra_clauses: Additional WHERE expressions, ANDed with the others.
             session: Optional shared session.
 
         Returns:
@@ -531,30 +533,23 @@ class PgADRRepo(BasePgRepository):
         if status is not None:
             filters["status"] = status
 
-        if query is not None:
-            # FTS branch — optionally filtered by tags via extra_clauses
-            extra_clauses = None
-            tags_clause = self._tags_clause(self.table.c.tags, tags)
-            if tags_clause is not None:
-                extra_clauses = [tags_clause]
+        # Tags filter and the caller's clauses travel together as extra_clauses.
+        clauses = list(extra_clauses or [])
+        tags_clause = self._tags_clause(self.table.c.tags, tags)
+        if tags_clause is not None:
+            clauses.append(tags_clause)
 
+        if query is not None:
             rows, _total = await super().search_fts(
                 query,
                 filters=filters if filters else None,
                 offset=offset,
                 limit=limit,
                 skip_count=True,
-                extra_clauses=extra_clauses,
+                extra_clauses=clauses or None,
                 session=session,
             )
         else:
-            # No-query branch: list all matching filters, no archived filtering.
-            # Preserve: tags filter via extra_clauses (no archived exclusion).
-            extra_clauses = None
-            tags_clause = self._tags_clause(self.table.c.tags, tags)
-            if tags_clause is not None:
-                extra_clauses = [tags_clause]
-
             rows, _total = await super().list_all(
                 filters=filters if filters else None,
                 offset=offset,
@@ -562,8 +557,8 @@ class PgADRRepo(BasePgRepository):
                 order_by="number",
                 order_desc=True,
                 skip_count=True,
-                include_archived=None,  # no archive filter — preserve existing behaviour
-                extra_clauses=extra_clauses,
+                include_archived=None,  # archive exclusion, if any, arrives in extra_clauses
+                extra_clauses=clauses or None,
                 session=session,
             )
         return [self._row_to_model(r) for r in rows]
@@ -575,6 +570,7 @@ class PgADRRepo(BasePgRepository):
         project_key: str | None = None,
         project_keys: list[str] | None = None,
         *,
+        extra_clauses: ExtraClauses = None,
         session: AsyncSession | None = None,
     ) -> list[tuple[ADR, float]]:
         """Semantic search using pgvector cosine similarity (<=> operator).
@@ -594,6 +590,7 @@ class PgADRRepo(BasePgRepository):
             limit: Maximum number of results (default 10).
             project_key: Optional filter by project.
             project_keys: Multi-project filter — takes precedence over project_key.
+            extra_clauses: Additional WHERE expressions, ANDed with the others.
             session: Optional shared session.
 
         Returns:
@@ -609,6 +606,7 @@ class PgADRRepo(BasePgRepository):
             query_embedding,
             filters=filters if filters else None,
             limit=limit,
+            extra_clauses=extra_clauses,
             session=session,
         )
         output: list[tuple[ADR, float]] = []
