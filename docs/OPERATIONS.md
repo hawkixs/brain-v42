@@ -340,7 +340,9 @@ Consumers can read `GET /api/session-slots/v1` (the slot inventory alone) and
 The operator issues each consumer's client credential through the registry CLI;
 issuing credentials is an operator gesture. Configure `METRICS_RECEIVER_AUTH=credentials`
 and `METRICS_READ_CLIENTS=red-monitor,red-cockpit` with the client ids the operator
-actually issued. The allowlist is comma-separated with no spaces; each id must match
+actually issued, in the metrics service's `environment:` list of `deploy/compose.yaml`
+(that list is explicit, so a value set elsewhere never reaches the container; changing it
+ships with a release). The allowlist is comma-separated with no spaces; each id must match
 `[a-z0-9][a-z0-9.-]{0,63}`. Its default is empty, which admits no credentialed reader.
 The credential must have the existing `telemetry` family as well as an allowlisted id.
 
