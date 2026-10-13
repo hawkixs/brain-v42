@@ -13,6 +13,8 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from brain_v42 import release_recovery
 from brain_v42.config import Settings
@@ -23,6 +25,12 @@ from brain_v42.release import shipped_alembic_head
 from brain_v42.scripts import migrate_cli, restore_cli
 
 ROOT = Path(__file__).parents[2]
+# The code head and its parent are read from the revisions, never written as
+# literals: a new migration (or a renumbering at merge time) must not break
+# tests whose subject is the upgrade logic, not a revision number.
+_SCRIPTS = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+CODE_HEAD: str = _SCRIPTS.get_current_head() or ""
+PREVIOUS_HEAD: str = str(_SCRIPTS.get_revision(CODE_HEAD).down_revision)
 PASSWORD = "unit-only-password-'\\-never-log"
 OWNER_URL = "postgresql+asyncpg://owner:unit-only-owner-password@localhost:5432/test"
 #: The repository head, read like the CLI reads it: a literal here broke 33 tests the
@@ -32,9 +40,14 @@ NEWER = f"{int(HEAD) + 1:03d}"
 RESTORE_COMMENT = "brain-v42-restore sha256=" + "a" * 64 + " at=2026-10-09T12:00:00Z"
 
 
+def _is_preflight(sql: str) -> bool:
+    """The read-only merge-chain count that runs before an upgrade across the guard."""
+    return "merge_chain_preflight" in sql and sql.lstrip().upper().startswith("SELECT")
+
+
 @dataclass
 class Database:
-    heads: tuple[str, ...] = (HEAD,)
+    heads: tuple[str, ...] = (CODE_HEAD,)
     calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
     receipt: dict[str, Any] = field(
         default_factory=lambda: {
@@ -49,6 +62,7 @@ class Database:
     receipts: dict[str, Any] = field(default_factory=dict)
     transactions: dict[int, list[str]] = field(default_factory=dict)
     transaction: int = 0
+    chain_residue: str | None = None
 
     async def execute(self, statement: Any, parameters: dict[str, Any] | None = None) -> None:
         sql = str(statement)
@@ -70,6 +84,8 @@ class Database:
             return self.role_exists
         if "pg_catalog.shobj_description" in str(statement):
             return self.database_comment
+        if "merge_chain_preflight" in str(statement):
+            return self.chain_residue
         return json.dumps(self.receipts.get(str(statement), self.receipt))
 
     async def run_sync(self, callback: Any) -> tuple[str, ...]:
@@ -88,7 +104,7 @@ class Database:
         self.calls.append(("dispose", {}))
 
 
-def write_binding(directory: Path, *, head: str = HEAD) -> Path:
+def write_binding(directory: Path, *, head: str = CODE_HEAD) -> Path:
     directory.mkdir()
     manifest = {
         "contract_id": "unit/recovery/v1",
@@ -130,7 +146,7 @@ def runtime(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         assert config.config_file_name == str(ROOT / "alembic.ini")
         assert migrate_cli.os.environ["POSTGRES_URL"] == OWNER_URL
         database.calls.append(("upgrade", {}))
-        database.heads = (HEAD,)
+        database.heads = (CODE_HEAD,)
 
     monkeypatch.setattr(migrate_cli.command, "upgrade", upgrade)
     return database, ["--recovery-dir", str(binding)], password_file, binding
@@ -157,7 +173,7 @@ def test_restore_and_migrate_share_the_restore_marker_pattern() -> None:
 
 def test_loaded_contract_carries_the_verified_restored_sql(runtime) -> None:
     _, _, _, directory = runtime
-    contract = migrate_cli._load_contract(directory, HEAD)
+    contract = migrate_cli._load_contract(directory, CODE_HEAD)
     assert contract.restored_sql == (directory / "restored.sql").read_text()
 
 
@@ -228,7 +244,7 @@ def test_marked_database_proves_restored_then_live_sandbox_gaps(
     assert_restored_proof(database)
     log.info.assert_called_once_with(
         "migration_contract_proven",
-        code_head=HEAD,
+        code_head=CODE_HEAD,
         contract_id="unit/recovery/v1",
         attestation="restored",
     )
@@ -338,7 +354,7 @@ def test_comments_without_a_full_restore_marker_use_only_live_proof(
     assert "SELECT 'restored-receipt'" not in [sql for sql, _ in database.calls]
     log.info.assert_called_once_with(
         "migration_contract_proven",
-        code_head=HEAD,
+        code_head=CODE_HEAD,
         contract_id="unit/recovery/v1",
         attestation="live",
     )
@@ -346,19 +362,19 @@ def test_comments_without_a_full_restore_marker_use_only_live_proof(
 
 def test_ancestor_upgrades_then_records_head_pinned_compat_before_proving(runtime) -> None:
     database, arguments, _, _ = runtime
-    database.heads = ("063",)
+    database.heads = (PREVIOUS_HEAD,)
     assert migrate_cli.main(arguments) == 0
     compat = [(sql, params) for sql, params in database.calls if "INSERT INTO" in sql]
     assert len(compat) == 1
     assert "public.brain_schema_compat" in compat[0][0]
-    assert compat[0][1]["schema_head"] == HEAD
-    assert compat[0][1]["oldest_compatible_code_head"] == HEAD
+    assert compat[0][1]["schema_head"] == CODE_HEAD
+    assert compat[0][1]["oldest_compatible_code_head"] == CODE_HEAD
     assert compat[0][1]["recorded_by_version"]
     sql = [call[0] for call in database.calls]
     assert sql.index("upgrade") < sql.index(compat[0][0]) < sql.index("SELECT 'fixture-receipt'")
 
 
-@pytest.mark.parametrize("head", [NEWER, "unrecognized-revision"])
+@pytest.mark.parametrize("head", ["999", "unrecognized-revision"])
 def test_newer_or_unknown_database_refuses_without_changes_and_names_both_heads(
     runtime, head: str, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -367,7 +383,7 @@ def test_newer_or_unknown_database_refuses_without_changes_and_names_both_heads(
     assert migrate_cli.main(arguments) == 1
     output = capsys.readouterr()
     assert head in output.out + output.err
-    assert HEAD in output.out + output.err
+    assert CODE_HEAD in output.out + output.err
     assert all(sql == "dispose" for sql, _ in database.calls)
 
 
@@ -621,7 +637,8 @@ def test_failed_upgrade_does_not_record_compatibility_or_provision_role(
 
     monkeypatch.setattr(migrate_cli.command, "upgrade", fail_upgrade)
     assert migrate_cli.main(arguments) == 1
-    assert all(sql == "dispose" for sql, _ in database.calls)
+    # The merge-chain preflight is a read; nothing else may have run.
+    assert all(sql == "dispose" or _is_preflight(sql) for sql, _ in database.calls)
 
 
 def test_upgrade_that_does_not_reach_code_head_is_refused(runtime, monkeypatch) -> None:
@@ -629,7 +646,7 @@ def test_upgrade_that_does_not_reach_code_head_is_refused(runtime, monkeypatch) 
     database.heads = ("062",)
     monkeypatch.setattr(migrate_cli.command, "upgrade", lambda config, target: None)
     assert migrate_cli.main(arguments) == 1
-    assert all(sql == "dispose" for sql, _ in database.calls)
+    assert all(sql == "dispose" or _is_preflight(sql) for sql, _ in database.calls)
 
 
 @pytest.mark.parametrize("url", [None, "invalid", "postgresql+asyncpg://owner@localhost:5432/test"])
@@ -647,3 +664,61 @@ def test_boolean_receipt_version_is_not_a_valid_contract_version(runtime) -> Non
     database, arguments, _, _ = runtime
     database.receipt["schema_version"] = True
     assert migrate_cli.main(arguments) == 1
+
+
+def test_upgrade_across_the_merge_chain_guard_refuses_on_residue_before_any_write(
+    runtime, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """rail renders this line as a preflight failure (red-rail c14acfea contract)."""
+    database, arguments, _, _ = runtime
+    database.heads = (PREVIOUS_HEAD,)
+    database.chain_residue = "features,learnings"
+    assert migrate_cli.main(arguments) == 1
+    output = capsys.readouterr()
+    assert (
+        "migration_refused reason=merge_chains_present tables=features,learnings "
+        'remedy="run scripts/repair_merge_chains.py"'
+    ) in output.err.splitlines()
+    assert "upgrade" not in [sql for sql, _ in database.calls]
+    assert not any("INSERT INTO" in sql for sql, _ in database.calls)
+
+
+def test_upgrade_across_the_merge_chain_guard_proceeds_without_residue(runtime) -> None:
+    database, arguments, _, _ = runtime
+    database.heads = (PREVIOUS_HEAD,)
+    assert migrate_cli.main(arguments) == 0
+    sql = [call[0] for call in database.calls]
+    preflight = next(i for i, text in enumerate(sql) if "merge_chain_preflight" in text)
+    assert preflight < sql.index("upgrade")
+
+
+def test_equal_head_runs_no_merge_chain_preflight(runtime) -> None:
+    database, arguments, _, _ = runtime
+    assert migrate_cli.main(arguments) == 0
+    assert not any("merge_chain_preflight" in sql for sql, _ in database.calls)
+
+
+@pytest.mark.parametrize(
+    ("reason", "tables", "remedy"),
+    [
+        ("database_not_initialized", (), None),
+        ("merge_chains_present", ("adrs", "learnings"), "run scripts/repair_merge_chains.py"),
+    ],
+)
+def test_refusal_line_follows_the_rail_contract(reason, tables, remedy) -> None:
+    line = migrate_cli.refusal_line(reason, tables=tables, remedy=remedy)
+    expected = f"migration_refused reason={reason}"
+    if tables:
+        expected += " tables=" + ",".join(tables)
+    if remedy:
+        expected += f' remedy="{remedy}"'
+    assert line == expected
+
+
+@pytest.mark.parametrize(
+    ("tables", "remedy"),
+    [(("learnings features",), None), (("learnings,features",), None), ((), 'say "hi"')],
+)
+def test_refusal_line_rejects_values_that_break_the_contract(tables, remedy) -> None:
+    with pytest.raises(ValueError):
+        migrate_cli.refusal_line("merge_chains_present", tables=tables, remedy=remedy)
