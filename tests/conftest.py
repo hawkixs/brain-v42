@@ -7,6 +7,7 @@ import signal
 
 import pytest
 
+from tests import disk_floor
 from tests.database_guards import (
     UnsafeTestDatabase,
     enforce_database_isolation,
@@ -22,9 +23,16 @@ def pytest_configure(config: pytest.Config) -> None:
     a child with a real SIGINT then wait for a child that never stops. Python's
     own handler is restored here, so this process is interruptible again and its
     children start with the default disposition.
+
+    It also refuses to start on a nearly full filesystem (ticket 998634d7,
+    tests/disk_floor.py), before anything writes a temporary file.
     """
     if signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
         signal.signal(signal.SIGINT, signal.default_int_handler)
+    try:
+        disk_floor.check(disk_floor.measured_path(config.option.basetemp), environ=os.environ)
+    except disk_floor.DiskFloorError as exc:
+        raise pytest.UsageError(str(exc)) from None
     try:
         enforce_database_isolation()
     except UnsafeTestDatabase as exc:
