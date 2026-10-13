@@ -308,6 +308,14 @@ class TestBrainSearch:
         assert call_kwargs["types"] == ["decision", "learning"]
 
     @pytest.mark.asyncio
+    async def test_brain_search_accepts_single_type_string(self) -> None:
+        mcp, mock_svc = _make_mcp_with_brain_svc()
+        mock_svc.search = AsyncMock(return_value=_make_search_response())
+        async with Client(mcp) as client:
+            await client.call_tool("brain_search", {"query": "test", "types": "decision"})
+        assert mock_svc.search.call_args.kwargs["types"] == ["decision"]
+
+    @pytest.mark.asyncio
     async def test_brain_search_rejects_mixed_invalid_types(self) -> None:
         """The MCP schema rejects a list containing any unknown knowledge type."""
         mcp, mock_svc = _make_mcp_with_brain_svc()
