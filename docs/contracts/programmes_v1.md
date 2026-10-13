@@ -39,9 +39,21 @@ transport metadata. red-cockpit owns parsing and rendering.
     "title": "Brain to red-base",
     "coordinator": "brain-v42",
     "state": "active",
-    "last_change": {"gate": "G12", "from": "todo", "to": "in_progress",
-                    "at": "2026-10-13T08:58:10.004211+00:00", "by": "brain-v42"},
+    "last_change": {"gate": "G7", "from": "in_progress", "to": "done",
+                    "at": "2026-10-13T08:58:10.004211+00:00", "by": "red-backup"},
     "gates": [{
+      "key": "G6",
+      "title": "red-rail ships private-timers",
+      "owner": "red-rail",
+      "state": "done",
+      "depends_on": [],
+      "weight": 1,
+      "waiting_on_operator": null,
+      "progress": null,
+      "note": null,
+      "updated_at": "2026-10-13T08:30:00+00:00",
+      "updated_by": "brain-v42"
+    }, {
       "key": "G7",
       "title": "red-backup deployed on red-base",
       "owner": "red-backup",
@@ -49,14 +61,16 @@ transport metadata. red-cockpit owns parsing and rendering.
       "depends_on": ["G6"],
       "weight": 4,
       "waiting_on_operator": null,
-      "progress": null,
-      "note": null,
-      "updated_at": "2026-10-13T08:40:00+00:00",
+      "progress": {"done": 15, "total": 15, "unit": "tasks"},
+      "note": "brain target enabled at cutover",
+      "updated_at": "2026-10-13T08:58:10.004211+00:00",
       "updated_by": "red-backup"
     }]
   }]
 }
 ```
+
+This example is pinned by the same test as the samples.
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -94,7 +108,7 @@ consumer safeguard.
 
 | What `GET /programmes` answers | Meaning |
 |---|---|
-| `200 {}` (no `programmes` key) | Not published this cycle: the block's database read failed. It is retried within about 5 s (`error_ttl_seconds`). The block is never replaced by an older copy |
+| `200 {}` (no `programmes` key) | Not published this cycle: the block's database read failed. The failure is memoised for 5 s (`error_ttl_seconds`), and the first request after that recomputes. The block is never replaced by an older copy |
 | `200 {"programmes": {"version": "programmes/v1", "generated_at": "…", "programmes": []}}` | Published, and nothing to show |
 | `404` | The release predates this contract. red-monitor's probe fails and the route reads `no_publisher` |
 | `"programmes": null` | Never emitted by brain. A relay may treat it as absent |
@@ -105,9 +119,11 @@ consumer safeguard.
   and fractional seconds as 0 or 6 digits. Consumers parse with any RFC 3339 parser and
   compare instants, never strings.
 - **`generated_at`**: the sidecar's wall clock when it computed the block. The block is
-  memoised with a single flight (decision `1669d429`): one computation every 30 s at
-  most, shared by every concurrent poll. At the moment the sidecar serves it,
-  `generated_at` is therefore at most about 30 s old. It is not the time of the
+  memoised with a single flight (decision `1669d429`). A success is served for 30 s.
+  The first request after that recomputes it, and every concurrent request waits on
+  that one computation. A failure is memoised for 5 s only. There is no background
+  refresh: computation happens on a request. At the moment the sidecar serves a
+  block, `generated_at` is therefore at most about 30 s old. It is not the time of the
   request.
 - **`updated_at`, `since` and `last_change.at`**: the database server time at which the
   write ran. They are never taken from a tool argument. A seeded gate therefore carries

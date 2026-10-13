@@ -6,6 +6,7 @@ to both consumers. The publisher itself is pinned against the same shape by the
 sidecar block's own tests.
 """
 
+import copy
 import json
 import re
 from datetime import datetime
@@ -53,10 +54,42 @@ def conforms(value: Any, shape: Any, objects: dict[str, Any], path: str = "$") -
             conforms(value, objects[name], objects, path)
 
 
+#: RFC 3339 as brain writes it (contract section 4): UTC, offset `+00:00`, and no
+#: fractional digits or exactly six. `datetime.fromisoformat` alone would also accept
+#: the basic format and a space separator.
+RFC3339_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{6})?\+00:00$")
+#: What contract section 2 forbids in a declared text: C0 and C1 controls (line breaks
+#: included), DEL, zero-width characters and bidirectional overrides.
+FORBIDDEN_TEXT = re.compile(
+    "[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]"
+)
+MAX_LIVE, MAX_DONE = 8, 4
+
+
 def _instant(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value)
-    assert parsed.utcoffset() is not None and parsed.utcoffset().total_seconds() == 0, value
-    return parsed
+    assert RFC3339_UTC.match(value), value
+    return datetime.fromisoformat(value)
+
+
+def _line(value: str, limit: int) -> None:
+    assert 0 < len(value) <= limit and value.strip() == value, value
+    assert not FORBIDDEN_TEXT.search(value), value
+
+
+def _acyclic(gates: dict[str, list[str]]) -> None:
+    state: dict[str, int] = {}
+
+    def visit(key: str) -> None:
+        assert state.get(key) != 1, f"dependency cycle through {key}"
+        if state.get(key) == 2:
+            return
+        state[key] = 1
+        for dependency in gates[key]:
+            visit(dependency)
+        state[key] = 2
+
+    for key in gates:
+        visit(key)
 
 
 def check_semantics(block: dict[str, Any]) -> None:
@@ -67,34 +100,63 @@ def check_semantics(block: dict[str, Any]) -> None:
     generated_at = _instant(block["generated_at"])
     programme_keys = [p["key"] for p in block["programmes"]]
     assert len(programme_keys) == len(set(programme_keys))
+    states = [p["state"] for p in block["programmes"]]
+    assert sum(state != "done" for state in states) <= MAX_LIVE
+    assert states.count("done") <= MAX_DONE
     for programme in block["programmes"]:
         assert KEY.match(programme["key"]) and len(programme["key"]) <= 64
         assert programme["state"] in enums["programme.state"]
-        assert 0 < len(programme["title"]) <= 120
-        gate_keys = [g["key"] for g in programme["gates"]]
-        assert len(gate_keys) == len(set(gate_keys)) and len(gate_keys) <= 32
+        _line(programme["title"], 120)
+        assert KEY.match(programme["coordinator"]), programme["coordinator"]
+        gates = {g["key"]: g for g in programme["gates"]}
+        assert len(gates) == len(programme["gates"]) and len(gates) <= 32
         for gate in programme["gates"]:
             assert KEY.match(gate["key"]) and len(gate["key"]) <= 32
+            _line(gate["title"], 120)
+            assert KEY.match(gate["owner"]) and KEY.match(gate["updated_by"])
             assert gate["state"] in enums["gate.state"]
             assert 1 <= gate["weight"] <= 100
             assert gate["key"] not in gate["depends_on"]
-            assert set(gate["depends_on"]) <= set(gate_keys)
-            assert len(gate["depends_on"]) <= 12
+            assert set(gate["depends_on"]) <= set(gates)
+            assert len(gate["depends_on"]) == len(set(gate["depends_on"])) <= 12
+            updated_at = _instant(gate["updated_at"])
+            assert updated_at <= generated_at
             if gate["note"] is not None:
-                assert 0 < len(gate["note"]) <= 200
-            if gate["waiting_on_operator"] is not None:
-                assert 0 < len(gate["waiting_on_operator"]["ask"]) <= 200
-                assert _instant(gate["waiting_on_operator"]["since"]) <= generated_at
-            if gate["progress"] is not None:
-                assert 0 <= gate["progress"]["done"] <= gate["progress"]["total"]
-            assert _instant(gate["updated_at"]) <= generated_at
+                _line(gate["note"], 200)
+            request = gate["waiting_on_operator"]
+            if request is not None:
+                _line(request["ask"], 200)
+                assert _instant(request["since"]) <= updated_at
+            progress = gate["progress"]
+            if progress is not None:
+                assert 1 <= progress["total"] <= 100_000
+                assert 0 <= progress["done"] <= progress["total"]
+                _line(progress["unit"], 24)
+        _acyclic({key: gate["depends_on"] for key, gate in gates.items()})
         change = programme["last_change"]
         if change is not None:
-            assert change["gate"] in gate_keys
+            gate = gates[change["gate"]]
             assert change["from"] != change["to"]
             assert {change["from"], change["to"]} <= set(enums["gate.state"])
-            assert _instant(change["at"]) <= generated_at
+            # The programme's latest transition is its gate's latest one: the gate
+            # still holds the state it moved to, and was written at or after it.
+            assert gate["state"] == change["to"]
+            assert _instant(change["at"]) <= _instant(gate["updated_at"])
+            assert KEY.match(change["by"])
         assert len(json.dumps(programme).encode()) <= 16 * 1024
+
+
+def _prose_example() -> dict[str, Any]:
+    text = (CONTRACTS / "programmes_v1.md").read_text()
+    blocks = re.findall(r"```json\n(.*?)\n```", text, flags=re.DOTALL)
+    assert len(blocks) == 1
+    return json.loads(blocks[0])
+
+
+def test_the_prose_example_obeys_its_own_contract() -> None:
+    block = _prose_example()
+    conforms(block, SHAPE["shape"], SHAPE["objects"])
+    check_semantics(block)
 
 
 @pytest.mark.parametrize("sample", SAMPLES, ids=lambda p: p.name)
@@ -148,6 +210,32 @@ def test_brain_move_sample_carries_the_structure_the_coordination_confirmed() ->
         lambda b: b["programmes"][0]["gates"][0].update(state="mostly_done"),
         lambda b: b["programmes"][0]["gates"][1].update(depends_on=["G2"]),
         lambda b: b["programmes"][0]["gates"][6]["waiting_on_operator"].pop("since"),
+        # Contract review round 1: every rule below was stated and not checked.
+        lambda b: b["programmes"][0]["gates"][0].update(depends_on=["G2"]),
+        lambda b: b["programmes"][0]["gates"][0].update(title="t" * 121),
+        lambda b: b["programmes"][0]["gates"][0].update(note="two\nlines"),
+        lambda b: b["programmes"][0]["gates"][0].update(note="nul\u0000here"),
+        lambda b: b["programmes"][0]["gates"][0].update(note="bidi\u202eflip"),
+        lambda b: b["programmes"][0]["gates"][6]["waiting_on_operator"].update(ask="a\nb"),
+        lambda b: b["programmes"][0]["gates"][6]["progress"].update(total=0, done=0),
+        lambda b: b["programmes"][0]["gates"][6]["progress"].update(total=100_001),
+        lambda b: b["programmes"][0]["gates"][6]["progress"].update(unit=""),
+        lambda b: b["programmes"][0]["gates"][6]["progress"].update(unit="u" * 25),
+        lambda b: b["programmes"].extend(
+            {**copy.deepcopy(b["programmes"][0]), "key": f"p{n}"} for n in range(8)
+        ),
+        lambda b: b["programmes"].extend(
+            {**copy.deepcopy(b["programmes"][0]), "key": f"d{n}", "state": "done"} for n in range(5)
+        ),
+        lambda b: b["programmes"][0]["last_change"].update(to="done", **{"from": "todo"}),
+        lambda b: b["programmes"][0]["last_change"].update(at="2026-10-06T16:39:00+00:00"),
+        lambda b: b["programmes"][0]["gates"][6]["waiting_on_operator"].update(
+            since="2026-10-06T16:31:00+00:00"
+        ),
+        lambda b: b.update(generated_at="20261006T164000+00:00"),
+        lambda b: b.update(generated_at="2026-10-06 16:40:00+00:00"),
+        lambda b: b.update(generated_at="2026-10-06T16:40:00Z"),
+        lambda b: b["programmes"][0]["gates"][0].update(updated_at="2026-10-06T12:00:00.5+00:00"),
     ],
 )
 def test_the_checks_reject_a_drifted_block(mutate: Any) -> None:
