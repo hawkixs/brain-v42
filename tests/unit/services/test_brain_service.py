@@ -2118,7 +2118,7 @@ class TestScoreKindByTypeHasNoPlausibleDefault:
         brain, _ = make_brain_service()
 
         broken_fan_out = AsyncMock(
-            return_value=({"decision": [(decision, 0.9)]}, None, "reranked", {})
+            return_value=({"decision": [(decision, 0.9)]}, None, "reranked", {}, [])
         )
         with patch.object(brain, "_fan_out", broken_fan_out), pytest.raises(KeyError):
             await brain.search("query")
@@ -2129,7 +2129,7 @@ class TestScoreKindByTypeHasNoPlausibleDefault:
         brain, _ = make_brain_service()
 
         broken_fan_out = AsyncMock(
-            return_value=({"decision": [(decision, 0.9)]}, None, "reranked", {})
+            return_value=({"decision": [(decision, 0.9)]}, None, "reranked", {}, [])
         )
         with patch.object(brain, "_fan_out", broken_fan_out), pytest.raises(KeyError):
             await brain.what_do_i_know_about("topic")
