@@ -214,6 +214,8 @@ async def test_find_tool_returns_compact_summary_with_required_and_enum_types() 
         workflow: Workflow,
         many: ManyValues,
         nullable: str | None,
+        limit: int = 10,
+        scope: str | None = None,
     ) -> str:
         """
         Search memory entries.
@@ -237,7 +239,9 @@ async def test_find_tool_returns_compact_summary_with_required_and_enum_types() 
         "many": "v1|v2|v3|v4|v5|v6|v7|v8|…",
         "nullable": "string",
     }
-    assert result["optional"] == []
+    assert result["optional"] == ["limit", "scope"]
+    assert "limit" not in result["required"]
+    assert "scope" not in result["required"]
     assert "outputSchema" not in json.dumps(found.data)
     assert "output_schema" not in json.dumps(found.data)
 
@@ -293,9 +297,50 @@ async def test_find_tool_exact_name_does_not_leak_family_hidden_tool(
     assert "input_schema" in allowed.data[0]
 
 
+async def test_find_tool_real_hidden_name_does_not_resolve_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.mcp import tool_families
+    from brain_v42.mcp.tool_families import FamilyAuthorizationMiddleware
+
+    server = FastMCP("brain-family-alias-catalog-test", mask_error_details=True)
+
+    @server.tool
+    async def brain_get_runbook(entity_id: str) -> str:
+        """Get a runbook."""
+        return entity_id
+
+    @server.tool
+    async def brain_get(entity_id: str, entity_type: str = "learning") -> str:
+        """Get a memory entry."""
+        return entity_id + entity_type
+
+    server.add_middleware(FamilyAuthorizationMiddleware())
+    access = AccessToken(
+        token="",
+        client_id="reader",
+        scopes=["read"],
+        claims={"credential_id": "00000000-0000-0000-0000-000000000001", "issuers": ["actor.*"]},
+    )
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: access)
+    monkeypatch.setattr(
+        tool_families,
+        "family_of",
+        lambda name: "write" if name == "brain_get_runbook" else "read",
+    )
+    async with Client(apply_tool_catalog_profile(server, "compact")) as client:
+        found = await client.call_tool("brain_find_tool", {"query": "brain_get_runbook"})
+
+    assert all("input_schema" not in item for item in found.data)
+    assert all(item["name"] != "brain_get_runbook" for item in found.data)
+
+
 async def test_find_tool_summaries_are_bounded_for_large_tool_schemas() -> None:
+    from fastmcp.server.transforms.search import serialize_tools_for_output_json
+
     server = FastMCP("brain-catalog-size-test")
     long_text = "Detailed description. " * 100
+    # The five tools return dict[str, str], so each carries an output schema.
     for index in range(5):
 
         async def tool(required_value: str) -> dict[str, str]:
@@ -310,7 +355,11 @@ async def test_find_tool_summaries_are_bounded_for_large_tool_schemas() -> None:
         found = await client.call_tool("brain_find_tool", {"query": "large tool"})
 
     assert len(found.data) == 5
-    assert len(json.dumps(found.data)) < 1500
+    new = json.dumps(found.data)
+    old_tools = await server._list_tools()
+    old = json.dumps(serialize_tools_for_output_json(old_tools))
+    assert len(new) < 1500
+    assert len(old) >= 3 * len(new)
 
 
 @pytest.mark.parametrize(

@@ -123,9 +123,8 @@ class _RequestAwareBM25SearchTransform(BM25SearchTransform):
         ) -> str | list[dict[str, Any]]:
             visible = await transform._get_visible_tools(ctx)
             name = query.strip()
-            target = (
-                name if any(tool.name == name for tool in visible) else TOOL_NAME_ALIASES.get(name)
-            )
+            raw_names = {tool.name for tool in await transform._mcp._list_tools()}
+            target = name if name in raw_names else TOOL_NAME_ALIASES.get(name)
             tool = next((item for item in visible if item.name == target), None)
             if tool is not None:
                 return [
