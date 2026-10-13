@@ -458,6 +458,10 @@ class MetricsServer:
             task.cancel()
             self._keep_until_done(task)
             return "TimeoutError"
+        if task.cancelled():
+            # A driver can cancel its own operation: that is an unreachable
+            # database, not a cancelled request (red-rail F-368-1).
+            return "CancelledError"
         exc = task.exception()
         return None if exc is None else type(exc).__name__
 
