@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AccessToken
 
 from brain_v42.mcp import tool_catalog
@@ -25,6 +26,42 @@ def _build_test_server() -> FastMCP:
     async def brain_search(query: str) -> str:
         """Search decisions and learnings in Brain memory."""
         return f"memory:{query}"
+
+    return server
+
+
+def _build_resolution_server() -> FastMCP:
+    server = FastMCP("brain-catalog-resolution-test", mask_error_details=True)
+
+    @server.tool
+    async def brain_session_start(project_key: str) -> str:
+        """Start a user-controlled Brain session."""
+        return project_key
+
+    @server.tool
+    async def brain_search(query: str) -> str:
+        """Search decisions and learnings in Brain memory."""
+        return f"memory:{query}"
+
+    @server.tool
+    async def brain_get(entity_id: str, entity_type: str = "learning") -> str:
+        """Get one typed memory entry."""
+        return f"{entity_type}:{entity_id}"
+
+    @server.tool
+    async def brain_get_runbook(entity_id: str) -> str:
+        """Get a runbook using its native tool."""
+        return f"runbook:{entity_id}"
+
+    @server.tool
+    async def brain_focus_history(project_key: str) -> str:
+        """Read project focus history."""
+        return project_key
+
+    @server.tool
+    async def brain_list_projects() -> str:
+        """List projects."""
+        return "projects"
 
     return server
 
@@ -145,6 +182,223 @@ async def test_compact_profile_finds_and_calls_a_hidden_tool() -> None:
 
     assert [tool["name"] for tool in found.data] == ["brain_search"]
     assert called.data == "memory:session lifecycle"
+
+
+@pytest.mark.parametrize(
+    ("name", "arguments", "guidance"),
+    [
+        ("brain_call_tool", {}, 'call brain_call_tool(name="<target tool>", arguments={...}) once'),
+        ("brain_find_tool", {}, "call brain_find_tool(query=...) directly"),
+    ],
+)
+async def test_nested_catalog_gateways_return_actionable_tool_errors(
+    name: str, arguments: dict, guidance: str
+) -> None:
+    server = apply_tool_catalog_profile(_build_resolution_server(), "compact")
+    async with Client(server) as client:
+        with pytest.raises(ToolError, match="cannot be nested") as error:
+            await client.call_tool("brain_call_tool", {"name": name, "arguments": arguments})
+    assert guidance in str(error.value)
+
+
+async def test_unknown_tool_suggests_similar_catalog_tools() -> None:
+    server = apply_tool_catalog_profile(_build_resolution_server(), "compact")
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as error:
+            await client.call_tool("brain_call_tool", {"name": "brain_get_project_focus"})
+    message = str(error.value)
+    assert "Unknown tool 'brain_get_project_focus'." in message
+    assert "brain_focus_history" in message and "brain_list_projects" in message
+    assert "Use brain_find_tool(query=...) to search the catalogue." in message
+    assert "Project focus:" in message
+
+
+async def test_typo_prefers_strong_fuzzy_match_over_word_overlap() -> None:
+    server = FastMCP("brain-catalog-typo-test", mask_error_details=True)
+    for tool_name in (
+        "brain_session_start",
+        "brain_session_abandon",
+        "brain_session_bind",
+        "brain_session_capture",
+        "brain_session_end",
+    ):
+
+        async def tool() -> str:
+            return "tool"
+
+        tool.__name__ = tool_name
+        server.tool(tool)
+    async with Client(apply_tool_catalog_profile(server, "compact")) as client:
+        with pytest.raises(ToolError) as error:
+            await client.call_tool("brain_call_tool", {"name": "brain_session_statr"})
+    suggestions = str(error.value).split("Closest: ", 1)[1].split(".", 1)[0]
+    assert suggestions.split(", ")[0] == "brain_session_start"
+
+
+async def test_unknown_tool_suggestions_exclude_family_hidden_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.mcp import tool_families
+    from brain_v42.mcp.tool_families import FamilyAuthorizationMiddleware
+
+    server = FastMCP("brain-family-catalog-test", mask_error_details=True)
+
+    @server.tool
+    async def brain_session_start(project_key: str) -> str:
+        """Start a user-controlled Brain session."""
+        return project_key
+
+    @server.tool
+    async def brain_search(query: str) -> str:
+        """Search Brain memory."""
+        return query
+
+    server.add_middleware(FamilyAuthorizationMiddleware())
+    access = AccessToken(
+        token="",
+        client_id="reader",
+        scopes=["read"],
+        claims={
+            "credential_id": "00000000-0000-0000-0000-000000000001",
+            "issuers": ["actor.*"],
+        },
+    )
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: access)
+    # Read scope can see brain_search but not the session start write family.
+    async with Client(apply_tool_catalog_profile(server, "compact")) as client:
+        with pytest.raises(ToolError) as error:
+            await client.call_tool("brain_call_tool", {"name": "brain_session_statr"})
+    assert "Unknown tool 'brain_session_statr'." in str(error.value)
+    assert "brain_session_start" not in str(error.value)
+
+
+async def test_unrelated_unknown_tool_omits_closest_candidates() -> None:
+    server = apply_tool_catalog_profile(_build_resolution_server(), "compact")
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as error:
+            await client.call_tool("brain_call_tool", {"name": "zzzzzzzzzzzz"})
+    assert "Closest:" not in str(error.value)
+    assert "Use brain_find_tool(query=...) to search the catalogue." in str(error.value)
+
+
+async def test_brain_prefixed_nonsense_omits_closest_candidates() -> None:
+    server = FastMCP("brain-nonsense-catalog-test")
+
+    @server.tool
+    async def brain_session_start(project_key: str) -> str:
+        """Start a session."""
+        return project_key
+
+    @server.tool
+    async def brain_search(query: str) -> str:
+        """Search memory."""
+        return query
+
+    async with Client(apply_tool_catalog_profile(server, "compact")) as client:
+        with pytest.raises(ToolError) as error:
+            await client.call_tool("brain_call_tool", {"name": "brain_qwzx"})
+    assert "Closest:" not in str(error.value)
+
+
+async def test_plural_project_query_suggests_focus_history() -> None:
+    server = _build_resolution_server()
+
+    @server.tool
+    async def brain_update_project_focus(project_key: str) -> str:
+        """Update project focus."""
+        return project_key
+
+    @server.tool
+    async def brain_list_project_groups() -> str:
+        """List project groups."""
+        return "groups"
+
+    async with Client(apply_tool_catalog_profile(server, "compact")) as client:
+        with pytest.raises(ToolError) as error:
+            await client.call_tool("brain_call_tool", {"name": "brain_get_project_focus"})
+    assert "brain_focus_history" in str(error.value)
+
+
+async def test_alias_to_family_hidden_tool_is_treated_as_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.mcp import tool_families
+    from brain_v42.mcp.tool_families import FamilyAuthorizationMiddleware
+
+    server = _build_resolution_server()
+    server.add_middleware(FamilyAuthorizationMiddleware())
+    access = AccessToken(
+        token="",
+        client_id="writer",
+        scopes=["write"],
+        claims={
+            "credential_id": "00000000-0000-0000-0000-000000000001",
+            "issuers": ["actor.*"],
+        },
+    )
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: access)
+    async with Client(apply_tool_catalog_profile(server, "compact")) as client:
+        with pytest.raises(ToolError, match="Unknown tool 'brain_recall'"):
+            await client.call_tool(
+                "brain_call_tool", {"name": "brain_recall", "arguments": {"query": "x"}}
+            )
+
+
+async def test_recall_alias_dispatches() -> None:
+    server = apply_tool_catalog_profile(_build_resolution_server(), "compact")
+    async with Client(server) as client:
+        recalled = await client.call_tool(
+            "brain_call_tool", {"name": "brain_recall", "arguments": {"query": "x"}}
+        )
+    assert recalled.data == "memory:x"
+
+
+async def test_typed_getter_alias_dispatches() -> None:
+    server = apply_tool_catalog_profile(_build_resolution_server(), "compact")
+    async with Client(server) as client:
+        typed = await client.call_tool(
+            "brain_call_tool", {"name": "brain_get_decision", "arguments": {"entity_id": "id"}}
+        )
+    assert typed.data == "decision:id"
+
+
+async def test_real_tool_name_takes_precedence_over_alias() -> None:
+    server = apply_tool_catalog_profile(_build_resolution_server(), "compact")
+    async with Client(server) as client:
+        real = await client.call_tool(
+            "brain_call_tool", {"name": "brain_get_runbook", "arguments": {"entity_id": "id"}}
+        )
+    assert real.data == "runbook:id"
+
+
+async def test_typed_alias_refuses_conflicting_entity_type() -> None:
+    server = apply_tool_catalog_profile(_build_resolution_server(), "compact")
+    async with Client(server) as client:
+        with pytest.raises(ToolError, match="conflicts"):
+            await client.call_tool(
+                "brain_call_tool",
+                {
+                    "name": "brain_get_decision",
+                    "arguments": {"entity_id": "id", "entity_type": "learning"},
+                },
+            )
+
+
+async def test_call_gateway_dump_matches_base_transform() -> None:
+    from fastmcp.server.transforms.search import BM25SearchTransform
+
+    configured = apply_tool_catalog_profile(_build_resolution_server(), "compact")
+    base_tool = BM25SearchTransform(
+        max_results=5,
+        always_visible=list(SESSION_LIFECYCLE_TOOLS),
+        search_tool_name="brain_find_tool",
+        call_tool_name="brain_call_tool",
+    )._make_call_tool()
+    async with Client(configured) as client:
+        gateway = next(tool for tool in await client.list_tools() if tool.name == "brain_call_tool")
+    assert gateway.model_dump(
+        by_alias=True, exclude_none=True
+    ) == base_tool.to_mcp_tool().model_dump(by_alias=True, exclude_none=True)
 
 
 async def test_compact_profile_keeps_all_registered_lifecycle_tools_visible() -> None:
