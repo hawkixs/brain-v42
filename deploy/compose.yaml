@@ -270,17 +270,19 @@ services:
     container_name: brain-v42-delivery-observer
     mem_limit: 256m
     command: [python, -m, brain_v42.delivery_observer, --env-file, /run/secrets/observer_config]
-    environment: *brain-env
+    environment:
+      <<: *brain-env
+      BRAIN_DELIVERY_HEARTBEAT_PATH: /tmp/brain-v42-delivery-observer.heartbeat
     secrets:
       - github_app_key
       - observer_config
     healthcheck:
-      # No HTTP readiness endpoint exists; this checks process liveness only.
-      test: [CMD, python, -c, "from pathlib import Path; assert b'brain_v42.delivery_observer' in Path('/proc/1/cmdline').read_bytes()"]
+      # No HTTP readiness endpoint exists; this checks recent observation progress.
+      test: [CMD, python, -c, "from pathlib import Path; import time; p=Path('/tmp/brain-v42-delivery-observer.heartbeat'); assert p.is_file() and time.time()-p.stat().st_mtime <= 600"]
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 120s
 
   graph-recon:
     <<: [*brain-service, *server]

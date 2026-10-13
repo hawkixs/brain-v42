@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+import tempfile
 import traceback
 from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
@@ -169,6 +171,37 @@ class DeliveryObserverRuntime:
         self._blocked_keys: set[tuple[UUID, str, str]] = set()
         self._run_lock = asyncio.Lock()
 
+    def _write_heartbeat(self) -> None:
+        """Atomically publish progress so readers never see a partial timestamp."""
+        path = self.settings.heartbeat_path
+        if path is None:
+            return
+        temporary: str | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+            ) as stream:
+                temporary = stream.name
+                stream.write(datetime.now(UTC).isoformat())
+            os.replace(temporary, path)
+        except OSError as error:
+            with suppress(OSError, ValueError):
+                sys.stderr.write(
+                    json.dumps(
+                        {
+                            "event": "observer_heartbeat_write_failed",
+                            "error_type": type(error).__name__,
+                        }
+                    )
+                    + "\n"
+                )
+                sys.stderr.flush()
+        finally:
+            if temporary is not None:
+                with suppress(OSError):
+                    os.unlink(temporary)
+
     async def run_once(self, project_key: str | None = None) -> ObservationRunResult:
         """Acquire for one pass unless run() already owns the connection."""
         async with self._run_lock:
@@ -178,7 +211,10 @@ class DeliveryObserverRuntime:
             try:
                 if release and not await self.owner.acquire():
                     return ObservationRunResult(exit_code=2)
-                return await self._cycle(asyncio.Event(), project_key=project_key)
+                result = await self._cycle(asyncio.Event(), project_key=project_key)
+                if result.exit_code != 2:
+                    self._write_heartbeat()
+                return result
             except ObserverOwnershipLost:
                 return ObservationRunResult(exit_code=2)
             finally:
@@ -197,6 +233,8 @@ class DeliveryObserverRuntime:
                     result = await self._cycle(stop_event)
                 if result.exit_code == 2:
                     return 2
+                if not stop_event.is_set():
+                    self._write_heartbeat()
                 deadline = asyncio.get_running_loop().time() + self.settings.poll_seconds
                 while not stop_event.is_set() and asyncio.get_running_loop().time() < deadline:
                     delay = min(1.0, max(0.0, deadline - asyncio.get_running_loop().time()))
@@ -392,6 +430,9 @@ class DeliveryObserverRuntime:
             for candidate in candidates:
                 seen.add((candidate.ticket_id, candidate.deliverable_key))
                 yield candidate
+                # The consumer has processed this candidate; long backlogs must
+                # keep the externally observed liveness timestamp current.
+                self._write_heartbeat()
             if len(candidates) < _MAX_RELEASE_COMPARES_PER_PASS:
                 return
 
@@ -652,6 +693,7 @@ class DeliveryObserverRuntime:
                     expected_version=job.version + 1,
                     delay_seconds=delay,
                 )
+            self._write_heartbeat()
             if code is not None:
                 # After the attempt is persisted and rescheduled: stderr is
                 # synchronous, and a journal that stalls may delay only what
