@@ -1,0 +1,56 @@
+{
+  "digest": "sha256:8caba4421021c1b4ac74f88c377cd59b158c8979aab2664f195f0e5d538e9bf5",
+  "idempotency_key": "review_verdict:879c4cb114d8f9dc470f8a039bfc19ead361103d:115138417345",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115138417345,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The checks reject self-edges and unknown keys but never traverse the dependency graph. Two gates depending on each other pass check_semantics, despite section 2 explicitly forbidding cycles. Add cycle detection and a negative case covering a multi-gate cycle.",
+          "file": "tests/unit/test_programmes_v1_contract.py",
+          "id": "F-364-1",
+          "line": 78,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Dependency validation does not detect cycles"
+        },
+        {
+          "class": "note",
+          "evidence": "Progress validation checks only done <= total: {\"done\":0,\"total\":0,\"unit\":\"\"} passes both shape and semantic checks, although the contract requires total between 1 and 100000 and unit length between 1 and 24. Gate title limits and the prohibition on control characters and line breaks are also unchec",
+          "file": "tests/unit/test_programmes_v1_contract.py",
+          "id": "F-364-2",
+          "line": 86,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Several documented field limits are not checked"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 364,
+      "providers": [
+        "agy",
+        "codex"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "879c4cb114d8f9dc470f8a039bfc19ead361103d",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T05:06:10.627918Z",
+  "schema_version": 1
+}

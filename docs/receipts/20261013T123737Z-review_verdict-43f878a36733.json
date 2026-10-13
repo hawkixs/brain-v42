@@ -1,0 +1,45 @@
+{
+  "digest": "sha256:43f878a3673317550d010b948199aca5eabd6efe4f0b6a82355f33f6863de9a1",
+  "idempotency_key": "review_verdict:0d08f16ec9fa14c78bb1f761010de9d0a0fb029f:115300191291",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115300191291,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The new assertions read settings.rerank_fallback_model, settings.rerank_fallback_provider and settings.rerank_primary_budget_seconds; those fields are presumably added by the base branch feat/rerank-fallback-chain (#400), which is not visible here. Check that #400 defines them (including the primary",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-401-1",
+          "line": 427,
+          "severity": "minor",
+          "status": "new",
+          "title": "Asserted Settings fields live on the stacked base, not in this diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "pr": 401,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "0d08f16ec9fa14c78bb1f761010de9d0a0fb029f",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T12:37:37.326241Z",
+  "schema_version": 1
+}

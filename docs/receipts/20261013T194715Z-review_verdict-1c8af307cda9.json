@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:1c8af307cda93158782e17990347afeef767eecbab53178c04917194b7b4702a",
+  "idempotency_key": "review_verdict:2bb88bdc4ea5a27d418430533271430785a57d43:115498571428",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115498571428,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The new docstring requires callers to hold the registry lock, and `_prune_conversations`/`_trim_conversations` were pure staticmethods that now mutate shared counter state. Call sites are outside the diff; they likely mirror `_prune_brain`/`_trim_brain`, which already mutate instance counters, so th",
+          "file": "src/brain_v42/metrics/client_activity.py",
+          "id": "F-352-1",
+          "line": 283,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Lock-holding at call sites of the now stateful prune/trim helpers"
+        },
+        {
+          "class": "note",
+          "evidence": "If `_claude_api_request` does not accept the five newly forwarded kwargs (input_tokens, cache_read_tokens, cache_creation_tokens, output_tokens, cost_usd), every claude-fixture test would error; its signature is outside the diff. The stated full-suite result (14171 passed, only the pre-existing pyve",
+          "file": "tests/unit/test_client_activity.py",
+          "id": "F-352-2",
+          "line": 129,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "_claude_api_request signature not visible in the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 352,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "2bb88bdc4ea5a27d418430533271430785a57d43",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T19:47:15.101937Z",
+  "schema_version": 1
+}

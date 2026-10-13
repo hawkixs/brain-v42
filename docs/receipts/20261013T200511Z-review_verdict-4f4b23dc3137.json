@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:4f4b23dc313753213969064f81ff1db5460674afe3c42d0a1040f7b7a05e8557",
+  "idempotency_key": "review_verdict:a288e98eb36db5f45902033208f24e91d9765073:115507647174",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115507647174,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "If `configure_console_logging`/`configure_json_logging` (in brain_v42.safe_logging, outside this diff) attach handlers to any logger other than root, fastmcp, uvicorn, uvicorn.error or uvicorn.access, `restore_logging` would not remove them; check safe_logging's handler targets to confirm the saved ",
+          "file": "tests/unit/codex_gateway/test_entrypoint_logging.py",
+          "id": "F-421-1",
+          "line": 15,
+          "severity": "minor",
+          "status": "new",
+          "title": "Fixture may miss handlers attached to loggers outside the saved set"
+        },
+        {
+          "class": "note",
+          "evidence": "`assert order == [(\"configured\", log_format), (\"serve\", order[-1][1])]` uses the observed kwargs dict as its own expected value; it still verifies length, order and the configured-first invariant, but asserting the serve kwargs dict contents explicitly would be slightly stronger.",
+          "file": "tests/unit/codex_gateway/test_entrypoint_logging.py",
+          "id": "F-421-2",
+          "line": 83,
+          "severity": "minor",
+          "status": "new",
+          "title": "Ordering assertion is partly self-referential"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 421,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "a288e98eb36db5f45902033208f24e91d9765073",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T20:05:11.817050Z",
+  "schema_version": 1
+}

@@ -1,0 +1,66 @@
+{
+  "digest": "sha256:06ba865f070dbb0db3705de81854868d677be925f4ea53cfd4a5f9daae33bd2d",
+  "idempotency_key": "review_verdict:127dc4ade619e36e649dde1adf898bf013b0da1f:115284518936",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115284518936,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "_search_shard sets `rerank_invoked = bool(self._reranker and fused)` before the `if fused and ticket is not None:` block (body not in the visible diff). If a shard can have non-empty fused yet skip the actual rerank call (ticket None), rerank_eligible overcounts and the acceptance ratio rerank_rrf/r",
+          "file": "src/brain_v42/services/search/hybrid.py",
+          "id": "F-400-1",
+          "line": 380,
+          "severity": "minor",
+          "status": "new",
+          "title": "Eligibility flag computed before the gated rerank invocation"
+        },
+        {
+          "class": "note",
+          "evidence": "The validator only applies fallback checks inside `if self.rerank_fallback_model:`, so with backend cohere, BRAIN_RERANK_FALLBACK_PROVIDER alone is accepted, never routing-validated, and build_reranker_client returns the single primary \u2014 the operator's setting has no effect and no error surfaces.",
+          "file": "src/brain_v42/config.py",
+          "id": "F-400-2",
+          "line": 449,
+          "severity": "minor",
+          "status": "new",
+          "title": "Fallback provider without fallback model is silently ignored"
+        },
+        {
+          "class": "note",
+          "evidence": "RerankChain checks is_calibrated only for the fallback, then computes math.log(primary_floor/(1-primary_floor)); if calibration_for_identity's unknown-identity default search_min_score is 0.0 or 1.0, an uncalibrated primary plus a configured fallback would raise a math domain error or ZeroDivisionEr",
+          "file": "src/brain_v42/services/rerank_chain.py",
+          "id": "F-400-3",
+          "line": 49,
+          "severity": "minor",
+          "status": "new",
+          "title": "Logit shift built from the primary floor without a calibrated-primary check"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 400,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "127dc4ade619e36e649dde1adf898bf013b0da1f",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T12:05:25.961335Z",
+  "schema_version": 1
+}

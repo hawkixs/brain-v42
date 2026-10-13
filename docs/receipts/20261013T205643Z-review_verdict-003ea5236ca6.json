@@ -1,0 +1,109 @@
+{
+  "digest": "sha256:003ea5236ca62959eca28edc7bd72cec59a2e9857c4bd30cd8aeb8dbcaf3018f",
+  "idempotency_key": "review_verdict:db471808f7efa64efc954b0701d60be24afdd937:115532232079",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115532232079,
+      "diff_truncated": false,
+      "finding_count": 7,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The error body uses `\"error\": \"empty_exclude_key\" if empty_tokens else \"unknown_exclude_key\"` and `\"keys\": empty_tokens or unknown_tokens`, so a request like `?exclude=,nope` reports only the empty token; the caller must fix one class at a time.",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-418-1",
+          "line": 692,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "400 response reports only one error class when both empty and unknown tokens are present"
+        },
+        {
+          "class": "note",
+          "evidence": "When `\"graph\" not in excluded` is false, the `graph_healthy` evaluation and `graph_stats` fetch still execute above the guarded block; only the slow `collect_graph_inventory` call and the response key are skipped. Consistent with the stated contract (only slow blocks skip computation) but worth know",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-418-2",
+          "line": 870,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Excluding 'graph' still runs the health probe, only omits the payload key"
+        },
+        {
+          "class": "note",
+          "evidence": "Keys such as `version`, `cross_process`, or `model` are fully computed and only removed by the final `metrics.pop` loop; correct per the description, which promises skipped computation only for slow blocks.",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-418-3",
+          "line": 962,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Fast blocks named in exclude are computed then popped, not skipped"
+        },
+        {
+          "class": "note",
+          "evidence": "test_excluding_multiple_slow_blocks_skips_both asserts collect_session_slots/collect_ticket_counts are not awaited, and the session_slots test asserts collect_session_slots.assert_not_awaited(), but no test asserts the graph_inventory slow-block compute lambda is not invoked when graph is excluded \u2014",
+          "file": "tests/unit/metrics/test_metrics_exclude.py",
+          "id": "F-418-4",
+          "line": 68,
+          "severity": "minor",
+          "status": "new",
+          "title": "No test pins that ?exclude=graph skips the slow inventory fetch"
+        },
+        {
+          "class": "note",
+          "evidence": "EXCLUDABLE_METRICS_KEYS is a frozen literal; a block added to the payload later but not to the set makes ?exclude=<that block> answer 400 while the default payload carries it. Low harm (loud failure, additive-only contract intact, existing consumers unaffected) and already flagged in the test's own ",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-418-5",
+          "line": 42,
+          "severity": "minor",
+          "status": "new",
+          "title": "Static allowlist can drift from future /metrics payload keys"
+        },
+        {
+          "class": "note",
+          "evidence": "The 12-24 KiB pin holds for fixture shapes/volumes built in the test (26 tools, 16 projects, synthetic titles); real production drift (new blocks, longer titles) would not fail CI. Consumer-side enforcement is deferred to red-monitor ticket 79a36d3e per the description.",
+          "file": "tests/unit/metrics/test_metrics_exclude.py",
+          "id": "F-418-6",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Size budget is enforced only against the synthetic fixture"
+        },
+        {
+          "class": "note",
+          "evidence": "test_excluded_block_status_is_not_published repeats the second half of test_block_status_is_kept_when_slow_block_is_excluded (same request, same assertion) verbatim; one of the two is redundant.",
+          "file": "tests/unit/metrics/test_metrics_exclude.py",
+          "id": "F-418-7",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Duplicate coverage for excluding block_status"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 418,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "db471808f7efa64efc954b0701d60be24afdd937",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T20:56:43.982920Z",
+  "schema_version": 1
+}
