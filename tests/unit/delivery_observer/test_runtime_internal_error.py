@@ -14,7 +14,7 @@ import pytest
 
 from brain_v42.delivery_config import DeliverySettings
 from brain_v42.delivery_observer.runtime import DeliveryObserverRuntime
-from brain_v42.models.delivery import SAFE_OBSERVATION_ERROR_CODES
+from brain_v42.models.delivery import SAFE_OBSERVATION_ERROR_CODES, DeliveryError
 from tests.unit.delivery_observer.test_runtime_job_isolation import (
     SECRET,
     FakeEvidenceRepo,
@@ -114,3 +114,29 @@ async def test_network_and_timeout_errors_stay_provider_unavailable(error, capsy
     assert repo.codes == ["provider_unavailable"]
     assert result.internal_errors == 0
     assert SECRET not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("persist_error", "status"),
+    [
+        (DeliveryError("binding_conflict", SECRET), "deferred"),
+        (DeliveryError("some_unforeseen_code", SECRET), "failed"),
+    ],
+)
+async def test_internal_error_survives_a_failed_persistence(persist_error, status, capsys):
+    """Codex review of #354: an internal error lost its signal when its record failed."""
+
+    class FailingRepo(RecordingRepo):
+        async def record_observation_error(self, *args):
+            raise persist_error
+
+    result = await runtime_raising(AttributeError(SECRET), FailingRepo()).run_once()
+
+    assert result.internal_errors == 1
+    assert getattr(result, status) == 1
+    err = capsys.readouterr().err
+    assert SECRET not in err
+    codes = [json.loads(line)["error_code"] for line in err.splitlines()]
+    assert "observer_internal_error" in codes
+    [internal] = [json.loads(x) for x in err.splitlines() if "observer_internal_error" in x]
+    assert internal["diagnostic"].startswith("AttributeError at ")

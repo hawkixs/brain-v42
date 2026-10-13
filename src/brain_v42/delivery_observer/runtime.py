@@ -278,6 +278,7 @@ class DeliveryObserverRuntime:
                     deferred += len(jobs)
                     break
                 for outcome in outcomes:
+                    internal += outcome.internal
                     if outcome.status == "collected":
                         collected += 1
                         if outcome.finished_at is not None:
@@ -286,7 +287,6 @@ class DeliveryObserverRuntime:
                             )
                     elif outcome.status == "failed":
                         failed += 1
-                        internal += outcome.internal
                     else:
                         deferred += 1
             # The passes are repository-wide: a run scoped to one project leaves them out.
@@ -591,13 +591,18 @@ class DeliveryObserverRuntime:
                 internal=code == _INTERNAL_ERROR,
             )
         except DeliveryError as error:
+            internal = code == _INTERNAL_ERROR
+            if internal:
+                # The attempt was not recorded, but the defect behind it must not
+                # vanish with it: say where it happened before handling the record.
+                _diagnose(job.identity, _INTERNAL_ERROR, provider_code=None, diagnostic=diagnostic)
             if error.code in {
                 "binding_conflict",
                 "binding_superseded",
                 "repository_context_conflict",
                 "repository_context_superseded",
             }:
-                return _Outcome("deferred")
+                return _Outcome("deferred", internal=internal)
             # Any other domain error is confined to this one job: re-raising
             # would end the process, and the oldest due job being retried
             # first, every restart would die on the same one (ticket b78b5144).
@@ -608,4 +613,4 @@ class DeliveryObserverRuntime:
                 provider_code=None,
                 diagnostic=type(error).__name__,
             )
-            return _Outcome("failed")
+            return _Outcome("failed", internal=internal)
