@@ -104,6 +104,8 @@ def _signature(name: str, parameters: dict[str, Any], cap: int) -> str:
         return ""
     root = parameters
     props = parameters.get("properties", {})
+    if not props:
+        return f"{name}()"
     required = parameters.get("required", [])
     names = [key for key in props if key in required] + [
         key for key in props if key not in required
@@ -125,23 +127,23 @@ def _signature(name: str, parameters: dict[str, Any], cap: int) -> str:
         if len(candidate) > cap:
             break
         required_parts.append(parameter(key))
-    required_text = ", ".join(required_parts)
     required_remaining = len(required_names) - len(required_parts)
     kept: list[str] = []
     for key in optional_names if not required_remaining else []:
         remaining = len(optional_names) - len(kept) - 1
         suffix = f", … (+{remaining} optional)" if remaining else ""
-        candidate = f"{name}({required_text}{', ' if required_text else ''}{', '.join([*kept, parameter(key)])}{suffix})"
+        candidate_parts = [*required_parts, *kept, parameter(key)]
+        candidate = f"{name}({', '.join(candidate_parts)}{suffix})"
         if len(candidate) > cap:
             break
         kept.append(parameter(key))
     remaining = len(optional_names) - len(kept) + required_remaining
-    optional_text = ", ".join(kept)
+    parts = [*required_parts, *kept]
     if remaining:
-        optional_text += f", … (+{remaining} more)"
-    result = (
-        f"{name}({required_text}{', ' if required_text and optional_text else ''}{optional_text})"
-    )
+        parts.append(f"… (+{remaining} more)")
+    if not required_parts and not kept:
+        return ""
+    result = f"{name}({', '.join(parts)})"
     return result if len(result) <= cap else ""
 
 
@@ -196,6 +198,84 @@ def _limit_message(code: str, ctx: dict[str, Any]) -> str | None:
     return None
 
 
+def _fit_message(
+    prefix: str,
+    core: list[str],
+    unexpected: list[str],
+    signature_for: Any,
+) -> str:
+    """Fit guidance to the public message limit with bounded clause passes."""
+    parts = list(core)
+    body = "; ".join(parts) or "invalid value shape"
+    if len(f"{prefix} {body}.") > 600:
+        budget = 600 - len(prefix) - len(" ….")
+        kept: list[str] = []
+        for clause in core:
+            candidate = "; ".join([*kept, clause])
+            if len(f"{prefix} {candidate}….") > 600:
+                break
+            kept.append(clause)
+        if kept:
+            body = "; ".join(kept) + "…"
+        else:
+            first = core[0] if core else "invalid value shape"
+            body = first[: max(0, budget)] + "…"
+        return f"{prefix} {body}."
+
+    base_message = f"{prefix} {body}."
+    signature = signature_for(600 - len(base_message) - len(" Expected: "))
+    kept_unexpected: list[str] = []
+    truncated = False
+    for index, clause in enumerate(unexpected):
+        candidate_parts = [*core, *kept_unexpected, clause]
+        candidate_body = "; ".join(candidate_parts)
+        candidate_message = f"{prefix} {candidate_body}."
+        more_clauses = index + 1 < len(unexpected)
+        limit = 600 - (len("…") if more_clauses else 0)
+        if signature and len(candidate_message) + len(" Expected: ") + len(signature) > limit:
+            truncated = True
+            break
+        if not signature and len(candidate_message) > limit:
+            truncated = True
+            break
+        kept_unexpected.append(clause)
+
+    parts = [*core, *kept_unexpected]
+    if not parts:
+        parts = ["invalid value shape"]
+    if truncated:
+        parts[-1] += "…"
+    body = "; ".join(parts)
+    message = f"{prefix} {body}."
+    if signature:
+        message += f" Expected: {signature}"
+
+    while len(message) > 600 and kept_unexpected:
+        kept_unexpected.pop()
+        parts = [*core, *kept_unexpected]
+        if not parts:
+            parts = ["invalid value shape"]
+        parts[-1] += "…"
+        body = "; ".join(parts)
+        message = f"{prefix} {body}."
+        if signature:
+            message += f" Expected: {signature}"
+
+    while len(message) > 600 and len(core) > 1:
+        core.pop()
+        parts = [*core]
+        if not parts:
+            parts = ["invalid value shape"]
+        parts[-1] += "…"
+        message = f"{prefix} {'; '.join(parts)}."
+        if signature:
+            message += f" Expected: {signature}"
+
+    if len(message) > 600:
+        message = message[:597].rstrip(" ;") + "…"
+    return message
+
+
 def _guidance(
     name: str,
     error: ValidationError,
@@ -222,15 +302,16 @@ def _guidance(
         for head in item["loc"][:1]
         if isinstance(head, str)
     ]
-    clauses: list[str] = []
+    unexpected_clauses: list[str] = []
+    core_clauses: list[str] = []
     for key in unknown:
         semantic = next((item for item in _SEMANTIC_ALIASES.get(key, ()) if item in props), None)
         close = difflib.get_close_matches(key, list(props), n=1, cutoff=0.5)
         hint = semantic or (close[0] if close else None)
         suffix = f" (did you mean '{hint}'?)" if hint else ""
-        clauses.append(f"unexpected '{_safe_key(key)}'{suffix}")
+        unexpected_clauses.append(f"unexpected '{_safe_key(key)}'{suffix}")
     if missing:
-        clauses.append("missing " + ", ".join(f"'{item}'" for item in missing))
+        core_clauses.append("missing " + ", ".join(f"'{item}'" for item in missing))
     for item in error_items:
         raw_loc = tuple(item.get("loc", ()))
         path, leaf_schema = _schema_path(parameters or {}, raw_loc)
@@ -242,15 +323,15 @@ def _guidance(
             continue
         if error_type == "missing":
             if leaf_schema is None:
-                clauses.append(f"'{loc}': invalid value")
+                core_clauses.append(f"'{loc}': invalid value")
                 continue
-            clauses.append(f"'{loc}': missing required value")
+            core_clauses.append(f"'{loc}': missing required value")
             continue
         if error_type == "extra_forbidden":
-            clauses.append(f"'{loc}': unexpected field")
+            core_clauses.append(f"'{loc}': unexpected field")
             continue
         if leaf_schema is None:
-            clauses.append(f"'{loc}': invalid value")
+            core_clauses.append(f"'{loc}': invalid value")
             continue
         code = str(item.get("type", ""))
         if code in {"literal_error", "enum"} and leaf_schema:
@@ -264,11 +345,11 @@ def _guidance(
                 allowed = "|".join(f'"{value}"' for value in values[:8]) + (
                     "|…" if len(values) > 8 else ""
                 )
-                clauses.append(f"'{loc}': must be one of {allowed}")
+                core_clauses.append(f"'{loc}': must be one of {allowed}")
                 continue
         limit = _limit_message(code, item.get("ctx", {}))
         if limit:
-            clauses.append(f"'{loc}': {limit}")
+            core_clauses.append(f"'{loc}': {limit}")
             continue
         actual_type = _input_type(arguments, tuple(path)) if path else "unknown"
         if code.startswith("string_type") or code.startswith("string_"):
@@ -282,47 +363,25 @@ def _guidance(
         elif code.startswith("bool_"):
             expected = "boolean"
         else:
-            clauses.append(f"'{loc}': invalid value")
+            core_clauses.append(f"'{loc}': invalid value")
             continue
         if path:
-            clauses.append(f"'{loc}': expected {expected}, got {actual_type}")
+            core_clauses.append(f"'{loc}': expected {expected}, got {actual_type}")
         else:
-            clauses.append(f"'{loc}': expected {expected}")
+            core_clauses.append(f"'{loc}': expected {expected}")
     prefix = f"Invalid arguments for {name}:"
-    clauses = list(dict.fromkeys(clauses))
-    body = "; ".join(clauses) or "invalid value shape"
-    message = f"{prefix} {body}."
+    core_clauses = list(dict.fromkeys(core_clauses))
+    unexpected_clauses = list(dict.fromkeys(unexpected_clauses))
     if parameters is not None and is_call_schema_error:
-        marker = " Expected: "
-        kept = clauses.copy()
-        while True:
-            body = "; ".join(kept) or "invalid value shape"
-            message = f"{prefix} {body}."
-            signature = _signature(name, parameters, 600 - len(message) - len(marker))
-            if signature and len(message) + len(marker) + len(signature) <= 600:
-                break
-            if not kept:
-                signature = ""
-                break
-            kept.pop()
-        if signature:
-            message += f"{marker}{signature}"
-    if len(message) <= 600:
-        return message
-    expected_marker = " Expected: "
-    expected_at = message.find(expected_marker)
-    if expected_at >= 0:
-        before = message[:expected_at]
-        expected = message[expected_at:]
-        if len(expected) + 1 <= 600:
-            boundary = before.rfind("; ", 0, 600 - len(expected) - 1)
-            if boundary >= 0:
-                return before[:boundary] + "…" + expected
-        return before.rstrip(" ;.")[:599].rstrip(" ;.") + "."
-    boundary = message.rfind("; ", 0, 599)
-    if boundary < 0:
-        return message[:599].rstrip() + "…"
-    return message[:boundary] + "…"
+        return _fit_message(
+            prefix,
+            core_clauses,
+            unexpected_clauses,
+            lambda cap: _signature(name, parameters, cap),
+        )
+    clauses = [*unexpected_clauses, *core_clauses]
+    message = f"{prefix} {'; '.join(clauses) or 'invalid value shape'}."
+    return message if len(message) <= 600 else _fit_message(prefix, clauses, [], lambda _cap: "")
 
 
 class ArgumentGuidanceMiddleware(Middleware):

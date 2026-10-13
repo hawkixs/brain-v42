@@ -24,22 +24,38 @@ async def test_unexpected_and_missing_arguments_show_safe_expected_signature() -
     server = _server()
 
     @server.tool()
-    async def brain_get(entity_type: str, entity_id: str) -> str:
+    async def lookup_entity(entity_type: str, entity_id: str) -> str:
         return entity_type + entity_id
 
     async with Client(server) as client:
         with pytest.raises(ToolError) as caught:
             await client.call_tool(
-                "brain_get", {"id": "sentinel-private-value", "type": "decision"}
+                "lookup_entity", {"id": "sentinel-private-value", "type": "decision"}
             )
 
     message = str(caught.value)
     assert "unexpected 'id' (did you mean 'entity_id'?)" in message
     assert "unexpected 'type' (did you mean 'entity_type'?)" in message
     assert "missing 'entity_type', 'entity_id'" in message
-    assert "Expected: brain_get(entity_type: string, entity_id: string)" in message
+    assert "Expected: lookup_entity(entity_type: string, entity_id: string)" in message
     assert "sentinel-private-value" not in message
     assert "pydantic.dev" not in message
+
+
+async def test_parameterless_tool_reports_unexpected_argument_and_empty_signature() -> None:
+    server = _server()
+
+    @server.tool()
+    async def brain_fact_list() -> str:
+        return "ok"
+
+    async with Client(server) as client:
+        with pytest.raises(ToolError) as caught:
+            await client.call_tool("brain_fact_list", {"foo": 1})
+
+    assert str(caught.value) == (
+        "Invalid arguments for brain_fact_list: unexpected 'foo'. Expected: brain_fact_list()"
+    )
 
 
 async def test_signature_renders_enum_and_optional_parameters() -> None:
@@ -98,7 +114,7 @@ async def test_compact_gateway_reports_inner_tool_guidance() -> None:
     server = _server()
 
     @server.tool()
-    async def brain_get(entity_type: str, entity_id: str) -> str:
+    async def lookup_entity(entity_type: str, entity_id: str) -> str:
         return entity_type + entity_id
 
     apply_tool_catalog_profile(server, "compact")
@@ -106,10 +122,13 @@ async def test_compact_gateway_reports_inner_tool_guidance() -> None:
         with pytest.raises(ToolError) as caught:
             await client.call_tool(
                 "brain_call_tool",
-                {"name": "brain_get", "arguments": {"id": "private-sentinel", "type": "decision"}},
+                {
+                    "name": "lookup_entity",
+                    "arguments": {"id": "private-sentinel", "type": "decision"},
+                },
             )
 
-    assert "Expected: brain_get(entity_type: string, entity_id: string)" in str(caught.value)
+    assert "Expected: lookup_entity(entity_type: string, entity_id: string)" in str(caught.value)
     assert "private-sentinel" not in str(caught.value)
 
 
@@ -287,9 +306,9 @@ def test_limits_patterns_enum_and_signature_edge_rendering() -> None:
         _limit_message("string_pattern_mismatch", {"pattern": "secret"})
         == "does not match the expected format"
     )
-    assert _signature(
-        "tiny", {"properties": {f"optional_{i}": {"type": "string"} for i in range(6)}}, 30
-    ).startswith("tiny(")
+    optional_schema = {"properties": {f"optional_{i}": {"type": "string"} for i in range(6)}}
+    assert _signature("tiny", optional_schema, 30) == ""
+    assert _signature("tiny", optional_schema, 45) == "tiny(optional_0?: string, … (+5 more))"
     assert (
         _signature(
             "long",
@@ -343,8 +362,9 @@ def test_guidance_omits_signature_when_unknown_keys_leave_no_room() -> None:
     error = ValidationError.from_exception_data("Synthetic", fields)
     schema = {"properties": {"lit": {"type": "string"}}, "required": ["lit"]}
     message = _guidance("synthetic", error, schema, {})
-    assert "lit(, …" not in message
-    assert "Expected: synthetic(lit: string)" in message
+    assert len(message) <= 600
+    assert message.endswith("Expected: synthetic(lit: string)")
+    assert "…" in message
 
     message = _guidance("x" * 590, error, schema, {})
     assert "Expected:" not in message
@@ -358,3 +378,73 @@ def test_argument_error_docs_describe_all_echoed_caller_names() -> None:
         "caller-supplied names (parameter names and dictionary keys) are echoed only when they "
         "look like identifiers" in docs.read_text()
     )
+
+
+def test_no_signature_keeps_fitting_unexpected_clauses_and_marks_dropped_ones() -> None:
+    from pydantic import ValidationError
+
+    from brain_v42.mcp.argument_guidance import _guidance
+
+    error = ValidationError.from_exception_data(
+        "x",
+        [
+            {"type": "unexpected_keyword_argument", "loc": (f"unknown_{i}",), "input": None}
+            for i in range(30)
+        ],
+    )
+    parameters = {
+        "type": "object",
+        "properties": {"optional_" + "x" * 700: {"type": "string"}},
+    }
+    message = _guidance("x", error, parameters, {})
+
+    assert "unexpected 'unknown_0'" in message
+    assert "unexpected 'unknown_29'" not in message
+    assert message.endswith("….")
+    assert len(message) <= 600
+    assert "Expected:" not in message
+    assert "invalid value shape" not in message
+    assert ": ; " not in message
+
+
+def test_guidance_caps_unexpected_clauses_with_long_tool_names() -> None:
+    from pydantic import ValidationError
+
+    from brain_v42.mcp.argument_guidance import _guidance
+
+    error = ValidationError.from_exception_data(
+        "Synthetic",
+        [
+            *[
+                {"type": "unexpected_keyword_argument", "loc": (f"u{i:02d}",), "input": 1}
+                for i in range(29)
+            ],
+            {"type": "missing_argument", "loc": ("a",), "input": None},
+        ],
+    )
+    schema = {
+        "type": "object",
+        "properties": {"a": {"type": "string"}, "b" * 20: {"type": "integer"}},
+        "required": ["a"],
+    }
+
+    for name_length in (3, 12, 21, 30, 39):
+        message = _guidance("t" * name_length, error, schema, {})
+        assert len(message) <= 600
+        assert "…. Expected: " in message
+
+
+def test_guidance_shortens_a_single_overlong_clause() -> None:
+    from pydantic import ValidationError
+
+    from brain_v42.mcp.argument_guidance import _guidance
+
+    error = ValidationError.from_exception_data(
+        "x",
+        [{"type": "missing_argument", "loc": ("required_" + "x" * 900,), "input": None}],
+    )
+    message = _guidance("x", error, {"type": "object", "properties": {}}, {})
+
+    assert len(message) <= 600
+    assert "missing 'required_" in message
+    assert "…" in message
