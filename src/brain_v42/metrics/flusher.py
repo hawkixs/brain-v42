@@ -98,6 +98,8 @@ class MetricsFlusher:
         ptools["_elevation_refused"] = elevation_refusal_counts()
         ptools["_mcp_auth_agent_unresolved"] = agent_unresolved_counts()
         ptools["_author_binding_candidates"] = author_binding_counts()
+        if "search" in entry:
+            ptools["_search_rerank"] = entry["search"]
         rk = entry.get("reranker", {})
         probes = rk.get("last_probe", {})
         if (
@@ -105,6 +107,7 @@ class MetricsFlusher:
             or any(stats.get("operations", 0) > 0 for stats in rk.get("by_identity", {}).values())
             or probes
             or rk.get("backend") is not None
+            or rk.get("chain", {}).get("operations", 0) > 0
         ):
             ptools["_reranker"] = {
                 "calls": rk.get("total_calls", 0),
@@ -115,6 +118,8 @@ class MetricsFlusher:
             }
             if "by_identity" in rk:
                 ptools["_reranker"]["by_identity"] = rk["by_identity"]
+            if rk.get("chain"):
+                ptools["_reranker"]["chain"] = rk["chain"]
             if rk.get("backend") is not None:
                 ptools["_reranker"]["backend"] = rk["backend"]
             if probes:

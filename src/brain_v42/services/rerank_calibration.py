@@ -17,6 +17,11 @@ class RerankCalibration:
     source: str
 
 
+def is_calibrated(identity: str) -> bool:
+    """A fallback needs a measured floor before its scale can be aligned."""
+    return identity in {"shim", "cohere:voyageai/rerank-3-lite", "cohere:cohere/rerank-4-fast"}
+
+
 def calibration_for_identity(identity: str) -> RerankCalibration:
     """Disable dedup signalling unless this backend's score scale is calibrated."""
     if identity == "shim":
@@ -34,6 +39,14 @@ def calibration_for_identity(identity: str) -> RerankCalibration:
             dedup_signal=None,
             source="internal bench rerank-quality-2026-10-06, calibrate_min_score.py; "
             "no dedup calibration (ruling 9e21964f)",
+        )
+    if identity == "cohere:cohere/rerank-4-fast":
+        return RerankCalibration(
+            identity=identity,
+            search_min_score=0.30,
+            dedup_signal=None,
+            source="internal bench rerank-quality-2026-10-06 full 762 (internal #23), "
+            "calibrate_min_score.py CAL_MODEL",
         )
     logger.warning("rerank_calibration.uncalibrated", identity=identity)
     return RerankCalibration(

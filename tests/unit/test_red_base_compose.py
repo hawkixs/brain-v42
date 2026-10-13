@@ -383,6 +383,11 @@ HOSTED_RERANK = {
     "BRAIN_RERANK_HEALTH_PATH": "/v1/key",
     "BRAIN_RERANK_PROVIDER": '{"only":["voyageai"],"allow_fallbacks":false,"data_collection":"deny"}',
     "BRAIN_RERANK_API_KEY_FILE": "/run/secrets/rerank_api_key",
+    # Operator go 742e7a05: a second rerank link instead of RRF when Voyage saturates.
+    "BRAIN_RERANK_FALLBACK_MODEL": "cohere/rerank-4-fast",
+    "BRAIN_RERANK_FALLBACK_PROVIDER": '{"only":["cohere"],"allow_fallbacks":false,"data_collection":"deny"}',
+    "BRAIN_RERANK_BUDGET_SECONDS": "2.5",
+    "BRAIN_RERANK_PRIMARY_BUDGET_SECONDS": "1.0",
 }
 
 
@@ -419,10 +424,17 @@ def test_hosted_rerank_block_passes_the_settings_policy(
     assert settings.rerank_provider.allow_fallbacks is False
     assert settings.rerank_provider.data_collection == "deny"
     assert str(settings.rerank_api_key_file) == "/run/secrets/rerank_api_key"
+    assert settings.rerank_fallback_model == "cohere/rerank-4-fast"
+    assert settings.rerank_fallback_provider is not None
+    assert settings.rerank_fallback_provider.only == ["cohere"]
+    assert settings.rerank_fallback_provider.allow_fallbacks is False
+    assert settings.rerank_fallback_provider.data_collection == "deny"
+    assert settings.rerank_primary_budget_seconds < settings.rerank_budget_seconds
 
 
 def test_rerank_rollback_is_documented_for_the_operator() -> None:
     header = COMPOSE.read_text(encoding="utf-8").split("name:", 1)[0]
+    assert "cohere/rerank-4-fast" in header
     assert "BRAIN_RERANK_BACKEND" in header and "none" in header
 
 

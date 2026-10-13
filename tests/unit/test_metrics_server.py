@@ -10,6 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.metrics.collector_db import _DbCollectorsMixin
+from brain_v42.metrics.flusher import MetricsFlusher
 from brain_v42.metrics.server import MetricsServer
 
 _MOCK_SETTINGS = MagicMock(
@@ -18,6 +20,57 @@ _MOCK_SETTINGS = MagicMock(
     embedding_backend="shim",
     embedding_model="qodo",
 )
+
+
+async def test_rerank_chain_and_search_writer_to_reader(
+    collector: MetricsCollector, mock_embedding_svc: MagicMock
+) -> None:
+    writer = MetricsCollector(MagicMock(), MagicMock())
+    writer.on_handover()
+    writer.on_chain("fallback", "cohere:cohere/rerank-4-fast")
+    writer.record_search_rerank(eligible=True, rrf=False)
+    writer.record_search_rerank(eligible=True, rrf=True)
+    writer.record_search_rerank(eligible=False, rrf=False)
+    flush = writer.get_flush_data()["_process"]
+    tools = MetricsFlusher._process_pseudo_tools(flush)
+    row = ("_process", 42, None, None, tools, flush["embedding"], 0, True)
+    # An agent's forged blocks cannot contribute process counters.
+    forged = (
+        "agent",
+        42,
+        None,
+        None,
+        {"_search_rerank": {"rerank_searches": 99}, "_reranker": {"chain": {"operations": 99}}},
+        {},
+        0,
+        True,
+    )
+    session = AsyncMock()
+    session.execute.return_value = MagicMock(all=MagicMock(return_value=[row, forged]))
+    context = MagicMock()
+    context.__aenter__ = AsyncMock(return_value=session)
+    context.__aexit__ = AsyncMock(return_value=None)
+    reader = _DbCollectorsMixin.__new__(_DbCollectorsMixin)
+    reader._session_factory = MagicMock(return_value=context)
+    aggregate = await reader.collect_process_metrics()
+    assert aggregate["tools"]["_reranker"]["chain"] == flush["reranker"]["chain"]
+    assert aggregate["search_rerank"] == flush["search"]
+    collector.collect_process_metrics = AsyncMock(return_value=aggregate)
+    server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
+    response = await server._handle_metrics(MagicMock())
+    payload = json.loads(response.text)
+    assert payload["reranker"]["chain"] == flush["reranker"]["chain"]
+    assert payload["search_rerank"] == flush["search"]
+    assert "_search_rerank" not in payload["cross_process"]["tools"]
+
+
+async def test_missing_rerank_chain_and_search_emitter_are_empty(
+    collector: MetricsCollector, mock_embedding_svc: MagicMock
+) -> None:
+    server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
+    payload = json.loads((await server._handle_metrics(MagicMock())).text)
+    assert payload["reranker"]["chain"] == {}
+    assert payload["search_rerank"] == {}
 
 
 @pytest.fixture(autouse=True)
@@ -200,6 +253,7 @@ async def test_metrics_exposes_cross_process_rerank_observations(
         "total_candidates": 9,
         "avg_latency_ms": 20.0,
         "by_identity": identities,
+        "chain": {},
         "last_probe_ok": False,
         "last_probe_reason": "http_401",
         "last_probe_age_s": expected_age,
@@ -225,6 +279,7 @@ async def test_metrics_legacy_reranker_aggregate_has_empty_observations(
         "total_candidates": 0,
         "avg_latency_ms": 5.0,
         "by_identity": {},
+        "chain": {},
         "last_probe_ok": None,
         "last_probe_reason": None,
         "last_probe_age_s": None,

@@ -332,6 +332,7 @@ class BrainService:
         score_kind_by_type: dict[KnowledgeType, str] = {}
         # Collect rerank modes from hybrid searcher results (Fix 1)
         observed_rerank_modes: list[str] = []
+        invoked_rerank_modes: list[str] = []
 
         for t, result in zip(task_types, raw_results, strict=True):
             if isinstance(result, BaseException):
@@ -357,6 +358,8 @@ class BrainService:
                 search_results, rerank_mode = result
                 results[t] = search_results
                 observed_rerank_modes.append(rerank_mode)
+                if getattr(search_results, "rerank_invoked", False):
+                    invoked_rerank_modes.append(rerank_mode)
 
                 from brain_v42.services.search.hybrid import (  # noqa: PLC0415
                     RERANK_MODE_DISABLED,
@@ -408,7 +411,15 @@ class BrainService:
                 if rerank_mode_observed not in (None, "reranked", "disabled"):
                     degraded = {"rerank_mode": rerank_mode_observed}
 
+        self._record_search_rerank(
+            eligible=bool(invoked_rerank_modes), rrf="rrf_fallback" in invoked_rerank_modes
+        )
         return results, degraded, rerank_mode_observed, score_kind_by_type
+
+    def _record_search_rerank(self, *, eligible: bool, rrf: bool) -> None:
+        """One fan-out is one search in both the flat and grouped MCP paths."""
+        if self._collector is not None:
+            self._collector.record_search_rerank(eligible=eligible, rrf=rrf)
 
     def _build_search_results(
         self,
@@ -672,6 +683,7 @@ class BrainService:
         if project_group and self._project_context_svc:
             project_keys = await self._project_context_svc.get_keys_by_group(project_group)
             if not project_keys:
+                self._record_search_rerank(eligible=False, rrf=False)
                 threshold = min_score if min_score is not None else self._min_score
                 return SearchResponse(
                     results=[],
@@ -894,6 +906,7 @@ class BrainService:
         if project_group and self._project_context_svc:
             project_keys = await self._project_context_svc.get_keys_by_group(project_group)
             if not project_keys:
+                self._record_search_rerank(eligible=False, rrf=False)
                 return WhatDoIKnowResponse(
                     topic=topic,
                     by_type=KnowledgeByType(),
