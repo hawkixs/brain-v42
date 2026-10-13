@@ -7,7 +7,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
+import asyncpg
 import pytest
+import sqlalchemy as sa
 import structlog
 
 from brain_v42.mcp.dream_project_authorization import (
@@ -142,6 +144,32 @@ def test_merge_signature_includes_entity_type_and_keyword_only_authorization() -
 
 def test_repository_exposes_same_transaction_audit_seam() -> None:
     assert hasattr(PgConsolidationLogRepo, "log_action_in_session")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["write", "commit"])
+async def test_database_guard_refusal_is_typed_before_any_graph_write(stage: str) -> None:
+    from brain_v42.db.merge_chain_errors import MergeChainRefusedError
+
+    source_id, target_id = uuid4(), uuid4()
+    job, session, _log_repo, graph, _statements, events = _job_fixture(source_id, target_id)
+    error = sa.exc.DBAPIError(
+        "UPDATE",
+        None,
+        asyncpg.CheckViolationError("merge_chain_refused: decisions foreign-child foreign-root"),
+    )
+    if stage == "write":
+        session.execute.side_effect = error
+    else:
+        transaction = AsyncMock()
+        transaction.__aexit__.side_effect = error
+        session.begin.return_value = transaction
+    with pytest.raises(MergeChainRefusedError, match="^merge_chain_refused$"):
+        await job.merge(
+            "decision", source_id, target_id, authorization=MagicMock(project_key="owned")
+        )
+    graph.create_relation.assert_not_awaited()
+    assert "graph" not in events
 
 
 @pytest.mark.asyncio

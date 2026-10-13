@@ -26,6 +26,8 @@ from brain_v42.db.tables import (
     runbooks,
     snippets,
 )
+from brain_v42.facts.probes.merge_chains import MergeChainsProbe
+from brain_v42.facts.sources import PostgresSourceSession
 from brain_v42.maintenance.merge_chain_repair import (
     MAX_DEPTH,
     MergeChainRepairError,
@@ -248,10 +250,12 @@ async def test_dry_inventory_reports_feature_chain_without_writes(session: Async
     payload = _inventory_payload(await inventory(session))
 
     assert payload["in_project_chained_count"] == 1
+    assert payload["cross_project_chained_count"] == 0
     report = next(value for value in payload["tables"] if value["table"] == "features")
     assert report["merged_count"] == 2
     assert report["chained_count"] == 1
     assert report["in_project_chained_count"] == 1
+    assert report["cross_project_chained_count"] == 0
     assert report["depth_histogram"] == {1: 1, 2: 1}
     assert list(report["in_project_chains"]) == [{"id": a, "merged_into": b, "root": root}]
     assert (
@@ -283,6 +287,7 @@ async def test_per_table_mismatch_refuses_all_tables_even_when_total_matches(
     assert refused.value.reason == "expected_count_mismatch"
     assert refused.value.table in {mismatched_table, other}
     assert refused.value.table in str(refused.value)
+    assert refused.value.count_kind == "in_project"
     for table in TABLES:
         assert await _pointers(session, table, ids_by_table[table.name]) == pointers[table.name]
     assert await _counts(session) == counts
@@ -305,25 +310,142 @@ async def test_omitted_feature_count_is_expected_to_be_zero(session: AsyncSessio
 
 
 @pytest.mark.parametrize("table", TABLES, ids=lambda table: table.name)
-async def test_cross_project_chain_is_reported_and_unchanged(
-    session: AsyncSession, table: sa.Table
+@pytest.mark.parametrize(
+    "projects",
+    [
+        ["test-repair-a", "test-repair-b", "test-repair-b"],
+        ["test-repair-a", "test-repair-a", "test-repair-b"],
+        ["test-repair-a", "test-repair-a", "test-repair-b", "test-repair-b"],
+    ],
+    ids=["foreign-first-hop", "foreign-root", "two-chained-rows"],
+)
+async def test_cross_project_chain_is_flattened_with_per_row_audit(
+    session: AsyncSession, table: sa.Table, projects: list[str]
 ) -> None:
     ids = await _rows(
         session,
+        [*range(1, len(projects)), None],
+        table=table,
+        projects=projects,
+    )
+    chained = ids[:-2]
+    root = ids[-1]
+    result = await repair(session, expected={}, expected_cross={table.name: len(chained)})
+    report = next(value for value in result.before.tables if value.table == table.name)
+    assert {row.id for row in report.cross_project_chains} == set(chained)
+    assert all(row.root == root for row in report.cross_project_chains)
+    assert report.in_project_chained_count == 0
+    assert result.changed_count == len(chained)
+    assert await _pointers(session, table, ids) == {**dict.fromkeys(ids[:-1], root), root: None}
+    assert all(value.chained_count == 0 for value in result.after.tables)
+    logs = (
+        (
+            await session.execute(
+                sa.select(consolidation_log).where(consolidation_log.c.source_id.in_(chained))
+            )
+        )
+        .mappings()
+        .all()
+    )
+    if table is features:
+        assert logs == []
+        assert "JSON receipt" in report.audit
+    else:
+        assert len(logs) == len(chained)
+        assert {(row["source_id"], row["target_id"], row["action"]) for row in logs} == {
+            (value, root, "repointed") for value in chained
+        }
+    source = brain_entities.alias("source")
+    target = brain_entities.alias("target")
+    relations = (
+        await session.execute(
+            sa.select(
+                source.c.source_uuid,
+                target.c.source_uuid,
+                entity_relations.c.lifecycle,
+                graph_outbox.c.operation,
+            )
+            .select_from(
+                entity_relations.join(source, source.c.id == entity_relations.c.source_entity_id)
+                .join(target, target.c.id == entity_relations.c.target_entity_id)
+                .join(
+                    graph_outbox,
+                    sa.and_(
+                        graph_outbox.c.relation_id == entity_relations.c.id,
+                        graph_outbox.c.aggregate_revision == entity_relations.c.revision,
+                    ),
+                )
+            )
+            .where(
+                source.c.source_uuid.in_(chained), entity_relations.c.relation_type == "MERGED_INTO"
+            )
+        )
+    ).all()
+    assert set(relations) == {
+        *((value, root, "active", "upsert_relation") for value in chained),
+        *(
+            (value, ids[index + 1], "deleted", "delete_relation")
+            for index, value in enumerate(chained)
+        ),
+    }
+    assert len(relations) == 2 * len(chained)
+
+
+@pytest.mark.parametrize("table", TABLES, ids=lambda table: table.name)
+@pytest.mark.parametrize("approved_cross_count", [None, 0, 2])
+async def test_cross_project_count_mismatch_refuses_in_project_changes_too(
+    session: AsyncSession, table: sa.Table, approved_cross_count: int | None
+) -> None:
+    cross_ids = await _rows(
+        session,
         [1, 2, None],
         table=table,
-        projects=["test-repair-a", "test-repair-b", "test-repair-b"],
+        projects=["test-repair-a", "test-repair-a", "test-repair-b"],
     )
-    before = await _pointers(session, table, ids)
-    result = await repair(session, expected={})
-    report = next(value for value in result.after.tables if value.table == table.name)
-    assert report.chained_count == 1
-    assert len(report.cross_project_chains) == 1
-    assert report.cross_project_chains[0].id == ids[0]
-    assert report.cross_project_chains[0].root == ids[2]
-    assert report.transits_other_project == 1
-    assert await _pointers(session, table, ids) == before
-    assert result.changed_count == 0
+    local_table = features if table is not features else learnings
+    local_ids = await _rows(session, [1, 2, None], table=local_table)
+    pointers = await _pointers(session, table, cross_ids)
+    local_pointers = await _pointers(session, local_table, local_ids)
+    counts = await _counts(session)
+    expected_cross = {} if approved_cross_count is None else {table.name: approved_cross_count}
+    with pytest.raises(MergeChainRepairError, match="expected_count_mismatch") as refused:
+        await repair(
+            session,
+            expected={local_table.name: 1},
+            expected_cross=expected_cross,
+        )
+    assert refused.value.table == table.name
+    assert refused.value.count_kind == "cross_project"
+    assert "cross_project" in str(refused.value)
+    assert await _pointers(session, table, cross_ids) == pointers
+    assert await _pointers(session, local_table, local_ids) == local_pointers
+    assert await _counts(session) == counts
+
+
+async def test_full_repair_leaves_merge_chains_probe_zero_on_all_six_tables(
+    session: AsyncSession,
+) -> None:
+    for table in TABLES:
+        await _rows(session, [1, 2, None], table=table)
+        await _rows(
+            session,
+            [1, 2, None],
+            table=table,
+            projects=["test-repair-a", "test-repair-a", "test-repair-b"],
+        )
+    source = PostgresSourceSession(session)
+    assert await MergeChainsProbe().measure(source) == dict.fromkeys(
+        (table.name for table in TABLES), 2
+    )
+    result = await repair(
+        session,
+        expected={table.name: 1 for table in TABLES},
+        expected_cross={table.name: 1 for table in TABLES},
+    )
+    assert result.changed_count == 12
+    assert await MergeChainsProbe().measure(source) == dict.fromkeys(
+        (table.name for table in TABLES), 0
+    )
 
 
 @pytest.mark.parametrize("table", TABLES, ids=lambda table: table.name)
@@ -483,19 +605,28 @@ async def test_repair_uses_registry_trigger_without_private_ledger_calls(
     stage.assert_not_awaited()
 
 
+@pytest.mark.parametrize("cross_project", [False, True])
 async def test_final_inventory_refusal_rolls_back_all_changes(
-    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch, cross_project: bool
 ) -> None:
     from unittest.mock import AsyncMock
 
     from brain_v42.maintenance import merge_chain_repair as module
 
-    ids = await _rows(session, [1, 2, None])
+    ids = await _rows(
+        session,
+        [1, 2, None],
+        projects=["test-repair-a", "test-repair-a", "test-repair-b"] if cross_project else None,
+    )
     before = await inventory(session)
     pointers = await _pointers(session, learnings, ids)
     counts = await _counts(session)
     monkeypatch.setattr(module, "inventory", AsyncMock(return_value=before))
     with pytest.raises(MergeChainRepairError, match="chains_remain"):
-        await repair(session, expected={"learnings": 1})
+        await repair(
+            session,
+            expected={} if cross_project else {"learnings": 1},
+            expected_cross={"learnings": 1} if cross_project else {},
+        )
     assert await _pointers(session, learnings, ids) == pointers
     assert await _counts(session) == counts

@@ -843,3 +843,25 @@ class TestFeatureStateColumnIsALiteral:
                 f"il vaut {ast.dump(argument)}"
             )
             assert argument.value in self.ALLOWED_COLUMNS
+
+
+@pytest.mark.asyncio
+async def test_merge_chain_guard_refusal_is_a_typed_conflict_without_row_ids() -> None:
+    """The 068 guard fails at commit; its message holds two row ids that must not leak."""
+    import asyncpg
+    import sqlalchemy as sa
+
+    child, root = uuid4(), uuid4()
+    guard = sa.exc.DBAPIError(
+        "COMMIT", None, asyncpg.CheckViolationError(f"merge_chain_refused: features {child} {root}")
+    )
+    factory, session = _factory_with([guard])
+
+    with pytest.raises(ProposalStateConflictError) as caught:
+        await ProposalService(factory, AsyncMock(), AsyncMock()).apply_roadmap_curation(9)
+
+    assert "merge chain" in str(caught.value)
+    assert str(child) not in str(caught.value)
+    assert str(root) not in str(caught.value)
+    assert caught.value.family == "roadmap-curation"
+    assert caught.value.proposal_id == 9

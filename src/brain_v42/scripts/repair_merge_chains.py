@@ -16,6 +16,7 @@ import sqlalchemy as sa
 
 from brain_v42.config import get_settings
 from brain_v42.db.engine import dispose_engine, get_session_factory
+from brain_v42.db.merge_chain_errors import merge_chain_errors
 from brain_v42.maintenance.merge_chain_repair import (
     TABLE_NAMES,
     InventoryReport,
@@ -47,15 +48,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="TABLE=N",
         help="approved in-project chained count per table (repeat; omitted tables expect 0)",
     )
+    parser.add_argument(
+        "--expect-cross",
+        type=_expected_count,
+        action="append",
+        metavar="TABLE=N",
+        help="approved cross-project chained count per table (repeat; omitted tables expect 0)",
+    )
     args = parser.parse_args(argv)
-    if args.execute and args.expect is None:
-        parser.error("--execute requires --expect TABLE=N")
-    expected: dict[str, int] = {}
-    for table, count in args.expect or []:
-        if table in expected:
-            parser.error(f"duplicate --expect table: {table}")
-        expected[table] = count
-    args.expect = expected
+    if args.execute and args.expect is None and args.expect_cross is None:
+        parser.error("--execute requires --expect TABLE=N or --expect-cross TABLE=N")
+    for attribute, flag in (("expect", "--expect"), ("expect_cross", "--expect-cross")):
+        expected: dict[str, int] = {}
+        for table, count in getattr(args, attribute) or []:
+            if table in expected:
+                parser.error(f"duplicate {flag} table: {table}")
+            expected[table] = count
+        setattr(args, attribute, expected)
     return args
 
 
@@ -64,9 +73,14 @@ def _inventory_payload(report: InventoryReport) -> dict[str, object]:
     for table in report.tables:
         payload = asdict(table)
         payload["in_project_chained_count"] = table.in_project_chained_count
+        payload["cross_project_chained_count"] = table.cross_project_chained_count
         payload["depth_histogram"] = dict(table.depth_histogram)
         tables.append(payload)
-    return {"tables": tables, "in_project_chained_count": report.in_project_chained_count}
+    return {
+        "tables": tables,
+        "in_project_chained_count": report.in_project_chained_count,
+        "cross_project_chained_count": report.cross_project_chained_count,
+    }
 
 
 @contextlib.contextmanager
@@ -89,9 +103,15 @@ async def run_from_args(args: argparse.Namespace) -> int:
         try:
             # Settings, including POSTGRES_URL, remain the only database authority.
             get_settings()
-            async with get_session_factory()() as session, session.begin():
+            async with (
+                get_session_factory()() as session,
+                merge_chain_errors(MergeChainRepairError),
+                session.begin(),
+            ):
                 if args.execute:
-                    result = await repair(session, expected=args.expect)
+                    result = await repair(
+                        session, expected=args.expect, expected_cross=args.expect_cross
+                    )
                     payload = {
                         "dry_run": False,
                         "changed_count": result.changed_count,
@@ -106,6 +126,8 @@ async def run_from_args(args: argparse.Namespace) -> int:
             payload = {"status": "refused", "reason": error.reason}
             if error.table is not None:
                 payload["table"] = error.table
+            if error.count_kind is not None:
+                payload["count_kind"] = error.count_kind
         except Exception as error:  # noqa: BLE001 — never expose a DSN or row contents
             code = 1
             payload = {"status": "failed", "error_type": type(error).__name__}

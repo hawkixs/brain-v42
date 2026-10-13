@@ -9,6 +9,7 @@ import sqlalchemy as sa
 import structlog
 from fastmcp.exceptions import AuthorizationError
 
+from brain_v42.db.merge_chain_errors import merge_chain_errors
 from brain_v42.db.tables import adrs, consolidation_log, decisions, learnings, runbooks, snippets
 
 if TYPE_CHECKING:
@@ -95,7 +96,7 @@ class ConsolidationJob:
 
         project_key = authorization.project_key if authorization is not None else None
         async with self._session_factory() as session:
-            async with session.begin():
+            async with merge_chain_errors(), session.begin():
                 source_row, target_row, child_ids = await self._lock_merge_pair(
                     session,
                     table,

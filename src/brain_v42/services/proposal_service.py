@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 import sqlalchemy as sa
 import structlog
 
+from brain_v42.db.merge_chain_errors import MergeChainRefusedError, merge_chain_errors
 from brain_v42.db.project_group_scope import project_key_in_group, ticket_in_group
 from brain_v42.db.tables import (
     features,
@@ -241,7 +242,9 @@ class ProposalService:
         family: ProposalFamily = "roadmap-curation"
         operation: str | None = None
         try:
-            async with self._session_factory() as session:
+            # The merge-chain guard (migration 068) refuses at COMMIT, with two
+            # row ids in its message: map it to a typed conflict, never forward it.
+            async with merge_chain_errors(), self._session_factory() as session:
                 async with session.begin():
                     row = await self._load_proposed(
                         session,
@@ -278,6 +281,14 @@ class ProposalService:
             )
         except ProposalServiceError:
             raise
+        except MergeChainRefusedError as exc:
+            raise ProposalStateConflictError(
+                f"roadmap-curation proposal {proposal_id} would leave a merge chain; "
+                "review the proposal again",
+                family=family,
+                proposal_id=proposal_id,
+                operation=operation,
+            ) from exc
         except Exception as exc:
             message = _internal_error_message(f"roadmap-curation proposal {proposal_id} apply", exc)
             raise ProposalApplyError(

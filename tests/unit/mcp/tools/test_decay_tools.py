@@ -367,6 +367,21 @@ class TestBrainMergeEntities:
         assert f"Target decision {target_id} not found" in result
 
     @pytest.mark.asyncio
+    async def test_database_guard_refusal_is_formatted_without_foreign_ids(
+        self, tools_with_consolidation: dict[str, Any], consolidation_job: AsyncMock
+    ) -> None:
+        from brain_v42.db.merge_chain_errors import MergeChainRefusedError
+        from brain_v42.mcp.dream_project_authorization import bind_dream_project_scope
+
+        consolidation_job.merge.side_effect = MergeChainRefusedError("private foreign row ids")
+        with bind_dream_project_scope(MagicMock(project_key="owned")):
+            result = await tools_with_consolidation["brain_merge_entities"](
+                entity_type="decision", source_id=str(uuid4()), target_id=str(uuid4())
+            )
+        assert "merge_chain_refused" in result
+        assert "private foreign row ids" not in result
+
+    @pytest.mark.asyncio
     async def test_tool_registered(self, tools_with_consolidation: dict[str, Any]) -> None:
         assert "brain_merge_entities" in tools_with_consolidation
 

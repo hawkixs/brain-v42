@@ -1422,19 +1422,25 @@ Deleted successes remain recoverable from the preceding backup dump.
 
 ## Historical merge chain repair
 
+The repair must run before the release carrying migration 068 is deployed; coordination holds that deployment until the repair is complete.
+
 `python scripts/repair_merge_chains.py` (or
 `python -m brain_v42.scripts.repair_merge_chains`) inventories merge chains in
 learnings, decisions, snippets, runbooks, ADRs and features. The default is a dry run in a
 read-only transaction and emits one JSON report. After reviewing that report,
 an explicit operator go is required to run `--execute` with repeated
-`--expect TABLE=N` approvals, for example
-`--execute --expect learnings=3 --expect features=1`. Each `N` must equal that
-table's measured `in_project_chained_count`. A table with zero eligible chains may
-be omitted and is then expected to have zero; execution without any `--expect`
-is refused. All six counts are checked before any write, and
-`expected_count_mismatch` identifies the table in the refusal's `table` field.
-The report retains the total `in_project_chained_count` alongside per-table counts.
-Execution flattens those pointers to their roots, writes a `repointed`
+`--expect TABLE=N` and `--expect-cross TABLE=N` approvals, for example
+`--execute --expect learnings=3 --expect features=1 --expect-cross learnings=2`.
+Each `N` must equal that table's measured `in_project_chained_count` or
+`cross_project_chained_count`, respectively. Both options accept only ASCII digits.
+An omitted table expects zero in that category; execution requires at least one
+`--expect` or `--expect-cross`, and may use only `--expect-cross` when all in-project
+counts are zero. Both counts on all six tables are checked before any write.
+`expected_count_mismatch` identifies the table in the refusal's `table` field and
+the category (`in_project` or `cross_project`) in its `count_kind` field.
+The report retains totals and per-table counts for both categories, with each
+row's ID, current `merged_into` and root in the two chain lists.
+Execution flattens all approved pointers to their roots, writes a `repointed`
 consolidation_log row per knowledge change and stages `MERGED_INTO` relations in
 the PostgreSQL ledger/outbox in the same transaction; it never writes Neo4j
 directly. Features write no consolidation_log rows: their audit is the JSON receipt
@@ -1442,15 +1448,20 @@ plus the graph ledger tombstones written by the registry trigger, as indicated i
 the report's `audit` field. Save the execution JSON as the receipt. The features
 self-reference has no ON DELETE action; repair only updates pointers and deletes
 no feature rows. Cycles, dangling roots, depths beyond 64, a changed per-table
-count or failed final verification refuse the repair.
+count or failed final verification refuse the repair. The final inventory must
+contain zero chains of either kind; otherwise `chains_remain` rolls back all
+changes. The expected result is `merge_chains = 0` on every one of the six tables.
 The repair takes a SHARE ROW EXCLUSIVE lock on all six tables for its
 duration and refuses after 5 s if it cannot acquire it. Reads proceed, but every
 write to these tables waits, including the access-count flush (which updates
 freshness counters), new knowledge writes and feature writes, to keep the approved
 inventory stable.
-Chains rooted in another project are reported, not changed; `transits_other_project`
-counts rows whose path visits another project, including chains returning to their
-own project, which remain eligible for repair. All changes commit together or
+Chains rooted in another project are flattened too, under their own `--expect-cross`
+count: they already point into that project indirectly, so pointing directly at
+the same root adds no new reachability. This applies only to the admin repair;
+project-scoped consolidation still refuses merges that would strand foreign children.
+`transits_other_project` counts rows whose path visits another project, including
+chains returning to their own project. All changes commit together or
 roll back together. The database URL comes only
 from the existing settings (`POSTGRES_URL`), never from a CLI argument.
 

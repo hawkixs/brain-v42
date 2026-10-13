@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from brain_v42.db.tables import learnings
 from brain_v42.facts.probes.merge_chains import MergeChainsProbe
 from brain_v42.facts.sources import PostgresSourceFactory
+from tests.integration.db._merge_chain_helpers import legacy_chain
 
 pytestmark = pytest.mark.integration
 
@@ -30,10 +31,11 @@ async def test_seeded_learning_chain_is_counted_once_and_other_tables_are_zero(
                     project_key="merge-chain-fact-test",
                 )
             )
-        for row_id, target in ((middle, survivor), (child, middle), (direct, survivor)):
-            await session.execute(
-                sa.update(learnings).where(learnings.c.id == row_id).values(merged_into=target)
-            )
+        await session.execute(
+            sa.update(learnings).where(learnings.c.id == direct).values(merged_into=survivor)
+        )
+
+    await legacy_chain(private_head_engine, learnings, (child, middle, survivor))
 
     factory = PostgresSourceFactory(async_sessionmaker(private_head_engine))
     async with factory() as source:

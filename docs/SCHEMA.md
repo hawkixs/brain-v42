@@ -415,6 +415,27 @@ CREATE INDEX idx_decisions_embedding ON decisions USING hnsw (embedding vector_c
     WITH (m = 16, ef_construction = 64);
 ```
 
+Migration 068 guards `merged_into` on `learnings`, `decisions`, `snippets`,
+`runbooks`, `adrs`, and `features` with deferred constraint triggers. At commit,
+each inserted row or row updated through `merged_into` is re-read: a merged row
+must point to an unmerged survivor and have no incoming merge pointers. Violations
+raise `merge_chain_refused` with the table and two row ids (SQLSTATE `23514`).
+Writers may merge a source and re-point its children in the same transaction;
+updates to other columns leave legacy chains untouched.
+The target is read `FOR SHARE`, which conflicts with an update of `merged_into`:
+an earlier target update must finish before validation, and a later update must
+wait until the child commits, then sees that child in its deferred check.
+The children check also locks its first matching row `FOR SHARE` to observe
+concurrent repointing. Concurrent cycles can raise a deadlock error instead of
+committing. Each table has a partial `idx_<table>_merged_into` index on
+`merged_into WHERE merged_into IS NOT NULL`; downgrade drops these six indexes.
+SQLSTATE `23514` denotes a check violation; the stable `merge_chain_refused:`
+prefix distinguishes this guard from other checks. Consolidation maps it to
+`MergeChainRefusedError`, repair to `MergeChainRepairError("merge_chain_refused")`
+and CLI exit 2, and MCP formats only `merge_chain_refused`, without the database's
+row identifiers. Repair validates its writes inside its savepoint when the guard
+is installed, before returning commit ownership to its caller.
+
 ### Table `learnings`
 
 ```sql
