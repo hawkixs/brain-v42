@@ -715,7 +715,7 @@ on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text)
 
 ## Migration history
 
-The repository migration target is 064. No page in this repository proves a live
+The repository migration target is 065. No page in this repository proves a live
 schema head; read `alembic_version` in the target database.
 
 `brain-v42-migrate` uses the owner credentials from `POSTGRES_URL` and the

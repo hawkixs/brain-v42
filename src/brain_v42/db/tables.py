@@ -2301,3 +2301,136 @@ focus_slot_history = Table(
         name="focus_slot_history_session_valid",
     ),
 )
+
+# Programme progress (migration 065, contract docs/contracts/programmes_v1.md). The
+# CHECK texts are the migration's, byte for byte: the fresh-head yardstick compares
+# `create_all()` against the chain constraint by constraint.
+_PROGRAMME_STATES = "('active', 'paused', 'done')"
+_GATE_STATES = "('todo', 'in_progress', 'blocked', 'done')"
+
+programmes = Table(
+    "programmes",
+    METADATA,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+    Column("key", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column(
+        "coordinator_project",
+        String(50),
+        sa.ForeignKey(
+            "project_contexts.project_key",
+            ondelete="RESTRICT",
+            name="programmes_coordinator_project_fkey",
+        ),
+        nullable=False,
+    ),
+    Column("state", String(16), nullable=False),
+    Column("position", Integer, nullable=False),
+    Column("last_change_gate", Text, nullable=True),
+    Column("last_change_from", String(16), nullable=True),
+    Column("last_change_to", String(16), nullable=True),
+    Column("last_change_at", DateTime(timezone=True), nullable=True),
+    Column("last_change_by", String(50), nullable=True),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("updated_by", String(50), nullable=False),
+    UniqueConstraint("key", name="programmes_key_key"),
+    sa.CheckConstraint(
+        "COALESCE(key ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$', false)", name="programmes_key_valid"
+    ),
+    sa.CheckConstraint(
+        "COALESCE(btrim(title) <> '' AND char_length(title) <= 120, false)",
+        name="programmes_title_valid",
+    ),
+    sa.CheckConstraint(
+        f"COALESCE(state IN {_PROGRAMME_STATES}, false)", name="programmes_state_valid"
+    ),
+    sa.CheckConstraint("COALESCE(position >= 0, false)", name="programmes_position_valid"),
+    sa.CheckConstraint(
+        "COALESCE("
+        "(last_change_gate IS NULL AND last_change_from IS NULL AND last_change_to IS NULL "
+        "AND last_change_at IS NULL AND last_change_by IS NULL) "
+        "OR (last_change_gate IS NOT NULL AND last_change_at IS NOT NULL "
+        "AND last_change_by IS NOT NULL "
+        f"AND last_change_from IN {_GATE_STATES} AND last_change_to IN {_GATE_STATES} "
+        "AND last_change_from <> last_change_to), false)",
+        name="programmes_last_change_valid",
+    ),
+)
+
+programme_gates = Table(
+    "programme_gates",
+    METADATA,
+    Column("id", UUID(as_uuid=True), primary_key=True, server_default=sa.text("gen_random_uuid()")),
+    Column(
+        "programme_id",
+        UUID(as_uuid=True),
+        sa.ForeignKey(
+            "programmes.id", ondelete="CASCADE", name="programme_gates_programme_id_fkey"
+        ),
+        nullable=False,
+    ),
+    Column("key", Text, nullable=False),
+    Column("title", Text, nullable=False),
+    Column(
+        "owner_project",
+        String(50),
+        sa.ForeignKey(
+            "project_contexts.project_key",
+            ondelete="RESTRICT",
+            name="programme_gates_owner_project_fkey",
+        ),
+        nullable=False,
+    ),
+    Column("state", String(16), nullable=False),
+    Column("depends_on", ARRAY(Text), nullable=False, server_default=sa.text("'{}'")),
+    Column("weight", Integer, nullable=False, server_default=sa.text("1")),
+    Column("waiting_ask", Text, nullable=True),
+    Column("waiting_since", DateTime(timezone=True), nullable=True),
+    Column("progress_done", Integer, nullable=True),
+    Column("progress_total", Integer, nullable=True),
+    Column("progress_unit", Text, nullable=True),
+    Column("note", Text, nullable=True),
+    Column("position", Integer, nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("updated_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("updated_by", String(50), nullable=False),
+    UniqueConstraint("programme_id", "key", name="programme_gates_programme_id_key_key"),
+    sa.CheckConstraint(
+        "COALESCE(key ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$', false)",
+        name="programme_gates_key_valid",
+    ),
+    sa.CheckConstraint(
+        "COALESCE(btrim(title) <> '' AND char_length(title) <= 120, false)",
+        name="programme_gates_title_valid",
+    ),
+    sa.CheckConstraint(
+        f"COALESCE(state IN {_GATE_STATES}, false)", name="programme_gates_state_valid"
+    ),
+    sa.CheckConstraint(
+        "COALESCE(cardinality(depends_on) <= 12 AND array_position(depends_on, NULL) IS NULL "
+        "AND array_to_string(depends_on, ',') ~ '^([A-Za-z0-9][A-Za-z0-9._-]{0,31}(,|$))*$' "
+        "AND NOT (key = ANY (depends_on)), false)",
+        name="programme_gates_depends_on_valid",
+    ),
+    sa.CheckConstraint(
+        "COALESCE(weight BETWEEN 1 AND 100, false)", name="programme_gates_weight_valid"
+    ),
+    sa.CheckConstraint(
+        "COALESCE((waiting_ask IS NULL AND waiting_since IS NULL) "
+        "OR (btrim(waiting_ask) <> '' AND char_length(waiting_ask) <= 200 "
+        "AND waiting_since IS NOT NULL), false)",
+        name="programme_gates_waiting_valid",
+    ),
+    sa.CheckConstraint(
+        "COALESCE((progress_done IS NULL AND progress_total IS NULL AND progress_unit IS NULL) "
+        "OR (progress_total BETWEEN 1 AND 100000 AND progress_done BETWEEN 0 AND progress_total "
+        "AND btrim(progress_unit) <> '' AND char_length(progress_unit) <= 24), false)",
+        name="programme_gates_progress_valid",
+    ),
+    sa.CheckConstraint(
+        "COALESCE(note IS NULL OR (btrim(note) <> '' AND char_length(note) <= 200), false)",
+        name="programme_gates_note_valid",
+    ),
+    sa.CheckConstraint("COALESCE(position >= 0, false)", name="programme_gates_position_valid"),
+)

@@ -313,7 +313,10 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # added by 004), but this v1 contract tracks no per-column fingerprint for
     # it — only its membership in `table_set` — so a new column on it moves
     # nothing this contract checks.
-    assert script.get_heads() == ["064"]
+    # Re-read at 065: two new tables (`programmes`, `programme_gates`) whose only
+    # links to the 031 schema are child foreign keys to `project_contexts`; no
+    # column, CHECK or index of an existing table moves. The SET moves, below.
+    assert script.get_heads() == ["065"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim
@@ -369,6 +372,9 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
         "brain_admin_elevations",
         "brain_schema_compat",
         "brain_credential_audit",
+        # 065's two tables (programme progress), for the same reason as 063's.
+        "programmes",
+        "programme_gates",
         "brain_session_artifacts",
         "brain_sessions",
         "projects",
