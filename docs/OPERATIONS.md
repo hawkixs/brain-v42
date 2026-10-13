@@ -392,6 +392,19 @@ Variables: `BRAIN_CLAUDE_TOKEN_FILE` (default
 they reconnect. Check the effect on the metrics sidecar: the `mcp_auth_agent_unresolved`
 counters stop growing, and the per-agent view shows the mapped projects.
 
+## Metrics sidecar health
+
+`GET /healthz` on the metrics sidecar (`:9200`) runs `SELECT 1` on its own engine, bounded
+by two seconds. PostgreSQL answering gives `200` with `"database": "reachable"`; an error
+or a stall gives `503` with `"status": "degraded"` and `"database": "unreachable"`, and a
+`metrics_healthz.database_unreachable` warning naming only the error type. The compose
+healthcheck reads this endpoint, so a PostgreSQL outage now turns `brain-v42-metrics`
+`unhealthy`, which red-agent reports in the container's health field. The answer still
+carries `ingest_receivers`. Unlike the MCP server's `/healthz`, this one does touch the
+database. The answer is decided at the two-second bound: a probe cancelled there finishes
+tearing down its connection in the background, so the endpoint stays within the
+healthcheck's three-second client timeout even when that teardown is slow.
+
 ## Network trust boundary (detailed)
 
 MCP HTTP binds to loopback by default. A non-loopback `MCP_HTTP_HOST` requires
