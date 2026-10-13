@@ -52,6 +52,9 @@ DYNAMIC_MAPS = {
     "/metrics.dream.promotions.by_type": "target types present in dream_promotions",
 }
 
+# Per-block evaluation health, kept apart from payloads that own status keys.
+BLOCK_HEALTH = {"status": None, "error_type": None, "as_of": None, "last_ok_at": None}
+
 # None denotes a JSON scalar (including null), [shape] a nonempty list whose
 # EVERY item must match, and [] an intentionally empty, unimplemented section.
 # Fixed vocabularies (tables, entity types, intents, receivers, killswitches,
@@ -336,6 +339,19 @@ METRICS_SCHEMA = {
         ],
         "generated_at": None,
     },
+    "block_status": dict.fromkeys(
+        (
+            "database",
+            "search_quality",
+            "cross_process",
+            "dream",
+            "nightly",
+            "tickets",
+            "session_slots",
+            "graph_inventory",
+        ),
+        BLOCK_HEALTH,
+    ),
 }
 
 COCKPIT_SCHEMA = {
@@ -399,6 +415,7 @@ COCKPIT_SCHEMA = {
         "rerankUsed": None,
         "queries24h": None,
     },
+    "block_status": {"memory": BLOCK_HEALTH, "retrieval": BLOCK_HEALTH},
     "latencyBuckets": [{"range": None, "count": None, "tone": None}],
     "cost": {
         "today": None,
