@@ -205,12 +205,39 @@ def test_a_path_unsafe_for_json_claims_no_project(tmp_path, claude, env) -> None
     assert "X-Brain-Agent" not in headers(run(claude, odd, env))
 
 
-@pytest.mark.parametrize("token", ['tok"en', "tok\\en"])
-def test_a_token_json_cannot_carry_fails_closed(tmp_path, claude, env, token) -> None:
-    Path(env["BRAIN_CLAUDE_TOKEN_FILE"]).write_text(token)
-    result = run(claude, tmp_path, env)
-    assert result.returncode != 0 and result.stdout == ""
+@pytest.mark.parametrize("token", [b'tok"en', b"tok\\en", b"tok\xffen", "tokén".encode()])
+def test_a_token_outside_the_credential_alphabet_fails_closed(tmp_path, claude, env, token) -> None:
+    Path(env["BRAIN_CLAUDE_TOKEN_FILE"]).write_bytes(token)
+    result = subprocess.run(
+        [str(claude), "-c", 'sh "$0"; exit $?', str(HELPER)],
+        cwd=tmp_path,
+        env=env,
+        capture_output=True,
+        timeout=10,
+        check=False,
+    )
+    assert result.returncode != 0 and result.stdout == b""
     assert token not in result.stderr
+
+
+def test_a_path_outside_printable_ascii_claims_no_project(tmp_path, claude, env) -> None:
+    odd = tmp_path / "caf\u00e9"
+    odd.mkdir()
+    assert "X-Brain-Agent" not in headers(run(claude, odd, env))
+
+
+def test_a_map_in_a_directory_others_can_write_is_ignored(tmp_path, claude, env) -> None:
+    red = tmp_path / "ReD_v1"
+    red.mkdir()
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    env["BRAIN_AGENT_MAP_FILE"] = str(shared / "agent-map")
+    write_map(env, f"{red.resolve()} red")
+    shared.chmod(0o777)
+    try:
+        assert headers(run(claude, red, env))["X-Brain-Agent"] == str(red.resolve())
+    finally:
+        shared.chmod(0o700)
 
 
 def test_missing_or_empty_token_fails_closed(tmp_path, claude, env) -> None:

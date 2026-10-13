@@ -21,8 +21,10 @@ file="${BRAIN_CLAUDE_TOKEN_FILE:-$HOME/.config/brain-v42/clients/workstation-cla
 map="${BRAIN_AGENT_MAP_FILE:-$HOME/.config/brain-v42/clients/agent-map}"
 token=$(tr -d '[:space:]' < "$file")
 [ -n "$token" ] || { echo "brain-v42 headersHelper: empty token file $file" >&2; exit 1; }
+# Credential tokens are URL-safe ASCII ("bk1_" + token_urlsafe); anything else could
+# not be printed as valid JSON, so it is refused rather than passed through.
 case "$token" in
-  *[\"\\]*|*[[:cntrl:]]*)
+  *[!A-Za-z0-9_.~+/=-]*)
     echo "brain-v42 headersHelper: unusable token in $file" >&2; exit 1 ;;
 esac
 
@@ -39,11 +41,22 @@ claude_cwd() {
   done
 }
 
-# Only a regular file owned by this user and closed to group and others is trusted:
-# anyone else able to write it, or to own it, could redirect attribution.
-map_is_private() {
-  [ -f "$map" ] && [ ! -L "$map" ] && [ -r "$map" ] &&
-    [ -n "$(find "$map" -prune -type f -user "$(id -u)" ! -perm /077 2>/dev/null)" ]
+# Only a map nobody else can change is trusted, since it decides attribution: its
+# directory must be this user's and closed to group and others, the path must not be a
+# symlink, and the file actually opened (checked through its descriptor, so a swap
+# between the check and the read cannot slip another file in) must be a regular file
+# owned by this user with no group or other permission.
+uid=$(id -u)
+private_entry() {  # $1 = path, $2 = find type
+  [ -n "$(find "$1" -prune -type "$2" -user "$uid" ! -perm /077 2>/dev/null)" ]
+}
+map_dir_is_private() {
+  dir=${map%/*}
+  [ -n "$dir" ] || dir=/
+  [ ! -L "$dir" ] && private_entry "$dir" d
+}
+opened_map_is_private() {  # the map is open on descriptor 3
+  [ -n "$(find -L /proc/self/fd/3 -prune -type f -user "$uid" ! -perm /077 2>/dev/null)" ]
 }
 
 # The server's project key syntax: ^[a-z0-9]+([:-][a-z0-9]+)*$
@@ -55,8 +68,10 @@ is_project_key() {
 
 mapped_project() {
   best="" best_len=-1
-  map_is_private || return 0
-  while IFS= read -r line || [ -n "$line" ]; do
+  [ -f "$map" ] && [ ! -L "$map" ] && map_dir_is_private || return 0
+  exec 3< "$map" || return 0
+  opened_map_is_private || { exec 3<&-; return 0; }
+  while IFS= read -r line <&3 || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; esac
     key=${line##* }
     path=${line% *}
@@ -72,7 +87,8 @@ mapped_project() {
     if [ "$matched" = yes ] && [ "${#path}" -gt "$best_len" ]; then
       best=$key best_len=${#path}
     fi
-  done < "$map"
+  done
+  exec 3<&-
   printf '%s' "$best"
 }
 
@@ -87,9 +103,10 @@ case "$agent" in
     project=$(mapped_project "$agent")
     [ -z "$project" ] || agent=$project ;;
 esac
-# JSON cannot carry a quote, a backslash or a control character unescaped.
+# The agent is printed into JSON unescaped: only printable ASCII without a quote or a
+# backslash can be; any other path claims no project rather than break the line.
 case "$agent" in
-  *[\"\\]*|*[[:cntrl:]]*) agent="" ;;
+  *[!\ -~]*|*[\"\\]*) agent="" ;;
 esac
 if [ -n "$agent" ]; then
   printf '{"Authorization":"Bearer %s","X-Brain-Agent":"%s"}\n' "$token" "$agent"
