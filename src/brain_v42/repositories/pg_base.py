@@ -32,6 +32,7 @@ from typing import Any, TypeVar
 import sqlalchemy as sa
 import structlog
 from sqlalchemy import ColumnElement, Table
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from brain_v42.db.engine import get_session_factory
@@ -63,6 +64,12 @@ class EmbeddingBacklogStats:
 _ITERATIVE_SCAN_MIN_VERSION = (0, 8, 0)
 # pgvector's own default for hnsw.ef_search; never go below it.
 _DEFAULT_EF_SEARCH = 40
+# ...and pgvector's own ceiling: PostgreSQL refuses a larger value outright.
+_MAX_EF_SEARCH = 1000
+# Module constants (not inline literals) so an integration test can swap one for a
+# statement PostgreSQL rejects and prove that a failed tuning never fails a search.
+_SET_EF_SEARCH_SQL = "SELECT set_config('hnsw.ef_search', :v, true)"
+_SET_ITERATIVE_SCAN_SQL = "SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)"
 
 
 def _parse_version(raw: str) -> tuple[int, ...]:
@@ -105,14 +112,30 @@ class VectorScanSettings:
         return self._iterative_supported
 
     async def apply(self, sess: AsyncSession, limit: int) -> None:
-        """Set ef_search = max(40, limit) and, when supported, iterative_scan."""
-        await sess.execute(
-            sa.text("SELECT set_config('hnsw.ef_search', :v, true)"),
-            {"v": str(max(_DEFAULT_EF_SEARCH, limit))},
-        )
-        if await self._supports_iterative_scan(sess):
-            await sess.execute(
-                sa.text("SELECT set_config('hnsw.iterative_scan', 'relaxed_order', true)")
+        """Set ef_search = clamp(limit, 40, 1000) and, when supported, iterative_scan.
+
+        Tuning must never fail a search: a failed statement aborts the whole
+        PostgreSQL transaction, and the SELECT after it with it. The statements
+        therefore run in one SAVEPOINT (``begin_nested`` autobegins the outer
+        transaction, so this holds for the repository's own session and for a
+        caller-owned one alike). On a database error the savepoint is rolled
+        back, one warning names the step that failed, and the search proceeds
+        with PostgreSQL's defaults.
+        """
+        step = "hnsw.ef_search"
+        try:
+            async with sess.begin_nested():
+                await sess.execute(
+                    sa.text(_SET_EF_SEARCH_SQL),
+                    {"v": str(min(_MAX_EF_SEARCH, max(_DEFAULT_EF_SEARCH, limit)))},
+                )
+                step = "pg_extension.extversion"
+                if await self._supports_iterative_scan(sess):
+                    step = "hnsw.iterative_scan"
+                    await sess.execute(sa.text(_SET_ITERATIVE_SCAN_SQL))
+        except SQLAlchemyError as exc:
+            logger.warning(
+                "pg_base.vector_scan_tuning_failed", setting=step, error=type(exc).__name__
             )
 
 
@@ -574,7 +597,7 @@ class BasePgRepository:
 
             # include_archived=False: add archive-exclusion filters (if columns exist)
             if include_archived is False:
-                where_clauses.extend(self.live_row_clauses())
+                where_clauses.extend(self.live_row_clauses(keep_null_status=False))
 
             # Append any caller-supplied extra clauses
             if extra_clauses:
@@ -620,18 +643,26 @@ class BasePgRepository:
     # Alias — list and search paths use the same slim column set.
     _list_columns = _search_columns
 
-    def live_row_clauses(self) -> list[ColumnElement[bool]]:
+    def live_row_clauses(self, *, keep_null_status: bool = True) -> list[ColumnElement[bool]]:
         """WHERE clauses that keep live rows only: not merged, not archived.
 
         Only for the columns the table has. Pass as ``extra_clauses`` to a search
         so the exclusion applies BEFORE the LIMIT; filtering the returned page
         afterwards can leave it short of the rows that exist.
+
+        ``freshness_status`` is nullable on every knowledge table, and the Python
+        post-filter in brain_service keeps a NULL one, so searches use the NULL-safe
+        ``IS DISTINCT FROM 'archived'`` (default). ``keep_null_status=False`` gives
+        the historical ``!= 'archived'`` that ``list_all`` has always applied.
         """
         clauses: list[ColumnElement[bool]] = []
         if "merged_into" in self.table.c:
             clauses.append(self.table.c.merged_into.is_(None))
         if "freshness_status" in self.table.c:
-            clauses.append(self.table.c.freshness_status != "archived")
+            status = self.table.c.freshness_status
+            clauses.append(
+                status.is_distinct_from("archived") if keep_null_status else status != "archived"
+            )
         return clauses
 
     def _build_filter_clauses(self, filters: dict[str, Any]) -> list[Any]:

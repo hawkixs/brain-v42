@@ -569,8 +569,10 @@ class TestSearchVector:
             results = await repo.search_vector([0.1] * 1536, project_key="brain_v42")
 
         assert len(results) == 1
-        # HNSW scan settings run first; the vector SELECT is the last statement.
-        assert "<=>" in str(session.execute.call_args.args[0])
+        # Exactly one vector SELECT, and it is the last statement executed.
+        statements = [str(c.args[0]) for c in session.execute.call_args_list]
+        assert sum("<=>" in text for text in statements) == 1
+        assert "<=>" in statements[-1]
 
 
 # ---------------------------------------------------------------------------
