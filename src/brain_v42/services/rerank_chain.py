@@ -10,7 +10,7 @@ import httpx
 import structlog
 
 from brain_v42.services.rerank_calibration import RerankCalibration, is_calibrated
-from brain_v42.services.rerank_wire import CohereRerankWire
+from brain_v42.services.rerank_wire import is_hosted_wire
 from brain_v42.services.reranker_client import (
     RerankBudgetExhausted,
     RerankChainObserver,
@@ -32,10 +32,8 @@ class RerankChain:
         primary_budget: float,
         observer: RerankChainObserver | None = None,
     ) -> None:
-        if not isinstance(primary._wire, CohereRerankWire) or not isinstance(
-            fallback._wire, CohereRerankWire
-        ):
-            raise ValueError("RerankChain requires CohereRerankWire for both links")
+        if not is_hosted_wire(primary._wire) or not is_hosted_wire(fallback._wire):
+            raise ValueError("RerankChain requires hosted rerank wires for both links")
         if not is_calibrated(fallback.calibration.identity):
             raise ValueError("rerank_fallback_model requires a calibrated identity")
         if not 0 < primary_budget < overall_budget:

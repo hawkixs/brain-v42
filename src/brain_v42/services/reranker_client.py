@@ -27,7 +27,7 @@ import structlog
 from brain_v42.config import is_relative_request_path
 from brain_v42.safe_logging import redact_url
 from brain_v42.services.rerank_calibration import RerankCalibration, calibration_for_identity
-from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
+from brain_v42.services.rerank_wire import RerankWire, ShimRerankWire, is_hosted_wire
 
 logger = structlog.get_logger(__name__)
 
@@ -90,7 +90,7 @@ class RerankerClient:
       failure -- including a 503 WITHOUT ``Retry-After``, which is an outage
       rather than a busy slot -- still raises at once: reranking stays
       best-effort and callers fall back to RRF ordering.
-    - Hosted Cohere requests share one elapsed-time budget across all attempts
+    - Hosted Cohere and Voyage requests share one elapsed-time budget across all attempts
       and sleeps, so provider saturation cannot hold up a search indefinitely.
     """
 
@@ -190,7 +190,7 @@ class RerankerClient:
         if not candidates:
             return []
 
-        if isinstance(self._wire, CohereRerankWire):
+        if is_hosted_wire(self._wire):
             return await self.rerank_until(
                 query,
                 candidates,
@@ -203,8 +203,8 @@ class RerankerClient:
         self, query: str, candidates: list[str], *, deadline: float, may_wait: bool
     ) -> list[float]:
         """Bound a hosted call without mutating controls shared by concurrent calls."""
-        if not isinstance(self._wire, CohereRerankWire):
-            raise ValueError("rerank_until requires CohereRerankWire")
+        if not is_hosted_wire(self._wire):
+            raise ValueError("rerank_until requires a hosted rerank wire")
         if not candidates:
             return []
         return await self._rerank_operation(query, candidates, deadline=deadline, may_wait=may_wait)
@@ -342,7 +342,8 @@ class RerankerClient:
     async def is_available(self) -> bool:
         """Check if the reranker service is healthy.
 
-        Calls GET on the wire's health path. The outcome and its reason are kept
+        Calls GET on the wire's health path, or its POST probe when none exists.
+        The outcome and its reason are kept
         on the client, and a change of state is logged once: a hosted reranker
         whose key was revoked answers 401 forever, and without that line the only
         symptom is searches quietly falling back to RRF ordering.
@@ -351,13 +352,21 @@ class RerankerClient:
             True if the service responds with 200, False otherwise. Never raises
             on a transport error.
         """
-        if not is_relative_request_path(self._wire.health_path):
-            # Defence in depth behind the settings validator: httpx would send the
-            # bearer to the host an absolute URL names, ignoring base_url.
-            return self._record_probe(False, "invalid_health_path")
         try:
+            path = self._wire.health_path
+            probe = getattr(self._wire, "probe_request", None)
+            body = None
+            method = "GET"
+            if path is None and probe is not None:
+                method, path, body = probe()
+            if path is None or not is_relative_request_path(path):
+                # Defence in depth: never send the bearer to an absolute probe URL.
+                return self._record_probe(False, "invalid_health_path")
             client = self._get_client()
-            response = await client.get(self._wire.health_path)
+            if method == "POST":
+                response = await client.post(path, json=body)
+            else:
+                response = await client.get(path)
         except httpx.HTTPError as exc:
             return self._record_probe(False, f"transport_{type(exc).__name__}")
         except Exception as exc:

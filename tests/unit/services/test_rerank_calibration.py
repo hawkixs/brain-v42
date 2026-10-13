@@ -83,3 +83,15 @@ def test_is_calibrated(identity: str, expected: bool) -> None:
     from brain_v42.services.rerank_calibration import is_calibrated
 
     assert is_calibrated(identity) is expected
+
+
+def test_direct_voyage_reuses_the_measured_model_floor() -> None:
+    from brain_v42.services.rerank_calibration import calibration_for_identity, is_calibrated
+
+    cal = calibration_for_identity("voyage:rerank-3-lite")
+    assert is_calibrated(cal.identity)
+    assert cal.search_min_score == 0.50
+    assert cal.dedup_signal is None
+    assert cal.source == (
+        "same model as cohere:voyageai/rerank-3-lite (internal bench, 762 queries)"
+    )

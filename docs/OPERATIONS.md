@@ -498,6 +498,22 @@ a hosted Cohere-style API (`BRAIN_RERANK_BACKEND=cohere`, for example OpenRouter
 `BRAIN_RERANKER_URL=https://openrouter.ai/api`) uses the settings below. None of
 them changes the shim deployment.
 
+For direct Voyage, set `BRAIN_RERANK_BACKEND=voyage`,
+`BRAIN_RERANKER_URL=https://api.voyageai.com`,
+`BRAIN_RERANK_MODEL=rerank-3-lite` and `BRAIN_RERANK_API_KEY_FILE` to the
+operator's Voyage key file. The HTTPS origin is pinned; other hosts are refused.
+The model must be non-empty and have no author prefix. An inline key,
+`BRAIN_RERANK_PROVIDER` and an explicitly configured `BRAIN_RERANK_HEALTH_PATH`
+are refused. Voyage has no free GET probe: availability sends a one-document
+`POST /v1/rerank` with query and document `ping`, costing about 10 tokens per
+300-second interval (plus the startup probe).
+
+**Direct Voyage data policy:** training exclusion depends on the Voyage account's
+training opt-out (operator decision `d4648d84`, Q4). OpenRouter's
+`data_collection` routing setting does not govern a direct Voyage call; verify
+the account opt-out before switching. The Cohere fallback through OpenRouter
+keeps its enforced routing policy.
+
 `BRAIN_RERANK_BACKEND=none` is the hosted reranker's configuration rollback:
 no reranking, RRF order, `rerank_mode="disabled"`, no reranker client and no
 background probe. This is an intended state, so it adds no degraded banner.
@@ -507,28 +523,36 @@ a caller supplies an explicit threshold. No reranker key file is read.
 For this rollback, clear non-empty `BRAIN_RERANK_MODEL` and `BRAIN_RERANK_API_KEY`,
 unset `BRAIN_RERANK_API_KEY_FILE` and `BRAIN_RERANK_PROVIDER`, and unset explicitly
 configured `BRAIN_RERANKER_URL` / `RERANKER_URL` and `BRAIN_RERANK_HEALTH_PATH`.
+Also clear `BRAIN_RERANK_FALLBACK_MODEL` and `BRAIN_RERANK_FALLBACK_URL`, and
+unset `BRAIN_RERANK_FALLBACK_PROVIDER`, `BRAIN_RERANK_FALLBACK_API_KEY_FILE` and
+any explicitly configured `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS`.
 Startup refuses these fields, even when an explicit URL or health path equals
 its default, and names the offending fields without their values.
 The sidecar reports `reranker.backend="none"`, empty `by_identity` and null
-`last_probe_*` fields. The configured backend (`shim`, `cohere` or `none`) is
+`last_probe_*` fields. The configured backend (`shim`, `cohere`, `voyage` or `none`) is
 persisted even without calls; the latest process report wins across processes.
 
 | Setting | Default | Role |
 |---|---|---|
 | `BRAIN_RERANK_API_KEY_FILE` | unset | **Path** of the API key, read once at startup. Never a value: `systemctl show` and `docker inspect` print an environment verbatim. Mutually exclusive with `BRAIN_RERANK_API_KEY`, and refused with the shim backend. |
-| `BRAIN_RERANK_HEALTH_PATH` | `/health` | GET path of the availability probe. Hosted APIs have no liveness route: for OpenRouter set `/v1/key`, which is free and answers 200 only with a valid key (401 otherwise), so it proves the route and the key. |
+| `BRAIN_RERANK_HEALTH_PATH` | `/health` | GET path of the shim or Cohere availability probe. For OpenRouter set `/v1/key`, which is free and answers 200 only with a valid key (401 otherwise). Must stay unset for Voyage, which uses its POST probe. |
 | `BRAIN_RERANK_PROVIDER` | unset | Provider routing sent with every request, as JSON: `{"only": ["voyageai"]}`. Keys: `only`, `allow_fallbacks` (default `false`), `data_collection` (`deny` by default, or `allow`), `zdr`. Unknown keys are refused. |
 | `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
-| `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole Cohere operation: connection, write, read, parsing and backoff sleeps. |
+| `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole hosted operation: connection, write, read, parsing and backoff sleeps. |
 | `BRAIN_RERANK_FALLBACK_MODEL` | empty | Optional second Cohere model, such as `cohere/rerank-4-fast`; must differ from the primary and have a measured calibration. |
 | `BRAIN_RERANK_FALLBACK_PROVIDER` | unset | JSON routing for the fallback, such as `{"only": ["cohere"]}`; required on OpenRouter and subject to the same author and privacy policy as the primary. |
+| `BRAIN_RERANK_FALLBACK_URL` | empty | Fallback Cohere endpoint, such as `https://openrouter.ai/api`. Required with a Voyage primary and a configured fallback; otherwise defaults to the primary URL. |
+| `BRAIN_RERANK_FALLBACK_API_KEY_FILE` | unset | Fallback key file, with the same format and permissions as the primary key file. Required with a Voyage primary and a configured fallback; otherwise reuses the primary key. |
 | `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS` | `1.0` | Positive primary-link budget; must be strictly below the overall budget when a fallback is configured. |
 
 With a fallback configured, the primary gets one attempt, with no retry sleep,
 bounded by its primary budget. Any HTTP, transport or response parsing failure
 hands over to the fallback, which may retry within the overall budget measured
-from the start of the primary call. Both links share the URL, probe path and key,
-read once at startup. Fallback logits are shifted by the difference between the
+from the start of the primary call. Each configured key file is read once at
+startup. A Cohere primary keeps the shared URL, probe path and key unless the
+fallback transport is overridden. A Voyage primary requires a separate fallback
+URL and key file; an OpenRouter fallback probes `/v1/key`, and another Cohere
+fallback probes `/health`. Fallback logits are shifted by the difference between the
 two calibrated floor logits so the primary's search floor also applies to fallback
 scores after sigmoid. Search falls back to RRF only when both links fail; without
 a configured fallback, the single-client behaviour below still applies. The chain
@@ -542,7 +566,7 @@ ignored and never sent anywhere). Anything else is refused, so an env fragment i
 never forwarded;
 anything readable beyond its owner, malformed, empty, or unreadable stops the runtime at construction with a `RerankKeyError` that
 names the path, never the content. Create it the way the shim bearer is created, with
-a redirection under a tight `umask`. The cohere backend never reads
+a redirection under a tight `umask`. The cohere and voyage backends never read
 `BRAIN_EMBEDDING_TOKEN_FILE`: that file is the shim's bearer and must not reach a
 hosted vendor.
 
@@ -562,7 +586,7 @@ or `transport_<ExceptionName>`) when it starts failing and
 rejected or revoked key shows up there as `http_401` rather than as search results
 silently falling back to RRF ordering.
 
-The Cohere backend retries HTTP 429, 500, 502, 503 and 504, and connection errors,
+The Cohere and Voyage backends retry HTTP 429, 500, 502, 503 and 504, and connection errors,
 at most twice. `Retry-After` accepts seconds or an HTTP-date and is never shortened;
 without a usable header, full jitter chooses a delay between zero and
 `0.1 * 2**attempt` seconds (the first attempt is zero). If the delay cannot fit in
@@ -575,7 +599,7 @@ HTTP timeout. It has no elapsed-time budget; a 503 without the header fails at o
 
 With MCP metrics enabled, the sidecar's `/metrics` `reranker.by_identity` reports operations,
 `operations_by_outcome`, attempts, retries, `status_429`, `status_5xx` and
-`budget_exhausted`. Identities are `shim` or `cohere:<model>` and carry `backend` and
+`budget_exhausted`. Identities are `shim`, `cohere:<model>` or `voyage:<model>` and carry `backend` and
 `model` labels. `fallback_rate` is non-ok operations divided by operations (zero
 before any operation), recomputed from counters summed across processes for each
 identity. `operations_by_outcome` is also summed per outcome. `attempt_latency_ms`
