@@ -21,6 +21,7 @@ from brain_v42.models.programme import (
     DEPENDS_ON_MAX,
     GATE_KEY_MAX,
     LINE_MAX,
+    POSITION_MAX,
     PROGRAMME_KEY_MAX,
     TITLE_MAX,
     UNIT_MAX,
@@ -37,7 +38,7 @@ ProgrammeKey = Annotated[
 GateKey = Annotated[str, Field(min_length=1, max_length=GATE_KEY_MAX, description="Gate key.")]
 Title = Annotated[str, Field(min_length=1, max_length=TITLE_MAX)]
 Line = Annotated[str, Field(min_length=1, max_length=LINE_MAX)]
-Position = Annotated[int, Field(ge=0)]
+Position = Annotated[int, Field(ge=0, le=POSITION_MAX)]
 
 
 class ProgrammeProgress(BaseModel):
@@ -66,8 +67,10 @@ def register_programme_tools(mcp: FastMCP, programme_svc: ProgrammeService) -> N
         changes it afterwards. A new programme needs a title and starts `active`;
         `done` folds it in the cockpit, `paused` dims it. Returns the programme as
         the sidecar publishes it. Refusals: `invalid_key`, `invalid_text`,
-        `invalid_state`, `not_coordinator`, `programme_limit_reached` (at most 8
-        active or paused), `caller_unidentified`.
+        `invalid_state`, `invalid_position` (0 to 9999), `not_coordinator`,
+        `programme_limit_reached` (at most 8 active or paused),
+        `coordinator_limit_reached` (4 live or 40 in all per coordinator),
+        `caller_unidentified`.
         """
         return await programme_svc.upsert_programme(
             key=key, title=title, state=state, position=position

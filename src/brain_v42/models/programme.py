@@ -10,6 +10,7 @@ the shape rules as CHECKs (migration 065); the character rules live here only.
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Final, Literal
 
@@ -26,18 +27,34 @@ UNIT_MAX: Final = 24
 DEPENDS_ON_MAX: Final = 12
 GATES_MAX: Final = 32
 LIVE_PROGRAMMES_MAX: Final = 8
+#: One coordinating project may hold at most half the live slots, and a bounded
+#: number of programmes in any state: no project can crowd the others out or grow
+#: the table without end (security pass 2026-10-13).
+LIVE_PER_COORDINATOR_MAX: Final = 4
+PROGRAMMES_PER_COORDINATOR_MAX: Final = 40
+#: Order positions stop here, far below INTEGER: max(position) + 1 cannot overflow.
+POSITION_MAX: Final = 9999
 DONE_PROGRAMMES_PUBLISHED: Final = 4
 DONE_PUBLISHED_DAYS: Final = 7
 PROGRAMME_BYTES_MAX: Final = 16 * 1024
 PROGRESS_TOTAL_MAX: Final = 100_000
 
 _KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
-#: Contract §2: C0 and C1 controls (line breaks included) and DEL, zero-width
-#: characters, the Unicode line and paragraph separators, bidirectional overrides
-#: and isolates.
-_FORBIDDEN = re.compile(
-    r"[\x00-\x1f\x7f-\x9f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]"
-)
+#: Contract §2, made general by a second security pass (2026-10-13). A declared text
+#: is refused when it carries a character of these Unicode categories: controls (Cc,
+#: line breaks included), format characters (Cf: zero-width, bidi marks and overrides,
+#: soft hyphen, tag characters), surrogates (Cs), private use (Co), unassigned (Cn)
+#: and the line and paragraph separators (Zl, Zp). Fillers that render blank but are
+#: letters or marks are named one by one. The cockpit strips a subset of these; brain
+#: refuses them all at write, so no invisible payload reaches a reader.
+_FORBIDDEN_CATEGORIES: Final = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+_BLANK_FILLERS: Final = frozenset({0x034F, 0x115F, 0x1160, 0x2800, 0x3164, 0xFFA0})
+
+
+def _forbidden(character: str) -> bool:
+    return (
+        unicodedata.category(character) in _FORBIDDEN_CATEGORIES or ord(character) in _BLANK_FILLERS
+    )
 
 
 class ProgrammeError(Exception):
@@ -76,10 +93,11 @@ def line(value: object, *, field: str, limit: int) -> str:
         raise ProgrammeError("invalid_text", f"{field} must hold 1 to {limit} characters")
     if value.strip() != value:
         raise ProgrammeError("invalid_text", f"{field} must not start or end with a blank")
-    if _FORBIDDEN.search(value):
+    if any(_forbidden(character) for character in value):
         raise ProgrammeError(
             "invalid_text",
-            f"{field} must be one line without control, zero-width, separator or bidi characters",
+            f"{field} must be one line of visible text: no control, format, separator, "
+            "private-use or blank-filler character",
         )
     return value
 

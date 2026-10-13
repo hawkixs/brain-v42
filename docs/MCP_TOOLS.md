@@ -1043,13 +1043,15 @@ A programme is a multi-session effort the operator follows in the cockpit; a gat
 
 **Who writes.** The caller's project, as the credential layer resolved it (a verified principal and its accepted actor's project), signs every write: no argument names the writer. A call with no resolved project is refused with `caller_unidentified`, so the shared-token and stdio transports cannot write programmes. A credential's issuer patterns are its authority here, as they are for delivery attestations: a credential holding `@project` writes as any existing project it declares, and one holding a prefix pattern (`red-lab*`) writes as every existing project that pattern matches. Issue credentials with that in mind. The project that creates a programme coordinates it: only it changes the programme and the structure of its gates. A gate's owner and the coordinator report it and raise or lift its request. The cockpit and red-monitor never write.
 
-**Text.** Titles hold at most 120 characters, notes and asks at most 200; a value with an outer blank or a control, zero-width, line-separator or bidi character is refused with `invalid_text`, never cut.
+**Text.** Titles hold at most 120 characters, notes and asks at most 200. A value is refused with `invalid_text`, never cut, when it has an outer blank or carries a character of the Unicode categories Cc, Cf, Cs, Co, Cn, Zl or Zp: controls and line breaks, format characters such as zero-width, bidi marks, soft hyphen and tag characters, surrogates, private use, unassigned code points, and line or paragraph separators. Blank fillers (U+034F, U+115F, U+1160, U+2800, U+3164, U+FFA0) are refused too. This is stricter than the contract's minimum: no invisible payload reaches a reader.
+
+**Quotas.** At most 8 programmes are active or paused at once. One coordinating project holds at most 4 of them, and at most 40 programmes in any state; past that, the write is refused with `coordinator_limit_reached`. Positions run from 0 to 9999.
 
 ### brain_programme_upsert
 ```
 brain_programme_upsert(key, title=None, state=None, position=None) -> programme
 ```
-Creates a programme (needs a title; starts `active`) or changes its title, state (`active`, `paused`, `done`) or order. Refusals: `invalid_key`, `invalid_text`, `invalid_state`, `invalid_position`, `programme_incomplete`, `not_coordinator`, `programme_limit_reached` (at most 8 active or paused), `programme_too_large`, `caller_unidentified`.
+Creates a programme (needs a title; starts `active`) or changes its title, state (`active`, `paused`, `done`) or order. Refusals: `invalid_key`, `invalid_text`, `invalid_state`, `invalid_position`, `programme_incomplete`, `not_coordinator`, `programme_limit_reached` (at most 8 active or paused), `coordinator_limit_reached` (4 live or 40 in all per coordinator), `programme_too_large`, `caller_unidentified`.
 
 ### brain_programme_gate_upsert
 ```

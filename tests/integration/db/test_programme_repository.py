@@ -355,3 +355,44 @@ async def test_the_published_block_is_empty_but_present_with_no_programme(factor
         "version": "programmes/v1",
         "programmes": [],
     }
+
+
+async def test_positions_are_bounded_and_the_next_one_never_overflows(
+    factory, coordinator: str
+) -> None:
+    """Security pass 2026-10-13: max(position)+1 on a caller-chosen 2^31-1 overflowed
+    INTEGER and blocked every later creation. Positions stop at 9999; the next free
+    one is clamped there, ties ordered by creation."""
+    repo = PgProgrammeRepo(factory)
+    # The repository is the last line: even a row already at the INTEGER maximum
+    # (written before the service bound, or by hand) must not break the next creation.
+    await repo.upsert_programme(caller=coordinator, key="last", title="L", position=2_147_483_647)
+    after = await repo.upsert_programme(caller=coordinator, key="after", title="A")
+    assert after["key"] == "after"
+    listed = [p["key"] for p in await repo.list_programmes()]
+    assert listed == ["after", "last"]
+
+
+async def test_one_coordinator_cannot_take_every_live_slot(
+    factory, coordinator: str, stranger: str
+) -> None:
+    repo = PgProgrammeRepo(factory, max_live=3, max_live_per_coordinator=2)
+    await repo.upsert_programme(caller=coordinator, key="a", title="A")
+    await repo.upsert_programme(caller=coordinator, key="b", title="B")
+    await _refusal(
+        "coordinator_limit_reached",
+        repo.upsert_programme(caller=coordinator, key="c", title="C"),
+    )
+    await repo.upsert_programme(caller=stranger, key="d", title="D")
+
+
+async def test_one_coordinator_cannot_grow_the_table_without_bound(
+    factory, coordinator: str
+) -> None:
+    repo = PgProgrammeRepo(factory, max_programmes_per_coordinator=2)
+    await repo.upsert_programme(caller=coordinator, key="a", title="A", state="done")
+    await repo.upsert_programme(caller=coordinator, key="b", title="B", state="done")
+    await _refusal(
+        "coordinator_limit_reached",
+        repo.upsert_programme(caller=coordinator, key="c", title="C", state="done"),
+    )

@@ -73,6 +73,7 @@ async def test_reads_need_no_identity(repo: AsyncMock, as_project: Any) -> None:
         (lambda s: s.upsert_programme(key="move", title="two\nlines"), "invalid_text"),
         (lambda s: s.upsert_programme(key="move", title="t", state="finished"), "invalid_state"),
         (lambda s: s.upsert_programme(key="move", title="t", position=-1), "invalid_position"),
+        (lambda s: s.upsert_programme(key="move", title="t", position=10000), "invalid_position"),
         (lambda s: s.upsert_gate(programme="move", gate="G 7"), "invalid_key"),
         (lambda s: s.upsert_gate(programme="move", gate="G7", owner="Red_Backup"), "invalid_owner"),
         (lambda s: s.upsert_gate(programme="move", gate="G7", weight=0), "invalid_weight"),

@@ -107,3 +107,47 @@ def test_a_dependency_graph_with_a_cycle_is_refused_and_named() -> None:
         acyclic_or_refuse({"G1": ["G3"], "G2": ["G1"], "G3": ["G2"]})
     assert refused.value.code == "dependency_cycle"
     assert "G1" in refused.value.message
+
+
+#: Code points a second security pass found accepted (2026-10-13): invisible format
+#: characters, fillers that render blank, a bidi mark, tag characters (an invisible
+#: payload an LLM reader would still see) and a lone surrogate. Built with chr() so
+#: this source file carries none of them.
+INVISIBLE = [
+    0x00AD,
+    0x034F,
+    0x061C,
+    0x115F,
+    0x1160,
+    0x180E,
+    0x2060,
+    0x2064,
+    0x206A,
+    0x206F,
+    0x2800,
+    0x3164,
+    0xE0001,
+    0xE0041,
+    0xE007F,
+    0xD800,
+    0xE000,
+    0xFFFF,
+]
+
+
+@pytest.mark.parametrize("code_point", INVISIBLE, ids=lambda c: f"U+{c:04X}")
+def test_invisible_and_format_characters_are_refused(code_point: int) -> None:
+    with pytest.raises(ProgrammeError) as refused:
+        line(f"visible{chr(code_point)}text", field="title", limit=120)
+    assert refused.value.code == "invalid_text"
+
+
+def test_a_text_of_blank_fillers_only_is_refused() -> None:
+    with pytest.raises(ProgrammeError) as refused:
+        line(chr(0x3164) * 3, field="note", limit=200)
+    assert refused.value.code == "invalid_text"
+
+
+@pytest.mark.parametrize("text", ["café — déjà vu", "G7 → G10", "日本語のテキスト", "naïve 50 %"])
+def test_ordinary_unicode_text_still_passes(text: str) -> None:
+    assert line(text, field="title", limit=120) == text

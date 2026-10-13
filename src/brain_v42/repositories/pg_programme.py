@@ -32,8 +32,11 @@ from brain_v42.models.programme import (
     DONE_PROGRAMMES_PUBLISHED,
     DONE_PUBLISHED_DAYS,
     GATES_MAX,
+    LIVE_PER_COORDINATOR_MAX,
     LIVE_PROGRAMMES_MAX,
+    POSITION_MAX,
     PROGRAMME_BYTES_MAX,
+    PROGRAMMES_PER_COORDINATOR_MAX,
     ProgrammeError,
     acyclic_or_refuse,
 )
@@ -122,9 +125,13 @@ class PgProgrammeRepo:
         max_live: int = LIVE_PROGRAMMES_MAX,
         max_gates: int = GATES_MAX,
         max_bytes: int = PROGRAMME_BYTES_MAX,
+        max_live_per_coordinator: int = LIVE_PER_COORDINATOR_MAX,
+        max_programmes_per_coordinator: int = PROGRAMMES_PER_COORDINATOR_MAX,
     ) -> None:
         self._session_factory = session_factory
         self._max_live = max_live
+        self._max_live_per_coordinator = max_live_per_coordinator
+        self._max_programmes_per_coordinator = max_programmes_per_coordinator
         self._max_gates = max_gates
         self._max_bytes = max_bytes
 
@@ -206,8 +213,9 @@ class PgProgrammeRepo:
                 if title is None:
                     raise ProgrammeError("programme_incomplete", "a new programme needs a title")
                 new_state = state or "active"
+                await self._coordinator_total_cap(session, caller)
                 if new_state in _LIVE:
-                    await self._live_cap(session)
+                    await self._live_cap(session, caller)
                 await session.execute(
                     sa.insert(programmes).values(
                         key=key,
@@ -225,7 +233,7 @@ class PgProgrammeRepo:
             else:
                 self._coordinator(row, caller)
                 if state in _LIVE and row["state"] not in _LIVE:
-                    await self._live_cap(session)
+                    await self._live_cap(session, row["coordinator_project"])
                 values: dict[str, Any] = {"updated_at": sa.func.now(), "updated_by": caller}
                 for column, value in (("title", title), ("state", state), ("position", position)):
                     if value is not None:
@@ -475,12 +483,34 @@ class PgProgrammeRepo:
                 f"project ({programme_row['coordinator_project']}) may do this",
             )
 
-    async def _live_cap(self, session: AsyncSession) -> None:
+    async def _live_cap(self, session: AsyncSession, coordinator: str) -> None:
         live = await session.scalar(sa.select(sa.func.count()).where(programmes.c.state.in_(_LIVE)))
         if (live or 0) >= self._max_live:
             raise ProgrammeError(
                 "programme_limit_reached",
                 f"at most {self._max_live} programmes may be active or paused; mark one done",
+            )
+        mine = await session.scalar(
+            sa.select(sa.func.count()).where(
+                programmes.c.state.in_(_LIVE), programmes.c.coordinator_project == coordinator
+            )
+        )
+        if (mine or 0) >= self._max_live_per_coordinator:
+            raise ProgrammeError(
+                "coordinator_limit_reached",
+                f"one project coordinates at most {self._max_live_per_coordinator} active or "
+                "paused programmes; mark one done",
+            )
+
+    async def _coordinator_total_cap(self, session: AsyncSession, coordinator: str) -> None:
+        total = await session.scalar(
+            sa.select(sa.func.count()).where(programmes.c.coordinator_project == coordinator)
+        )
+        if (total or 0) >= self._max_programmes_per_coordinator:
+            raise ProgrammeError(
+                "coordinator_limit_reached",
+                f"one project coordinates at most {self._max_programmes_per_coordinator} "
+                "programmes in any state",
             )
 
     async def _known_project(self, session: AsyncSession, project: str) -> None:
@@ -523,4 +553,4 @@ class PgProgrammeRepo:
                     programme_gates.c.programme_id == programme_id
                 )
             )
-        return 0 if current is None else int(current) + 1
+        return 0 if current is None else min(int(current) + 1, POSITION_MAX)

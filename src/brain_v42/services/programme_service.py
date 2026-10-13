@@ -25,6 +25,7 @@ from typing import Any, Protocol
 from brain_v42.models.programme import (
     GATE_STATES,
     LINE_MAX,
+    POSITION_MAX,
     PROGRAMME_STATES,
     TITLE_MAX,
     ProgrammeError,
@@ -111,8 +112,12 @@ def _state(value: str | None, allowed: Sequence[str]) -> str | None:
 
 
 def _position(value: int | None) -> int | None:
-    if value is not None and (isinstance(value, bool) or not isinstance(value, int) or value < 0):
-        raise ProgrammeError("invalid_position", "position must be a non-negative integer")
+    if value is not None and (
+        isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= POSITION_MAX
+    ):
+        raise ProgrammeError(
+            "invalid_position", f"position must be an integer from 0 to {POSITION_MAX}"
+        )
     return value
 
 
