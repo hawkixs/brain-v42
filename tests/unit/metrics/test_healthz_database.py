@@ -66,6 +66,31 @@ async def test_healthz_does_not_hang_on_a_stalled_postgresql() -> None:
     assert body["database"] == "unreachable"
 
 
+async def test_healthz_answers_within_its_timeout_even_if_cancellation_is_slow() -> None:
+    """Codex review of #368: asyncio.wait_for waits for the cancelled probe to clean
+    up, and an asyncpg connection torn down during an outage can take seconds, past
+    the compose healthcheck's 3 s client timeout. The answer must not wait for it."""
+    finished = asyncio.Event()
+
+    async def slow_to_cancel() -> None:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            await asyncio.sleep(1.0)
+            finished.set()
+            raise
+
+    server = _server(database_probe=slow_to_cancel, database_probe_timeout_seconds=0.05)
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    status, body = await _healthz(server)
+    elapsed = loop.time() - started
+
+    assert (status, body["database"]) == (503, "unreachable")
+    assert elapsed < 0.8
+    await asyncio.wait_for(finished.wait(), timeout=5)
+
+
 async def test_healthz_keeps_reporting_the_receivers() -> None:
     status, body = await _healthz(_server(database_probe=AsyncMock(side_effect=OSError())))
     assert body["ingest_receivers"] == "enabled"

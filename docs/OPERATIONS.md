@@ -398,7 +398,9 @@ or a stall gives `503` with `"status": "degraded"` and `"database": "unreachable
 healthcheck reads this endpoint, so a PostgreSQL outage now turns `brain-v42-metrics`
 `unhealthy`, which red-agent reports in the container's health field. The answer still
 carries `ingest_receivers`. Unlike the MCP server's `/healthz`, this one does touch the
-database: it is the sidecar's only database-dependent signal a monitor can read.
+database. The answer is decided at the two-second bound: a probe cancelled there finishes
+tearing down its connection in the background, so the endpoint stays within the
+healthcheck's three-second client timeout even when that teardown is slow.
 
 ## Network trust boundary (detailed)
 
