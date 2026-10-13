@@ -543,7 +543,7 @@ class ProposalService:
                 operation="merge",
             )
 
-        locked = await self._lock_features(session, loser, into)
+        locked = await self._lock_features(session, loser, into, children_of=loser)
         prior = self._require_live_feature(
             locked,
             loser,
@@ -563,6 +563,16 @@ class ProposalService:
         if prior["project_key"] != target["project_key"]:
             raise ProposalStateConflictError(
                 "merge source and target must belong to the same project",
+                family="roadmap-curation",
+                proposal_id=proposal_id,
+                operation="merge",
+            )
+        child_ids = sorted(
+            (feature_id for feature_id in locked if feature_id not in (loser, into)), key=str
+        )
+        if any(locked[child_id]["project_key"] != prior["project_key"] for child_id in child_ids):
+            raise ProposalStateConflictError(
+                "merge children and source must belong to the same project",
                 family="roadmap-curation",
                 proposal_id=proposal_id,
                 operation="merge",
@@ -588,6 +598,16 @@ class ProposalService:
             ),
             {"into": into, "loser": loser},
         )
+        if child_ids:
+            # Update only locked rows: a child missed by the lock snapshot must
+            # cause a postcondition refusal rather than an out-of-order lock.
+            await session.execute(
+                sa.text(
+                    "UPDATE features SET merged_into = :into "
+                    "WHERE id = ANY(CAST(:child_ids AS uuid[]))"
+                ),
+                {"into": into, "child_ids": child_ids},
+            )
         await self._check_merge_postconditions(session, loser, into)
         return {
             "op": "merge",
@@ -596,6 +616,7 @@ class ProposalService:
             "loser_prior_name": prior["name"],
             "moved_artifacts": self._artifact_log(moved),
             "duplicate_links_deleted": self._artifact_log(duplicates),
+            "repointed_children": [str(child_id) for child_id in child_ids],
         }
 
     async def _move_merge_artifacts(
@@ -658,6 +679,16 @@ class ProposalService:
         ).scalar_one()
         if remaining != 0:
             raise PostConditionError(f"merge {loser}: {remaining} artifacts still on loser")
+        remaining_children = (
+            await session.execute(
+                sa.text("SELECT COUNT(*) FROM features WHERE merged_into = :loser"),
+                {"loser": loser},
+            )
+        ).scalar_one()
+        if remaining_children != 0:
+            raise PostConditionError(
+                f"merge {loser}: {remaining_children} children still pointing at loser"
+            )
 
     async def _apply_archive(
         self,
@@ -757,8 +788,9 @@ class ProposalService:
     async def _lock_features(
         session: Any,
         *feature_ids: UUID,
+        children_of: UUID | None = None,
     ) -> dict[UUID, Mapping[str, Any]]:
-        """Lock feature rows in UUID order so competing proposals cannot deadlock."""
+        """Lock endpoints and optional children in one UUID order to avoid lock inversion."""
         ordered_ids = sorted(set(feature_ids), key=str)
         rows = (
             (
@@ -768,9 +800,10 @@ class ProposalService:
                         "COALESCE(pinned, false) AS pinned, status_updated_at, updated_at "
                         "FROM features "
                         "WHERE id = ANY(CAST(:feature_ids AS uuid[])) "
+                        "OR merged_into = :children_of "
                         "ORDER BY id FOR UPDATE"
                     ),
-                    {"feature_ids": ordered_ids},
+                    {"feature_ids": ordered_ids, "children_of": children_of},
                 )
             )
             .mappings()

@@ -18,6 +18,7 @@ from structlog.testing import capture_logs
 
 from brain_v42.services import proposal_service as proposal_service_module
 from brain_v42.services.proposal_service import (
+    PostConditionError,
     ProposalApplyError,
     ProposalNotFoundError,
     ProposalNotProposedError,
@@ -421,6 +422,7 @@ async def test_apply_roadmap_merge_records_moved_and_duplicate_artifacts() -> No
             MagicMock(),
             _result_row({"merged_into": into, "status": "archived"}),
             _scalar(0),
+            _scalar(0),
             MagicMock(),
         ]
     )
@@ -437,10 +439,104 @@ async def test_apply_roadmap_merge_records_moved_and_duplicate_artifacts() -> No
         "duplicate_links_deleted": [
             {"artifact_type": "decision", "artifact_id": str(duplicate_id)}
         ],
+        "repointed_children": [],
     }
     lock_statement = str(session.execute.await_args_list[1].args[0]).upper()
     assert "FOR UPDATE" in lock_statement
     assert "ORDER BY ID" in lock_statement
+
+
+@pytest.mark.asyncio
+async def test_apply_roadmap_merge_repoints_and_audits_locked_children() -> None:
+    into = uuid4()
+    child_ids = sorted([uuid4(), uuid4()], key=str)
+    row = _roadmap_row(op="merge", payload={"into": str(into)})
+    loser = row["feature_id"]
+    factory, session = _factory_with(
+        [
+            _result_row(row),
+            _mapping_rows(
+                [
+                    _feature_row(loser, row),
+                    _feature_row(into, row),
+                    *[
+                        _feature_row(child_id, row, status="archived", merged_into=loser)
+                        for child_id in child_ids
+                    ],
+                ]
+            ),
+            _rows([]),
+            _rows([]),
+            MagicMock(),
+            MagicMock(),
+            _result_row({"merged_into": into, "status": "archived"}),
+            _scalar(0),
+            _scalar(0),
+            MagicMock(),
+        ]
+    )
+
+    result = await ProposalService(factory, AsyncMock(), AsyncMock()).apply_roadmap_curation(
+        row["id"]
+    )
+
+    assert result.apply_log is not None
+    assert result.apply_log["repointed_children"] == [str(child_id) for child_id in child_ids]
+    lock = session.execute.await_args_list[1]
+    assert "OR merged_into = :children_of" in str(lock.args[0])
+    assert "ORDER BY id FOR UPDATE" in str(lock.args[0])
+    assert lock.args[1]["children_of"] == loser
+    repoint = session.execute.await_args_list[5]
+    assert "UPDATE features SET merged_into = :into" in str(repoint.args[0])
+    assert repoint.args[1] == {"into": into, "child_ids": child_ids}
+    persisted = session.execute.await_args_list[-1].args[0].compile().params["apply_log"]
+    assert persisted == result.apply_log
+
+
+@pytest.mark.asyncio
+async def test_apply_roadmap_merge_rejects_cross_project_child_before_writes() -> None:
+    into = uuid4()
+    row = _roadmap_row(op="merge", payload={"into": str(into)})
+    loser = row["feature_id"]
+    factory, session = _factory_with(
+        [
+            _result_row(row),
+            _mapping_rows(
+                [
+                    _feature_row(loser, row),
+                    _feature_row(into, row),
+                    _feature_row(
+                        uuid4(), row, project_key="outside", status="archived", merged_into=loser
+                    ),
+                ]
+            ),
+        ]
+    )
+
+    with pytest.raises(ProposalStateConflictError, match="children.*same project") as caught:
+        await ProposalService(factory, AsyncMock(), AsyncMock()).apply_roadmap_curation(row["id"])
+
+    assert caught.value.family == "roadmap-curation"
+    assert caught.value.proposal_id == row["id"]
+    assert caught.value.operation == "merge"
+    assert session.execute.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_merge_postcondition_rejects_a_child_still_pointing_at_loser() -> None:
+    loser, into = uuid4(), uuid4()
+    factory, session = _factory_with(
+        [_result_row({"merged_into": into, "status": "archived"}), _scalar(0), _scalar(1)]
+    )
+
+    with pytest.raises(PostConditionError, match="1.*still.*loser"):
+        await ProposalService(factory, AsyncMock(), AsyncMock())._check_merge_postconditions(
+            session, loser, into
+        )
+
+    query = session.execute.await_args_list[-1]
+    assert "FROM features WHERE merged_into = :loser" in str(query.args[0])
+    assert query.args[1] == {"loser": loser}
 
 
 @pytest.mark.asyncio
