@@ -554,6 +554,9 @@ scheduler, so a database outage cannot hold `:9200` behind asyncpg's connection 
 Lot 0.6.13 adopts an additive-only contract for the JSON payloads of `/metrics`
 and `/api/cockpit`: no existing key is removed or renamed without a coordinated
 pull request in the consuming repository (`red-monitor`, `red-cockpit`).
+`GET /metrics?exclude=<key,...>` omits named top-level blocks; unknown or empty
+keys return HTTP 400, and requests without `exclude` retain the full payload.
+The representative `?exclude=session_slots` payload is pinned at no more than 24 KiB.
 
 `nightly.scheduler` measures Dream's timer/service state independently of declared
 killswitches. `nightly` is always published when the sidecar can read the scheduler:
