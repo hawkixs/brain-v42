@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from brain_v42.config import Settings, get_settings
+from brain_v42.safe_logging import redact_url
 
 logger = structlog.get_logger(__name__)
 
@@ -130,7 +131,7 @@ def get_engine() -> AsyncEngine:
         )
         logger.info(
             "SQLAlchemy async engine created",
-            url=_engine.url.render_as_string(hide_password=True),
+            url=redact_url(str(_engine.url)),
             profile=_profile,
         )
     return _engine

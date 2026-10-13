@@ -1,6 +1,6 @@
-"""The one way a focus write leaves its trace — used by all seven writers.
+"""The one way a focus write leaves its trace — used by every writer.
 
-Seven sites persist `project_contexts.current_focus`. Spreading the audit insert
+Several sites persist `project_contexts.current_focus`. Spreading the audit insert
 over all of them is how an audit rots: the eighth writer copies five lines,
 drops one, and the trail acquires a hole nobody can see from the data left
 behind. `focus_stamp` already exists for exactly this reason, one column over.
@@ -45,10 +45,13 @@ from brain_v42.db.tables import project_focus_history
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-#: Six sources for seven writers, mirroring 050's CHECK exactly. `focus_tool`
-#: covers the roadmap CAS and the repository's `update_focus` — both are "a tool
-#: asked for this focus"; `context_upsert` covers `create` and `get_or_create`,
-#: which are the same write seen at birth and at conflict.
+#: The five runtime sources of 050's CHECK; its sixth, `migration_seed`, is written
+#: once by the migration itself and never through `record_focus_history`. `focus_tool` is the roadmap CAS
+#: ("a tool asked for this focus"); `context_upsert` covers `create` and the
+#: insert branch of `get_or_create`, the same write at birth. Since ticket
+#: 7eab4e35 the upsert's conflict branch and the generic `update` no longer
+#: write the focus, so `generic_update` has no writer: it stays because the
+#: CHECK installed by migration 050 names it.
 FocusHistorySource = Literal[
     "session_end",
     "focus_tool",

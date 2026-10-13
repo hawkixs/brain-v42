@@ -60,10 +60,13 @@ async def _close_tracer(session_factory: async_sessionmaker[AsyncSession], trace
         )
 
 
-async def test_a_lot_session_takes_its_artifacts_despite_a_coordinating_session(
+@pytest.mark.parametrize("shared_connection", [False, True])
+async def test_a_lot_session_abstains_when_the_coordinator_saw_its_connection(
     session_factory: async_sessionmaker[AsyncSession],
     absorption_project: str,  # noqa: F811
+    shared_connection: bool,
 ) -> None:
+    """Decision 974f46f3: an exact match no longer overrides a shared connection."""
     repo = PgBrainSessionRepo(session_factory)
     learning_repo = PgLearningRepo(session_factory)
 
@@ -74,17 +77,26 @@ async def test_a_lot_session_takes_its_artifacts_despite_a_coordinating_session(
             lot_id = UUID(str(lot.session.id))
             # The lot's own lifecycle call on this connection: what records it.
             await _absorb_from_the_current_connection(repo, lot_id, "lot")
+            if shared_connection:
+                await repo.record_seen_connection(coordinator.session.id, lot_connection)
             tracer = await repo.auto_open(_Identity(absorption_project, lot_connection))
             artifact = await _derive_one_artifact(learning_repo, absorption_project)
         await _close_tracer(session_factory, tracer)
 
         # Idle eviction: the lot comes back on a fresh connection to end.
         with _transport(uuid4().hex):
-            moved = await _absorb_from_the_current_connection(repo, lot_id, "lot")
+            outcome = await _absorb_outcome_from_the_current_connection(repo, lot_id, "lot")
 
     assert coordinator.session.id != lot.session.id
-    assert moved == 1, "the coordinating session still blocks the lot's capture"
-    assert await _ledger_owner(session_factory, artifact) == lot_id
+    if shared_connection:
+        assert outcome.total == 0
+        assert outcome.reason == "ambiguous"
+        assert outcome.rival_artifacts == 1
+        assert coordinator.session.id in outcome.rival_sessions
+        assert await _ledger_owner(session_factory, artifact) == tracer
+    else:
+        assert outcome.total == 1, "the coordinating session still blocks the lot's capture"
+        assert await _ledger_owner(session_factory, artifact) == lot_id
 
 
 async def test_the_coordinator_keeps_what_its_own_connection_produced(

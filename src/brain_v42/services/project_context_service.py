@@ -23,7 +23,6 @@ class ProjectContextService:
     Wraps PgProjectContextRepo and exposes:
     - get_or_create(data) → ProjectContext
     - get_by_key(project_key) → ProjectContext | None
-    - update_focus(project_key, focus, blockers) → ProjectContext | None
     - refresh_counts(project_key) → ProjectContext | None
 
     No embedding is computed — ProjectContext is configuration/state,
@@ -49,16 +48,6 @@ class ProjectContextService:
         """Fetch project context by project_key. Returns None if not found."""
         logger.debug("project_context_service.get_by_key", project_key=project_key)
         return await self.repo.get_by_key(project_key)
-
-    async def update_focus(
-        self,
-        project_key: str,
-        focus: str,
-        blockers: list[str] | None = None,
-    ) -> ProjectContext | None:
-        """Update current_focus and optionally blockers. Returns None if project not found."""
-        logger.debug("project_context_service.update_focus", project_key=project_key)
-        return await self.repo.update_focus(project_key, focus, blockers)
 
     async def archive(self, project_key: str, *, reason: str) -> ProjectContext | None:
         """Take a project out of the default views. Deletes nothing."""

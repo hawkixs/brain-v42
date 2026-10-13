@@ -1,8 +1,7 @@
-"""The one destructive-shrink rule for a write that REPLACES the project base focus.
+"""The destructive-shrink rule for a write that REPLACES a base focus or slot body.
 
-Four writers replace the base focus whole: `brain_session_relay` onto the base,
-`brain_session_end` of an unbound session, `brain_update_project_focus`, and the
-slot-less upsert. Callers keep sending a short hand-off where a durable focus
+The lifecycle end and relay replace the base focus or a bound slot body;
+`brain_update_project_focus` replaces the base. Callers keep sending a short hand-off where a durable focus
 stood, and the CAS does not notice: the revision is current, the write is legal,
 the content is gone (red-rail lost 65% of its focus in one call, ticket
 `91faa1a8`). The relay shipped the guard first; this module is that rule lifted
@@ -22,11 +21,14 @@ from typing import Final
 FOCUS_SHRINK_FLOOR_PERCENT: Final = 70
 
 
-def focus_shrink_refusal(current: str | None, proposed: str, *, subject: str) -> str | None:
+def focus_shrink_refusal(
+    current: str | None, proposed: str, *, subject: str, target: str = "base focus"
+) -> str | None:
     """Return the refusal message when `proposed` would shrink `current` destructively.
 
     `subject` names what the caller sent ("the handover", "next_focus") so the
-    message reads in the caller's own vocabulary. Returns None when the write is
+    message reads in the caller's own vocabulary. `target` names the base focus or
+    slot body being replaced. Returns None when the write is
     allowed; the caller raises its own error type with this text, and decides
     whether an operator override applies.
     """
@@ -35,9 +37,12 @@ def focus_shrink_refusal(current: str | None, proposed: str, *, subject: str) ->
     if proposed_length * 100 >= current_length * FOCUS_SHRINK_FLOOR_PERCENT:
         return None
     floor = -(-current_length * FOCUS_SHRINK_FLOOR_PERCENT // 100)  # ceil, in characters
+    dropped = current_length - proposed_length
+    kept_percent = proposed_length * 100 / current_length
     return (
         f"{subject} has {proposed_length} characters against {current_length} in the current "
-        f"base focus, under the {FOCUS_SHRINK_FLOOR_PERCENT}% floor of {floor} characters. "
-        "This write REPLACES the whole base focus: carry the durable content over, or have "
-        "the operator pass allow_focus_shrink=true"
+        f"{target}, under the {FOCUS_SHRINK_FLOOR_PERCENT}% floor of {floor} characters. "
+        f"It would drop {dropped} characters and keep {kept_percent:.1f}% of the current text. "
+        f"This write REPLACES the whole {target}: carry the durable content over, or use "
+        "allow_focus_shrink=true with a /brain-admin elevation or an operator relay"
     )

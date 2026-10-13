@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import ipaddress
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
 import structlog
@@ -251,6 +251,8 @@ class MetricsServer:
         credential_verifier: CredentialVerifier | None = None,
         credential_listener: CredentialListener | None = None,
         receiver_bucket: TokenBucket | None = None,
+        database_probe: Callable[[], Awaitable[object]] | None = None,
+        database_probe_timeout_seconds: float = 2.0,
     ) -> None:
         if receiver_auth not in {"none", "credentials"}:
             raise ValueError("METRICS_RECEIVER_AUTH must be none or credentials")
@@ -261,6 +263,9 @@ class MetricsServer:
         self._credential_listener = credential_listener
         self._receiver_bucket = receiver_bucket or TokenBucket(10, 20, monotonic=time.monotonic)
         self._receiver_refused: dict[str, int] = {}
+        self._database_probe = database_probe
+        self._database_probe_timeout_seconds = database_probe_timeout_seconds
+        self._probe_cleanups: set[asyncio.Future[object]] = set()
         self._collector = collector
         self._embedding_svc = embedding_svc
         self._port = port
@@ -407,17 +412,69 @@ class MetricsServer:
 
         The bind address is deliberately NOT echoed: this endpoint is served on
         the very bind it describes, including a LAN one.
+
+        With a database probe, `database` says whether PostgreSQL answers within
+        the probe timeout, and an unreachable one turns the answer into a 503 so
+        the compose healthcheck and red-agent's health field see it (ticket
+        abbfabfd: a constant "ok" through a PostgreSQL outage). The probe's error
+        is never served: it may carry connection details.
         """
-        return web.json_response(
-            {
-                "status": "ok",
-                "ingest_receivers": (
-                    "enabled"
-                    if _is_loopback_bind(self._host) or self._receiver_auth == "credentials"
-                    else "disabled"
-                ),
-            }
-        )
+        body: dict[str, str] = {
+            "status": "ok",
+            "ingest_receivers": (
+                "enabled"
+                if _is_loopback_bind(self._host) or self._receiver_auth == "credentials"
+                else "disabled"
+            ),
+        }
+        if self._database_probe is None:
+            return web.json_response(body)
+        error_type = await self._probe_database()
+        if error_type is not None:
+            with contextlib.suppress(Exception):
+                logger.warning("metrics_healthz.database_unreachable", error_type=error_type)
+            body.update(status="degraded", database="unreachable")
+            return web.json_response(body, status=503)
+        body["database"] = "reachable"
+        return web.json_response(body)
+
+    async def _probe_database(self) -> str | None:
+        """Run the probe within its timeout; return None, or the failure's type name.
+
+        asyncio.wait_for would also wait for the cancelled probe to clean up, and an
+        asyncpg connection torn down during an outage can take seconds, past the
+        healthcheck's client timeout (codex review of #368). The answer is decided
+        at the timeout; the cancelled probe finishes its cleanup in the background.
+        """
+        assert self._database_probe is not None
+        task = asyncio.ensure_future(self._database_probe())
+        try:
+            done, _ = await asyncio.wait({task}, timeout=self._database_probe_timeout_seconds)
+        except BaseException:
+            task.cancel()
+            self._keep_until_done(task)
+            raise
+        if task not in done:
+            task.cancel()
+            self._keep_until_done(task)
+            return "TimeoutError"
+        if task.cancelled():
+            # A driver can cancel its own operation: that is an unreachable
+            # database, not a cancelled request (red-rail F-368-1).
+            return "CancelledError"
+        exc = task.exception()
+        return None if exc is None else type(exc).__name__
+
+    def _keep_until_done(self, task: asyncio.Future[object]) -> None:
+        """Hold a cancelled probe until its cleanup ends, and consume its outcome."""
+        self._probe_cleanups.add(task)
+
+        def _forget(finished: asyncio.Future[object]) -> None:
+            self._probe_cleanups.discard(finished)
+            if not finished.cancelled():
+                finished.exception()
+
+        task.add_done_callback(_forget)
 
     async def _handle_bounded_receiver(
         self,
@@ -593,6 +650,7 @@ class MetricsServer:
         metrics["mcp_auth_refused"] = process_agg.pop("mcp_auth_refused", {})
         metrics["elevation_refused"] = process_agg.pop("elevation_refused", {})
         metrics["mcp_auth_agent_unresolved"] = process_agg.pop("mcp_auth_agent_unresolved", {})
+        metrics["author_binding_candidates"] = process_agg.pop("author_binding_candidates", {})
 
         # Override per-process tools/embedding/reranker with cross-process aggregation
         # when multiple processes are active

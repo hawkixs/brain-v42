@@ -193,7 +193,9 @@ def test_engine_log_masks_password(mock_settings):
     """The logged DSN must not contain the password (finding 2026-07-04)."""
     from structlog.testing import capture_logs
 
-    mock_settings.postgres_url = "postgresql+asyncpg://brain:s3cret@localhost:5433/brain"
+    mock_settings.postgres_url = (
+        "postgresql+asyncpg://private-user:s3cret@localhost:5433/brain_test?token=query-secret"
+    )
     from brain_v42.db.engine import get_engine
 
     with capture_logs() as logs:
@@ -202,7 +204,11 @@ def test_engine_log_masks_password(mock_settings):
     created = [e for e in logs if e["event"] == "SQLAlchemy async engine created"]
     assert len(created) == 1
     assert "s3cret" not in created[0]["url"]
-    assert "***" in created[0]["url"]
+    # Since ticket 2bb6f20b the whole userinfo is dropped (redact_url), not masked.
+    assert "brain:" not in created[0]["url"]
+    assert "private-user" not in created[0]["url"]
+    assert "query-secret" not in created[0]["url"]
+    assert "localhost:5433" in created[0]["url"]
 
 
 @pytest.fixture
