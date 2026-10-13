@@ -317,18 +317,19 @@ services:
     # Runs the seven-day rule of the workstation's Dream sweep phase (auto_stale_7d),
     # once at start and then daily (ticket 888660a9). The MCP server's own net already
     # closes idle agent traces every fifteen minutes, so the four-hour rule stays off
-    # here. DRY: without --wet it only enumerates and records a dream_runs row; arming
-    # it is a separate pull request, after a dry run's journal was read. The same loop
-    # then runs the retention of closed agent traces and delivered graph_outbox rows
-    # (ticket 8f319827), dry as well until a pull request passes --execute. A failed run
-    # is retried the next day instead of crash-looping the container.
+    # here. The same loop then runs the retention of closed agent traces and delivered
+    # graph_outbox rows (ticket 8f319827). Both shipped dry and were armed by the
+    # operator on 2026-10-13 after the dry run of the 0.6.12 deploy: --wet abandons the
+    # stale sessions, --execute deletes. Disarming is removing the flag, through a pull
+    # request and a rail deploy. A failed run is retried the next day instead of
+    # crash-looping the container.
     command:
       - /bin/sh
       - -c
       - |
         while :; do
-          python -m brain_v42.maintenance.session_sweep && touch /tmp/brain-v42-session-sweep.heartbeat || echo "session-sweep: run failed, next attempt in 24 h" >&2;
-          python -m brain_v42.maintenance.trace_retention && touch /tmp/brain-v42-trace-retention.heartbeat || echo "trace-retention: run failed, next attempt in 24 h" >&2;
+          python -m brain_v42.maintenance.session_sweep --wet && touch /tmp/brain-v42-session-sweep.heartbeat || echo "session-sweep: run failed, next attempt in 24 h" >&2;
+          python -m brain_v42.maintenance.trace_retention --execute && touch /tmp/brain-v42-trace-retention.heartbeat || echo "trace-retention: run failed, next attempt in 24 h" >&2;
           sleep 86400;
         done
     env_file:
