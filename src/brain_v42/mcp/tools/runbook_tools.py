@@ -12,6 +12,7 @@ import structlog
 from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
+from brain_v42.mcp.tools.capture_rule import CAPTURE_RULE
 from brain_v42.mcp.tools.claim_writes import (
     claim_write_log_fields,
     claims_confirmation,
@@ -104,7 +105,20 @@ def register_runbook_tools(
             tags=tags or [],
         )
 
-    @mcp.tool(version="2.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    # Promotion uses brain_promote_runbook (ticket c07957ea). A call naming
+    # dream_run_id alone once fell into the standard path, which never reads it,
+    # and returned a confirmation; two paths now publish two schemas. Until
+    # 2026-09-04 this signature also published source_learning_id and
+    # dream_run_id without a guard between them.
+    # Published description: the `description=` below, not this docstring.
+    @mcp.tool(
+        version="2.0",
+        annotations=_HEARTBEAT_ANNOTATIONS,
+        description=(
+            "Capture a reproducible procedure: ordered steps someone can follow again.\n\n"
+            + CAPTURE_RULE
+        ),
+    )
     async def brain_create_runbook(
         title: str,
         description: KnowledgeText,
@@ -118,14 +132,6 @@ def register_runbook_tools(
         claims: list[dict] | None = None,
     ) -> str:
         """Create an operational runbook.
-
-        The Dream promotion path lives in its own tool, `brain_promote_runbook`
-        (ticket c07957ea). Until 2026-09-04 this signature also published
-        `source_learning_id` and `dream_run_id`, with NO guard between them: a
-        call naming `dream_run_id` alone fell into the standard path, which
-        never reads it, and returned a confirmation — the caller believed they
-        were attributing a promotion nothing was recording. Two paths now
-        publish two schemas, so that request can no longer be built.
 
         Args:
             title: Short title of the procedure.
