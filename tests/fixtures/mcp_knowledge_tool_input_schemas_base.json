@@ -1,0 +1,1954 @@
+{
+ "source_ref": "f6c68fea13837651cbeea2686493b95584ea1ebb",
+ "tools": {
+  "brain_accept_adr": {
+   "additionalProperties": false,
+   "properties": {
+    "adr_id": {
+     "description": "UUID string of the ADR to accept.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "adr_id"
+   ],
+   "type": "object"
+  },
+  "brain_create_runbook": {
+   "additionalProperties": false,
+   "properties": {
+    "claims": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "description": {
+     "description": "What the runbook is for.",
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "estimated_duration": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Free-form duration hint."
+    },
+    "prerequisites": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "What must hold before starting."
+    },
+    "project_key": {
+     "description": "Owning project.",
+     "type": "string"
+    },
+    "rollback_steps": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "How to undo, same step shape."
+    },
+    "steps": {
+     "description": "Ordered steps, `{order?, title, command?, verification?}`.",
+     "items": {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     "maxItems": 100,
+     "type": "array"
+    },
+    "tags": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 100,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Free-form tags."
+    },
+    "title": {
+     "description": "Short title of the procedure.",
+     "type": "string"
+    },
+    "trigger": {
+     "description": "The situation that calls for this procedure.",
+     "maxLength": 2000,
+     "type": "string"
+    }
+   },
+   "required": [
+    "title",
+    "description",
+    "project_key",
+    "trigger",
+    "steps"
+   ],
+   "type": "object"
+  },
+  "brain_delete": {
+   "additionalProperties": false,
+   "properties": {
+    "entity_id": {
+     "description": "UUID of the entity to delete",
+     "type": "string"
+    },
+    "entity_type": {
+     "description": "One of: decision, learning, snippet, runbook, adr, plan",
+     "enum": [
+      "decision",
+      "learning",
+      "snippet",
+      "runbook",
+      "adr",
+      "plan"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "entity_type",
+    "entity_id"
+   ],
+   "type": "object"
+  },
+  "brain_deprecate_adr": {
+   "additionalProperties": false,
+   "properties": {
+    "adr_id": {
+     "description": "UUID of the ADR to deprecate.",
+     "type": "string"
+    },
+    "reason": {
+     "anyOf": [
+      {
+       "maxLength": 2000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional reason for deprecation (appended to consequences)."
+    }
+   },
+   "required": [
+    "adr_id"
+   ],
+   "type": "object"
+  },
+  "brain_execute_runbook": {
+   "additionalProperties": false,
+   "properties": {
+    "runbook_id": {
+     "type": "string"
+    },
+    "status": {
+     "default": "success",
+     "enum": [
+      "success",
+      "failed",
+      "partial",
+      "skipped"
+     ],
+     "type": "string"
+    }
+   },
+   "required": [
+    "runbook_id"
+   ],
+   "type": "object"
+  },
+  "brain_focus_history": {
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "default": 20,
+     "maximum": 50,
+     "minimum": 1,
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "minimum": 0,
+     "type": "integer"
+    },
+    "project_key": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "project_key"
+   ],
+   "type": "object"
+  },
+  "brain_get": {
+   "additionalProperties": false,
+   "properties": {
+    "entity_id": {
+     "description": "UUID of the entity, or a unique \u22658-hex-char prefix\n(prefix not supported for plan)",
+     "type": "string"
+    },
+    "entity_type": {
+     "description": "One of: decision, learning, snippet, runbook, adr, plan",
+     "enum": [
+      "decision",
+      "learning",
+      "snippet",
+      "runbook",
+      "adr",
+      "plan"
+     ],
+     "type": "string"
+    },
+    "max_chars": {
+     "default": 8000,
+     "description": "Max character budget for plan content (default 8000).\nOnly applies when entity_type='plan'. Increase to retrieve\nmore chunks when a truncation notice appears.",
+     "type": "integer"
+    }
+   },
+   "required": [
+    "entity_type",
+    "entity_id"
+   ],
+   "type": "object"
+  },
+  "brain_get_neighbors": {
+   "additionalProperties": false,
+   "properties": {
+    "depth": {
+     "default": 1,
+     "description": "Traversal depth, clamped to [1, 3]. Default 1.",
+     "type": "integer"
+    },
+    "entity_id": {
+     "description": "UUID of any entity present in the knowledge graph.",
+     "type": "string"
+    },
+    "rel_types": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional list of relation types to traverse. If\nomitted, all relation types are followed."
+    }
+   },
+   "required": [
+    "entity_id"
+   ],
+   "type": "object"
+  },
+  "brain_get_runbook": {
+   "additionalProperties": false,
+   "properties": {
+    "limit": {
+     "default": 10,
+     "description": "Max runbooks returned in list mode (default 10, max 50).",
+     "type": "integer"
+    },
+    "project_key": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Project scope for list or title lookup."
+    },
+    "runbook_id": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "UUID or unique id prefix of a specific runbook\n(highest priority)."
+    },
+    "title": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Runbook title \u2014 combined with project_key for lookup."
+    }
+   },
+   "type": "object"
+  },
+  "brain_get_supersession_chain": {
+   "additionalProperties": false,
+   "properties": {
+    "decision_id": {
+     "description": "UUID of any decision in the chain.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "decision_id"
+   ],
+   "type": "object"
+  },
+  "brain_graph_path": {
+   "additionalProperties": false,
+   "properties": {
+    "max_depth": {
+     "default": 3,
+     "description": "Maximum hops, clamped to [1, 6]. Default 3.",
+     "type": "integer"
+    },
+    "rel_types": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional whitelist of relation types to follow.\nIf omitted, follows all canonical types except\nBELONGS_TO_DOMAIN."
+    },
+    "source_id": {
+     "description": "UUID of the start entity.",
+     "type": "string"
+    },
+    "target_id": {
+     "description": "UUID of the end entity.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "source_id",
+    "target_id"
+   ],
+   "type": "object"
+  },
+  "brain_learn": {
+   "additionalProperties": false,
+   "properties": {
+    "claims": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "confidence": {
+     "default": "medium",
+     "enum": [
+      "low",
+      "medium",
+      "high"
+     ],
+     "type": "string"
+    },
+    "insight": {
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "project_key": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "related_to": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "maxItems": 50,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "source": {
+     "anyOf": [
+      {
+       "maxLength": 2000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "source_type": {
+     "default": "experience",
+     "enum": [
+      "experience",
+      "documentation",
+      "code_review",
+      "bug",
+      "external",
+      "article",
+      "video",
+      "book",
+      "conversation",
+      "research",
+      "automated"
+     ],
+     "type": "string"
+    },
+    "tags": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 100,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "topic": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "topic",
+    "insight"
+   ],
+   "type": "object"
+  },
+  "brain_list": {
+   "additionalProperties": false,
+   "properties": {
+    "confidence": {
+     "anyOf": [
+      {
+       "enum": [
+        "low",
+        "medium",
+        "high"
+       ],
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Filter by confidence (learning)"
+    },
+    "entity_type": {
+     "description": "One of: decision, learning, snippet, runbook, adr, plan",
+     "enum": [
+      "decision",
+      "learning",
+      "snippet",
+      "runbook",
+      "adr",
+      "plan"
+     ],
+     "type": "string"
+    },
+    "include_archived": {
+     "default": false,
+     "description": "When False (default), exclude merged/archived entities",
+     "type": "boolean"
+    },
+    "language": {
+     "anyOf": [
+      {
+       "maxLength": 50,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Filter by language (snippet)"
+    },
+    "limit": {
+     "default": 20,
+     "description": "Maximum results (default 20, clamped server-side to [1, 100])",
+     "type": "integer"
+    },
+    "offset": {
+     "default": 0,
+     "description": "Pagination offset (default 0)",
+     "type": "integer"
+    },
+    "project_key": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Filter by project (required for runbook)"
+    },
+    "status": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Filter by status (decision, adr, plan)"
+    },
+    "summary_only": {
+     "default": false,
+     "description": "When True (decision/learning only), drop body content\nand surface metadata (project_key, tags, access_count,\nfreshness_status). For full-corpus pagination such as Dream\nREORG Part 1 where the body is unused.",
+     "type": "boolean"
+    },
+    "tags": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 100,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Filter by tags (decision, learning)"
+    }
+   },
+   "required": [
+    "entity_type"
+   ],
+   "type": "object"
+  },
+  "brain_list_project_groups": {
+   "additionalProperties": false,
+   "properties": {},
+   "type": "object"
+  },
+  "brain_list_projects": {
+   "additionalProperties": false,
+   "properties": {
+    "full": {
+     "default": false,
+     "description": "Render every project instead of the 20 most recent.",
+     "type": "boolean"
+    },
+    "project_group": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional group name to filter projects belonging to that group."
+    }
+   },
+   "type": "object"
+  },
+  "brain_log_decision": {
+   "additionalProperties": false,
+   "properties": {
+    "alternatives": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "claims": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "consequences": {
+     "anyOf": [
+      {
+       "maxLength": 50000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "context": {
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "decision_made": {
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "project_key": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "reasoning": {
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "related_to": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "maxItems": 50,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "tags": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 100,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "title": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "title",
+    "context",
+    "decision_made",
+    "reasoning"
+   ],
+   "type": "object"
+  },
+  "brain_project_archive": {
+   "additionalProperties": false,
+   "properties": {
+    "project_key": {
+     "description": "The project to archive.",
+     "type": "string"
+    },
+    "reason": {
+     "description": "Why. Required \u2014 an archive nobody can explain outlives the\nreason it was archived for.",
+     "maxLength": 2000,
+     "type": "string"
+    }
+   },
+   "required": [
+    "project_key",
+    "reason"
+   ],
+   "type": "object"
+  },
+  "brain_project_focus_get": {
+   "additionalProperties": false,
+   "properties": {
+    "project_key": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "project_key"
+   ],
+   "type": "object"
+  },
+  "brain_project_unarchive": {
+   "additionalProperties": false,
+   "properties": {
+    "project_key": {
+     "description": "The project to bring back.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "project_key"
+   ],
+   "type": "object"
+  },
+  "brain_promote_adr": {
+   "$defs": {
+    "AlternativeConsidered": {
+     "description": "An alternative option that was considered.",
+     "properties": {
+      "description": {
+       "type": "string"
+      },
+      "reason_rejected": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "title": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "title",
+      "description"
+     ],
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "alternatives_considered": {
+     "anyOf": [
+      {
+       "items": {
+        "$ref": "#/$defs/AlternativeConsidered"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Options weighed and set aside."
+    },
+    "consequences": {
+     "description": "What becomes easier and what becomes harder.",
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "context": {
+     "description": "Forces at play \u2014 why a decision is needed.",
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "decision": {
+     "description": "The decision taken.",
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "dream_run_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional orchestrator run to attribute the promotion to."
+    },
+    "project_key": {
+     "description": "Owning project.",
+     "type": "string"
+    },
+    "source_learning_id": {
+     "description": "UUID of the learning being graduated.",
+     "type": "string"
+    },
+    "tags": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 100,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Free-form tags."
+    },
+    "title": {
+     "description": "Short title of the decision.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "title",
+    "context",
+    "decision",
+    "consequences",
+    "project_key",
+    "source_learning_id"
+   ],
+   "type": "object"
+  },
+  "brain_promote_runbook": {
+   "additionalProperties": false,
+   "properties": {
+    "description": {
+     "description": "What the runbook is for.",
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "dream_run_id": {
+     "anyOf": [
+      {
+       "type": "integer"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional orchestrator run to attribute the promotion to."
+    },
+    "estimated_duration": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Free-form duration hint."
+    },
+    "prerequisites": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "What must hold before starting."
+    },
+    "project_key": {
+     "description": "Owning project.",
+     "type": "string"
+    },
+    "rollback_steps": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "How to undo, same step shape."
+    },
+    "source_learning_id": {
+     "description": "UUID of the learning being graduated.",
+     "type": "string"
+    },
+    "steps": {
+     "description": "Ordered steps, `{order?, title, command?, verification?}`.",
+     "items": {
+      "additionalProperties": true,
+      "type": "object"
+     },
+     "maxItems": 100,
+     "type": "array"
+    },
+    "tags": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 100,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Free-form tags."
+    },
+    "title": {
+     "description": "Short title of the procedure.",
+     "type": "string"
+    },
+    "trigger": {
+     "description": "The situation that calls for this procedure.",
+     "maxLength": 2000,
+     "type": "string"
+    }
+   },
+   "required": [
+    "title",
+    "description",
+    "project_key",
+    "trigger",
+    "steps",
+    "source_learning_id"
+   ],
+   "type": "object"
+  },
+  "brain_propose_adr": {
+   "$defs": {
+    "AlternativeConsidered": {
+     "description": "An alternative option that was considered.",
+     "properties": {
+      "description": {
+       "type": "string"
+      },
+      "reason_rejected": {
+       "anyOf": [
+        {
+         "type": "string"
+        },
+        {
+         "type": "null"
+        }
+       ],
+       "default": null
+      },
+      "title": {
+       "type": "string"
+      }
+     },
+     "required": [
+      "title",
+      "description"
+     ],
+     "type": "object"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "alternatives_considered": {
+     "anyOf": [
+      {
+       "items": {
+        "$ref": "#/$defs/AlternativeConsidered"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Options weighed and set aside."
+    },
+    "claims": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "consequences": {
+     "description": "What becomes easier and what becomes harder.",
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "context": {
+     "description": "Forces at play \u2014 why a decision is needed.",
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "decision": {
+     "description": "The decision taken.",
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "project_key": {
+     "description": "Owning project.",
+     "type": "string"
+    },
+    "tags": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 100,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Free-form tags."
+    },
+    "title": {
+     "description": "Short title of the decision.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "title",
+    "context",
+    "decision",
+    "consequences",
+    "project_key"
+   ],
+   "type": "object"
+  },
+  "brain_save_snippet": {
+   "additionalProperties": false,
+   "properties": {
+    "claims": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "code": {
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "dependencies": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "gotchas": {
+     "anyOf": [
+      {
+       "maxLength": 50000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "intention": {
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "language": {
+     "maxLength": 50,
+     "type": "string"
+    },
+    "project_key": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "related_to": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "maxItems": 50,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "tags": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 100,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "title": {
+     "type": "string"
+    },
+    "usage_example": {
+     "anyOf": [
+      {
+       "maxLength": 50000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "required": [
+    "title",
+    "intention",
+    "code",
+    "language"
+   ],
+   "type": "object"
+  },
+  "brain_search": {
+   "additionalProperties": false,
+   "properties": {
+    "full": {
+     "default": false,
+     "type": "boolean"
+    },
+    "group_by_type": {
+     "default": false,
+     "type": "boolean"
+    },
+    "include_archived": {
+     "default": false,
+     "type": "boolean"
+    },
+    "include_related": {
+     "default": false,
+     "type": "boolean"
+    },
+    "limit": {
+     "default": 20,
+     "type": "integer"
+    },
+    "min_score": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "project_group": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "project_key": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "query": {
+     "maxLength": 10000,
+     "type": "string"
+    },
+    "tags": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 100,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "types": {
+     "anyOf": [
+      {
+       "items": {
+        "enum": [
+         "decision",
+         "learning",
+         "snippet",
+         "runbook",
+         "adr",
+         "plan"
+        ],
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    }
+   },
+   "required": [
+    "query"
+   ],
+   "type": "object"
+  },
+  "brain_set_project_context": {
+   "additionalProperties": false,
+   "properties": {
+    "blockers": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Current blockers, one string each."
+    },
+    "code_style": {
+     "anyOf": [
+      {
+       "maxLength": 2000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Coding conventions summary."
+    },
+    "current_focus": {
+     "anyOf": [
+      {
+       "maxLength": 10000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Focus prose \u2014 capped at the same character bound as\nevery MCP focus writer; do not restate machine-measurable state.\nSets focus only on creation. An existing project's different focus\nis refused as focus_write_requires_update_project_focus: use\nbrain_update_project_focus with its revision CAS and shrink guard."
+    },
+    "current_phase": {
+     "anyOf": [
+      {
+       "maxLength": 2000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Current lifecycle phase (free text)."
+    },
+    "databases": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Data stores in use (e.g. ['postgresql', 'neo4j'])."
+    },
+    "description": {
+     "description": "What the project is and does.",
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "frameworks": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Frameworks in use (e.g. ['fastmcp', 'sqlalchemy'])."
+    },
+    "git_workflow": {
+     "anyOf": [
+      {
+       "maxLength": 2000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Branching/commit conventions summary."
+    },
+    "gitlab_project_path": {
+     "anyOf": [
+      {
+       "maxLength": 200,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "GitLab path (group/name) when mirrored."
+    },
+    "languages": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Programming languages in use (e.g. ['python'])."
+    },
+    "name": {
+     "description": "Human-readable project name.",
+     "maxLength": 200,
+     "type": "string"
+    },
+    "plan_scan_paths": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Filesystem paths scanned for plan indexing."
+    },
+    "project_group": {
+     "anyOf": [
+      {
+       "maxLength": 50,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional group name to assign this project to a group."
+    },
+    "project_key": {
+     "description": "Canonical project key (kebab-case, e.g. 'brain-v42').",
+     "maxLength": 50,
+     "type": "string"
+    },
+    "related_projects": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Project keys this one relates to."
+    },
+    "test_strategy": {
+     "anyOf": [
+      {
+       "maxLength": 2000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Testing approach summary."
+    }
+   },
+   "required": [
+    "project_key",
+    "name",
+    "description"
+   ],
+   "type": "object"
+  },
+  "brain_supersede_decision": {
+   "additionalProperties": false,
+   "properties": {
+    "alternatives": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "consequences": {
+     "anyOf": [
+      {
+       "maxLength": 50000,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "context": {
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "decision_made": {
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "old_decision_id": {
+     "type": "string"
+    },
+    "project_key": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "reasoning": {
+     "maxLength": 50000,
+     "type": "string"
+    },
+    "tags": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 100,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "title": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "old_decision_id",
+    "title",
+    "context",
+    "decision_made",
+    "reasoning"
+   ],
+   "type": "object"
+  },
+  "brain_update": {
+   "additionalProperties": false,
+   "properties": {
+    "claims": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional complete replacement for this entry's active claims."
+    },
+    "entity_id": {
+     "description": "UUID of the entity to update",
+     "type": "string"
+    },
+    "entity_type": {
+     "description": "One of: decision, learning, snippet, runbook, adr",
+     "enum": [
+      "decision",
+      "learning",
+      "snippet",
+      "runbook",
+      "adr"
+     ],
+     "type": "string"
+    },
+    "expected_active_claim_ids": {
+     "anyOf": [
+      {
+       "items": {
+        "type": "string"
+       },
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Active claim ids observed by the caller."
+    },
+    "fields": {
+     "additionalProperties": true,
+     "description": "Dict of fields to update (validated via Pydantic model)",
+     "type": "object"
+    },
+    "related_to": {
+     "anyOf": [
+      {
+       "items": {
+        "additionalProperties": true,
+        "type": "object"
+       },
+       "maxItems": 50,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional list of graph relations to add/update.\nEach item must have keys ``id`` (UUID string) and ``type``\n(one of: MOTIVATED_BY, IMPLEMENTS, DOCUMENTS, USES, RELATED_TO)."
+    }
+   },
+   "required": [
+    "entity_type",
+    "entity_id",
+    "fields"
+   ],
+   "type": "object"
+  },
+  "brain_update_project_focus": {
+   "additionalProperties": false,
+   "properties": {
+    "allow_focus_shrink": {
+     "default": false,
+     "description": "The override is operator-only. An active /brain-admin elevation is required for this credential and MCP connection; shared-token and stdio callers are refused (`focus_shrink_override_refused`). True lets a `current_focus` under 70% of the current focus length through; otherwise it is refused (`base_focus_shrink`, both sizes in the message) and nothing is written, roadmap changes included.",
+     "type": "boolean"
+    },
+    "blockers": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional list of current blockers."
+    },
+    "current_focus": {
+     "description": "New current focus. It REPLACES the whole project focus, and a text under 70% of the current length is refused (`base_focus_shrink`) unless `allow_focus_shrink` is authorized by an active /brain-admin elevation for this credential and MCP connection.",
+     "maxLength": 10000,
+     "type": "string"
+    },
+    "expected_focus_revision": {
+     "description": "Revision returned by session start/resume.",
+     "minimum": 0,
+     "type": "integer"
+    },
+    "feature_status": {
+     "anyOf": [
+      {
+       "additionalProperties": {
+        "type": "string"
+       },
+       "type": "object"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional dict mapping feature name -> new status.\nExample: {\"Core Monitoring\": \"deployed\", \"GPU Collector\": \"building\"}\nFeatures in this dict are automatically pinned."
+    },
+    "project_key": {
+     "description": "The project key to update.",
+     "type": "string"
+    },
+    "unpin": {
+     "anyOf": [
+      {
+       "items": {
+        "maxLength": 2000,
+        "type": "string"
+       },
+       "maxItems": 100,
+       "type": "array"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null,
+     "description": "Optional list of feature names to unpin (set pinned=false)."
+    }
+   },
+   "required": [
+    "project_key",
+    "current_focus",
+    "expected_focus_revision"
+   ],
+   "type": "object"
+  },
+  "brain_use_snippet": {
+   "additionalProperties": false,
+   "properties": {
+    "snippet_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "snippet_id"
+   ],
+   "type": "object"
+  },
+  "brain_validate_learning": {
+   "additionalProperties": false,
+   "properties": {
+    "learning_id": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "learning_id"
+   ],
+   "type": "object"
+  },
+  "brain_workflow_guide": {
+   "$defs": {
+    "WorkflowName": {
+     "enum": [
+      "session.lifecycle",
+      "project.context",
+      "knowledge.decision",
+      "runbook.lifecycle",
+      "ticket.lifecycle"
+     ],
+     "type": "string"
+    },
+    "WorkflowPhase": {
+     "enum": [
+      "prepare",
+      "recover"
+     ],
+     "type": "string"
+    }
+   },
+   "additionalProperties": false,
+   "properties": {
+    "error_context": {
+     "anyOf": [
+      {
+       "description": "Short local validation context. It is never reflected in the guide response.",
+       "maxLength": 300,
+       "minLength": 1,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "known_catalog_revision": {
+     "anyOf": [
+      {
+       "maxLength": 64,
+       "minLength": 1,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "known_guide_version": {
+     "anyOf": [
+      {
+       "maxLength": 64,
+       "minLength": 1,
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "default": null
+    },
+    "phase": {
+     "$ref": "#/$defs/WorkflowPhase",
+     "default": "prepare"
+    },
+    "project_key": {
+     "maxLength": 50,
+     "minLength": 1,
+     "type": "string"
+    },
+    "workflow": {
+     "$ref": "#/$defs/WorkflowName"
+    }
+   },
+   "required": [
+    "project_key",
+    "workflow"
+   ],
+   "type": "object"
+  }
+ }
+}
