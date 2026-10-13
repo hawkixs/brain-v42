@@ -30,7 +30,10 @@ def pytest_configure(config: pytest.Config) -> None:
     if signal.getsignal(signal.SIGINT) is signal.SIG_IGN:
         signal.signal(signal.SIGINT, signal.default_int_handler)
     try:
-        disk_floor.check(disk_floor.measured_path(config.option.basetemp), environ=os.environ)
+        disk_floor.check(
+            disk_floor.measured_path(config.option.basetemp, environ=os.environ),
+            environ=os.environ,
+        )
     except disk_floor.DiskFloorError as exc:
         raise pytest.UsageError(str(exc)) from None
     try:

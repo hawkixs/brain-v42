@@ -289,7 +289,7 @@ dependency and interpreter match CI. Unit tests do not require PostgreSQL. Tests
 need a database require an isolated test database through `BRAIN_V42_TEST_DB_URL` and
 refuse production database targets.
 A session also refuses to start when the filesystem holding its temporary files
-(`--basetemp`, or the system temp directory) has less free space than 5 % of its size,
+(`--basetemp`, else `PYTEST_DEBUG_TEMPROOT`, else the system temp directory) has less free space than 5 % of its size,
 at least 5 GiB: a disk filled by old test directories once took a PostgreSQL on the same
 disk down. `BRAIN_V42_TEST_MIN_FREE_GB` sets the floor explicitly; `0` disables it.
 

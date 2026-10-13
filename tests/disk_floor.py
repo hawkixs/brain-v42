@@ -40,9 +40,22 @@ def floor_bytes(total: int, *, override: str | None) -> float:
     return value * GiB
 
 
-def measured_path(basetemp: str | None) -> Path:
-    """Where the session writes: --basetemp when given, else the system temp dir."""
-    return Path(basetemp) if basetemp else Path(tempfile.gettempdir())
+def measured_path(basetemp: str | None, *, environ: Mapping[str, str]) -> Path:
+    """Where the session writes, as pytest resolves it: --basetemp when given, else
+    PYTEST_DEBUG_TEMPROOT when set, else the system temp dir."""
+    if basetemp:
+        return Path(basetemp)
+    if environ.get("PYTEST_DEBUG_TEMPROOT"):
+        return Path(environ["PYTEST_DEBUG_TEMPROOT"])
+    try:
+        return Path(tempfile.gettempdir())
+    except OSError as exc:
+        # gettempdir() probes candidates by writing to them: a full temp
+        # filesystem makes it raise, which is this guard's refusal too.
+        raise DiskFloorError(
+            f"no usable temporary directory ({type(exc).__name__}): a full temp "
+            "filesystem (ticket 998634d7)"
+        ) from None
 
 
 def check(
@@ -52,11 +65,20 @@ def check(
     disk_usage: Callable[[Path], Any] = shutil.disk_usage,
 ) -> None:
     """Raise DiskFloorError when `path`'s filesystem has less free space than its floor."""
+    override = environ.get(_ENV)
+    if override is not None and floor_bytes(0, override=override) == 0:
+        return
     existing = path
     while not existing.exists() and existing != existing.parent:
         existing = existing.parent
-    usage = disk_usage(existing)
-    floor = floor_bytes(usage.total, override=environ.get(_ENV))
+    try:
+        usage = disk_usage(existing)
+    except OSError as exc:
+        raise DiskFloorError(
+            f"cannot measure free space on {existing} ({type(exc).__name__}); set {_ENV}=0 "
+            "to skip the check"
+        ) from None
+    floor = floor_bytes(usage.total, override=override)
     if usage.free < floor:
         raise DiskFloorError(
             f"{usage.free / GiB:.1f} GiB free on the filesystem of {existing}, under the "
