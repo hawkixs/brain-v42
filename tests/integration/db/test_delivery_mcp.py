@@ -184,7 +184,7 @@ async def test_list_ticket_filter_limits_to_visible_workflow(delivery_mcp, sessi
             for ticket in (*visible, hidden)
         ]
     for ticket, page in zip(visible, pages, strict=False):
-        assert [item["contract"]["ticket_id"] for item in page["items"]] == [_uuid(ticket.id)]
+        assert [item["ticket_id"] for item in page["items"]] == [_uuid(ticket.id)]
         assert page["omitted_count"] == 0 and page["next_cursor"] is None
     assert pages[2]["items"] == [] and pages[2]["omitted_count"] == 0
 
