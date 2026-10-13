@@ -1,4 +1,4 @@
-"""Preview historical merge chains or atomically repair an explicitly approved count."""
+"""Preview merge chains or atomically repair explicitly approved per-table counts."""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ import sqlalchemy as sa
 from brain_v42.config import get_settings
 from brain_v42.db.engine import dispose_engine, get_session_factory
 from brain_v42.maintenance.merge_chain_repair import (
+    TABLE_NAMES,
     InventoryReport,
     MergeChainRepairError,
     inventory,
@@ -24,21 +25,37 @@ from brain_v42.maintenance.merge_chain_repair import (
 )
 
 
-def _nonnegative(value: str) -> int:
-    number = int(value)
-    if number < 0:
-        raise argparse.ArgumentTypeError("expected count must be non-negative")
-    return number
+def _expected_count(value: str) -> tuple[str, int]:
+    table, separator, count = value.partition("=")
+    if not separator or table not in TABLE_NAMES:
+        raise argparse.ArgumentTypeError("expected table=count for a covered table")
+    # int() also accepts "1_0", "+3" and " 3": an approved count is typed
+    # digits only, so a typo cannot pass as a different number.
+    if not (count.isascii() and count.isdigit()):
+        raise argparse.ArgumentTypeError("expected count must be a non-negative integer")
+    return table, int(count)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Require a measured count before opening any writable transaction."""
+    """Require unambiguous per-table approval before opening a writable transaction."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--execute", action="store_true", help="repair (default: dry run)")
-    parser.add_argument("--expect", type=_nonnegative, help="approved in-project chained count")
+    parser.add_argument(
+        "--expect",
+        type=_expected_count,
+        action="append",
+        metavar="TABLE=N",
+        help="approved in-project chained count per table (repeat; omitted tables expect 0)",
+    )
     args = parser.parse_args(argv)
     if args.execute and args.expect is None:
-        parser.error("--execute requires --expect N")
+        parser.error("--execute requires --expect TABLE=N")
+    expected: dict[str, int] = {}
+    for table, count in args.expect or []:
+        if table in expected:
+            parser.error(f"duplicate --expect table: {table}")
+        expected[table] = count
+    args.expect = expected
     return args
 
 
@@ -46,6 +63,7 @@ def _inventory_payload(report: InventoryReport) -> dict[str, object]:
     tables = []
     for table in report.tables:
         payload = asdict(table)
+        payload["in_project_chained_count"] = table.in_project_chained_count
         payload["depth_histogram"] = dict(table.depth_histogram)
         tables.append(payload)
     return {"tables": tables, "in_project_chained_count": report.in_project_chained_count}
@@ -86,6 +104,8 @@ async def run_from_args(args: argparse.Namespace) -> int:
         except MergeChainRepairError as error:
             code = 2
             payload = {"status": "refused", "reason": error.reason}
+            if error.table is not None:
+                payload["table"] = error.table
         except Exception as error:  # noqa: BLE001 — never expose a DSN or row contents
             code = 1
             payload = {"status": "failed", "error_type": type(error).__name__}
