@@ -16,13 +16,14 @@
 # /etc/brain-v42/neo4j-auth: uid 7474, mode 0600 (neo4j/password; _FILE pattern)
 # /etc/brain-v42/brain-app-password: uid 1000, mode 0600 (matches runtime DSN password)
 # /etc/brain-v42/embedding-token: uid 1000, mode 0600 (hosted embedding API key)
-# /etc/brain-v42/rerank-api-key: uid 1000, mode 0600 (OpenRouter rerank key, value only;
-# read by mcp only). Rerank rollback: set the x-rerank-env block to BRAIN_RERANK_BACKEND
-# "none" alone (the settings validator refuses any other rerank line next to it), then
-# redeploy through the rail. A rotated key needs an explicit recreate.
-# When Voyage saturates (shared OpenRouter quota, 429), the same key reranks with
-# cohere/rerank-4-fast (fallback link, data collection denied) within the 2.5 s
-# budget; RRF order only when both links fail (operator go 742e7a05).
+# /etc/brain-v42/voyage-api-key: uid 1000, mode 0600 (operator's Voyage key, value only;
+# read by mcp only; primary rerank link, Voyage's own API: decisions fa3b6abc, 7d36a08c).
+# /etc/brain-v42/rerank-api-key: uid 1000, mode 0600 (OpenRouter key, value only; read by
+# mcp only; fallback link cohere/rerank-4-fast with data collection denied, used when Voyage
+# fails within the 2.5 s budget; RRF order only when both links fail, go 742e7a05).
+# Rerank rollback: set the x-rerank-env block to BRAIN_RERANK_BACKEND "none" alone (the
+# settings validator refuses any other rerank line next to it), then redeploy through the
+# rail. A rotated key needs an explicit recreate.
 # /etc/brain-v42/github-app-key.pem: uid 1000, mode 0600 (GitHub App private key)
 # /etc/brain-v42/delivery-observer.env: uid 1000, mode 0600 (the real observer config,
 # read via --env-file; BRAIN_DELIVERY_ENABLED=true, BRAIN_DELIVERY_POSTGRES_URL for brain_app,
@@ -77,17 +78,17 @@ x-embedding-env: &embedding-env
   EMBEDDING_DIMENSION: "1536"
   BRAIN_EMBEDDING_TOKEN_FILE: /run/secrets/embedding_token
 
-# Hosted reranker (lot 0.6.10, ruling 26208df8): Voyage rerank-3-lite through OpenRouter,
-# provider pinned, data collection denied. Rollback: keep only BRAIN_RERANK_BACKEND: "none".
+# Hosted reranker (lot 0.6.10): Voyage's own API first (operator key, own quota), Cohere
+# through OpenRouter as the fallback link. Rollback: keep only BRAIN_RERANK_BACKEND: "none".
 x-rerank-env: &rerank-env
-  BRAIN_RERANK_BACKEND: "cohere"
-  BRAIN_RERANKER_URL: https://openrouter.ai/api
-  BRAIN_RERANK_MODEL: voyageai/rerank-3-lite
-  BRAIN_RERANK_HEALTH_PATH: /v1/key
-  BRAIN_RERANK_PROVIDER: '{"only":["voyageai"],"allow_fallbacks":false,"data_collection":"deny"}'
-  BRAIN_RERANK_API_KEY_FILE: /run/secrets/rerank_api_key
+  BRAIN_RERANK_BACKEND: "voyage"
+  BRAIN_RERANKER_URL: https://api.voyageai.com
+  BRAIN_RERANK_MODEL: rerank-3-lite
+  BRAIN_RERANK_API_KEY_FILE: /run/secrets/voyage_api_key
   BRAIN_RERANK_FALLBACK_MODEL: cohere/rerank-4-fast
   BRAIN_RERANK_FALLBACK_PROVIDER: '{"only":["cohere"],"allow_fallbacks":false,"data_collection":"deny"}'
+  BRAIN_RERANK_FALLBACK_URL: https://openrouter.ai/api
+  BRAIN_RERANK_FALLBACK_API_KEY_FILE: /run/secrets/rerank_api_key
   BRAIN_RERANK_BUDGET_SECONDS: "2.5"
   BRAIN_RERANK_PRIMARY_BUDGET_SECONDS: "1.0"
 
@@ -235,6 +236,7 @@ services:
       BRAIN_CLIENT_ACTIVITY_ALLOWED_HOST: "metrics"
     secrets:
       - embedding_token
+      - voyage_api_key
       - rerank_api_key
     volumes:
       - /etc/brain-v42/activity:/etc/brain-v42/activity:ro
@@ -362,6 +364,8 @@ secrets:
     file: /etc/brain-v42/brain-app-password
   embedding_token:
     file: /etc/brain-v42/embedding-token
+  voyage_api_key:
+    file: /etc/brain-v42/voyage-api-key
   rerank_api_key:
     file: /etc/brain-v42/rerank-api-key
   github_app_key:
