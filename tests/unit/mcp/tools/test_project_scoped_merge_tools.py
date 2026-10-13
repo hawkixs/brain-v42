@@ -13,6 +13,7 @@ from brain_v42.mcp.dream_project_authorization import (
     DreamProjectScope,
     bind_dream_project_scope,
 )
+from brain_v42.services import consolidation
 from brain_v42.services.consolidation import ConsolidationEntityNotFoundError
 from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
@@ -128,4 +129,22 @@ async def test_scoped_missing_target_is_formatted_from_job_outcome() -> None:
 
     assert result and result[0].isalnum()
     assert f"Target decision {target_id} not found" in result
+    job.merge.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scoped_foreign_children_refusal_is_formatted_with_admin_guidance() -> None:
+    source_id, target_id = uuid4(), uuid4()
+    error = consolidation.ConsolidationForeignChildrenError(
+        "Scoped merge refused: 1 foreign children; an admin merge is needed"
+    )
+    job = MagicMock()
+    job.merge = AsyncMock(side_effect=error)
+    merge = _registered_merge(job)
+
+    with bind_dream_project_scope(_scope()):
+        result = await merge("decision", str(source_id), str(target_id))
+
+    assert result == str(error)
+    assert "admin merge" in result
     job.merge.assert_awaited_once()

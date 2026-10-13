@@ -43,6 +43,10 @@ class ConsolidationChildrenUnstableError(RuntimeError):
     """Refuse without writes when new children prevent a stable ordered lock set."""
 
 
+class ConsolidationForeignChildrenError(ValueError):
+    """Refuse scoped merges that would leave chains or mutate another project's children."""
+
+
 class _ChildAppeared(Exception):
     """Restart the savepoint to release locks before taking a late child's lock in order."""
 
@@ -90,7 +94,6 @@ class ConsolidationJob:
             raise ValueError("Source and target must be different entities")
 
         project_key = authorization.project_key if authorization is not None else None
-        foreign_children_count = 0
         async with self._session_factory() as session:
             async with session.begin():
                 source_row, target_row, child_ids = await self._lock_merge_pair(
@@ -111,6 +114,11 @@ class ConsolidationJob:
                         )
                     )
                     foreign_children_count = foreign_children.scalar_one_or_none() or 0
+                    if foreign_children_count:
+                        raise ConsolidationForeignChildrenError(
+                            f"Scoped merge refused: {foreign_children_count} foreign children; "
+                            "an admin merge is needed"
+                        )
                 merged_tags = list(
                     dict.fromkeys([*(target_row["tags"] or []), *(source_row["tags"] or [])])
                 )
@@ -142,10 +150,6 @@ class ConsolidationJob:
                         action="repointed",
                     )
 
-        if foreign_children_count:
-            logger.warning(
-                "consolidation.merge.foreign_children_left", count=foreign_children_count
-            )
         await self._write_graph_relation(
             entity_type,
             source_id,

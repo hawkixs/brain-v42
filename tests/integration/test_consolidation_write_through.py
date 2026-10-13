@@ -106,6 +106,48 @@ async def test_real_merge_flattens_two_children_and_audits_each(
 
 
 @pytest.mark.asyncio
+async def test_real_scoped_foreign_child_refusal_preserves_rows_and_audit(
+    session_factory: async_sessionmaker[AsyncSession],
+    merge_project: str,
+) -> None:
+    repo = PgDecisionRepo(session_factory)
+    source = await _create_decision(
+        repo, project_key=merge_project, title="Source", tags=["source"]
+    )
+    target = await _create_decision(
+        repo, project_key=merge_project, title="Target", tags=["target"]
+    )
+    child = await _create_decision(
+        repo, project_key=f"{merge_project}-foreign", title="Foreign child", tags=[]
+    )
+    job = ConsolidationJob(session_factory, PgConsolidationLogRepo(session_factory))
+    await job.merge("decision", child, source)
+    ids = [source, target, child]
+    rows_query = sa.select(decisions).where(decisions.c.id.in_(ids)).order_by(decisions.c.id)
+    audit_query = (
+        sa.select(consolidation_log)
+        .where(consolidation_log.c.source_id.in_(ids))
+        .order_by(consolidation_log.c.id)
+    )
+    async with session_factory() as observer:
+        before_rows = (await observer.execute(rows_query)).mappings().all()
+        before_audits = (await observer.execute(audit_query)).mappings().all()
+    scope = DreamProjectScope(
+        project_key=merge_project,
+        resolver=PostgresDreamProjectResolver(session_factory),
+        audit=DreamProjectAudit(principal="dream-codex-synth", phase="synth"),
+        tool_name="brain_merge_entities",
+    )
+
+    with pytest.raises(consolidation.ConsolidationForeignChildrenError):
+        await job.merge("decision", source, target, authorization=scope)
+
+    async with session_factory() as observer:
+        assert (await observer.execute(rows_query)).mappings().all() == before_rows
+        assert (await observer.execute(audit_query)).mappings().all() == before_audits
+
+
+@pytest.mark.asyncio
 async def test_real_merge_rereads_child_committed_after_lock_snapshot(
     session_factory: async_sessionmaker[AsyncSession],
     merge_project: str,

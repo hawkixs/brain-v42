@@ -30,6 +30,7 @@ from brain_v42.services.consolidation import (
     ConsolidationChildrenUnstableError,
     ConsolidationEndpointMergedError,
     ConsolidationEntityNotFoundError,
+    ConsolidationForeignChildrenError,
 )
 
 if TYPE_CHECKING:
@@ -263,6 +264,7 @@ def register_decay_tools(
             ConsolidationEntityNotFoundError,
             ConsolidationEndpointMergedError,
             ConsolidationChildrenUnstableError,
+            ConsolidationForeignChildrenError,
         ) as exc:
             # The consolidation guards name only the endpoint, entity type and UUID.
             return format_error(str(exc))
