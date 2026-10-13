@@ -45,7 +45,10 @@ claude_cwd() {
 # directory must be this user's and closed to group and others, the path must not be a
 # symlink, and the file actually opened (checked through its descriptor, so a swap
 # between the check and the read cannot slip another file in) must be a regular file
-# owned by this user with no group or other permission.
+# owned by this user with no group or other permission. Ancestors above the map's
+# directory are not checked (accepted residual): the default path lives in the user's
+# private config tree, next to this helper and the token, which an ancestor's owner
+# could replace anyway. Never point BRAIN_AGENT_MAP_FILE into a shared directory.
 uid=$(id -u)
 private_entry() {  # $1 = path, $2 = find type
   [ -n "$(find "$1" -prune -type "$2" -user "$uid" ! -perm /077 2>/dev/null)" ]

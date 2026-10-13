@@ -356,9 +356,15 @@ install -m 0700 deploy/clients/claude-brain-headers.sh ~/.config/brain-v42/clien
 ```
 
 The map file is the operator's, `~/.config/brain-v42/clients/agent-map`, mode `0600`, one
-`<absolute path> <project_key>` per line, `#` for comments. The helper ignores a map that
-group or others can write, and any line whose key is not kebab-case. Seed it for directories
-whose basename is not their project:
+`<absolute path> <project_key>` per line, `#` for comments. The helper trusts it only when
+its directory belongs to the user with no group or other permission, the map path is not a
+symlink, and the file it actually opens is a regular file owned by the user with no group or
+other permission; it ignores any line whose key the server would refuse. Directories above
+the map's own are not checked: this residual is accepted (operator ruling, 2026-10-13),
+because the default path sits in the user's private configuration tree next to the helper
+and the token, which whoever controlled an ancestor could replace anyway. Never point
+`BRAIN_AGENT_MAP_FILE` into a directory another user can write or redirect. Seed the map
+for directories whose basename is not their project:
 
 ```
 /path/to/ReD_v1/skills red-skills
