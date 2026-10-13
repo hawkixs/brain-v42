@@ -7,10 +7,9 @@ the public API (``collector.collect_dream_*``) is unchanged.
 
 These methods depend only on ``self._session_factory`` and never crash the
 sidecar. ``collect_dream_metrics`` -- the block ``SlowBlockCache`` memoizes as
-"dream" -- signals a SQL failure by raising ``CollectorDegraded({})`` instead
-of returning ``{}`` plainly, so the cache can tell that shape apart from the
-identical ``{}`` a legitimate "no dream runs yet" produces and give it the
-short ``error_ttl_seconds`` instead of the full TTL (slow_block_cache.py).
+"dream" -- signals a SQL failure by raising ``CollectorDegraded`` with an
+empty payload, so the cache retries it under the short error
+TTL rather than treating it as a legitimate "no dream runs yet" result.
 The other two collectors here (promotions, promoted-health) still degrade to
 an empty result silently -- they are optional sub-blocks folded into "dream"
 only when non-empty, not the block's own success/failure signal.
@@ -25,6 +24,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 from sqlalchemy import text
 
+from brain_v42.metrics.dream_scheduler import DreamSchedulerMode, read_dream_scheduler_state
 from brain_v42.metrics.slow_block_cache import CollectorDegraded
 
 if TYPE_CHECKING:
@@ -105,7 +105,9 @@ class _DreamCollectorsMixin:
     if TYPE_CHECKING:
         _session_factory: async_sessionmaker[AsyncSession]
 
-    async def collect_dream_metrics(self) -> dict[str, Any]:
+    async def collect_dream_metrics(
+        self, scheduler_mode: DreamSchedulerMode = "systemd_user"
+    ) -> dict[str, Any]:
         """Query dream_runs for last run detail + recent history.
 
         Last-run query: DISTINCT ON (phase) ORDER BY phase, id DESC — picks the
@@ -123,6 +125,9 @@ class _DreamCollectorsMixin:
         outcome (dry_run flag, target_type, target_id, reason) so red-monitor
         can tell a rehearsal from a real materialization at a glance.
         """
+        scheduler = await read_dream_scheduler_state(scheduler_mode)
+        scheduler_state = scheduler["state"]
+        judged = scheduler_state == "armed"
         try:
             async with self._session_factory() as session:
                 # Last row PER PHASE of the last run_date — a re-run on the
@@ -185,7 +190,8 @@ class _DreamCollectorsMixin:
                     if phase_name == "promote":
                         promote_ran = True
 
-                for phase_name in sorted(expected_dream_phases() - set(phases)):
+                missing_phases = expected_dream_phases() - set(phases) if judged else set()
+                for phase_name in sorted(missing_phases):
                     phases[phase_name] = {
                         "status": "partial",
                         "model": None,
@@ -243,7 +249,9 @@ class _DreamCollectorsMixin:
 
                 last_run: dict[str, Any] = {
                     "date": last_date,
-                    "status": "success" if fail == 0 else "partial",
+                    "status": "success" if fail == 0 else "partial" if judged else "failed",
+                    "judged": judged,
+                    "scheduler_state": scheduler_state,
                     "phases_ok": ok,
                     "phases_fail": fail,
                     "total_cost_usd": round(total_cost, 4),
@@ -280,7 +288,7 @@ class _DreamCollectorsMixin:
                         "reason": promote_row[2],
                     }
 
-                return {"last_run": last_run, "history": history}
+                return {"state": scheduler_state, "last_run": last_run, "history": history}
         except Exception as exc:
             logger.warning("metrics.collect_dream_metrics.failed", exc_info=True)
             raise CollectorDegraded({}) from exc
