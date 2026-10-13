@@ -100,12 +100,17 @@ def upgrade() -> None:
             f"CREATE INDEX idx_{table_name}_merged_into ON public.{table_name} "
             "(merged_into) WHERE merged_into IS NOT NULL"
         )
+        # Only a row whose pointer becomes non-NULL can start or extend a chain.
+        # Without the WHEN clause every plain insert queued a deferred check that
+        # runs with the committing role's privileges, so a role without SELECT on
+        # the table (codex_ro after SET LOCAL ROLE) failed its commit.
         op.execute(
             f"""
             CREATE CONSTRAINT TRIGGER {table_name}_merge_chain_guard
             AFTER INSERT OR UPDATE OF merged_into ON public.{table_name}
             DEFERRABLE INITIALLY DEFERRED
-            FOR EACH ROW EXECUTE FUNCTION public.refuse_merge_chain()
+            FOR EACH ROW WHEN (NEW.merged_into IS NOT NULL)
+            EXECUTE FUNCTION public.refuse_merge_chain()
             """
         )
 
