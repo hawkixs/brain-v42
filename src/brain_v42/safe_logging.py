@@ -1,23 +1,97 @@
-"""The one ConsoleRenderer factory: tracebacks are printed, frame locals never.
+"""Shared exception rendering: keep frames and types, never locals or messages.
 
 With ``rich`` installed, ``structlog.dev.ConsoleRenderer`` renders ``exc_info``
 through a rich formatter that shows every frame's local variables. During a
 Postgres outage the asyncpg connect frame holds ``password=...``, which then
-lands in clear in the systemd journal. ``plain_traceback`` keeps the traceback
-and drops the locals, whether or not rich is present.
+lands in clear in the systemd journal. Driver exception messages can also carry
+credentials, SQL and bound parameters. Both renderers use the same sanitizing
+transformer, including causes and exception groups, so neither messages nor
+frame locals reach the output, whether or not rich is present.
 """
 
 from __future__ import annotations
 
+import io
 import logging
 import re
 import sys
 from collections.abc import Sequence
-from typing import Any, Literal
+from typing import Any, Literal, TextIO
 from urllib.parse import urlsplit, urlunsplit
 
 import structlog
-from structlog.types import EventDict, Processor
+from structlog.types import EventDict, ExcInfo, Processor
+
+_REDACTED_MESSAGE = "<message redacted>"
+
+
+class _SafeExceptionTransformer(structlog.tracebacks.ExceptionDictTransformer):
+    """Remove messages from every nested exception before either renderer sees it."""
+
+    def __call__(self, exc_info: ExcInfo) -> list[dict[str, Any]]:
+        stacks = super().__call__(exc_info)
+        self._redact(stacks)
+        return stacks
+
+    def _redact(self, value: Any) -> None:
+        if isinstance(value, list):
+            for item in value:
+                self._redact(item)
+        elif isinstance(value, dict):
+            if "exc_value" in value:
+                value["exc_value"] = _REDACTED_MESSAGE
+                # Notes and SyntaxError payloads are also exception messages.
+                value["exc_notes"] = []
+                syntax = value.get("syntax_error")
+                if syntax:
+                    # `line` is the offending source text, as revealing as the message.
+                    syntax["msg"] = _REDACTED_MESSAGE
+                    syntax["text"] = _REDACTED_MESSAGE
+                    syntax["line"] = _REDACTED_MESSAGE
+            for item in value.values():
+                self._redact(item)
+
+
+_SAFE_EXCEPTION_TRANSFORMER = _SafeExceptionTransformer(show_locals=False)
+
+
+def _write_exception_stacks(sio: TextIO, stacks: list[dict[str, Any]]) -> None:
+    """Render only frame coordinates; source lines may themselves contain secrets."""
+    previous: dict[str, Any] | None = None
+    for stack in reversed(stacks):
+        if previous is not None:
+            relation = (
+                "The above exception was the direct cause of the following exception:"
+                if previous["is_cause"]
+                else "During handling of the above exception, another exception occurred:"
+            )
+            sio.write(f"\n{relation}\n\n")
+        sio.write("Traceback (most recent call last):\n")
+        for frame in stack["frames"]:
+            sio.write(f'  File "{frame["filename"]}", line {frame["lineno"]}, in {frame["name"]}\n')
+        sio.write(f"{stack['exc_type']}: {stack['exc_value']}\n")
+        for group in stack.get("exceptions", []):
+            # One chain per sub-exception; accept a bare stack too, whatever the version.
+            _write_exception_stacks(sio, [group] if isinstance(group, dict) else group)
+        previous = stack
+
+
+def _safe_console_traceback(sio: TextIO, exc_info: ExcInfo) -> None:
+    """Use the JSON sanitizer for standalone console consumers too."""
+    sio.write("\n")
+    _write_exception_stacks(sio, _SAFE_EXCEPTION_TRANSFORMER(exc_info))
+
+
+def _safe_text_traceback(exc_info: ExcInfo) -> str:
+    """Render the sanitized traceback as one string, for chains that pre-format."""
+    sio = io.StringIO()
+    _write_exception_stacks(sio, _SAFE_EXCEPTION_TRANSFORMER(exc_info))
+    return sio.getvalue().rstrip("\n")
+
+
+#: Drop-in replacement for ``structlog.processors.format_exc_info``: the stock
+#: processor formats with the stdlib, message included, before any renderer runs.
+safe_format_exc_info = structlog.processors.ExceptionRenderer(_safe_text_traceback)
 
 
 def redact_url(url: str | None) -> str | None:
@@ -39,16 +113,14 @@ def redact_url(url: str | None) -> str | None:
 
 
 def safe_console_renderer(**kwargs: Any) -> structlog.dev.ConsoleRenderer:
-    """Build a ConsoleRenderer whose tracebacks never include frame locals."""
-    return structlog.dev.ConsoleRenderer(
-        exception_formatter=structlog.dev.plain_traceback, **kwargs
-    )
+    """Keep traceback diagnostics without disclosing locals or exception messages."""
+    return structlog.dev.ConsoleRenderer(exception_formatter=_safe_console_traceback, **kwargs)
 
 
 def build_logging_processors(
     log_format: Literal["console", "json"], *, colors: bool | None = None
 ) -> list[Processor]:
-    """Keep both service log formats aligned without ever capturing frame locals."""
+    """Keep both service formats aligned without exposing locals or messages."""
     processors: list[Processor] = [
         # UTC for the JSON lines a follower parses; the console keeps its local time.
         structlog.processors.TimeStamper(fmt="iso", utc=log_format == "json"),
@@ -57,9 +129,7 @@ def build_logging_processors(
     if log_format == "json":
         processors.extend(
             [
-                structlog.processors.ExceptionRenderer(
-                    structlog.tracebacks.ExceptionDictTransformer(show_locals=False)
-                ),
+                structlog.processors.ExceptionRenderer(_SAFE_EXCEPTION_TRANSFORMER),
                 structlog.processors.JSONRenderer(),
             ]
         )
@@ -94,7 +164,7 @@ def _sanitize_access_event(logger: Any, method: str, event_dict: EventDict) -> E
 
 
 def configure_json_logging(processors: Sequence[Processor]) -> None:
-    """Share the no-locals JSON chain with stdlib and keep one stderr wire format."""
+    """Share exception redaction with stdlib and keep one stderr wire format."""
     # Keep foreign formatter metadata out of the sidecar's structured recent-log
     # buffer: the LogRecord still holds the original request, including its query.
     pre_chain: list[Processor] = [
