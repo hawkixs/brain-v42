@@ -205,8 +205,8 @@ async def test_a_collection_slower_than_the_previous_one_is_tolerated_up_to_an_e
     job_factory, previous_seconds, past_the_bound, expected, clock
 ):
     """Accepted residual (coordination ruling A, codex round 2 of #362): the delay is
-    planned from the collection that just finished, so the next confirmation lands
-    at age f/2 + poll + (D_next - D_prev). Evidence stays fresh while a collection
+    planned from the collection that just finished, so while f/2 - D_prev >= poll
+    the next confirmation lands at age f/2 + poll + (D_next - D_prev). Evidence stays fresh while a collection
     slows by at most f/2 - poll (240 s at the defaults) against the previous one;
     one second more reads stale for at most one cycle, and the only effect is a
     resolve refused until the next confirmation lands."""
@@ -219,6 +219,25 @@ async def test_a_collection_slower_than_the_previous_one_is_tolerated_up_to_an_e
     assert age == settings.freshness_seconds // 2 + settings.poll_seconds + (
         next_seconds - previous_seconds
     )
+    assert seen_by_the_evaluator(settings, age) == expected
+
+
+@pytest.mark.parametrize("job_factory", [lambda: make_job("merged"), context_job])
+@pytest.mark.parametrize("previous_seconds", [241.0, 300.0, 480.0])
+@pytest.mark.parametrize(("past_the_bound", "expected"), [(0, ["fresh"]), (1, ["stale"])])
+async def test_past_the_floor_a_collection_is_tolerated_up_to_the_poll_cadence_bound(
+    job_factory, previous_seconds, past_the_bound, expected, clock
+):
+    """Codex round 3 of #362: once f/2 - D_prev drops below poll_seconds the delay
+    is floored there, the next confirmation lands at age 2 * poll + D_next, and the
+    bound is the poll cadence's own: D_next up to f - 2 * poll (480 s), whatever
+    D_prev was."""
+    settings = DeliverySettings(enabled=True)
+    client = SlowClient(clock, previous_seconds, integration_sha=INTEGRATION_SHA)
+    delay = await delay_after(job_factory(), client, settings)
+    assert delay == settings.poll_seconds
+    next_seconds = settings.freshness_seconds - 2 * settings.poll_seconds + past_the_bound
+    age = delay + settings.poll_seconds + next_seconds
     assert seen_by_the_evaluator(settings, age) == expected
 
 

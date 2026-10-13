@@ -547,12 +547,15 @@ class DeliveryObserverRuntime:
         every cycle; subtracting this collection keeps a uniformly slow one no worse
         than the poll cadence. The caller floors the delay at poll_seconds.
 
-        Accepted residual (coordination ruling A on #362): the next confirmation
-        lands at age freshness/2 + poll + (D_next - D_prev), so evidence stays fresh
-        while a collection slows by at most freshness/2 - poll (240 s at the
-        defaults) against the previous one. Past that it reads stale for at most one
-        cycle, and the only effect is a resolve refused until the next confirmation.
-        No delay longer than poll_seconds could tolerate an arbitrary slowdown.
+        Accepted residual (coordination ruling A on #362). While freshness/2 - D_prev
+        >= poll, the next confirmation lands at age freshness/2 + poll + (D_next -
+        D_prev): evidence stays fresh while a collection slows by at most
+        freshness/2 - poll (240 s at the defaults) against the previous one. Once
+        the delay is floored at poll, the age is 2 * poll + D_next, the poll
+        cadence's own bound (D_next up to freshness - 2 * poll, 480 s). Past either
+        bound evidence reads stale for at most one cycle, and the only effect is a
+        resolve refused until the next confirmation. No delay longer than
+        poll_seconds could tolerate an arbitrary slowdown.
         """
         if isinstance(evidence, PullRequestEvidence) and evidence.integration_sha is None:
             return 0.0
