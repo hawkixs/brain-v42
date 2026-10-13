@@ -48,6 +48,18 @@ CALLER_SAFE_SITES: dict[tuple[str, str, str, str], str] = {
     ): "The isolated canonicalize_project_key call raises a curated invalid-key hint.",
     (
         "mcp/tools/project_context_tools.py",
+        "brain_set_project_context",
+        "FocusSlotError",
+        "format_error(str(exc))",
+    ): "FocusSlotError carries a stable code and a constant caller-safe message (7eab4e35).",
+    (
+        "mcp/tools/project_context_tools.py",
+        "brain_update_project_focus",
+        "FocusSlotError",
+        "format_error(str(exc))",
+    ): "The elevation check raises a constant focus_shrink_override_refused refusal (1c3136ef).",
+    (
+        "mcp/tools/project_context_tools.py",
         "brain_update_project_focus",
         "ProjectFocusShrinkError",
         "format_error(f'base_focus_shrink: {exc}')",
