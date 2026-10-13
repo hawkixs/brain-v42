@@ -1,0 +1,78 @@
+#!/bin/sh
+# Claude Code headersHelper for the brain-v42 MCP (user scope, Linux workstation).
+#
+# Prints the bearer read from the 0600 token file and, as X-Brain-Agent, what the
+# server needs to attribute the session to a project. The server keeps the basename
+# of a path and requires an existing kebab project; anything else falls back to the
+# client actor and counts mcp_auth_agent_unresolved (ticket 8955769a). So:
+#   - the working directory of the Claude Code process running this helper is used,
+#     never ${PWD}: Desktop sessions inherit the app's PWD (the home directory);
+#   - an operator-owned map (lines "<absolute path> <project_key>", longest path
+#     prefix wins) names the project of a directory whose basename is not one,
+#     and the project key is then sent instead of the path;
+#   - the home directory itself and the daemon's prewarmed /tmp/cc-daemon-*/spare
+#     processes claim no project: no X-Brain-Agent at all, so the call runs under
+#     the client actor without counting a miss;
+#   - a path that cannot be carried safely in the JSON line claims no project.
+# Fails (non-zero, nothing on stdout) when the token file is missing or empty.
+set -eu
+file="${BRAIN_CLAUDE_TOKEN_FILE:-$HOME/.config/brain-v42/clients/workstation-claude.token}"
+map="${BRAIN_AGENT_MAP_FILE:-$HOME/.config/brain-v42/clients/agent-map}"
+token=$(tr -d '[:space:]' < "$file")
+[ -n "$token" ] || { echo "brain-v42 headersHelper: empty token file $file" >&2; exit 1; }
+
+claude_cwd() {
+  pid=$PPID
+  while [ "$pid" -gt 1 ]; do
+    exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true)
+    case "$exe" in
+      */claude|*/ccd-cli/*|*/claude/versions/*|*/claude-code/*)
+        readlink "/proc/$pid/cwd" 2>/dev/null || true
+        return 0 ;;
+    esac
+    pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null || echo 1)
+  done
+}
+
+# A map writable by anyone but its owner could redirect attribution: ignore it.
+map_is_private() {
+  [ -f "$map" ] && [ -r "$map" ] && [ -z "$(find "$map" -prune -perm /022 2>/dev/null)" ]
+}
+
+mapped_project() {
+  best="" best_len=0
+  map_is_private || return 0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) continue ;; esac
+    key=${line##* }
+    path=${line% *}
+    [ "$path" != "$line" ] || continue
+    case "$path" in /*) ;; *) continue ;; esac
+    path=${path%/}
+    case "$key" in *[!a-z0-9-]*|-*|'') continue ;; esac
+    case "$1" in
+      "$path"|"$path"/*)
+        if [ "${#path}" -gt "$best_len" ]; then best=$key best_len=${#path}; fi ;;
+    esac
+  done < "$map"
+  printf '%s' "$best"
+}
+
+agent=$(claude_cwd)
+case "$agent" in
+  "$HOME"|/tmp/cc-daemon-*/spare) agent="" ;;
+esac
+case "$agent" in
+  /*)
+    project=$(mapped_project "$agent")
+    [ -z "$project" ] || agent=$project ;;
+esac
+# JSON cannot carry a quote, a backslash or a control character unescaped.
+case "$agent" in
+  *[\"\\]*|*[[:cntrl:]]*) agent="" ;;
+esac
+if [ -n "$agent" ]; then
+  printf '{"Authorization":"Bearer %s","X-Brain-Agent":"%s"}\n' "$token" "$agent"
+else
+  printf '{"Authorization":"Bearer %s"}\n' "$token"
+fi
