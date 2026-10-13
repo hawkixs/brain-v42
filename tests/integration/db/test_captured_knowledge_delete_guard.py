@@ -442,27 +442,65 @@ async def test_delete_adopts_a_referrer_committed_while_it_waited_for_the_lock(
 ) -> None:
     """The referrer is read by the locking statement, so one committed after that
     snapshot is invisible to it: the delete must notice it, lock it and clear it."""
-    target_id = await _insert_row(session_factory, "decision", project)
-    referrer_id = uuid4()
+    referrer_id, target_id = sorted((uuid4(), uuid4()), key=str)
+    session_id = await _open_session(session_factory, project)
+    async with session_factory.begin() as session:
+        for row_id in (target_id, referrer_id):
+            await session.execute(
+                decisions.insert().values(
+                    id=row_id, project_key=project, **_values("decision", project)
+                )
+            )
+
+    lower_locked = asyncio.Event()
+    writer_committed = asyncio.Event()
+
+    async def capture_lower_then_share_target() -> None:
+        async with session_factory.begin() as capturing:
+            await capturing.execute(
+                sa.select(decisions.c.id)
+                .where(decisions.c.id == referrer_id)
+                .with_for_update(read=True, key_share=True)
+            )
+            await capturing.execute(
+                brain_session_artifacts.insert().values(
+                    knowledge_id=referrer_id, session_id=session_id, knowledge_type="decision"
+                )
+            )
+            lower_locked.set()
+            await writer_committed.wait()
+            shared_target = await capturing.scalar(
+                sa.select(decisions.c.id)
+                .where(decisions.c.id == target_id)
+                .with_for_update(read=True, key_share=True)
+            )
+            assert shared_target == target_id
 
     async with session_factory() as writer:
         async with writer.begin():
-            # The foreign key check key-shares the target: the delete queues behind it.
+            # The uncommitted reference is invisible to the delete's snapshot.
+            # NO KEY UPDATE on the lower row allows capture to key-share it,
+            # while the FK check key-shares the target and parks the delete.
             await writer.execute(
-                decisions.insert().values(
-                    id=referrer_id,
-                    project_key=project,
-                    status="superseded",
-                    superseded_by=target_id,
-                    **_values("decision", project),
-                )
+                decisions.update()
+                .where(decisions.c.id == referrer_id)
+                .values(status="superseded", superseded_by=target_id)
             )
             deleting = asyncio.create_task(
                 _delete_with("decision", session_factory, target_id, project if scoped else None)
             )
             await _until(lambda: _lock_waiters_at_least(session_factory, 1), "delete parked")
+            capturing = asyncio.create_task(capture_lower_then_share_target())
+            await asyncio.wait_for(lower_locked.wait(), timeout=10)
 
-    assert await asyncio.wait_for(deleting, timeout=10) is True
+    # Delete is already first in the target's lock queue. Capture owns the lower
+    # straggler and now requests the target: keeping the target while retrying
+    # would deadlock. Rolling back the savepoint lets capture finish first.
+    writer_committed.set()
+    outcomes = await asyncio.wait_for(
+        asyncio.gather(deleting, capturing, return_exceptions=True), timeout=15
+    )
+    assert outcomes == [True, None], outcomes
     async with session_factory() as session:
         row = (
             (await session.execute(sa.select(decisions).where(decisions.c.id == referrer_id)))
@@ -472,6 +510,42 @@ async def test_delete_adopts_a_referrer_committed_while_it_waited_for_the_lock(
     assert row["superseded_by"] is None
     assert row["status"] == "active"
     assert not await _exists(session_factory, "decision", target_id)
+
+
+async def test_scoped_delete_with_a_foreign_referrer_takes_no_lock_on_it(
+    session_factory: async_sessionmaker[AsyncSession], project: str
+) -> None:
+    """A refusal must release no foreign row locks into the caller's transaction."""
+    target_id = await _insert_row(session_factory, "decision", project)
+    foreign_id = uuid4()
+    foreign_project = f"{project}-other"
+    async with session_factory.begin() as session:
+        await session.execute(
+            decisions.insert().values(
+                id=foreign_id,
+                project_key=foreign_project,
+                superseded_by=target_id,
+                status="superseded",
+                **_values("decision", foreign_project),
+            )
+        )
+    try:
+        async with session_factory.begin() as caller:
+            deleted = await PgDecisionRepo(session_factory).delete(
+                target_id, project_key=project, session=caller
+            )
+            assert deleted is False
+            async with session_factory.begin() as concurrent:
+                locked_id = await concurrent.scalar(
+                    sa.select(decisions.c.id)
+                    .where(decisions.c.id == foreign_id)
+                    .with_for_update(nowait=True)
+                )
+                assert locked_id == foreign_id
+        assert await _exists(session_factory, "decision", target_id)
+    finally:
+        async with session_factory.begin() as session:
+            await session.execute(decisions.delete().where(decisions.c.id == foreign_id))
 
 
 async def test_scoped_delete_of_another_projects_decision_takes_no_lock_on_it(
