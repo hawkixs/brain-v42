@@ -311,6 +311,28 @@ Focus slots (ADR #34) carry the topics in flight; the tools are described in
   `receipt_pending=true`. A slot found in that state came from a missed hook call: close it with
   `brain_slot_close`.
 
+## Programme progress (`GET /programmes`)
+
+Programmes and their gates are written by the `brain_programme_*` tools
+([MCP tools](MCP_TOOLS.md#brain_programme_upsert)) and read by the cockpit through red-monitor.
+The contract is `docs/contracts/programmes_v1.md`. Three things to know when operating it:
+
+- **Where it is served.** `GET /programmes` on the metrics sidecar answers
+  `{"programmes": <block>}`, or `{}` when the block's read failed. The failure is memoised
+  for 5 s, and the next request retries. The block is not in `/metrics`. It shares the
+  sidecar's listener and its read boundary: unauthenticated, behind the WireGuard perimeter
+  (decision 94771690). Its exact fields are pinned with the other public reads by
+  `tests/unit/metrics/test_read_exposure_pinned.py`. A release older than 065 answers `404`,
+  which red-monitor reports as `no_publisher`.
+- **How fresh it is.** The block is memoised for 30 s with the other slow blocks.
+  `generated_at` is its computation time, so a block served 25 s after it was computed reads
+  25 s old. That is not a stuck publisher.
+- **Who may write.** Writes need the HTTP transport with a client credential: the writer is the
+  project the credential resolves. A write under the shared token or stdio is refused with
+  `caller_unidentified`. When a coordinating session ends, a programme stays readable and
+  writable by its coordinating project. Mark a finished programme `done`: it stays published
+  for seven days, then leaves the block but remains readable through `brain_programme_list`.
+
 ## Admin elevation hook (`/brain-admin`)
 
 The operator elevates the current Brain session to admin by typing a command in the

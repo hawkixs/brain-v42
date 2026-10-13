@@ -502,15 +502,19 @@ All are optional via settings (`metrics_enabled`, `decay_enabled`, `graph_enable
 `src/brain_v42/metrics/server.py` starts an aiohttp app exposing:
 
 - `GET /metrics` — JSON, read from `MetricsCollector` in-memory counters and PG aggregates.
+- `GET /programmes` — the `programmes/v1` block (contract `docs/contracts/programmes_v1.md`) as `{"programmes": <block>}`, or `{}` while the block's read failed. It never rides in `/metrics`, so the payload red-monitor stores on every brain-card probe does not grow. It is memoised with the slow blocks (TTL 30 s, single flight) and relayed by red-monitor's `GET /api/v1/programmes` to the cockpit. Same listener and same unauthenticated read exposure as `/metrics`; it carries declared one-line texts and project keys, no secret.
 - `GET /api/cockpit` — single JSON snapshot (`CockpitCollector`) consumed by `red-monitor` with ~2s poll. The `transport` field reads `settings.brain_mcp_transport` (so it correctly shows `"http"` post-cutover). `cache_hit_ratio` is `null` — the GPU embedding service does not expose a cache-hit counter.
 
 **Read boundary (decisions 30cacb0b and 94771690, 2026-10-13)**: when the sidecar binds a non-loopback
-address with `METRICS_ALLOW_NON_LOOPBACK` (as on red-base's wg0), `GET /metrics` and
-`GET /api/cockpit` answer any WireGuard peer without a credential, by operator decision.
+address with `METRICS_ALLOW_NON_LOOPBACK` (as on red-base's wg0), `GET /metrics`,
+`GET /api/cockpit` and `GET /programmes` answer any WireGuard peer without a credential, by
+operator decision (`/programmes` with the frozen contract `docs/contracts/programmes_v1.md`).
 The WireGuard perimeter is the read boundary. The payloads include the inventory of
 every project's open sessions, focus slots (ids, titles, anchors) and ticket counters,
 per-agent and per-tool call counts, reranker usage by identity, MCP auth refusals by
 cause, Dream/nightly state and database sizes: together, the inventory and usage profile.
+`/programmes` adds the declared programme and gate titles, owners, states and operator
+asks.
 They carry no secret field; configured endpoint URLs (`embedding_service.url`) are
 published with userinfo, query string and fragment stripped by `redact_url` (ticket
 2bb6f20b). The exact field list is pinned by

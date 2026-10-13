@@ -24,6 +24,7 @@ from brain_v42.metrics.brain_graph_server import BrainGraphMetricsServer
 from brain_v42.metrics.client_activity import ClientActivityRegistry
 from brain_v42.metrics.client_observation import ClientObservation
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.repositories.pg_programme import VERSION, PgProgrammeRepo, published_programme
 
 # Only these maps use runtime labels rather than structural field names. The
 # wildcard in the literal pins EVERY value, without pinning deployment names.
@@ -397,6 +398,43 @@ COCKPIT_SCHEMA = {
 }
 
 
+# GET /programmes, decided with the frozen contract docs/contracts/programmes_v1.md
+# (tickets 8a063256 and 24c1f172): declared one-line texts, gate keys, project keys
+# and timestamps, no secret. Every optional object is filled below so the walk
+# reaches its fields; the contract test and the sidecar integration test pin the
+# semantics.
+PROGRAMMES_SCHEMA = {
+    "programmes": {
+        "version": None,
+        "generated_at": None,
+        "programmes": [
+            {
+                "key": None,
+                "title": None,
+                "coordinator": None,
+                "state": None,
+                "last_change": {"gate": None, "from": None, "to": None, "at": None, "by": None},
+                "gates": [
+                    {
+                        "key": None,
+                        "title": None,
+                        "owner": None,
+                        "state": None,
+                        "depends_on": [None],
+                        "weight": None,
+                        "waiting_on_operator": {"ask": None, "since": None},
+                        "progress": {"done": None, "total": None, "unit": None},
+                        "note": None,
+                        "updated_at": None,
+                        "updated_by": None,
+                    }
+                ],
+            }
+        ],
+    }
+}
+
+
 def _assert_schema(value: Any, schema: Any, path: str, visited_dynamic_maps: set[str]) -> None:
     """Reject structural drift at any depth, including inside dynamic maps."""
     if isinstance(schema, dict):
@@ -675,6 +713,40 @@ def populated_server(
     )
     monkeypatch.setattr("brain_v42.metrics.collector_nightly.KILLSWITCHES_PATH", killswitches)
 
+    # The programme rows a database would return, through the real serializer.
+    programme_row = {
+        "key": "brain-move",
+        "title": "Brain to red-base",
+        "coordinator_project": "brain-v42",
+        "state": "active",
+        "last_change_gate": "G7",
+        "last_change_from": "todo",
+        "last_change_to": "in_progress",
+        "last_change_at": NOW,
+        "last_change_by": "red-backup",
+    }
+    gate_row = {
+        "key": "G7",
+        "title": "red-backup deployed on red-base",
+        "owner_project": "red-backup",
+        "state": "in_progress",
+        "depends_on": ["G6"],
+        "weight": 4,
+        "waiting_ask": "validate spec",
+        "waiting_since": NOW,
+        "progress_done": 6,
+        "progress_total": 15,
+        "progress_unit": "tasks",
+        "note": "first deploy",
+        "updated_at": NOW,
+        "updated_by": "red-backup",
+    }
+
+    async def published_block(_repo: PgProgrammeRepo) -> dict[str, Any]:
+        return {"version": VERSION, "programmes": [published_programme(programme_row, [gate_row])]}
+
+    monkeypatch.setattr(PgProgrammeRepo, "published_block", published_block)
+
     # Reuse the actual telemetry fixture and merged-registry setup from
     # test_metrics_cockpit_collector.py, including the legacy conversation row.
     registry = ClientActivityRegistry(secret=b"\x04" * 32)
@@ -711,6 +783,7 @@ async def test_exact_recursive_read_exposure(populated_server: BrainGraphMetrics
     for path, handler, schema in (
         ("/metrics", "_handle_metrics", METRICS_SCHEMA),
         ("/api/cockpit", "_handle_cockpit", COCKPIT_SCHEMA),
+        ("/programmes", "_handle_programmes", PROGRAMMES_SCHEMA),
     ):
         response = await getattr(populated_server, handler)(make_mocked_request("GET", path))
         assert response.status == 200
@@ -722,7 +795,7 @@ async def test_exact_recursive_read_exposure(populated_server: BrainGraphMetrics
 async def test_only_decided_read_routes_are_credential_free(
     populated_server: BrainGraphMetricsServer, aiohttp_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pin the three public reads while credentialed POST receivers stay closed.
+    """Pin the four public reads while credentialed POST receivers stay closed.
 
     Graph rejection before loading data is pinned separately by
     test_brain_graph_server.py::test_graph_route_rejects_non_loopback_peer_before_loading_data.
@@ -735,16 +808,17 @@ async def test_only_decided_read_routes_are_credential_free(
     assert {route.resource.canonical for route in app.router.routes() if route.method == "GET"} == {
         "/metrics",
         "/api/cockpit",
+        "/programmes",
         "/healthz",
         "/api/brain-graph/v1",
     }
     client = await aiohttp_client(app)
     allowed = set()
-    for path in ("/metrics", "/api/cockpit", "/healthz", "/api/brain-graph/v1"):
+    for path in ("/metrics", "/api/cockpit", "/programmes", "/healthz", "/api/brain-graph/v1"):
         response = await client.get(path)
         if response.status == 200:
             allowed.add(path)
-    assert allowed == {"/metrics", "/api/cockpit", "/healthz"}
+    assert allowed == {"/metrics", "/api/cockpit", "/programmes", "/healthz"}
     for path in ("/v1/logs", "/v1/logs/claude", "/v1/client-activity"):
         response = await client.post(path, json={})
         assert response.status == 401
