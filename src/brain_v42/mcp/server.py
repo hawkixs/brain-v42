@@ -100,7 +100,7 @@ from brain_v42.services.graph_projection_schema import ensure_graph_projection_s
 from brain_v42.services.graph_service import GraphService
 from brain_v42.services.learning_service import LearningService
 from brain_v42.services.project_context_service import ProjectContextService
-from brain_v42.services.reranker_client import run_rerank_probe_loop
+from brain_v42.services.reranker_client import RerankClientLike, run_rerank_probe_loop
 from brain_v42.services.roadmap_service import RoadmapService
 from brain_v42.services.runbook_service import RunbookService
 from brain_v42.services.snippet_service import SnippetService
@@ -381,7 +381,7 @@ async def app_lifecycle(
         # without a periodic probe that only shows as searches quietly falling
         # back to RRF. Never awaited here: a probe that hangs must not delay
         # startup, and a probe error must not reach it (the loop swallows them).
-        reranker_client = services.get("reranker_client")
+        reranker_client: RerankClientLike | None = services.get("reranker_client")
         if reranker_client is not None:
             # Nothing else closes it. Pushed BEFORE the probe task so that, LIFO,
             # the probe is cancelled first and never meets a closed client.
@@ -676,7 +676,7 @@ def build_services() -> dict[str, Any]:
 
     # Reranker client (HTTP, for hybrid search)
 
-    reranker_client = build_reranker_client(
+    reranker_client: RerankClientLike | None = build_reranker_client(
         settings, observer=metrics_collector if settings.metrics_enabled else None
     )
     metrics_collector.record_rerank_backend(settings.rerank_backend)

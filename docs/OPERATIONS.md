@@ -498,6 +498,20 @@ persisted even without calls; the latest process report wins across processes.
 | `BRAIN_RERANK_PROVIDER` | unset | Provider routing sent with every request, as JSON: `{"only": ["voyageai"]}`. Keys: `only`, `allow_fallbacks` (default `false`), `data_collection` (`deny` by default, or `allow`), `zdr`. Unknown keys are refused. |
 | `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
 | `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole Cohere operation: connection, write, read, parsing and backoff sleeps. |
+| `BRAIN_RERANK_FALLBACK_MODEL` | empty | Optional second Cohere model, such as `cohere/rerank-4-fast`; must differ from the primary and have a measured calibration. |
+| `BRAIN_RERANK_FALLBACK_PROVIDER` | unset | JSON routing for the fallback, such as `{"only": ["cohere"]}`; required on OpenRouter and subject to the same author and privacy policy as the primary. |
+| `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS` | `1.0` | Positive primary-link budget; must be strictly below the overall budget when a fallback is configured. |
+
+With a fallback configured, the primary gets one attempt, with no retry sleep,
+bounded by its primary budget. Any HTTP, transport or response parsing failure
+hands over to the fallback, which may retry within the overall budget measured
+from the start of the primary call. Both links share the URL, probe path and key,
+read once at startup. Fallback logits are shifted by the difference between the
+two calibrated floor logits so the primary's search floor also applies to fallback
+scores after sigmoid. Search falls back to RRF only when both links fail; without
+a configured fallback, the single-client behaviour below still applies. The chain
+reports the primary's calibration and probe state, and neither hosted calibration
+enables feature deduplication signalling.
 
 The key file must be mode `0600` or stricter and have one of two shapes: the bare key value (one token: no whitespace, no `=`, at most
 512 characters), or a dotenv-style file with exactly one `BRAIN_RERANK_API_KEY=<value>`

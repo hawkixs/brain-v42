@@ -2,12 +2,109 @@
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
 from brain_v42.services.reranker_client import RerankerClient
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("retry_after", ["30", "1", "0", None])
+async def test_rerank_until_hands_over_without_sleep(retry_after: str | None) -> None:
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(429, headers={"Retry-After": retry_after} if retry_after else {})
+
+    hosted = RerankerClient(wire=CohereRerankWire("voyageai/rerank-3-lite"))
+    hosted._client = httpx.AsyncClient(
+        base_url="http://mock", transport=httpx.MockTransport(handler)
+    )
+    try:
+        with patch(
+            "brain_v42.services.reranker_client.asyncio.sleep", new_callable=AsyncMock
+        ) as sleep:
+            with pytest.raises(httpx.HTTPError):
+                await hosted.rerank_until(
+                    "q",
+                    ["a"],
+                    deadline=asyncio.get_running_loop().time() + 0.05,
+                    may_wait=False,
+                )
+            sleep.assert_not_called()
+        assert len(requests) == 1
+    finally:
+        await hosted.close()
+
+
+@pytest.mark.asyncio
+async def test_rerank_until_success() -> None:
+    hosted = RerankerClient(wire=CohereRerankWire("voyageai/rerank-3-lite"))
+    hosted._client = httpx.AsyncClient(
+        base_url="http://mock",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, json={"results": [{"index": 0, "relevance_score": 0.5}]}
+            )
+        ),
+    )
+    try:
+        assert await hosted.rerank_until(
+            "q",
+            ["a"],
+            deadline=asyncio.get_running_loop().time() + 0.05,
+            may_wait=False,
+        ) == [0.0]
+    finally:
+        await hosted.close()
+
+
+@pytest.mark.asyncio
+async def test_rerank_until_deadline_cancels_stalled_transport() -> None:
+    from brain_v42.services.reranker_client import RerankBudgetExhausted
+
+    cancelled = asyncio.Event()
+
+    async def stalled(request: httpx.Request) -> httpx.Response:
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    hosted = RerankerClient(wire=CohereRerankWire("voyageai/rerank-3-lite"))
+    hosted._client = httpx.AsyncClient(
+        base_url="http://mock", transport=httpx.MockTransport(stalled)
+    )
+    try:
+        with pytest.raises(RerankBudgetExhausted):
+            await hosted.rerank_until(
+                "q",
+                ["a"],
+                deadline=asyncio.get_running_loop().time() + 0.01,
+                may_wait=False,
+            )
+        assert cancelled.is_set()
+    finally:
+        await hosted.close()
+
+
+@pytest.mark.asyncio
+async def test_shim_slow_answer_ignores_hosted_budget() -> None:
+    async def slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.01)
+        return httpx.Response(200, json={"scores": [0.7]})
+
+    shim = RerankerClient(budget_seconds=0.001)
+    shim._client = httpx.AsyncClient(base_url="http://mock", transport=httpx.MockTransport(slow))
+    try:
+        assert await shim.rerank("q", ["a"]) == [0.7]
+    finally:
+        await shim.close()
 
 
 @pytest.mark.parametrize(
