@@ -1,0 +1,31 @@
+{
+  "digest": "sha256:f20adb22c5c7ba864bc2167302383ec0a88f7b5347540af4597680746feae195",
+  "idempotency_key": "released:0.6.16",
+  "issuer": "agent:claude-code:9685aeb7-05fa-46fb-a0d1-70eaa93f2263",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "changelog": [
+        "docs(release): describe the 0.6.11 follow-ups accurately",
+        "chore(release): 0.6.16",
+        "docs(slots): say which eligibility growth the slot fence covers",
+        "fix(slots): fence brain_slot_open against receipts of newly eligible tickets",
+        "fix(logging): redact exception messages in console-mode stdlib records",
+        "test(mcp): extend the raw-exception guard to every raise",
+        "test(ci): harden the uv version parity test",
+        "chore(receipts): record the deployment of 0.6.15",
+        "chore(receipts): record the release of 0.6.15"
+      ],
+      "digest": "sha256:630ad6fc9f11ab910152e8df9f688e3b0acdd84aeb5c0570005bf18972128c6a",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:630ad6fc9f11ab910152e8df9f688e3b0acdd84aeb5c0570005bf18972128c6a",
+      "platform": "linux/amd64",
+      "sha": "ed008d90db2098a4941dd422ab053ca8a703e72f",
+      "tag": "v0.6.16",
+      "version": "0.6.16"
+    },
+    "kind": "released"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T17:49:14.099328Z",
+  "schema_version": 1
+}
