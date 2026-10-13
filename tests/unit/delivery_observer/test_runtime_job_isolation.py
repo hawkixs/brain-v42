@@ -103,7 +103,9 @@ class FakeClient:
     async def collect(self, binding, contract, previous=None):
         if binding.id in self.failing:
             raise ProviderError("provider_unavailable")
-        return MagicMock(spec=PullRequestEvidence)
+        # spec= does not see pydantic fields; the runtime reads this one to pace
+        # the next observation, and a real open pull request carries None.
+        return MagicMock(spec=PullRequestEvidence, integration_sha=None)
 
 
 def runtime_for(jobs, repo, *, undecodable=(), failing_jobs=()):
@@ -114,6 +116,151 @@ def runtime_for(jobs, repo, *, undecodable=(), failing_jobs=()):
         evidence_repository=repo,
         queue=FakeQueue(jobs, undecodable=undecodable),
     )
+
+
+async def test_heartbeat_written_after_completed_pass_and_persisted_observation(tmp_path):
+    heartbeat = tmp_path / "observer.heartbeat"
+    job = make_job("healthy")
+    runtime = DeliveryObserverRuntime(
+        settings=DeliverySettings(enabled=True, heartbeat_path=heartbeat),
+        owner=FakeOwner(),
+        client=FakeClient([]),
+        evidence_repository=FakeEvidenceRepo(),
+        queue=FakeQueue([job]),
+    )
+    result = await runtime.run_once()
+    assert result.exit_code == 0
+    assert datetime.fromisoformat(heartbeat.read_text()).tzinfo is not None
+
+
+async def test_heartbeat_refreshes_after_one_persisted_observation(tmp_path):
+    heartbeat = tmp_path / "observer.heartbeat"
+    runtime = DeliveryObserverRuntime(
+        settings=DeliverySettings(enabled=True, heartbeat_path=heartbeat),
+        owner=FakeOwner(),
+        client=FakeClient([]),
+        evidence_repository=FakeEvidenceRepo(),
+        queue=FakeQueue([]),
+    )
+    outcome = await runtime._observe(make_job("healthy"))
+    assert outcome.status == "collected"
+    assert datetime.fromisoformat(heartbeat.read_text()).tzinfo is not None
+
+
+async def test_heartbeat_absent_without_configured_path(tmp_path):
+    await runtime_for([], FakeEvidenceRepo()).run_once()
+    assert list(tmp_path.iterdir()) == []
+
+
+async def test_run_refreshes_heartbeat_after_first_cycle_then_stops(tmp_path):
+    """The long-running loop refreshes the file between cycles. A shutdown requested
+    during a cycle skips that cycle's refresh (it may have been cut short), so the
+    file is checked when the second cycle starts, before stopping."""
+    heartbeat = tmp_path / "observer.heartbeat"
+    stop = asyncio.Event()
+    runtime = DeliveryObserverRuntime(
+        settings=DeliverySettings(enabled=True, heartbeat_path=heartbeat, poll_seconds=1),
+        owner=FakeOwner(),
+        client=FakeClient([]),
+        evidence_repository=FakeEvidenceRepo(),
+        queue=FakeQueue([]),
+    )
+    original = runtime._cycle
+    seen_before_second_cycle: list[bool] = []
+
+    async def stop_on_second_cycle(*args, **kwargs):
+        if seen_before_second_cycle or heartbeat.exists():
+            seen_before_second_cycle.append(heartbeat.exists())
+            stop.set()
+        return await original(*args, **kwargs)
+
+    runtime._cycle = stop_on_second_cycle
+    assert await asyncio.wait_for(runtime.run(stop), timeout=10) == 0
+    assert seen_before_second_cycle == [True]
+    assert datetime.fromisoformat(heartbeat.read_text()).tzinfo is not None
+
+
+async def test_heartbeat_not_written_after_aborted_batch(tmp_path, monkeypatch):
+    heartbeat = tmp_path / "observer.heartbeat"
+    runtime = runtime_for([make_job("healthy")], FakeEvidenceRepo())
+    runtime.settings.heartbeat_path = heartbeat
+    stop = asyncio.Event()
+
+    async def aborted(jobs, stop_event):
+        stop_event.set()
+        return None
+
+    monkeypatch.setattr(runtime, "_batch", aborted)
+    assert await runtime.run(stop) == 0
+    assert not heartbeat.exists()
+
+
+async def test_heartbeat_write_failure_does_not_change_pass_result(tmp_path):
+    heartbeat = tmp_path / "heartbeat-directory"
+    heartbeat.mkdir()
+    runtime = DeliveryObserverRuntime(
+        settings=DeliverySettings(enabled=True, heartbeat_path=heartbeat),
+        owner=FakeOwner(),
+        client=FakeClient([]),
+        evidence_repository=FakeEvidenceRepo(),
+        queue=FakeQueue([]),
+    )
+    result = await runtime.run_once()
+    assert result.exit_code == 0
+
+
+async def test_heartbeat_write_failure_is_reported_only_as_json_on_stderr(tmp_path, capsys):
+    heartbeat = tmp_path / "heartbeat-directory"
+    heartbeat.mkdir()
+    runtime = DeliveryObserverRuntime(
+        settings=DeliverySettings(enabled=True, heartbeat_path=heartbeat),
+        owner=FakeOwner(),
+        client=FakeClient([]),
+        evidence_repository=FakeEvidenceRepo(),
+        queue=FakeQueue([]),
+    )
+    runtime._write_heartbeat()
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert json.loads(captured.err) == {
+        "event": "observer_heartbeat_write_failed",
+        "error_type": "IsADirectoryError",
+    }
+
+
+async def test_heartbeat_is_not_written_after_ownership_loss(tmp_path):
+    heartbeat = tmp_path / "observer.heartbeat"
+    owner = FakeOwner()
+    owner.owned = False
+
+    async def cannot_acquire():
+        return False
+
+    owner.acquire = cannot_acquire  # type: ignore[method-assign]
+    runtime = DeliveryObserverRuntime(
+        settings=DeliverySettings(enabled=True, heartbeat_path=heartbeat),
+        owner=owner,
+        client=FakeClient([]),
+        evidence_repository=FakeEvidenceRepo(),
+        queue=FakeQueue([]),
+    )
+    assert (await runtime.run_once()).exit_code == 2
+    assert not heartbeat.exists()
+
+
+async def test_heartbeat_is_not_written_when_cycle_returns_ownership_exit(tmp_path, monkeypatch):
+    from brain_v42.delivery_observer.runtime import ObservationRunResult
+
+    heartbeat = tmp_path / "observer.heartbeat"
+    runtime = runtime_for([], FakeEvidenceRepo())
+    runtime.settings.heartbeat_path = heartbeat
+
+    async def lost_cycle(*args, **kwargs):
+        return ObservationRunResult(exit_code=2)
+
+    monkeypatch.setattr(runtime, "_cycle", lost_cycle)
+    assert (await runtime.run_once()).exit_code == 2
+    assert not heartbeat.exists()
 
 
 def stderr_lines(capsys):

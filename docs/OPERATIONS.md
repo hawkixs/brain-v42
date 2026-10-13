@@ -203,8 +203,16 @@ followed by a rail deploy. Each run prints its report to `docker logs brain-v42-
 and records a `dream_runs` row (`phase = 'sweep'`, `phase_dry_run` set accordingly) on a
 best-effort basis: a run that fails before reaching the database (invalid configuration,
 PostgreSQL down) or whose INSERT fails leaves no row, so a missing row does not prove the
-loop is dead. A failed run is retried the next day; the healthcheck proves only that the
-loop process exists, not that a run completed.
+loop is dead. A failed run is retried the next day.
+After the sweep, the same loop runs `python -m brain_v42.maintenance.trace_retention`
+(see "Agent trace and graph outbox retention"), dry unless its command line carries
+`--execute`; its two report lines go to the same container log.
+Each of the two jobs touches its own heartbeat file when it succeeds
+(`/tmp/brain-v42-session-sweep.heartbeat`, `/tmp/brain-v42-trace-retention.heartbeat`).
+The healthcheck fails once either is missing or older than 26 hours (a day between runs
+plus two hours for the runs), after a 15-minute start period that covers the first runs,
+so `brain-v42-session-sweep` turns `unhealthy` when a job stops completing, not only
+when the loop dies.
 
 **Arming state is measured, not documented.** This document deliberately does not
 state whether the four flags are armed: drop-ins change, and a copied value cannot
@@ -339,6 +347,68 @@ could elevate a session; the boundary against prompt injection holds (only text 
 submits reaches the hook), the boundary against a malicious local process is a convention
 plus the DM alert. An agent that calls `brain_session_resume` on another open session makes
 that session the one the next `/brain-admin` targets.
+
+## Workstation Claude Code headers (`headersHelper`)
+
+Claude Code reaches the MCP server with a user-scope `headersHelper`,
+`deploy/clients/claude-brain-headers.sh`. It prints one JSON line: the bearer read from
+the client's `0600` token file and, as `X-Brain-Agent`, what the server needs to attribute
+the session to a project. The server keeps the basename of a path and accepts it only if it
+is an existing kebab-case project; otherwise the call still runs, under the client actor,
+and `mcp_auth_agent_unresolved` counts the miss (`not_kebab` or `unknown_project`).
+
+What the helper sends, in order:
+
+1. Nothing for the home directory itself or for the daemon's prewarmed
+   `/tmp/cc-daemon-*/spare` processes: no project is claimed and nothing is counted.
+2. The project key of the longest matching prefix in the operator's map file, when one
+   matches on whole path components.
+3. Otherwise, the working directory of the Claude Code process that runs the helper (never
+   `${PWD}`: Desktop sessions inherit the app's directory, which is the home directory).
+
+A path that JSON cannot carry unescaped (a quote, a backslash, a control character) claims
+no project. A missing or empty token file makes the helper fail with nothing on stdout.
+
+Install, from the canonical checkout:
+
+```bash
+install -m 0700 deploy/clients/claude-brain-headers.sh ~/.config/brain-v42/clients/claude-brain-headers.sh
+```
+
+The map file is the operator's, `~/.config/brain-v42/clients/agent-map`, mode `0600`, one
+`<absolute path> <project_key>` per line, `#` for comments. The helper trusts it only when
+its directory belongs to the user with no group or other permission, the map path is not a
+symlink, and the file it actually opens is a regular file owned by the user with no group or
+other permission; it ignores any line whose key the server would refuse. Directories above
+the map's own are not checked: this residual is accepted (operator ruling, 2026-10-13),
+because the default path sits in the user's private configuration tree next to the helper
+and the token, which whoever controlled an ancestor could replace anyway. Never point
+`BRAIN_AGENT_MAP_FILE` into a directory another user can write or redirect. Seed the map
+for directories whose basename is not their project:
+
+```
+/path/to/ReD_v1/skills red-skills
+/path/to/ReD_v1 red
+```
+
+Variables: `BRAIN_CLAUDE_TOKEN_FILE` (default
+`~/.config/brain-v42/clients/workstation-claude.token`) and `BRAIN_AGENT_MAP_FILE`
+(default `~/.config/brain-v42/clients/agent-map`). Sessions pick the new helper up when
+they reconnect. Check the effect on the metrics sidecar: the `mcp_auth_agent_unresolved`
+counters stop growing, and the per-agent view shows the mapped projects.
+
+## Metrics sidecar health
+
+`GET /healthz` on the metrics sidecar (`:9200`) runs `SELECT 1` on its own engine, bounded
+by two seconds. PostgreSQL answering gives `200` with `"database": "reachable"`; an error
+or a stall gives `503` with `"status": "degraded"` and `"database": "unreachable"`, and a
+`metrics_healthz.database_unreachable` warning naming only the error type. The compose
+healthcheck reads this endpoint, so a PostgreSQL outage now turns `brain-v42-metrics`
+`unhealthy`, which red-agent reports in the container's health field. The answer still
+carries `ingest_receivers`. Unlike the MCP server's `/healthz`, this one does touch the
+database. The answer is decided at the two-second bound: a probe cancelled there finishes
+tearing down its connection in the background, so the endpoint stays within the
+healthcheck's three-second client timeout even when that teardown is slow.
 
 ## Network trust boundary (detailed)
 
@@ -969,6 +1039,53 @@ forever. The suppression is a LOG volume decision only: `brain_reindex_plans` st
 names every rejected path in its `Fichiers non indexés` list on every single run, and
 so does each sweep's `plan_index_refresher.sweep_done` error count.
 
+## Delivery observer: observation cadence
+
+A successful observation sets when the subject is looked at again:
+
+- an open pull request (no `integration_sha` yet): every
+  `BRAIN_DELIVERY_POLL_SECONDS` (default 60), so a merge is seen within a minute;
+- an integrated pull request and a ticket's repository contexts: after
+  `max(POLL_SECONDS, FRESHNESS_SECONDS // 2 - <duration of the collection>)`, 300 s at the
+  defaults for a quick collection. Before its next confirmation lands, evidence ages by
+  that delay, up to one poll interval before the loop picks the job, and the next
+  collection, which is sequential requests plus admission waits and can last minutes
+  for a large context set. Waiting the whole window would leave it stale at the end of
+  every cycle and refuse a resolve in that gap; subtracting the collection keeps a
+  uniformly slow one no worse than the poll cadence.
+
+With `D_prev` and `D_next` the durations of two consecutive collections, the next
+confirmation of a settled subject lands at age:
+
+- `FRESHNESS_SECONDS / 2 + POLL_SECONDS + (D_next - D_prev)` while
+  `FRESHNESS_SECONDS / 2 - D_prev >= POLL_SECONDS`: evidence stays fresh while a collection
+  slows by at most `FRESHNESS_SECONDS / 2 - POLL_SECONDS` (240 s at the defaults) against the
+  previous one, for example when GitHub's responses go from one to nine seconds across a
+  large context set;
+- `2 × POLL_SECONDS + D_next` once the delay is floored at the poll interval (a previous
+  collection longer than 240 s at the defaults): the poll cadence's own bound, fresh while
+  `D_next <= FRESHNESS_SECONDS - 2 × POLL_SECONDS` (480 s).
+
+Past either bound evidence reads stale for at most one cycle: a resolve in that window is refused
+with `delivery_requirements_unsatisfied` until the next confirmation lands, and nothing is
+lost. This residual is accepted (coordination ruling, 2026-10-13): no cadence slower than
+the poll interval could tolerate an arbitrary slowdown.
+
+The observer paces itself with its own `BRAIN_DELIVERY_FRESHNESS_SECONDS`, while the MCP
+server judges freshness with its own: give both processes the same value. An observer
+value above the server's leaves evidence stale between two observations.
+
+A failed observation retries on its own schedule. An outage, a rate limit or an invalid
+response backs off up to 300 s, or longer when GitHub names a longer `Retry-After` (capped
+at an hour). A repository or pull request the App cannot see (`provider_not_found`,
+`provider_forbidden`) waits `300 × 4^n` seconds, `n` being the failures since its last
+success (300 s, 20 min, 80 min, 5 h 20, 21 h 20, then a day), so a forgotten installation
+case stops spending the shared request budget. From its fourth
+consecutive failure the observer also writes an `observation_backoff` line on stderr
+(`subject`, `error_code`, `prior_failures`, `delay_seconds`): that subject now waits on an
+operator fix. Once it is fixed, `brain_delivery_refresh` on the ticket makes its
+contexts and active bindings due at once instead of waiting out the backoff.
+
 ## Delivery observer: releases and deployments
 
 Besides confirming pull requests, the delivery observer
@@ -1051,6 +1168,28 @@ running from a checkout says "live release unmeasured" instead of guessing.
 whether `v0.6.3` was observed, the tickets planned but not shipped in it, and those
 shipped under another tag.
 
+## Delivery observer: liveness
+
+Two signals say whether the observer is still observing, not merely running.
+
+**Heartbeat (container health).** With `BRAIN_DELIVERY_HEARTBEAT_PATH` set (Compose sets
+`/tmp/brain-v42-delivery-observer.heartbeat`), the observer rewrites that file, atomically,
+after every completed cycle, after every persisted observation attempt, and while the
+release and deployed passes page through their candidates. A cycle cut short by ownership
+loss or a shutdown does not refresh it at its end (a release pass may still refresh once
+before it notices, and the process exits right after). The `delivery-observer` healthcheck fails when the
+file is missing or older than 600 s (start period 120 s), so `brain-v42-delivery-observer`
+turns `unhealthy` and red-agent reports it. A failed write never stops observation; it is
+reported as one `observer_heartbeat_write_failed` JSON line on stderr with the error type.
+
+**Fact `delivery_observer_liveness` (briefing).** Measured on the production database:
+`lock_held` (the observer's session advisory lock is granted to a backend of this
+database), `overdue` (subjects the observer queue considers due for more than 600 s),
+`last_confirmation_age_seconds` (newest confirmation, any outcome; null when none) and
+`healthy` = lock held and nothing overdue. A dead observer shows as `lock_held = false`; a
+live but stalled one as `overdue > 0`. Read it with
+`brain_fact_get("delivery_observer_liveness")`.
+
 ## Delivery confirmation retention
 
 The maintenance CLI keeps every error confirmation (observer backoff depends on
@@ -1091,6 +1230,10 @@ SELECT count(*) FROM delivery_confirmations;
 ```
 
 Deleted successes remain recoverable from the preceding backup dump.
+
+## Agent trace and graph outbox retention
+
+`python -m brain_v42.maintenance.trace_retention` previews old, unreferenced closed agent traces and delivered graph outbox rows; deletion is dry by default and requires `--execute`. Trace retention has a 30-day minimum window, and outbox retention has a seven-day minimum (both default to 30 days). It keeps open and operator sessions, traces referenced by artifacts, checkpoints, slot history or relay children, and every undelivered outbox row. Batches default to 5000 rows, with at most 100 batches per purge. A dry run counts every candidate; an execute run is capped at `--max-batches` × `--batch-size` rows. Locked candidates are skipped, and later invocations can process the remainder.
 
 ## Automation service
 

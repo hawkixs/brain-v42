@@ -388,6 +388,38 @@ def test_unresolved_warning_memo_distinguishes_clients_and_reasons() -> None:
     assert len(logs) == 3
 
 
+async def test_project_client_without_agent_header_runs_as_itself_and_counts_no_miss() -> None:
+    """The workstation helper sends no X-Brain-Agent for the home directory or a daemon
+    spare (ticket 8955769a): such a call must be accepted under the client actor and must
+    not be counted as an unresolved agent."""
+    from unittest.mock import AsyncMock
+
+    from starlette.responses import JSONResponse
+
+    from brain_v42.credentials.verifier import VerifiedPrincipal
+    from brain_v42.mcp.credentials_http import CredentialGuard
+    from brain_v42.provenance import get_current_actor
+
+    core = AsyncMock(spec=CredentialVerifier)
+    core.verify.return_value = VerifiedPrincipal(
+        "workstation-claude", frozenset({"read"}), frozenset({"@project"}), ROW_ID, None
+    )
+    core.project_exists.side_effect = lambda candidate: candidate in {"red", "red-skills"}
+
+    async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        await JSONResponse(
+            {"actor": get_current_actor(), "project": scope["state"]["brain_actor_project"]}
+        )(scope, receive, send)
+
+    with capture_logs() as logs:
+        response = await request(CredentialGuard(app, verifier=core), token=TOKEN)
+    assert response.status_code == 200
+    assert response.json() == {"actor": "workstation-claude", "project": None}
+    assert agent_unresolved_counts() == {}
+    assert refusal_counts() == {}
+    assert logs == []
+
+
 @pytest.mark.parametrize("agent", ["ReD_v1", "/checkout/unknown-key"])
 async def test_unresolved_agent_without_project_issuer_keeps_exact_refusal(agent: str) -> None:
     from brain_v42.mcp.credentials_http import CredentialGuard
