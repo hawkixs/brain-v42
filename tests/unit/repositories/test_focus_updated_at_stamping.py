@@ -115,26 +115,18 @@ def _statements(session: AsyncMock) -> list[Any]:
 
 
 @pytest.mark.asyncio
-async def test_update_focus_stamps_only_on_a_real_change() -> None:
-    session = _mock_session(_result(None))
-
-    with _patch_factory(session):
-        await PgProjectContextRepo().update_focus("brain-v42", "a new focus")
-
-    _assert_conditional_stamp(_statements(session)[0])
-
-
-@pytest.mark.asyncio
-async def test_partial_update_stamps_when_it_carries_a_focus() -> None:
-    """`update()` is a generic partial write; it can still move the focus."""
+async def test_partial_update_cannot_move_or_stamp_the_focus() -> None:
+    """Generic metadata writes cannot bypass the focus CAS."""
     session = _mock_session(_result(None))
 
     with _patch_factory(session):
         await PgProjectContextRepo().update(
-            uuid4(), ProjectContextUpdate(current_focus="moved by a partial update")
+            uuid4(), ProjectContextUpdate(name="Renamed", current_focus="moved by a partial update")
         )
 
-    _assert_conditional_stamp(_statements(session)[0])
+    sql = _set_clause(_statements(session)[0])
+    assert "current_focus" not in sql
+    assert "focus_updated_at" not in sql
 
 
 @pytest.mark.asyncio
@@ -149,8 +141,8 @@ async def test_partial_update_without_a_focus_leaves_the_stamp_alone() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_or_create_stamps_the_conflict_branch_against_the_stored_row() -> None:
-    """On conflict the upsert overwrites `current_focus`, so it must date it."""
+async def test_get_or_create_cannot_write_focus_in_the_conflict_branch() -> None:
+    """Only the insert branch can establish a focus without a CAS."""
     session = _mock_session(
         _result(),
         # The focus-history INSERT 050 adds behind every focus write.
@@ -164,9 +156,9 @@ async def test_get_or_create_stamps_the_conflict_branch_against_the_stored_row()
 
     sql = _sql(_statements(session)[0])
     assert "ON CONFLICT" in sql, sql
-    assert "excluded.current_focus" in sql, sql
-    assert "project_contexts.current_focus IS DISTINCT FROM" in sql, sql
-    assert "ELSE project_contexts.focus_updated_at" in sql, sql
+    conflict = sql.split("DO UPDATE SET", 1)[1].split("RETURNING", 1)[0]
+    assert "current_focus" not in conflict, sql
+    assert "focus_updated_at" not in conflict, sql
 
 
 @pytest.mark.asyncio
@@ -314,7 +306,6 @@ def test_every_focus_writer_uses_the_shared_stamp() -> None:
 
     root = Path(__file__).parents[3] / "src" / "brain_v42"
     writers = (
-        root / "repositories" / "pg_project_context.py",
         root / "repositories" / "pg_brain_session.py",
         root / "services" / "roadmap_service.py",
     )

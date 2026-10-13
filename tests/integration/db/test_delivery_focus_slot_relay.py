@@ -23,6 +23,7 @@ from brain_v42.models.brain_session import (
 )
 from brain_v42.models.focus_slot import FocusSlotError
 from brain_v42.repositories.pg_brain_session import PgBrainSessionRepo
+from tests.conftest import elevated_focus_writer
 from tests.integration.db import test_delivery_focus_slots as _slots
 from tests.integration.db.test_delivery_focus_slot_binding import open_slot, sessions, started
 from tests.integration.db.test_delivery_focus_slot_bound_end import bound, history
@@ -396,12 +397,13 @@ async def test_the_service_refuses_guard_mod_and_a_reused_key_before_any_write(
 
 
 async def set_base(factory, project: str, text: str) -> int:
-    """Put `text` on the project base through a plain unbound end; return the new revision."""
-    session_id, key = await started(factory, project)
-    revision = (await base_state(factory, project))[1]
-    await sessions(factory).end(
-        session_id, key, "seed the base", text, revision, allow_focus_shrink=True
-    )
+    """Seed through an elevated unbound end; return the new revision."""
+    with elevated_focus_writer():
+        session_id, key = await started(factory, project)
+        revision = (await base_state(factory, project))[1]
+        await sessions(factory).end(
+            session_id, key, "seed the base", text, revision, allow_focus_shrink=True
+        )
     return revision + 1
 
 

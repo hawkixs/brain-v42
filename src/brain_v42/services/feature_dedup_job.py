@@ -26,7 +26,7 @@ from brain_v42.services.rerank_calibration import RerankCalibration
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-    from brain_v42.services.reranker_client import RerankerClient
+    from brain_v42.services.reranker_client import RerankClientLike
 
 logger = structlog.get_logger(__name__)
 
@@ -49,7 +49,7 @@ class FeatureDedupJob:
     def __init__(
         self,
         session_factory: async_sessionmaker[AsyncSession],
-        reranker: RerankerClient | None,
+        reranker: RerankClientLike | None,
     ) -> None:
         self._sf = session_factory
         self._reranker = reranker
@@ -135,7 +135,7 @@ class FeatureDedupJob:
             # Step 3: run cross-encoder on pre-filtered pairs
             candidates: list[tuple[Any, Any, float]] = []
             for target, source, _cosine_score in pre_filtered:
-                scores = await cast("RerankerClient", self._reranker).rerank(
+                scores = await cast("RerankClientLike", self._reranker).rerank(
                     target.name, [source.name]
                 )
                 reranker_score = scores[0] if scores else 0.0

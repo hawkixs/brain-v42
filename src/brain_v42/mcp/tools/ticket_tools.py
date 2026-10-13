@@ -15,7 +15,14 @@ import structlog
 from pydantic import ValidationError
 
 from brain_v42.facts.sources import running_release_sha
-from brain_v42.mcp.tools.formatters import format_confirmation, format_error, format_id
+from brain_v42.mcp.author_binding import observe_declared_project
+from brain_v42.mcp.tools.formatters import (
+    format_confirmation,
+    format_error,
+    format_id,
+    format_internal_error,
+    format_validation_errors,
+)
 from brain_v42.mcp.tools.parsing import parse_uuid, resolve_entity_id
 from brain_v42.mcp.tools.tool_annotations import (
     _DESTRUCTIVE_ANNOTATIONS,
@@ -25,6 +32,7 @@ from brain_v42.mcp.tools.tool_annotations import (
 from brain_v42.models.input_bounds import (
     KnowledgeText,
 )
+from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.ticket import (
     ExtractionStatus,
     LotShipping,
@@ -48,6 +56,17 @@ logger = structlog.get_logger(__name__)
 _VALID_KINDS = ("fyi", "request")
 _LIST_DEFAULT_LIMIT = 10
 _LIST_MAX_LIMIT = 100
+
+
+def _validate_ticket_inputs(author_project: str, target_release: str | None = None) -> None:
+    """Isolate curated argument refusals from unexpected service ValueErrors."""
+    try:
+        canonicalize_project_key(author_project)
+        if target_release is not None:
+            parse_target_release(target_release)
+    except ValueError as exc:
+        # Only our key canonicalizer and release parser run here; their hints are curated.
+        format_error(str(exc))
 
 
 def _age_days(dt: datetime) -> str:
@@ -241,6 +260,7 @@ def register_ticket_tools(
         knowledge-extraction job — use it for high-volume operational/job
         tickets (e.g. a factory daemon) that are noise, not durable knowledge.
         """
+        observe_declared_project("brain_ticket_create", from_project)
         if kind not in _VALID_KINDS:
             return format_error(f"Invalid kind '{kind}'. Valid: {list(_VALID_KINDS)}")
         if extraction is not None and extraction != ExtractionStatus.SKIPPED.value:
@@ -257,7 +277,10 @@ def register_ticket_tools(
                 extraction_status=(ExtractionStatus.SKIPPED if extraction else None),
             )
             ticket = await ticket_svc.create(data)
-        except (TicketError, ValidationError) as exc:
+        except ValidationError as exc:
+            return format_error(format_validation_errors(exc))
+        except TicketError as exc:
+            # Ticket domain guards curate permission, state and project refusals.
             return format_error(str(exc))
         logger.info(
             "mcp.brain_ticket_create",
@@ -290,15 +313,20 @@ def register_ticket_tools(
         `body` then carries the reason and is mandatory; an identical body is
         refused.
         """
+        observe_declared_project("brain_ticket_reply", author_project)
         tid = parse_uuid(ticket_id)
         if tid is None:
             return format_error(f"Invalid UUID: {ticket_id}")
+        _validate_ticket_inputs(author_project)
         try:
             await ticket_svc.reply(tid, author_project, body, corrects_body=corrects_body)
         except TicketError as exc:
+            # Ticket domain guards curate permission, state and project refusals.
             return format_error(str(exc))
-        except ValueError as exc:  # canonicalize_project_key strict
-            return format_error(str(exc))
+        except ValueError as exc:
+            if isinstance(exc, ValidationError):
+                return format_error(format_validation_errors(exc))
+            return format_internal_error("brain_ticket_reply", exc)
         if corrects_body is not None:
             logger.info("mcp.brain_ticket_reply.body_corrected", ticket_id=ticket_id)
             return format_confirmation(
@@ -317,15 +345,20 @@ def register_ticket_tools(
         resolve, wontfix, ack (fyi). Requester (from_project): confirm,
         reopen, cancel. Optional message is appended to the thread.
         """
+        observe_declared_project("brain_ticket_transition", author_project)
         tid = parse_uuid(ticket_id)
         if tid is None:
             return format_error(f"Invalid UUID: {ticket_id}")
+        _validate_ticket_inputs(author_project)
         try:
             updated = await ticket_svc.transition(tid, author_project, str(action), message=message)
         except TicketError as exc:
+            # Ticket domain guards curate permission, state and project refusals.
             return format_error(str(exc))
         except ValueError as exc:
-            return format_error(str(exc))
+            if isinstance(exc, ValidationError):
+                return format_error(format_validation_errors(exc))
+            return format_internal_error("brain_ticket_transition", exc)
         logger.info(
             "mcp.brain_ticket_transition",
             ticket_id=ticket_id,
@@ -359,13 +392,20 @@ def register_ticket_tools(
             target_release: Version X.Y.Z without the tag's v (e.g. "0.6.3");
                 omit or null to unplan.
         """
+        observe_declared_project("brain_ticket_plan", author_project)
         tid = parse_uuid(ticket_id)
         if tid is None:
             return format_error(f"Invalid UUID: {ticket_id}")
+        _validate_ticket_inputs(author_project, target_release)
         try:
             message = await ticket_svc.plan(tid, author_project, target_release)
-        except (TicketError, ValueError) as exc:
+        except TicketError as exc:
+            # Ticket domain guards curate permission, state and project refusals.
             return format_error(str(exc))
+        except ValueError as exc:
+            if isinstance(exc, ValidationError):
+                return format_error(format_validation_errors(exc))
+            return format_internal_error("brain_ticket_plan", exc)
         return format_confirmation(
             f"Ticket planned: {message.body}", message.body, id=format_id(ticket_id)
         )
@@ -399,6 +439,10 @@ def register_ticket_tools(
         try:
             if target_release is not None:
                 target_release = parse_target_release(target_release)
+        except ValueError as exc:
+            # This isolated release parser constructs a curated version-format hint.
+            return format_error(str(exc))
+        try:
             groups = await ticket_svc.list_grouped(project_key, target_release=target_release)
             shipping = (
                 await ticket_svc.lot_shipping(project_key, target_release)
@@ -406,9 +450,12 @@ def register_ticket_tools(
                 else None
             )
         except TicketError as exc:
+            # Ticket domain guards curate permission, state and project refusals.
             return format_error(str(exc))
         except ValueError as exc:
-            return format_error(str(exc))
+            if isinstance(exc, ValidationError):
+                return format_error(format_validation_errors(exc))
+            return format_internal_error("brain_ticket_list", exc)
         return _format_groups(
             groups,
             project_key,

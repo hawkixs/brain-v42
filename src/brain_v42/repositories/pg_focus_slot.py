@@ -22,6 +22,7 @@ from brain_v42.db.focus_slots import (
     anchor_states,
     close_slot,
     load_anchors,
+    lock_anchor_project_shared,
     lock_anchor_tickets,
     lock_slot,
     received_anchor,
@@ -76,10 +77,10 @@ class PgFocusSlotRepo(BasePgRepository):
                 return self._replay_open(existing, body, anchors)
             for anchor in anchors:
                 await self._admit_anchor(session, project_key, anchor)
-            # Lock, THEN read the receipts, in a later statement (READ COMMITTED: a fresh
-            # snapshot per statement): a writer holding the lock has committed by the time the
-            # lock is ours, and one that comes later queues behind our commit and finds the slot.
+            # All ticket locks precede the project fence. The fence also covers tickets
+            # that become eligible later; the receipt read gets a fresh READ COMMITTED snapshot.
             await lock_anchor_tickets(session, project_key=project_key, anchors=anchors)
+            await lock_anchor_project_shared(session, project_key=project_key)
             for anchor in anchors:
                 if await received_anchor(session, project_key=project_key, anchor=anchor):
                     raise FocusSlotError(

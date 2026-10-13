@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 if TYPE_CHECKING:
-    from brain_v42.services.reranker_client import RerankerClient
+    from brain_v42.services.reranker_client import RerankClientLike
     from brain_v42.services.search.hybrid import RankedCandidate
 
 logger = structlog.get_logger(__name__)
@@ -37,7 +37,7 @@ class HybridReranker:
     results (incident d3cf29e9 2026-03-30).
     """
 
-    def __init__(self, client: RerankerClient) -> None:
+    def __init__(self, client: RerankClientLike) -> None:
         self._client: Any = client
 
     async def rerank_with_mode(

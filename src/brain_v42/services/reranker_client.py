@@ -27,13 +27,30 @@ import structlog
 from brain_v42.config import is_relative_request_path
 from brain_v42.safe_logging import redact_url
 from brain_v42.services.rerank_calibration import RerankCalibration, calibration_for_identity
-from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
+from brain_v42.services.rerank_wire import RerankWire, ShimRerankWire, is_hosted_wire
 
 logger = structlog.get_logger(__name__)
 
 
 class RerankBudgetExhausted(httpx.HTTPError):
     """Keep budget exhaustion on the existing best-effort HTTP fallback path."""
+
+
+class RerankClientLike(Protocol):
+    """Allow consumers to use one client or a chain without knowing its links."""
+
+    async def rerank(self, query: str, candidates: list[str]) -> list[float]: ...
+    async def is_available(self) -> bool: ...
+    async def close(self) -> None: ...
+
+    @property
+    def calibration(self) -> RerankCalibration: ...
+    @property
+    def last_probe_ok(self) -> bool | None: ...
+    @property
+    def last_probe_reason(self) -> str | None: ...
+    @property
+    def last_probe_monotonic(self) -> float | None: ...
 
 
 class RerankObserver(Protocol):
@@ -48,6 +65,13 @@ class RerankObserver(Protocol):
     def on_retry(self, identity: str, reason: str) -> None: ...
     def on_operation(self, identity: str, outcome: str, total_ms: float) -> None: ...
     def on_probe(self, identity: str, ok: bool, reason: str) -> None: ...
+
+
+class RerankChainObserver(Protocol):
+    """Optional chain telemetry, independent of each link's attempt counters."""
+
+    def on_chain(self, outcome: str, served_identity: str | None) -> None: ...
+    def on_handover(self) -> None: ...
 
 
 class RerankerClient:
@@ -66,7 +90,7 @@ class RerankerClient:
       failure -- including a 503 WITHOUT ``Retry-After``, which is an outage
       rather than a busy slot -- still raises at once: reranking stays
       best-effort and callers fall back to RRF ordering.
-    - Hosted Cohere requests share one elapsed-time budget across all attempts
+    - Hosted Cohere and Voyage requests share one elapsed-time budget across all attempts
       and sleeps, so provider saturation cannot hold up a search indefinitely.
     """
 
@@ -166,14 +190,42 @@ class RerankerClient:
         if not candidates:
             return []
 
+        if is_hosted_wire(self._wire):
+            return await self.rerank_until(
+                query,
+                candidates,
+                deadline=asyncio.get_running_loop().time() + self._budget_seconds,
+                may_wait=True,
+            )
+        return await self._rerank_operation(query, candidates)
+
+    async def rerank_until(
+        self, query: str, candidates: list[str], *, deadline: float, may_wait: bool
+    ) -> list[float]:
+        """Bound a hosted call without mutating controls shared by concurrent calls."""
+        if not is_hosted_wire(self._wire):
+            raise ValueError("rerank_until requires a hosted rerank wire")
+        if not candidates:
+            return []
+        return await self._rerank_operation(query, candidates, deadline=deadline, may_wait=may_wait)
+
+    async def _rerank_operation(
+        self,
+        query: str,
+        candidates: list[str],
+        *,
+        deadline: float | None = None,
+        may_wait: bool = True,
+    ) -> list[float]:
         started = time.monotonic()
         outcome = "ok"
         try:
-            if isinstance(self._wire, CohereRerankWire):
-                deadline = asyncio.get_running_loop().time() + self._budget_seconds
+            if deadline is not None:
                 try:
                     async with asyncio.timeout_at(deadline):
-                        scores = await self._rerank(query, candidates, deadline=deadline)
+                        scores = await self._rerank(
+                            query, candidates, deadline=deadline, may_wait=may_wait
+                        )
                         # Synchronous JSON parsing cannot yield to the timeout callback.
                         if asyncio.get_running_loop().time() >= deadline:
                             raise RerankBudgetExhausted("rerank latency budget exhausted")
@@ -200,7 +252,12 @@ class RerankerClient:
             self._observe("on_operation", outcome, (time.monotonic() - started) * 1000)
 
     async def _rerank(
-        self, query: str, candidates: list[str], *, deadline: float | None = None
+        self,
+        query: str,
+        candidates: list[str],
+        *,
+        deadline: float | None = None,
+        may_wait: bool = True,
     ) -> list[float]:
         client = self._get_client()
         path, body = self._wire.request(query, candidates)
@@ -212,11 +269,19 @@ class RerankerClient:
             except httpx.ConnectError as exc:
                 if deadline is None:
                     raise
+                if not may_wait:
+                    raise RerankBudgetExhausted("rerank primary handed over") from exc
                 delay = random.uniform(0, 0.1 * 2**attempt)
                 reason = "transport_ConnectError"
                 if attempt == retries:
                     raise RerankBudgetExhausted("rerank retries exhausted") from exc
             else:
+                if (
+                    deadline is not None
+                    and not may_wait
+                    and (response.status_code == 429 or response.status_code >= 500)
+                ):
+                    raise RerankBudgetExhausted("rerank primary handed over")
                 if isinstance(self._wire, ShimRerankWire):
                     delay = self._wire.retry_delay(
                         response, attempt, cap=self._busy_retry_cap_seconds
@@ -277,7 +342,8 @@ class RerankerClient:
     async def is_available(self) -> bool:
         """Check if the reranker service is healthy.
 
-        Calls GET on the wire's health path. The outcome and its reason are kept
+        Calls GET on the wire's health path, or its POST probe when none exists.
+        The outcome and its reason are kept
         on the client, and a change of state is logged once: a hosted reranker
         whose key was revoked answers 401 forever, and without that line the only
         symptom is searches quietly falling back to RRF ordering.
@@ -286,13 +352,21 @@ class RerankerClient:
             True if the service responds with 200, False otherwise. Never raises
             on a transport error.
         """
-        if not is_relative_request_path(self._wire.health_path):
-            # Defence in depth behind the settings validator: httpx would send the
-            # bearer to the host an absolute URL names, ignoring base_url.
-            return self._record_probe(False, "invalid_health_path")
         try:
+            path = self._wire.health_path
+            probe = getattr(self._wire, "probe_request", None)
+            body = None
+            method = "GET"
+            if path is None and probe is not None:
+                method, path, body = probe()
+            if path is None or not is_relative_request_path(path):
+                # Defence in depth: never send the bearer to an absolute probe URL.
+                return self._record_probe(False, "invalid_health_path")
             client = self._get_client()
-            response = await client.get(self._wire.health_path)
+            if method == "POST":
+                response = await client.post(path, json=body)
+            else:
+                response = await client.get(path)
         except httpx.HTTPError as exc:
             return self._record_probe(False, f"transport_{type(exc).__name__}")
         except Exception as exc:
@@ -331,7 +405,7 @@ class RerankerClient:
             logger.info("reranker_client.client_closed")
 
 
-async def run_rerank_probe_loop(client: RerankerClient, interval_seconds: float) -> None:
+async def run_rerank_probe_loop(client: RerankClientLike, interval_seconds: float) -> None:
     """Probe ``client`` once now, then every ``interval_seconds``, until cancelled.
 
     Without it the health state only moves when something calls ``is_available()``,

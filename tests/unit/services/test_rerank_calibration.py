@@ -56,3 +56,42 @@ def test_calibration_is_frozen() -> None:
     cal = calibration_for_identity("shim")
     with pytest.raises(FrozenInstanceError):
         cal.dedup_signal = None
+
+
+def test_cohere_fast_calibration_has_no_dedup_signal() -> None:
+    from brain_v42.services.rerank_calibration import calibration_for_identity
+
+    cal = calibration_for_identity("cohere:cohere/rerank-4-fast")
+    assert cal.search_min_score == 0.30
+    assert cal.dedup_signal is None
+    assert cal.source == (
+        "internal bench rerank-quality-2026-10-06 full 762 (internal #23), "
+        "calibrate_min_score.py CAL_MODEL"
+    )
+
+
+@pytest.mark.parametrize(
+    "identity,expected",
+    [
+        ("shim", True),
+        ("cohere:voyageai/rerank-3-lite", True),
+        ("cohere:cohere/rerank-4-fast", True),
+        ("cohere:unknown", False),
+    ],
+)
+def test_is_calibrated(identity: str, expected: bool) -> None:
+    from brain_v42.services.rerank_calibration import is_calibrated
+
+    assert is_calibrated(identity) is expected
+
+
+def test_direct_voyage_reuses_the_measured_model_floor() -> None:
+    from brain_v42.services.rerank_calibration import calibration_for_identity, is_calibrated
+
+    cal = calibration_for_identity("voyage:rerank-3-lite")
+    assert is_calibrated(cal.identity)
+    assert cal.search_min_score == 0.50
+    assert cal.dedup_signal is None
+    assert cal.source == (
+        "same model as cohere:voyageai/rerank-3-lite (internal bench, 762 queries)"
+    )

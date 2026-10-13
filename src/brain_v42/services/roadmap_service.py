@@ -18,6 +18,7 @@ from brain_v42.db.focus_shrink import focus_shrink_refusal
 from brain_v42.db.focus_stamp import focus_stamp
 from brain_v42.db.tables import features, project_contexts
 from brain_v42.models.feature import VALID_FEATURE_STATUSES, RoadmapFeature, RoadmapProject
+from brain_v42.services.focus_shrink_override import require_focus_shrink_override
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -109,11 +110,14 @@ class RoadmapService:
         """Atomically compare-and-swap focus plus optional roadmap mutations.
 
         The new focus REPLACES the stored one whole, so a text under 70% of the stored
-        length is refused (`ProjectFocusShrinkError`) unless the operator passes
-        `allow_focus_shrink`: the same rule as a base relay and an unbound session end.
+        length is refused (`ProjectFocusShrinkError`) unless `allow_focus_shrink` is
+        authorized by an active /brain-admin elevation for this credential and
+        MCP connection: the same guard as a base relay and an unbound session end.
         It runs after the revision check, as in the relay (a stale caller is told to
         re-read first) and before any feature mutation, so a refusal writes nothing.
         """
+        if allow_focus_shrink:
+            await require_focus_shrink_override()
         normalized_focus = current_focus.strip()
         if not normalized_focus:
             raise ProjectFocusValidationError("current_focus must not be blank")
