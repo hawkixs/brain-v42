@@ -288,6 +288,10 @@ The project requires Python 3.12.7 or newer; CI targets Python 3.12. Install wit
 dependency and interpreter match CI. Unit tests do not require PostgreSQL. Tests that
 need a database require an isolated test database through `BRAIN_V42_TEST_DB_URL` and
 refuse production database targets.
+A session also refuses to start when the filesystem holding its temporary files
+(`--basetemp`, else `PYTEST_DEBUG_TEMPROOT`, else the system temp directory) has less free space than 5 % of its size,
+at least 5 GiB: a disk filled by old test directories once took a PostgreSQL on the same
+disk down. `BRAIN_V42_TEST_MIN_FREE_GB` sets the floor explicitly; `0` disables it.
 
 ## Project layout
 
