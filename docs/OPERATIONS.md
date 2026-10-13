@@ -975,21 +975,25 @@ A successful observation sets when the subject is looked at again:
 
 - an open pull request (no `integration_sha` yet): every
   `BRAIN_DELIVERY_POLL_SECONDS` (default 60), so a merge is seen within a minute;
-- an integrated pull request and a ticket's repository contexts: every
-  `max(POLL_SECONDS, FRESHNESS_SECONDS // 2)`, 300 s at the defaults. Half the window,
-  not the whole of it: the loop picks due work only every poll interval, and evidence
-  refreshed at exactly `FRESHNESS_SECONDS` would read stale at the end of every cycle,
-  refusing a resolve in that gap.
+- an integrated pull request and a ticket's repository contexts: after
+  `max(POLL_SECONDS, FRESHNESS_SECONDS // 2 - <duration of the collection>)`, 300 s at the
+  defaults for a quick collection. Before its next confirmation lands, evidence ages by
+  that delay, up to one poll interval before the loop picks the job, and the next
+  collection, which is sequential requests plus admission waits and can last minutes
+  for a large context set. Waiting the whole window would leave it stale at the end of
+  every cycle and refuse a resolve in that gap; subtracting the collection keeps a slow
+  one no worse than the poll cadence.
 
 The observer paces itself with its own `BRAIN_DELIVERY_FRESHNESS_SECONDS`, while the MCP
 server judges freshness with its own: give both processes the same value. An observer
 value above the server's leaves evidence stale between two observations.
 
-A failed observation retries sooner. An outage, a rate limit or an invalid response
-retries after at most 300 s. A repository or pull request the App cannot see
-(`provider_not_found`, `provider_forbidden`) waits `300 × 4^n` seconds, `n` being the
-failures since its last success (300 s, 20 min, 80 min, 5 h 20, then a day), so a
-forgotten installation case stops spending the shared request budget. From its fourth
+A failed observation retries on its own schedule. An outage, a rate limit or an invalid
+response backs off up to 300 s, or longer when GitHub names a longer `Retry-After` (capped
+at an hour). A repository or pull request the App cannot see (`provider_not_found`,
+`provider_forbidden`) waits `300 × 4^n` seconds, `n` being the failures since its last
+success (300 s, 20 min, 80 min, 5 h 20, 21 h 20, then a day), so a forgotten installation
+case stops spending the shared request budget. From its fourth
 consecutive failure the observer also writes an `observation_backoff` line on stderr
 (`subject`, `error_code`, `prior_failures`, `delay_seconds`): that subject now waits on an
 operator fix. Once it is fixed, `brain_delivery_refresh` on the ticket makes its

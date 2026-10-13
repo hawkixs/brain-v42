@@ -37,6 +37,24 @@ from tests.unit.delivery_observer.test_runtime_job_isolation import (
 INTEGRATION_SHA = "a" * 40
 
 
+class Clock:
+    """Stands in for the runtime's datetime: time moves only while collecting."""
+
+    def __init__(self) -> None:
+        self.now_value = datetime(2026, 10, 13, tzinfo=UTC)
+
+    def now(self, tz=None):
+        return self.now_value
+
+
+@pytest.fixture(autouse=True)
+def clock(monkeypatch) -> Clock:
+    """Collections take no time unless a test says so: delays are exact."""
+    frozen = Clock()
+    monkeypatch.setattr("brain_v42.delivery_observer.runtime.datetime", frozen)
+    return frozen
+
+
 class RecordingQueue(FakeQueue):
     def __init__(self, jobs):
         super().__init__(jobs)
@@ -121,19 +139,24 @@ async def test_the_settled_cadence_never_polls_faster_than_the_loop():
     assert await delay_after(context_job(), Client(), settings) == 60
 
 
-@pytest.mark.parametrize(
-    "settings",
-    [
-        DeliverySettings(enabled=True),
-        DeliverySettings(enabled=True, poll_seconds=30, freshness_seconds=1200),
-    ],
-)
-async def test_evidence_refreshed_at_the_settled_cadence_is_never_seen_stale(settings):
-    """Worst case: the job becomes due just after a loop tick, so it waits one whole
-    poll interval more, and the observation itself takes up to the request timeout."""
-    delay = await delay_after(make_job("merged"), Client(integration_sha=INTEGRATION_SHA), settings)
+class SlowClient(Client):
+    """A collection that takes `seconds`: sequential requests, admission waits."""
+
+    def __init__(self, clock: Clock, seconds: float, **kwargs):
+        super().__init__(**kwargs)
+        self.clock, self.seconds = clock, seconds
+
+    async def collect(self, binding, contract, previous=None):
+        self.clock.now_value += timedelta(seconds=self.seconds)
+        return await super().collect(binding, contract, previous)
+
+    async def collect_repository_context(self, contract):
+        self.clock.now_value += timedelta(seconds=self.seconds)
+        return await super().collect_repository_context(contract)
+
+
+def seen_by_the_evaluator(settings, age_seconds: float) -> list[str]:
     finished = datetime.now(UTC) - timedelta(hours=1)
-    worst_age = delay + settings.poll_seconds + settings.request_timeout_seconds
     inputs = SimpleNamespace(
         freshness_seconds=settings.freshness_seconds,
         active_bindings=[
@@ -147,7 +170,32 @@ async def test_evidence_refreshed_at_the_settled_cadence_is_never_seen_stale(set
             )
         ],
     )
-    assert _binding_health_states(inputs, finished + timedelta(seconds=worst_age)) == ["fresh"]
+    return _binding_health_states(inputs, finished + timedelta(seconds=age_seconds))
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        DeliverySettings(enabled=True),
+        DeliverySettings(enabled=True, poll_seconds=30, freshness_seconds=1200),
+    ],
+)
+@pytest.mark.parametrize("job_factory", [lambda: make_job("merged"), context_job])
+@pytest.mark.parametrize("collection_share", [0.0, 0.05, 0.25, 0.5, 0.615, 0.8, 1.0])
+async def test_evidence_refreshed_at_the_settled_cadence_is_never_seen_stale(
+    settings, job_factory, collection_share, clock
+):
+    """Worst case for the next confirmation: the job becomes due just after a loop
+    tick, so it waits one whole poll interval more, and the next collection takes as
+    long as this one. A collection is many sequential requests plus admission waits
+    (codex review of #362: 41 requests at 9 s each is 369 s), so its duration counts.
+    Covered: every collection the poll cadence itself kept fresh, i.e. up to
+    freshness - 2 * poll seconds; a slower one is stale at any cadence."""
+    seconds = collection_share * (settings.freshness_seconds - 2 * settings.poll_seconds)
+    client = SlowClient(clock, seconds, integration_sha=INTEGRATION_SHA)
+    delay = await delay_after(job_factory(), client, settings)
+    worst_age = delay + settings.poll_seconds + seconds
+    assert seen_by_the_evaluator(settings, worst_age) == ["fresh"]
 
 
 @pytest.mark.parametrize("code", ["provider_not_found", "provider_forbidden"])

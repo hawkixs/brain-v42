@@ -531,20 +531,26 @@ class DeliveryObserverRuntime:
                 )
 
     def _settled_delay(
-        self, evidence: PullRequestEvidence | RepositoryContextEvidence | None
+        self,
+        evidence: PullRequestEvidence | RepositoryContextEvidence | None,
+        collection_seconds: float,
     ) -> float:
         """How long a successful observation stays good enough not to repeat.
 
         An open pull request keeps the poll cadence so its merge is seen within a
         minute. An integrated pull request and a repository context only need to stay
-        fresh: they are reobserved at half the freshness window, because the loop
-        picks due work only every poll_seconds and evidence refreshed at exactly
-        freshness_seconds would read stale at the end of every cycle (ticket
-        bd1879f6). The caller still floors the delay at poll_seconds.
+        fresh, so they wait half the freshness window minus the time this collection
+        took (ticket bd1879f6). The evidence is aged by three things before its next
+        confirmation lands: this delay, up to one poll interval before the loop picks
+        the job, and the next collection, which is many sequential requests plus
+        admission waits and lasts about as long as this one. Waiting the whole window
+        would leave it stale at the end of every cycle; subtracting the collection
+        keeps a slow one no worse than the poll cadence. The caller floors the delay
+        at poll_seconds.
         """
         if isinstance(evidence, PullRequestEvidence) and evidence.integration_sha is None:
             return 0.0
-        return float(self.settings.freshness_seconds // 2)
+        return self.settings.freshness_seconds // 2 - collection_seconds
 
     async def _observe(self, job: ObservationJob) -> _Outcome:
         started_at = datetime.now(UTC)
@@ -591,7 +597,7 @@ class DeliveryObserverRuntime:
             diagnostic = _fault_location(error)
         finished_at = max(started_at, datetime.now(UTC))
         if code is None:
-            retry = self._settled_delay(evidence)
+            retry = self._settled_delay(evidence, (finished_at - started_at).total_seconds())
         delay = min(86400, max(self.settings.poll_seconds, retry))
         try:
             async with self.owner.transaction() as session:
