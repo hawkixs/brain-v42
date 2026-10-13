@@ -9,6 +9,8 @@
 
 `brain_find_tool` is the FastMCP search gateway: pass a natural-language search query to find registered tools. `brain_call_tool(name, arguments)` invokes a discovered tool with its ordinary arguments and preserves that tool's result shape. The search transform returns at most five matches. These gateways are presentation tools and are unavailable to scoped Dream principals.
 
+Calling either gateway through `brain_call_tool` is refused with direct usage guidance. Unknown names return up to three suggestions from the caller's authorized catalogue, followed by the `brain_find_tool(query=...)` hint; project-shaped names also point to the session briefing, `brain_focus_history`, and `brain_list_projects`. Additive aliases resolve common names before dispatch. `brain_recall` resolves to `brain_search`. `brain_get_decision` resolves to `brain_get` with `entity_type="decision"`. `brain_get_learning` resolves to `brain_get` with `entity_type="learning"`. `brain_get_snippet` resolves to `brain_get` with `entity_type="snippet"`. `brain_get_runbook` resolves to `brain_get` with `entity_type="runbook"` only when no real registered tool has that name. `brain_get_adr` resolves to `brain_get` with `entity_type="adr"`. `brain_get_plan` resolves to `brain_get` with `entity_type="plan"`. A conflicting caller supplied `entity_type` is refused. An alias resolves only when its target tool is visible to the caller.
+
 Tools generally return formatted text; lifecycle, fact and delivery tools also expose structured outputs. Through `brain_call_tool`, structured results remain objects and text results use FastMCP's wrapped result shape. Clients should follow each tool's declared output.
 
 Lifecycle v4 has run in production since 24 July 2026.
