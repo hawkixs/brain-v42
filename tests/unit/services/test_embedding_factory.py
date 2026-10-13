@@ -12,6 +12,69 @@ from brain_v42.services.embedding_wire import OpenAIWire, ShimWire
 from brain_v42.services.rerank_wire import CohereRerankWire, ShimRerankWire
 
 
+def test_factory_builds_fallback_chain_with_one_key_read(monkeypatch, tmp_path) -> None:
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    observer = MagicMock()
+    read = MagicMock(return_value="test-key")
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(Path, "stat", MagicMock(return_value=MagicMock(st_mode=0o600)))
+    settings = _settings(
+        rerank_backend="cohere",
+        rerank_model="voyageai/rerank-3-lite",
+        rerank_fallback_model="cohere/rerank-4-fast",
+        rerank_fallback_provider={"only": ["cohere"]},
+        rerank_api_key_file=tmp_path / "fake-key",
+        rerank_health_path="/v1/key",
+        rerank_primary_budget_seconds=0.5,
+    )
+    client = build_reranker_client(settings, observer=observer)
+    assert type(client).__name__ == "RerankChain"
+    read.assert_called_once_with(encoding="utf-8")
+    assert client.calibration.identity == "cohere:voyageai/rerank-3-lite"
+    assert client.calibration.search_min_score == 0.50
+    assert client._primary._observer is client._fallback._observer is observer
+    assert client._primary._api_key == client._fallback._api_key == "test-key"
+    assert client._primary._base_url == client._fallback._base_url == settings.reranker_url
+    assert client._primary._wire.health_path == client._fallback._wire.health_path == "/v1/key"
+    assert client._fallback._wire.request("q", ["a"])[1]["provider"] == {
+        "only": ["cohere"],
+        "allow_fallbacks": False,
+        "data_collection": "deny",
+    }
+    assert client._primary_budget == 0.5
+    assert client._overall_budget == 1.5
+
+
+def test_factory_refuses_uncalibrated_fallback() -> None:
+    settings = _settings(
+        rerank_backend="cohere",
+        rerank_model="voyageai/rerank-3-lite",
+        rerank_fallback_model="unknown/model",
+    )
+    with pytest.raises(ValueError, match="rerank_fallback_model.*calibrat"):
+        build_reranker_client(settings)
+
+
+@pytest.mark.asyncio
+async def test_feature_dedup_with_chain_signals_nothing() -> None:
+    from unittest.mock import MagicMock
+
+    from brain_v42.services.feature_dedup_job import FeatureDedupJob
+
+    settings = _settings(
+        rerank_backend="cohere",
+        rerank_model="voyageai/rerank-3-lite",
+        rerank_fallback_model="cohere/rerank-4-fast",
+    )
+    client = build_reranker_client(settings)
+    session_factory = MagicMock()
+    job = FeatureDedupJob(session_factory, client)
+    assert await job.find_candidates("brain-v42") == []
+    session_factory.assert_not_called()
+
+
 def test_reranker_budget_and_observer_are_wired_through() -> None:
     from unittest.mock import MagicMock
 

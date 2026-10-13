@@ -520,6 +520,20 @@ persisted even without calls; the latest process report wins across processes.
 | `BRAIN_RERANK_PROVIDER` | unset | Provider routing sent with every request, as JSON: `{"only": ["voyageai"]}`. Keys: `only`, `allow_fallbacks` (default `false`), `data_collection` (`deny` by default, or `allow`), `zdr`. Unknown keys are refused. |
 | `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
 | `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole Cohere operation: connection, write, read, parsing and backoff sleeps. |
+| `BRAIN_RERANK_FALLBACK_MODEL` | empty | Optional second Cohere model, such as `cohere/rerank-4-fast`; must differ from the primary and have a measured calibration. |
+| `BRAIN_RERANK_FALLBACK_PROVIDER` | unset | JSON routing for the fallback, such as `{"only": ["cohere"]}`; required on OpenRouter and subject to the same author and privacy policy as the primary. |
+| `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS` | `1.0` | Positive primary-link budget; must be strictly below the overall budget when a fallback is configured. |
+
+With a fallback configured, the primary gets one attempt, with no retry sleep,
+bounded by its primary budget. Any HTTP, transport or response parsing failure
+hands over to the fallback, which may retry within the overall budget measured
+from the start of the primary call. Both links share the URL, probe path and key,
+read once at startup. Fallback logits are shifted by the difference between the
+two calibrated floor logits so the primary's search floor also applies to fallback
+scores after sigmoid. Search falls back to RRF only when both links fail; without
+a configured fallback, the single-client behaviour below still applies. The chain
+reports the primary's calibration and probe state, and neither hosted calibration
+enables feature deduplication signalling.
 
 The key file must be mode `0600` or stricter and have one of two shapes: the bare key value (one token: no whitespace, no `=`, at most
 512 characters), or a dotenv-style file with exactly one `BRAIN_RERANK_API_KEY=<value>`
@@ -577,6 +591,32 @@ it to zero and rounds to 0.1 seconds. Flush data keeps per-identity probe state 
 `{ok, reason, at, identity}` even without operations, along with `by_identity` when
 present. Existing legacy metrics retain their meanings; observer failures log once
 and never fail a search.
+
+`reranker.chain` counts chain operations separately from link attempts:
+`operations`, `served_by` (counts keyed by the serving identity), `handovers`
+(primary failures that pass to the fallback), and `failed_all`. A successful
+fallback counts as a served operation; it does not count as RRF. Missing chain
+observations appear as `{}` on `/metrics`.
+
+`search_rerank` counts each search once, including grouped output:
+`rerank_searches` counts all searches, `rerank_eligible` counts searches where at
+least one shard actually passed candidates to the reranker, and `rerank_rrf`
+counts eligible searches where at least one invoked shard returned `rrf_fallback`.
+Empty candidate sets, FTS fallback, backend `none` (`disabled`) and `rrf_only`
+are not eligible. Eligibility is measured before result limits and score
+filtering, so an invoked search returning no hits can still be eligible. The
+acceptance ratio is `rerank_rrf / rerank_eligible`; with a zero denominator it is
+undefined, not evidence that reranking succeeded.
+
+The MCP collector snapshot and flush store these search counters under `search`;
+the flusher persists them as the `_search_rerank` pseudo-tool and chain counters
+inside `_reranker`. The sidecar reads both from the single `_process` row:
+`agent_name` is the primary key and each upsert replaces that row, so these
+counters are never summed across agents. `search_rerank.emitter_started_at` is
+the emitter's construction time (`time.time()`), stable for its process lifetime
+and persisted even before its first search. Readers reset their baseline when
+this generation changes, never merely because a counter drops. Missing search
+observations appear as `{}`; the sidecar never substitutes its own generation.
 
 ### Embedding shim static bearer
 

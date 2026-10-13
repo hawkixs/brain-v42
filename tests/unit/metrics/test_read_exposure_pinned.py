@@ -34,6 +34,7 @@ DYNAMIC_MAPS = {
     "/metrics.cross_process.by_agent": "declared agent identities in process rows",
     "/metrics.reranker.by_identity": "backend:model identities that served reranks",
     "/metrics.reranker.by_identity.*.operations_by_outcome": "observed operation outcomes",
+    "/metrics.reranker.chain.served_by": "rerank link identities that served chain operations",
     "/metrics.graph.nodes_total": "labels returned by the graph service",
     "/metrics.graph.edges_total": "relationship types returned by the graph service",
     "/metrics.receiver_rejections.codex_logs": "HTTP statuses actually rejected",
@@ -111,9 +112,21 @@ METRICS_SCHEMA = {
                 "operation_latency_ms": {"p50": None, "p95": None, "p99": None},
             }
         },
+        "chain": {
+            "operations": None,
+            "served_by": {"*": None},
+            "handovers": None,
+            "failed_all": None,
+        },
         "last_probe_ok": None,
         "last_probe_reason": None,
         "last_probe_age_s": None,
+    },
+    "search_rerank": {
+        "rerank_searches": None,
+        "rerank_eligible": None,
+        "rerank_rrf": None,
+        "emitter_started_at": None,
     },
     "decay": {"stale_count": None, "archived_count": None, "access_log_size": None},
     "graph": {
@@ -661,6 +674,9 @@ def populated_server(
     collector.record_rerank_attempt("shim:test-model", "ok", 10.0)
     collector.record_rerank_operation("shim:test-model", "ok", 10.0)
     collector.record_rerank_probe("shim:test-model", True, "ok")
+    collector.on_handover()
+    collector.on_chain("fallback", "shim:test-model")
+    collector.record_search_rerank(eligible=True, rrf=False)
     collector.record_graph_query(10.0)
     collector.record_decay_stats(1, 2, 3)
 
@@ -679,7 +695,9 @@ def populated_server(
             "backend": reranker["backend"],
             "by_identity": reranker["by_identity"],
             "last_probe": reranker["last_probe"]["shim:test-model"],
+            "chain": reranker["chain"],
         },
+        "_search_rerank": process["search"],
         "_graph": {"calls": 1, "errors": 0, "recent_errors": 0, "total_latency": 10.0},
         "_decay": process["decay"],
         "_mcp_auth_refused": {"missing_token": 1},

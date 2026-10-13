@@ -21,8 +21,9 @@ from brain_v42.config import Settings, get_settings
 from brain_v42.safe_logging import redact_url
 from brain_v42.services.embedding_wire import EmbeddingWire, OpenAIWire, ShimWire
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
+from brain_v42.services.rerank_chain import RerankChain
 from brain_v42.services.rerank_wire import CohereRerankWire, RerankWire, ShimRerankWire
-from brain_v42.services.reranker_client import RerankerClient, RerankObserver
+from brain_v42.services.reranker_client import RerankClientLike, RerankerClient, RerankObserver
 
 logger = structlog.get_logger(__name__)
 
@@ -284,7 +285,7 @@ def build_rerank_wire(settings: Settings) -> RerankWire:
 
 def build_reranker_client(
     settings: Settings, *, observer: RerankObserver | None = None
-) -> RerankerClient | None:
+) -> RerankClientLike | None:
     """Build the reranker client configured for this deployment.
 
     Reranking stays best-effort: an unavailable or misconfigured reranker
@@ -293,11 +294,33 @@ def build_reranker_client(
     """
     if settings.rerank_backend == "none":
         return None
-    return RerankerClient(
+    api_key = _resolve_rerank_bearer(settings)
+    primary = RerankerClient(
         base_url=settings.reranker_url,
         timeout=settings.reranker_timeout,
         wire=build_rerank_wire(settings),
-        api_key=_resolve_rerank_bearer(settings),
+        api_key=api_key,
         budget_seconds=settings.rerank_budget_seconds,
         observer=observer,
+    )
+    if not settings.rerank_fallback_model:
+        return primary
+    provider = settings.rerank_fallback_provider
+    fallback = RerankerClient(
+        base_url=settings.reranker_url,
+        timeout=settings.reranker_timeout,
+        wire=CohereRerankWire(
+            model=settings.rerank_fallback_model,
+            health_path=settings.rerank_health_path,
+            routing=provider.model_dump(exclude_none=True) if provider is not None else None,
+        ),
+        api_key=api_key,
+        budget_seconds=settings.rerank_budget_seconds,
+        observer=observer,
+    )
+    return RerankChain(
+        primary,
+        fallback,
+        overall_budget=settings.rerank_budget_seconds,
+        primary_budget=settings.rerank_primary_budget_seconds,
     )
