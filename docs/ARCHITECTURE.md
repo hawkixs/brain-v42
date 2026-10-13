@@ -1,6 +1,6 @@
 # Architecture — brain_v42
 
-**Repository schema:** the repository carries migrations through revision 064. Migration 064 declares the least-privilege runtime ACLs for `brain_app`; the migrate CLI configures only its login attributes and timeouts. This is a code target, not a statement about any deployed database. Migration 063 adds four tables: the client credential registry (`brain_client_credentials`, digests only, with a NOTIFY trigger), time-boxed admin elevations (`brain_admin_elevations`), the schema compatibility ledger (`brain_schema_compat`) and the credential audit outbox (`brain_credential_audit`). Migration 062 adds two partial observer-error indexes and installs `pg_stat_statements` in the `monitoring` schema. Earlier revisions add measured-fact definitions, delivery attestations, focus slots, ticket release planning, and session connection provenance.
+**Repository schema:** the repository carries migrations through revision 065. Migration 065 adds `programmes` and `programme_gates`, the programme progress published to the cockpit (contract `docs/contracts/programmes_v1.md`). Migration 064 declares the least-privilege runtime ACLs for `brain_app`; the migrate CLI configures only its login attributes and timeouts. This is a code target, not a statement about any deployed database. Migration 063 adds four tables: the client credential registry (`brain_client_credentials`, digests only, with a NOTIFY trigger), time-boxed admin elevations (`brain_admin_elevations`), the schema compatibility ledger (`brain_schema_compat`) and the credential audit outbox (`brain_credential_audit`). Migration 062 adds two partial observer-error indexes and installs `pg_stat_statements` in the `monitoring` schema. Earlier revisions add measured-fact definitions, delivery attestations, focus slots, ticket release planning, and session connection provenance.
 
 **MCP catalog:** 79 always-on + 2 graph-gated = 81.
 
@@ -979,7 +979,7 @@ brain_v42/
 │       ├── server.py             # entry point (stdio+http), build_services(), app_lifecycle()
 │       ├── http_security.py      # HostOriginGuard + BearerTokenGuard ASGI middleware
 │       └── tools/                # 79 always-on + 2 graph-gated = 81
-├── alembic/versions/             # migrations 001–064 defined in the repository
+├── alembic/versions/             # migrations 001–065 defined in the repository
 ├── scripts/                      # legacy import + projection inventory/recovery CLIs
 ├── tests/                        # unit/ + integration/
 ├── docs/
