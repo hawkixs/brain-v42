@@ -169,9 +169,9 @@ async def test_list_ticket_filter_limits_to_visible_workflow(delivery_mcp, sessi
     # Two visible workflows, so that only the ticket predicate (applied before the
     # limit of one) can narrow the page to the requested ticket.
     visible = [(await _workflow(session_factory))[0] for _ in range(2)]
-    hidden, _, _ = await _workflow(
-        session_factory, requester="other-requester", executor="other-executor"
-    )
+    # The repository is registered for "executor" only; the hidden ticket keeps that
+    # executor and changes its requester, so "requester" is not a party to it.
+    hidden, _, _ = await _workflow(session_factory, requester="other-requester")
     async with Client(delivery_mcp) as client:
         compact = await _profile(client)
         pages = [
