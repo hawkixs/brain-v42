@@ -1,0 +1,28 @@
+{
+  "digest": "sha256:003d395ee2b938555ead8bc4e4f9adcd9b4f583b5ae5c4653d22212bbe807787",
+  "idempotency_key": "released:0.6.14",
+  "issuer": "agent:claude-code:9685aeb7-05fa-46fb-a0d1-70eaa93f2263",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "changelog": [
+        "chore(release): 0.6.14",
+        "feat(deploy): rerank with Voyage directly on red-base, Cohere as fallback",
+        "chore(receipts): record the deployment of 0.6.13",
+        "chore(receipts): record the release of 0.6.13",
+        "fix(rerank): keep the shim bearer path for every non-hosted backend",
+        "feat(rerank): call Voyage directly as the primary rerank link"
+      ],
+      "digest": "sha256:782741bc6b9b696ed36de200e6000216a34a636241fbd1767506a837be170741",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:782741bc6b9b696ed36de200e6000216a34a636241fbd1767506a837be170741",
+      "platform": "linux/amd64",
+      "sha": "29829f28e997afab6d5cbee221476e78eb439f0c",
+      "tag": "v0.6.14",
+      "version": "0.6.14"
+    },
+    "kind": "released"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T14:32:45.630908Z",
+  "schema_version": 1
+}
