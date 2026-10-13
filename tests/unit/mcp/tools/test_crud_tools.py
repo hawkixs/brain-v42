@@ -10,9 +10,14 @@ from uuid import uuid4
 
 import pytest
 import sqlalchemy as sa
+from structlog.testing import capture_logs
 
+from brain_v42.facts import FactTarget
+from brain_v42.facts.probe import FactDescriptor
+from brain_v42.facts.registry import UnknownFactError
 from brain_v42.models.adr import ADR
 from brain_v42.models.brain_session import KnowledgeCapturedError
+from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.models.decision import Decision
 from brain_v42.models.indexed_plan import IndexedPlan
 from brain_v42.models.learning import Learning
@@ -194,6 +199,94 @@ def access_logged_tools(
 # ===========================================================================
 # brain_get
 # ===========================================================================
+
+
+@pytest.mark.parametrize(
+    ("refusal", "message"),
+    [
+        ("unknown", "unknown fact 'unknown_fact'; available facts: ['graph_projection_lag']"),
+        ("measure", "measure=true claims require a claim verification service"),
+        ("count", "input count rule allows at most 10 inputs"),
+        ("duplicate", "duplicate input rule refuses identical validated inputs"),
+        ("path", "path schema rule requires a declared key; available keys: ['lag_seconds']"),
+        ("comparison", "comparison type rule requires an integer ordering comparison"),
+        ("nul", "statement rule refuses NUL characters and Unicode surrogates"),
+        ("verification", "idempotency_conflict: "),
+    ],
+)
+async def test_claim_update_preserves_curated_refusals_without_error_logs(
+    services: dict[str, Any], monkeypatch: pytest.MonkeyPatch, refusal: str, message: str
+) -> None:
+    """Exercise real resolution and mutation guards through the client boundary."""
+    from brain_v42.mcp.tools import claim_writes
+    from brain_v42.mcp.tools.crud_tools import register_crud_tools
+
+    registry = MagicMock()
+    registry.names.return_value = ("graph_projection_lag",)
+    registry.describe.return_value = FactDescriptor(
+        name="graph_projection_lag",
+        definition_version=1,
+        target=FactTarget.PRODUCTION,
+        ttl_seconds=15,
+        timeout_seconds=3,
+        queue_timeout_seconds=2,
+        deadline_seconds=5,
+        briefing=True,
+        policies={"late_after_seconds": 300},
+        value_schema={"lag_seconds": "int"},
+    )
+    if refusal == "unknown":
+        registry.describe.side_effect = UnknownFactError("unknown_fact")
+    claim = {
+        "statement": "The projection\x00 is current."
+        if refusal == "nul"
+        else "The projection is current.",
+        "fact_name": "unknown_fact" if refusal == "unknown" else "graph_projection_lag",
+        "expected": {
+            "path": "/missing" if refusal == "path" else "/lag_seconds",
+            "op": "lte",
+            "value": "late" if refusal == "comparison" else 300,
+        },
+        "measure": refusal == "measure",
+    }
+    claims = [claim]
+    if refusal == "count":
+        claims = [{**claim, "statement": f"Claim {number}"} for number in range(11)]
+    elif refusal == "duplicate":
+        claims = [claim, dict(claim)]
+
+    session = MagicMock()
+    session.begin.return_value = AsyncMock()
+    context = AsyncMock()
+    context.__aenter__.return_value = session
+    factory = MagicMock(return_value=context)
+    services["decision_svc"].update.return_value = _make_decision(project_key="brain-v42")
+    monkeypatch.setattr(claim_writes, "_claim_anchor_id", AsyncMock(return_value=uuid4()))
+    monkeypatch.setattr(
+        claim_writes,
+        "active_claims",
+        AsyncMock(
+            side_effect=ClaimVerificationError("idempotency_conflict")
+            if refusal == "verification"
+            else None,
+            return_value=[],
+        ),
+    )
+    monkeypatch.setattr(claim_writes, "latest_retired", AsyncMock(return_value=None))
+    monkeypatch.setattr(claim_writes, "retire_claims", AsyncMock(return_value=0))
+    mcp = MockMCP()
+    register_crud_tools(mcp, **services, session_factory=factory, fact_registry=registry)
+
+    with capture_logs() as logs:
+        result = await mcp.registered["brain_update"](
+            entity_type="decision",
+            entity_id=str(uuid4()),
+            fields={"title": "Updated"},
+            claims=claims,
+            expected_active_claim_ids=[],
+        )
+    assert message in result
+    assert not [event for event in logs if event["log_level"] == "error"]
 
 
 class TestBrainGet:

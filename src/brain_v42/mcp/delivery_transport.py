@@ -30,7 +30,7 @@ class _DeliveryFunctionTool(FunctionTool):
         except ToolError:
             raise
         except DeliveryError as exc:
-            # Also safe before the server's idempotent transport prelude runs.
+            # DeliveryError curates stable domain codes and never wraps driver failures.
             raise ToolError(str(exc)) from None
         except Exception:
             raise ToolError("delivery_unavailable: delivery operation could not complete") from None

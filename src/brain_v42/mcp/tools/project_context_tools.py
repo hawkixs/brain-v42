@@ -117,6 +117,7 @@ def register_project_context_tools(
         try:
             key = canonicalize_project_key(project_key)
         except ValueError as exc:
+            # This isolated key canonicalizer constructs an actionable invalid-key hint.
             return format_error(str(exc))
 
         rows = await project_context_svc.focus_history(key, limit=limit, offset=offset)
@@ -338,13 +339,16 @@ def register_project_context_tools(
                 allow_focus_shrink=allow_focus_shrink,
             )
         except ProjectFocusShrinkError as exc:
+            # The focus shrink guard constructs a curated refusal, not a driver message.
             return format_error(f"base_focus_shrink: {exc}")
         except ProjectFocusConflictError as exc:
+            # Only the declared focus and revision are exposed, never exception text.
             return format_error(
                 f"Focus conflict: current revision {exc.current_revision}, "
                 f"current focus: {exc.current_focus!r}. Resume the session and retry."
             )
         except (ProjectFocusNotFoundError, ProjectFocusValidationError) as exc:
+            # These domain guards construct project/field refusals without driver text.
             return format_error(str(exc))
 
         # Auto-update CLAUDE.md dynamic section (best-effort, may fail in CI)
