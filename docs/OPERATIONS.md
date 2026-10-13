@@ -1147,6 +1147,28 @@ running from a checkout says "live release unmeasured" instead of guessing.
 whether `v0.6.3` was observed, the tickets planned but not shipped in it, and those
 shipped under another tag.
 
+## Delivery observer: liveness
+
+Two signals say whether the observer is still observing, not merely running.
+
+**Heartbeat (container health).** With `BRAIN_DELIVERY_HEARTBEAT_PATH` set (Compose sets
+`/tmp/brain-v42-delivery-observer.heartbeat`), the observer rewrites that file, atomically,
+after every completed cycle, after every persisted observation attempt, and while the
+release and deployed passes page through their candidates. A cycle cut short by ownership
+loss or a shutdown does not refresh it at its end (a release pass may still refresh once
+before it notices, and the process exits right after). The `delivery-observer` healthcheck fails when the
+file is missing or older than 600 s (start period 120 s), so `brain-v42-delivery-observer`
+turns `unhealthy` and red-agent reports it. A failed write never stops observation; it is
+reported as one `observer_heartbeat_write_failed` JSON line on stderr with the error type.
+
+**Fact `delivery_observer_liveness` (briefing).** Measured on the production database:
+`lock_held` (the observer's session advisory lock is granted to a backend of this
+database), `overdue` (subjects the observer queue considers due for more than 600 s),
+`last_confirmation_age_seconds` (newest confirmation, any outcome; null when none) and
+`healthy` = lock held and nothing overdue. A dead observer shows as `lock_held = false`; a
+live but stalled one as `overdue > 0`. Read it with
+`brain_fact_get("delivery_observer_liveness")`.
+
 ## Delivery confirmation retention
 
 The maintenance CLI keeps every error confirmation (observer backoff depends on
