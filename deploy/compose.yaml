@@ -255,6 +255,8 @@ services:
       METRICS_RECEIVER_AUTH: credentials
       # This runtime refuses the projector role and exposes no facts registry.
       GRAPH_PROJECTOR_ENABLED: "false"
+      # Dormant by decision: feature_dedup runs nowhere, the roadmap is being retired
+      # (0f008a1c, operator ruling 2026-10-13). See OPERATIONS, "Automation service".
       METRICS_LEGACY_AUTOMATION_ENABLED: "false"
     secrets:
       - embedding_token
