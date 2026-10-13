@@ -108,6 +108,30 @@ def test_a_zero_floor_skips_even_a_failing_measurement(tmp_path):
     disk_floor.check(tmp_path, environ={"BRAIN_V42_TEST_MIN_FREE_GB": "0"}, disk_usage=broken)
 
 
+def test_a_zero_floor_disables_the_guard_before_any_path_is_resolved(monkeypatch):
+    """Codex round 2: with the guard disabled and no usable temp dir, the path
+    resolution itself refused the session; disabling must win first."""
+
+    def full() -> str:
+        raise FileNotFoundError("No usable temporary directory found")
+
+    monkeypatch.setattr(disk_floor.tempfile, "gettempdir", full)
+    disk_floor.guard(None, environ={"BRAIN_V42_TEST_MIN_FREE_GB": "0"})
+    with pytest.raises(disk_floor.DiskFloorError, match="no usable temporary directory"):
+        disk_floor.guard(None, environ={})
+
+
+def test_the_guard_measures_the_resolved_path(tmp_path, monkeypatch):
+    seen: list[Path] = []
+
+    def check(path, *, environ, disk_usage=None):
+        seen.append(path)
+
+    monkeypatch.setattr(disk_floor, "check", check)
+    disk_floor.guard(str(tmp_path / "bt"), environ={})
+    assert seen == [tmp_path / "bt"]
+
+
 def test_a_failing_measurement_is_a_refusal_not_a_crash(tmp_path):
     def broken(_):
         raise OSError("statvfs failed")

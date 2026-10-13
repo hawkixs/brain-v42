@@ -58,6 +58,19 @@ def measured_path(basetemp: str | None, *, environ: Mapping[str, str]) -> Path:
         ) from None
 
 
+def disabled(environ: Mapping[str, str]) -> bool:
+    """Whether the floor is explicitly set to zero (a malformed value raises)."""
+    override = environ.get(_ENV)
+    return override is not None and floor_bytes(0, override=override) == 0
+
+
+def guard(basetemp: str | None, *, environ: Mapping[str, str]) -> None:
+    """The session-start check: disabled first, then resolve where pytest writes."""
+    if disabled(environ):
+        return
+    check(measured_path(basetemp, environ=environ), environ=environ)
+
+
 def check(
     path: Path,
     *,
@@ -65,9 +78,9 @@ def check(
     disk_usage: Callable[[Path], Any] = shutil.disk_usage,
 ) -> None:
     """Raise DiskFloorError when `path`'s filesystem has less free space than its floor."""
-    override = environ.get(_ENV)
-    if override is not None and floor_bytes(0, override=override) == 0:
+    if disabled(environ):
         return
+    override = environ.get(_ENV)
     existing = path
     while not existing.exists() and existing != existing.parent:
         existing = existing.parent
