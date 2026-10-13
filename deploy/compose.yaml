@@ -20,6 +20,9 @@
 # read by mcp only). Rerank rollback: set the x-rerank-env block to BRAIN_RERANK_BACKEND
 # "none" alone (the settings validator refuses any other rerank line next to it), then
 # redeploy through the rail. A rotated key needs an explicit recreate.
+# When Voyage saturates (shared OpenRouter quota, 429), the same key reranks with
+# cohere/rerank-4-fast (fallback link, data collection denied) within the 2.5 s
+# budget; RRF order only when both links fail (operator go 742e7a05).
 # /etc/brain-v42/github-app-key.pem: uid 1000, mode 0600 (GitHub App private key)
 # /etc/brain-v42/delivery-observer.env: uid 1000, mode 0600 (the real observer config,
 # read via --env-file; BRAIN_DELIVERY_ENABLED=true, BRAIN_DELIVERY_POSTGRES_URL for brain_app,
@@ -83,6 +86,10 @@ x-rerank-env: &rerank-env
   BRAIN_RERANK_HEALTH_PATH: /v1/key
   BRAIN_RERANK_PROVIDER: '{"only":["voyageai"],"allow_fallbacks":false,"data_collection":"deny"}'
   BRAIN_RERANK_API_KEY_FILE: /run/secrets/rerank_api_key
+  BRAIN_RERANK_FALLBACK_MODEL: cohere/rerank-4-fast
+  BRAIN_RERANK_FALLBACK_PROVIDER: '{"only":["cohere"],"allow_fallbacks":false,"data_collection":"deny"}'
+  BRAIN_RERANK_BUDGET_SECONDS: "2.5"
+  BRAIN_RERANK_PRIMARY_BUDGET_SECONDS: "1.0"
 
 x-server: &server
   restart: unless-stopped
