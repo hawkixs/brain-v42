@@ -36,6 +36,7 @@ from pydantic import BeforeValidator, Field
 from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
+from brain_v42.mcp.tools.capture_rule import CAPTURE_RULE
 from brain_v42.mcp.tools.claim_rendering import claim_suffix_map
 from brain_v42.mcp.tools.claim_writes import (
     claim_write_log_fields,
@@ -220,7 +221,18 @@ def register_tools(
 
     # ── Feature #629: Decision tools ─────────────────────────────────────────
 
-    @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    # Published description: the `description=` below, not this docstring.
+    @mcp.tool(
+        version="1.0",
+        annotations=_HEARTBEAT_ANNOTATIONS,
+        description=(
+            "Capture a choice between options (A vs B, lib X vs Y) with its reasons: the WHY, not just the WHAT.\n\n"
+            f"{CAPTURE_RULE}\n\n"
+            "Use when picking between alternatives (lib X vs Y, refactor vs rewrite).\n\n"
+            'related_to items: {"id": UUID, "type": one of MOTIVATED_BY,\n'
+            "IMPLEMENTS, DOCUMENTS, USES, RELATED_TO}."
+        ),
+    )
     async def brain_log_decision(
         title: str,
         context: KnowledgeText,
@@ -233,15 +245,7 @@ def register_tools(
         related_to: RelationList | None = None,
         claims: list[dict] | None = None,
     ) -> str:
-        """Log a technical/architectural decision (the WHY, not just the WHAT).
-
-        Use when picking between alternatives (lib X vs Y, refactor vs rewrite).
-        For pure insights/gotchas use brain_learn; for code patterns use
-        brain_save_snippet; for durable architecture use brain_propose_adr.
-
-        related_to items: {"id": UUID, "type": one of MOTIVATED_BY,
-        IMPLEMENTS, DOCUMENTS, USES, RELATED_TO}.
-        """
+        """Capture a choice between options (A vs B, lib X vs Y) with its reasons: the WHY, not just the WHAT."""
         data = DecisionCreate(
             title=title,
             description=f"Context: {context}\n\nDecision: {decision_made}",
@@ -534,7 +538,22 @@ def register_tools(
 
     # ── Feature #630: Learning tools ─────────────────────────────────────────
 
-    @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    # Published description: the `description=` below, not this docstring.
+    @mcp.tool(
+        version="1.0",
+        annotations=_HEARTBEAT_ANNOTATIONS,
+        description=(
+            "Capture a pure insight or gotcha: last resort when no other capture tool fits.\n\n"
+            f"{CAPTURE_RULE}\n\n"
+            "Use ONLY for pure insights with no code and no choice between\n"
+            "options.\n\n"
+            "source_type: experience | documentation | code_review | bug |\n"
+            "external | article | video | book | conversation | research.\n"
+            "confidence: low | medium | high.\n"
+            'related_to items: {"id": UUID, "type": MOTIVATED_BY | IMPLEMENTS\n'
+            "| DOCUMENTS | USES | RELATED_TO}."
+        ),
+    )
     async def brain_learn(
         topic: str,
         insight: KnowledgeText,
@@ -546,19 +565,7 @@ def register_tools(
         related_to: RelationList | None = None,
         claims: list[dict] | None = None,
     ) -> str:
-        """Record an insight, gotcha, or discovery (last-resort tool).
-
-        Use ONLY for pure insights with no code and no choice between
-        options. Otherwise prefer brain_log_decision (choices),
-        brain_save_snippet (code), brain_create_runbook (procedures),
-        brain_propose_adr (durable architecture).
-
-        source_type: experience | documentation | code_review | bug |
-        external | article | video | book | conversation | research.
-        confidence: low | medium | high.
-        related_to items: {"id": UUID, "type": MOTIVATED_BY | IMPLEMENTS
-        | DOCUMENTS | USES | RELATED_TO}.
-        """
+        """Record an insight, gotcha, or discovery (last-resort tool)."""
         data = LearningCreate(
             topic=topic,
             insight=insight,
@@ -700,7 +707,19 @@ def register_tools(
             tags=tags or [],
         )
 
-    @mcp.tool(version="2.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    # Promotion uses brain_promote_adr (ticket af3b58dd item 2). Until
+    # 2026-09-03 this signature also published source_learning_id, auto_accept
+    # and dream_run_id.
+    # Published description: the `description=` below, not this docstring.
+    @mcp.tool(
+        version="2.0",
+        annotations=_HEARTBEAT_ANNOTATIONS,
+        description=(
+            "Capture a durable architecture decision as an ADR (status 'proposed').\n\n"
+            f"{CAPTURE_RULE}\n\n"
+            "Propose an Architecture Decision Record (ADR) in status='proposed'."
+        ),
+    )
     async def brain_propose_adr(
         title: str,
         context: KnowledgeText,
@@ -716,12 +735,6 @@ def register_tools(
         alternatives: ShortTextList | None = None,
     ) -> str:
         """Propose an Architecture Decision Record (ADR) in status='proposed'.
-
-        The Dream promotion path lives in its own tool, `brain_promote_adr`
-        (ticket af3b58dd item 2). Until 2026-09-03 this signature also published
-        `source_learning_id`, `auto_accept` and `dream_run_id` to every caller,
-        and refused their meaningless combinations at runtime. Two paths now
-        publish two schemas, so the invalid request can no longer be built.
 
         Args:
             title: Short title of the decision.

@@ -7,7 +7,7 @@
 
 ### Catalog gateways (`compact` profile)
 
-`brain_find_tool` is the FastMCP search gateway: pass a natural-language search query to find registered tools. `brain_call_tool(name, arguments)` invokes a discovered tool with its ordinary arguments and preserves that tool's result shape. The search transform returns at most five matches. These gateways are presentation tools and are unavailable to scoped Dream principals.
+`brain_find_tool` is the FastMCP search gateway: pass a natural-language search query to find registered tools. Each match is summarized as `name`, a one-line `description`, a `required` object mapping parameter names to short types, and an `optional` list of parameter names. Pass an exact tool name to get its full description and `input_schema`; output schemas are never included. The search transform returns at most five matches. `brain_call_tool(name, arguments)` invokes a discovered tool with its ordinary arguments and preserves that tool's result shape. These gateways are presentation tools and are unavailable to scoped Dream principals.
 
 Calling either gateway through `brain_call_tool` is refused with direct usage guidance. Unknown names return up to three suggestions from the caller's authorized catalogue, followed by the `brain_find_tool(query=...)` hint; project-shaped names also point to the session briefing, `brain_focus_history`, and `brain_list_projects`. Additive aliases resolve common names before dispatch. `brain_recall` resolves to `brain_search`. `brain_get_decision` resolves to `brain_get` with `entity_type="decision"`. `brain_get_learning` resolves to `brain_get` with `entity_type="learning"`. `brain_get_snippet` resolves to `brain_get` with `entity_type="snippet"`. `brain_get_runbook` resolves to `brain_get` with `entity_type="runbook"` only when no real registered tool has that name. `brain_get_adr` resolves to `brain_get` with `entity_type="adr"`. `brain_get_plan` resolves to `brain_get` with `entity_type="plan"`. A conflicting caller supplied `entity_type` is refused. An alias resolves only when its target tool is visible to the caller.
 
@@ -94,6 +94,8 @@ rollout, and rollback are documented in
 | See one claim's complete verdict history | `brain_claim_history` |
 
 `brain_learn` is the last-resort tool, never the default.
+
+Which capture tool: a choice between options -> `brain_log_decision`; a procedure -> `brain_create_runbook`; code -> `brain_save_snippet`; durable architecture -> `brain_propose_adr`; anything else -> `brain_learn`.
 
 ## Measured facts
 

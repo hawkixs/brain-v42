@@ -92,6 +92,8 @@ class MetricsFlusher:
         the ``_process`` ROW only (never per real agent — the ×N over-count guard).
         """
         ptools: dict[str, Any] = {}
+        if "tool_latency" in entry:
+            ptools["_tool_latency"] = entry["tool_latency"]
         # The sidecar runs in another process: persist cumulative MCP refusals
         # exactly once on _process, even before the first event or tool call.
         ptools["_mcp_auth_refused"] = refusal_counts()
@@ -248,6 +250,7 @@ class MetricsFlusher:
                              CAST(:tool_stats AS jsonb), CAST(:embedding_stats AS jsonb), :rss)
                         ON CONFLICT (agent_name) DO UPDATE SET
                             pid = :pid,
+                            started_at = :started_at,
                             updated_at = NOW(),
                             tool_stats = CAST(:tool_stats AS jsonb),
                             embedding_stats = CAST(:embedding_stats AS jsonb),

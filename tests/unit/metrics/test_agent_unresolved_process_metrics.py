@@ -96,12 +96,12 @@ async def test_aggregation_sums_processes_and_ignores_agent_copies() -> None:
     assert "_mcp_auth_agent_unresolved" not in result["tools"]
 
 
-async def test_aggregation_keeps_empty_map_before_flush_and_on_database_failure() -> None:
+async def test_aggregation_keeps_empty_before_flush_and_null_on_database_failure() -> None:
     failed = MetricsCollector(
         engine=MagicMock(), session_factory=MagicMock(side_effect=OSError("unavailable"))
     )
-    for result in (await _collect([]), await failed.collect_process_metrics()):
-        assert result["mcp_auth_agent_unresolved"] == {}
+    assert (await _collect([]))["mcp_auth_agent_unresolved"] == {}
+    assert (await failed.collect_process_metrics())["mcp_auth_agent_unresolved"] is None
 
 
 @pytest.mark.parametrize("counts", [None, {}, {"not_kebab": 2, "unknown_project": 1}])

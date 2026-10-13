@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from enum import StrEnum
+from typing import Literal
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -12,6 +15,23 @@ from fastmcp.server.auth import AccessToken
 from brain_v42.mcp import tool_catalog
 from brain_v42.mcp.tool_catalog import SESSION_LIFECYCLE_TOOLS, apply_tool_catalog_profile
 from brain_v42.mcp.tools.session_lifecycle_tools import register_session_lifecycle_tools
+
+
+class Workflow(StrEnum):
+    PLAN = "plan"
+    BUILD = "build"
+
+
+class ManyValues(StrEnum):
+    VALUE_1 = "v1"
+    VALUE_2 = "v2"
+    VALUE_3 = "v3"
+    VALUE_4 = "v4"
+    VALUE_5 = "v5"
+    VALUE_6 = "v6"
+    VALUE_7 = "v7"
+    VALUE_8 = "v8"
+    VALUE_9 = "v9"
 
 
 def _build_test_server() -> FastMCP:
@@ -182,6 +202,164 @@ async def test_compact_profile_finds_and_calls_a_hidden_tool() -> None:
 
     assert [tool["name"] for tool in found.data] == ["brain_search"]
     assert called.data == "memory:session lifecycle"
+
+
+async def test_find_tool_returns_compact_summary_with_required_and_enum_types() -> None:
+    server = FastMCP("brain-catalog-summary-test")
+
+    @server.tool
+    async def brain_search(
+        query: str,
+        kind: Literal["decision", "learning"],
+        workflow: Workflow,
+        many: ManyValues,
+        nullable: str | None,
+        limit: int = 10,
+        scope: str | None = None,
+    ) -> str:
+        """
+        Search memory entries.
+
+        Additional detail stays out of summaries.
+        """
+        return query + kind + workflow + many + (nullable or "")
+
+    async with Client(apply_tool_catalog_profile(server, "compact")) as client:
+        found = await client.call_tool("brain_find_tool", {"query": "search memory"})
+
+    assert isinstance(found.data, list)
+    result = next(item for item in found.data if item["name"] == "brain_search")
+    assert set(result) == {"name", "description", "required", "optional"}
+    assert result["description"] == "Search memory entries."
+    assert "\n" not in result["description"]
+    assert result["required"] == {
+        "query": "string",
+        "kind": "decision|learning",
+        "workflow": "plan|build",
+        "many": "v1|v2|v3|v4|v5|v6|v7|v8|…",
+        "nullable": "string",
+    }
+    assert result["optional"] == ["limit", "scope"]
+    assert "limit" not in result["required"]
+    assert "scope" not in result["required"]
+    assert "outputSchema" not in json.dumps(found.data)
+    assert "output_schema" not in json.dumps(found.data)
+
+
+async def test_find_tool_exact_name_returns_full_input_schema_only() -> None:
+    server = apply_tool_catalog_profile(_build_resolution_server(), "compact")
+    async with Client(server) as client:
+        found = await client.call_tool("brain_find_tool", {"query": " brain_get "})
+        aliased = await client.call_tool("brain_find_tool", {"query": "brain_recall"})
+
+    assert len(found.data) == 1
+    result = found.data[0]
+    assert result["name"] == "brain_get"
+    assert result["description"] == "Get one typed memory entry."
+    assert result["input_schema"]["properties"]["entity_id"] == {"type": "string"}
+    assert "output_schema" not in result
+    assert aliased.data[0]["name"] == "brain_search"
+    assert "input_schema" in aliased.data[0]
+
+
+async def test_find_tool_exact_name_does_not_leak_family_hidden_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.mcp import tool_families
+    from brain_v42.mcp.tool_families import FamilyAuthorizationMiddleware
+
+    server = FastMCP("brain-family-exact-catalog-test", mask_error_details=True)
+
+    @server.tool
+    async def brain_search(query: str) -> str:
+        """Search memory."""
+        return query
+
+    @server.tool
+    async def brain_learn(content: str) -> str:
+        """Save a learning."""
+        return content
+
+    server.add_middleware(FamilyAuthorizationMiddleware())
+    access = AccessToken(
+        token="",
+        client_id="reader",
+        scopes=["read"],
+        claims={"credential_id": "00000000-0000-0000-0000-000000000001", "issuers": ["actor.*"]},
+    )
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: access)
+    async with Client(apply_tool_catalog_profile(server, "compact")) as client:
+        hidden = await client.call_tool("brain_find_tool", {"query": "brain_learn"})
+        allowed = await client.call_tool("brain_find_tool", {"query": "brain_search"})
+    assert all(item["name"] != "brain_learn" for item in hidden.data)
+    assert all("input_schema" not in item for item in hidden.data)
+    assert allowed.data[0]["name"] == "brain_search"
+    assert "input_schema" in allowed.data[0]
+
+
+async def test_find_tool_real_hidden_name_does_not_resolve_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.mcp import tool_families
+    from brain_v42.mcp.tool_families import FamilyAuthorizationMiddleware
+
+    server = FastMCP("brain-family-alias-catalog-test", mask_error_details=True)
+
+    @server.tool
+    async def brain_get_runbook(entity_id: str) -> str:
+        """Get a runbook."""
+        return entity_id
+
+    @server.tool
+    async def brain_get(entity_id: str, entity_type: str = "learning") -> str:
+        """Get a memory entry."""
+        return entity_id + entity_type
+
+    server.add_middleware(FamilyAuthorizationMiddleware())
+    access = AccessToken(
+        token="",
+        client_id="reader",
+        scopes=["read"],
+        claims={"credential_id": "00000000-0000-0000-0000-000000000001", "issuers": ["actor.*"]},
+    )
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: access)
+    monkeypatch.setattr(
+        tool_families,
+        "family_of",
+        lambda name: "write" if name == "brain_get_runbook" else "read",
+    )
+    async with Client(apply_tool_catalog_profile(server, "compact")) as client:
+        found = await client.call_tool("brain_find_tool", {"query": "brain_get_runbook"})
+
+    assert all("input_schema" not in item for item in found.data)
+    assert all(item["name"] != "brain_get_runbook" for item in found.data)
+
+
+async def test_find_tool_summaries_are_bounded_for_large_tool_schemas() -> None:
+    from fastmcp.server.transforms.search import serialize_tools_for_output_json
+
+    server = FastMCP("brain-catalog-size-test")
+    long_text = "Detailed description. " * 100
+    # The five tools return dict[str, str], so each carries an output schema.
+    for index in range(5):
+
+        async def tool(required_value: str) -> dict[str, str]:
+            """Placeholder."""
+            return {"value": required_value}
+
+        tool.__name__ = f"brain_large_{index}"
+        tool.__doc__ = long_text
+        server.tool(tool)
+
+    async with Client(apply_tool_catalog_profile(server, "compact")) as client:
+        found = await client.call_tool("brain_find_tool", {"query": "large tool"})
+
+    assert len(found.data) == 5
+    new = json.dumps(found.data)
+    old_tools = await server._list_tools()
+    old = json.dumps(serialize_tools_for_output_json(old_tools))
+    assert len(new) < 1500
+    assert len(old) >= 3 * len(new)
 
 
 @pytest.mark.parametrize(
@@ -399,6 +577,29 @@ async def test_call_gateway_dump_matches_base_transform() -> None:
     assert gateway.model_dump(
         by_alias=True, exclude_none=True
     ) == base_tool.to_mcp_tool().model_dump(by_alias=True, exclude_none=True)
+
+
+async def test_search_gateway_documents_exact_name_schema_lookup() -> None:
+    from fastmcp.server.transforms.search import BM25SearchTransform
+
+    configured = apply_tool_catalog_profile(_build_resolution_server(), "compact")
+    base_tool = BM25SearchTransform(
+        max_results=5,
+        always_visible=list(SESSION_LIFECYCLE_TOOLS),
+        search_tool_name="brain_find_tool",
+        call_tool_name="brain_call_tool",
+    )._make_search_tool()
+    async with Client(configured) as client:
+        gateway = next(tool for tool in await client.list_tools() if tool.name == "brain_find_tool")
+    base_gateway = base_tool.to_mcp_tool()
+    assert gateway.inputSchema == base_gateway.inputSchema
+    assert gateway.outputSchema == base_gateway.outputSchema
+    assert gateway.description == (
+        "Search for tools using natural language.\n\n"
+        "Returns up to 5 matching tools ranked by relevance, each as a summary: name, one-line "
+        "description, required parameters with types, optional parameter names. Pass an exact "
+        "tool name to get that tool's full input schema."
+    )
 
 
 async def test_compact_profile_keeps_all_registered_lifecycle_tools_visible() -> None:
