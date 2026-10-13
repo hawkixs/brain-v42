@@ -2,7 +2,7 @@
 
 Persistent, typed project memory exposed through the Model Context Protocol (MCP). It stores decisions, learnings, snippets, runbooks, architecture decision records (ADRs), project focus, tickets, claims, and delivery evidence. PostgreSQL is the source of truth; PostgreSQL full-text search and pgvector provide retrieval, with an optional cross-encoder reranker. Neo4j is an optional relationship projection.
 
-brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.6.13 adds programmes/v1 (migration 065 for programme gates, recovery contract v23, five `brain_programme_*` MCP tools and the public sidecar `GET /programmes`), arms the session sweep and trace retention that 0.6.12 shipped dry, adds a hosted rerank fallback (Voyage first, then Cohere through OpenRouter, reciprocal rank fusion only when both fail), and quiets sidecar logging, on top of migrations 063 to 065. See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
+brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.6.14 calls Voyage's rerank API directly with the operator's own key (Cohere through OpenRouter stays the fallback, reciprocal rank fusion only when both fail), on top of release 0.6.13 (programmes/v1, migration 065, recovery contract v23) and migrations 063 to 065. See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
 
 ## Architecture
 
@@ -344,7 +344,7 @@ disaster-recovery proof, and metrics. Operators can suspend Dream and re-arm it 
 
 ## Versioning
 
-- The shipped version is **0.6.13**, and it stays `0.x` on purpose: a `1.0.0` would promise
+- The shipped version is **0.6.14**, and it stays `0.x` on purpose: a `1.0.0` would promise
   a stable interface and a way back, and this project has neither yet.
 - **No lossless downgrade is promised, at any version.** Several migrations protect stored
   history: **037** refuses when a session capture would be lost, **039** requires an explicit
