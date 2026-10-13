@@ -176,6 +176,12 @@ class _DbCollectorsMixin:
         The read window is ``retention.PROCESS_METRICS_FRESH_SQL`` — the exact complement
         of the purge predicate, so a row that survives the purge is always readable.
 
+        A deployment has exactly one ``_process`` emitter: ``agent_name`` is the
+        primary key and the flusher's upsert replaces that row. Chain and search
+        counters are snapshots from that row, never sums across agent rows.
+        ``search_rerank.emitter_started_at`` identifies the counter generation;
+        readers reset their baseline only when it changes, never on a counter drop.
+
         Returns:
             active_processes: distinct pid count (back-compat — dashboard already reads this).
             active_agents: distinct real agent_name count (excludes _process).
@@ -214,13 +220,16 @@ class _DbCollectorsMixin:
                 ).all()
 
             agg_tools: dict[str, dict[str, Any]] = {}
+            search_rerank: dict[str, Any] = {}
             mcp_auth_refused: dict[str, int] = {}
             elevation_refused: dict[str, int] = {}
             mcp_auth_agent_unresolved: dict[str, int] = {}
+            author_binding_candidates: dict[str, int] = {}
             process_counts = {
                 "_mcp_auth_refused": mcp_auth_refused,
                 "_elevation_refused": elevation_refused,
                 "_mcp_auth_agent_unresolved": mcp_auth_agent_unresolved,
+                "_author_binding_candidates": author_binding_candidates,
             }
             agg_emb: dict[str, Any] = {
                 "total_requests": 0,
@@ -264,6 +273,10 @@ class _DbCollectorsMixin:
 
                 # Aggregate tools across ALL rows (real tools + pseudo-tools are disjoint)
                 for name, stats in tool_stats.items():
+                    if name == "_search_rerank":
+                        if agent_name == "_process":
+                            search_rerank = dict(stats)
+                        continue
                     if name in process_counts:
                         # Cumulative snapshots belong to the emitting process,
                         # never to individual agents or generic tool reducers.
@@ -300,6 +313,8 @@ class _DbCollectorsMixin:
                     agg_tools[name]["total_latency"] += stats.get("total_latency", 0.0)
                     agg_tools[name]["total_candidates"] += stats.get("total_candidates", 0)
                     if name == "_reranker" and agent_name == "_process":
+                        if "chain" in stats:
+                            agg_tools[name]["chain"] = stats["chain"]
                         if stats.get("backend") is not None and (
                             "backend" not in agg_tools[name]
                             or rerank_backend_updated_at is None
@@ -442,6 +457,8 @@ class _DbCollectorsMixin:
                         entry["by_identity"] = {}
                         entry.pop("last_probe", None)
                         entry["recent_errors"] = 0
+                if "chain" in stats:
+                    entry["chain"] = stats["chain"]
                 tools_with_avg[name] = entry
 
             # by_agent: per-agent breakdown with avg_latency_ms
@@ -473,9 +490,11 @@ class _DbCollectorsMixin:
                 "active_agents": active_agents,
                 "total_memory_rss_bytes": total_rss,
                 "tools": tools_with_avg,
+                "search_rerank": search_rerank,
                 "mcp_auth_refused": mcp_auth_refused,
                 "elevation_refused": elevation_refused,
                 "mcp_auth_agent_unresolved": mcp_auth_agent_unresolved,
+                "author_binding_candidates": author_binding_candidates,
                 "embedding": {
                     "total_requests": emb_total,
                     "total_errors": agg_emb["total_errors"],
@@ -502,9 +521,11 @@ class _DbCollectorsMixin:
                 "active_agents": 0,
                 "total_memory_rss_bytes": 0,
                 "tools": {},
+                "search_rerank": {},
                 "mcp_auth_refused": {},
                 "elevation_refused": {},
                 "mcp_auth_agent_unresolved": {},
+                "author_binding_candidates": {},
                 "decay": dict(_DECAY_ZERO),
                 "embedding_identity": None,
                 "embedding": {

@@ -2,7 +2,7 @@
 
 Persistent, typed project memory exposed through the Model Context Protocol (MCP). It stores decisions, learnings, snippets, runbooks, architecture decision records (ADRs), project focus, tickets, claims, and delivery evidence. PostgreSQL is the source of truth; PostgreSQL full-text search and pgvector provide retrieval, with an optional cross-encoder reranker. Neo4j is an optional relationship projection.
 
-brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.6.10 adds per-client issuer patterns and the delivery attestation API v1.1 on top of migrations 063 and 064 and recovery contract v22 (no new migration). See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
+brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.6.16 ships the security and integrity follow-ups of lot 0.6.11 (a per-project fence between slot opening and the receipt-triggered automatic slot closure, exception messages redacted from standard-library console logs, a raw-exception test guard extended to raise statements, a hardened uv version parity test) on top of 0.6.15 (rerank budget), 0.6.14 (direct Voyage rerank) and 0.6.13 (programmes/v1, migration 065, recovery contract v23), and migrations 063 to 065. See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
 
 ## Architecture
 
@@ -102,7 +102,8 @@ support to be enabled.
 | Graph traversal | `brain_get_neighbors`, `brain_graph_path` |
 | Session lifecycle | `brain_session_start`, `brain_session_capture`, `brain_session_heartbeat`, `brain_session_checkpoint`, `brain_session_end`, `brain_session_relay`, `brain_session_list`, `brain_session_resume`, `brain_session_bind`, `brain_session_abandon` |
 | Focus slots | `brain_slot_open`, `brain_slot_list`, `brain_slot_close` |
-| Project context | `brain_focus_history`, `brain_set_project_context`, `brain_project_archive`, `brain_project_unarchive`, `brain_list_projects`, `brain_update_project_focus`, `brain_list_project_groups` |
+| Programme progress | `brain_programme_upsert`, `brain_programme_gate_upsert`, `brain_programme_gate_report`, `brain_programme_request`, `brain_programme_list` |
+| Project context | `brain_focus_history`, `brain_project_focus_get`, `brain_set_project_context`, `brain_project_archive`, `brain_project_unarchive`, `brain_list_projects`, `brain_update_project_focus`, `brain_list_project_groups` |
 | Decisions | `brain_log_decision`, `brain_supersede_decision`, `brain_get_supersession_chain` |
 | Learnings | `brain_learn`, `brain_validate_learning` |
 | Snippets | `brain_save_snippet`, `brain_use_snippet` |
@@ -230,7 +231,7 @@ the first provider proves nothing about fallthrough.
 
 ## Production state
 
-The repository migration target is migration 064. No page in this repository proves a
+The repository migration target is migration 065. No page in this repository proves a
 live schema head — **measure it, do not read it here**:
 
 ```bash
@@ -288,6 +289,10 @@ The project requires Python 3.12.7 or newer; CI targets Python 3.12. Install wit
 dependency and interpreter match CI. Unit tests do not require PostgreSQL. Tests that
 need a database require an isolated test database through `BRAIN_V42_TEST_DB_URL` and
 refuse production database targets.
+A session also refuses to start when the filesystem holding its temporary files
+(`--basetemp`, else `PYTEST_DEBUG_TEMPROOT`, else the system temp directory) has less free space than 5 % of its size,
+at least 5 GiB: a disk filled by old test directories once took a PostgreSQL on the same
+disk down. `BRAIN_V42_TEST_MIN_FREE_GB` sets the floor explicitly; `0` disables it.
 
 ## Project layout
 
@@ -339,7 +344,7 @@ disaster-recovery proof, and metrics. Operators can suspend Dream and re-arm it 
 
 ## Versioning
 
-- The shipped version is **0.6.10**, and it stays `0.x` on purpose: a `1.0.0` would promise
+- The shipped version is **0.6.16**, and it stays `0.x` on purpose: a `1.0.0` would promise
   a stable interface and a way back, and this project has neither yet.
 - **No lossless downgrade is promised, at any version.** Several migrations protect stored
   history: **037** refuses when a session capture would be lost, **039** requires an explicit

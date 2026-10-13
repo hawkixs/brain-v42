@@ -19,7 +19,12 @@ import structlog
 
 from brain_v42.db.tables import adrs, brain_entities, decisions, learnings, runbooks, snippets
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
-from brain_v42.mcp.tools.formatters import clamp_list_limit, format_error
+from brain_v42.mcp.tools.formatters import (
+    build_internal_error,
+    clamp_list_limit,
+    format_error,
+    format_internal_error,
+)
 from brain_v42.mcp.tools.tool_annotations import (
     _DESTRUCTIVE_ANNOTATIONS,
     _HEARTBEAT_ANNOTATIONS,
@@ -30,6 +35,7 @@ from brain_v42.mcp.tools.tool_annotations import (
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
 from brain_v42.services.link_result import LinkJobResult
+from brain_v42.services.proposal_service import ProposalServiceError
 
 if TYPE_CHECKING:
     from fastmcp import FastMCP
@@ -749,10 +755,6 @@ def register_dream_tools(
 
         ownership = await _curation_ownership(unique_ids)
         service = _proposal_service_factory(session_factory)
-        from brain_v42.services.proposal_service import (  # noqa: PLC0415
-            ProposalServiceError,
-        )
-
         lines: list[str] = []
         rejected = 0
         for proposal_id in unique_ids:
@@ -772,7 +774,12 @@ def register_dream_tools(
             try:
                 await service.reject_roadmap_curation(proposal_id)
             except ProposalServiceError as exc:
-                lines.append(f"- **#{proposal_id}** — échec : {exc}")
+                # Apply/reject failures already carry their service-side log reference.
+                lines.append(f"- **#{proposal_id}** — {exc}")
+                continue
+            except Exception as exc:
+                message = build_internal_error(f"reject proposal #{proposal_id}", exc)
+                lines.append(f"- **#{proposal_id}** — {message}")
                 continue
             rejected += 1
             lines.append(f"- **#{proposal_id}** `{row['op']}` — rejetée ({row['feature_name']})")
@@ -823,14 +830,13 @@ def register_dream_tools(
             return format_error(f"proposal #{proposal_id} est déjà `{row['status']}`")
 
         service = _proposal_service_factory(session_factory)
-        from brain_v42.services.proposal_service import (  # noqa: PLC0415
-            ProposalServiceError,
-        )
-
         try:
             result = await service.apply_roadmap_curation(proposal_id, allowed_ops=None)
         except ProposalServiceError as exc:
-            return format_error(f"apply #{proposal_id} a échoué : {exc}")
+            # Proposal guards are curated; unexpected failures are sanitized at source.
+            return format_error(str(exc))
+        except Exception as exc:
+            return format_internal_error(f"apply proposal #{proposal_id}", exc)
         return (
             f"## Curation appliquée — {project_key}\n\n"
             f"- **#{proposal_id}** `{result.operation}` — {row['feature_name']}\n"

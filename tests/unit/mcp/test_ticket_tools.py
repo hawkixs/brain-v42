@@ -5,7 +5,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
+import pytest
 from fastmcp import Client, FastMCP
+from pydantic import ValidationError
 
 from brain_v42.mcp.tools.formatters import format_id
 from brain_v42.mcp.tools.ticket_tools import register_ticket_tools
@@ -55,6 +57,60 @@ def _mcp_with(svc):
     mcp = FastMCP("test")
     register_ticket_tools(mcp, ticket_svc=svc)
     return mcp
+
+
+@pytest.mark.parametrize(
+    "name, method, arguments",
+    [
+        ("brain_ticket_reply", "reply", {"author_project": TO, "body": "reply"}),
+        ("brain_ticket_transition", "transition", {"author_project": TO, "action": "start"}),
+        ("brain_ticket_plan", "plan", {"author_project": TO, "target_release": "0.6.3"}),
+        ("brain_ticket_list", "list_grouped", {"project_key": TO}),
+    ],
+)
+async def test_service_validation_errors_never_echo_input(
+    name: str, method: str, arguments: dict[str, str]
+) -> None:
+    error = ValidationError.from_exception_data(
+        "Payload",
+        [
+            {
+                "type": "int_parsing",
+                "loc": ("count",),
+                "input": "input-secret",
+            }
+        ],
+    )
+    service = MagicMock()
+    setattr(service, method, AsyncMock(side_effect=error))
+    tool = await _tool(_mcp_with(service), name)
+    if name != "brain_ticket_list":
+        arguments = {**arguments, "ticket_id": str(uuid4())}
+    result = await tool.fn(**arguments)
+    assert "input-secret" not in result
+    assert "count" in result and "valid integer" in result
+
+
+@pytest.mark.parametrize(
+    "name, method, arguments",
+    [
+        ("brain_ticket_reply", "reply", {"author_project": TO, "body": "reply"}),
+        ("brain_ticket_transition", "transition", {"author_project": TO, "action": "start"}),
+        ("brain_ticket_plan", "plan", {"author_project": TO, "target_release": "0.6.3"}),
+        ("brain_ticket_list", "list_grouped", {"project_key": TO}),
+    ],
+)
+async def test_unexpected_service_value_errors_never_echo_exception_text(
+    name: str, method: str, arguments: dict[str, str]
+) -> None:
+    service = MagicMock()
+    setattr(service, method, AsyncMock(side_effect=ValueError("SELECT secret")))
+    tool = await _tool(_mcp_with(service), name)
+    if name != "brain_ticket_list":
+        arguments = {**arguments, "ticket_id": str(uuid4())}
+    result = await tool.fn(**arguments)
+    assert "SELECT" not in result and "secret" not in result
+    assert "internal error ValueError (ref " in result
 
 
 class TestRegistration:

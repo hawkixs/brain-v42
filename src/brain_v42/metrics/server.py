@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import ipaddress
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any, cast
 
 import structlog
@@ -251,6 +251,8 @@ class MetricsServer:
         credential_verifier: CredentialVerifier | None = None,
         credential_listener: CredentialListener | None = None,
         receiver_bucket: TokenBucket | None = None,
+        database_probe: Callable[[], Awaitable[object]] | None = None,
+        database_probe_timeout_seconds: float = 2.0,
     ) -> None:
         if receiver_auth not in {"none", "credentials"}:
             raise ValueError("METRICS_RECEIVER_AUTH must be none or credentials")
@@ -261,6 +263,9 @@ class MetricsServer:
         self._credential_listener = credential_listener
         self._receiver_bucket = receiver_bucket or TokenBucket(10, 20, monotonic=time.monotonic)
         self._receiver_refused: dict[str, int] = {}
+        self._database_probe = database_probe
+        self._database_probe_timeout_seconds = database_probe_timeout_seconds
+        self._probe_cleanups: set[asyncio.Future[object]] = set()
         self._collector = collector
         self._embedding_svc = embedding_svc
         self._port = port
@@ -295,6 +300,10 @@ class MetricsServer:
             app.cleanup_ctx.append(self._credential_registry_lifecycle)
         app.router.add_get("/metrics", self._handle_metrics)
         app.router.add_get("/api/cockpit", self._handle_cockpit)
+        # Programme progress (contract docs/contracts/programmes_v1.md): its own
+        # route, so the /metrics payload red-monitor stores on every probe does not
+        # carry it. Same listener and same read exposure as /metrics.
+        app.router.add_get("/programmes", self._handle_programmes)
         # Always registered, including on a bind that has no receivers: it is the
         # ONLY place a monitor can read that they are missing. The startup line
         # below says it once, to whoever reads a boot; nobody greps a log to build
@@ -397,6 +406,19 @@ class MetricsServer:
             )
         return response
 
+    async def _handle_programmes(self, _request: web.Request) -> web.Response:
+        """`{"programmes": <block>}`, or `{}` while this cycle's read failed (contract §3).
+
+        Memoised with the slow blocks (decision 1669d429): one read per TTL for every
+        poller, `generated_at` stamped by the cache. The attribute lookup happens
+        inside the cache's protected `compute`, as for the tickets block: a collector
+        lacking the method degrades to `{}`, never to a 500.
+        """
+        block = await self._slow_block_cache.get(
+            "programmes", lambda: self._collector.collect_programmes()
+        )
+        return web.json_response({"programmes": block} if block else {})
+
     async def _handle_healthz(self, _request: web.Request) -> web.Response:
         """Whether the three POST receivers are being served, in one field.
 
@@ -407,17 +429,69 @@ class MetricsServer:
 
         The bind address is deliberately NOT echoed: this endpoint is served on
         the very bind it describes, including a LAN one.
+
+        With a database probe, `database` says whether PostgreSQL answers within
+        the probe timeout, and an unreachable one turns the answer into a 503 so
+        the compose healthcheck and red-agent's health field see it (ticket
+        abbfabfd: a constant "ok" through a PostgreSQL outage). The probe's error
+        is never served: it may carry connection details.
         """
-        return web.json_response(
-            {
-                "status": "ok",
-                "ingest_receivers": (
-                    "enabled"
-                    if _is_loopback_bind(self._host) or self._receiver_auth == "credentials"
-                    else "disabled"
-                ),
-            }
-        )
+        body: dict[str, str] = {
+            "status": "ok",
+            "ingest_receivers": (
+                "enabled"
+                if _is_loopback_bind(self._host) or self._receiver_auth == "credentials"
+                else "disabled"
+            ),
+        }
+        if self._database_probe is None:
+            return web.json_response(body)
+        error_type = await self._probe_database()
+        if error_type is not None:
+            with contextlib.suppress(Exception):
+                logger.warning("metrics_healthz.database_unreachable", error_type=error_type)
+            body.update(status="degraded", database="unreachable")
+            return web.json_response(body, status=503)
+        body["database"] = "reachable"
+        return web.json_response(body)
+
+    async def _probe_database(self) -> str | None:
+        """Run the probe within its timeout; return None, or the failure's type name.
+
+        asyncio.wait_for would also wait for the cancelled probe to clean up, and an
+        asyncpg connection torn down during an outage can take seconds, past the
+        healthcheck's client timeout (codex review of #368). The answer is decided
+        at the timeout; the cancelled probe finishes its cleanup in the background.
+        """
+        assert self._database_probe is not None
+        task = asyncio.ensure_future(self._database_probe())
+        try:
+            done, _ = await asyncio.wait({task}, timeout=self._database_probe_timeout_seconds)
+        except BaseException:
+            task.cancel()
+            self._keep_until_done(task)
+            raise
+        if task not in done:
+            task.cancel()
+            self._keep_until_done(task)
+            return "TimeoutError"
+        if task.cancelled():
+            # A driver can cancel its own operation: that is an unreachable
+            # database, not a cancelled request (red-rail F-368-1).
+            return "CancelledError"
+        exc = task.exception()
+        return None if exc is None else type(exc).__name__
+
+    def _keep_until_done(self, task: asyncio.Future[object]) -> None:
+        """Hold a cancelled probe until its cleanup ends, and consume its outcome."""
+        self._probe_cleanups.add(task)
+
+        def _forget(finished: asyncio.Future[object]) -> None:
+            self._probe_cleanups.discard(finished)
+            if not finished.cancelled():
+                finished.exception()
+
+        task.add_done_callback(_forget)
 
     async def _handle_bounded_receiver(
         self,
@@ -588,11 +662,21 @@ class MetricsServer:
 
         # Cross-process aggregated tool/embedding stats
         process_agg = await self._collector.collect_process_metrics()
+        # These counters belong to MCP's single emitter, not this sidecar.
+        metrics["search_rerank"] = process_agg.pop("search_rerank", {})
+        metrics.pop("search", None)
+        # Persisted by MCP's emitter; this sidecar's own collector never reranks.
+        aggregated_chain = process_agg.get("tools", {}).get("_reranker", {}).get("chain")
+        if aggregated_chain is not None:
+            metrics.setdefault("reranker", {})["chain"] = aggregated_chain
+        else:
+            metrics.setdefault("reranker", {}).setdefault("chain", {})
         # Read MCP's persisted snapshot, never this sidecar's in-memory counter.
         # Structural zero stays present before the first event/flush and on DB failure.
         metrics["mcp_auth_refused"] = process_agg.pop("mcp_auth_refused", {})
         metrics["elevation_refused"] = process_agg.pop("elevation_refused", {})
         metrics["mcp_auth_agent_unresolved"] = process_agg.pop("mcp_auth_agent_unresolved", {})
+        metrics["author_binding_candidates"] = process_agg.pop("author_binding_candidates", {})
 
         # Override per-process tools/embedding/reranker with cross-process aggregation
         # when multiple processes are active
@@ -610,6 +694,7 @@ class MetricsServer:
                     "total_candidates": reranker_agg.get("total_candidates", 0),
                     "avg_latency_ms": reranker_agg["avg_latency_ms"],
                     "by_identity": reranker_agg.get("by_identity", {}),
+                    "chain": reranker_agg.get("chain", {}),
                     "last_probe_ok": probe["ok"] if probe else None,
                     "last_probe_reason": probe["reason"] if probe else None,
                     "last_probe_age_s": round(max(0.0, time.time() - probe["at"]), 1)

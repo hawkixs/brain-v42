@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 import structlog
@@ -29,6 +29,20 @@ ProposalFamily = Literal["ticket-extraction", "roadmap-curation"]
 ProposalStatus = Literal["applied", "rejected"]
 
 logger = structlog.get_logger(__name__)
+
+
+def _internal_error_message(operation: str, exc: BaseException) -> str:
+    """Keep proposal errors transport-neutral while linking them to the full server log."""
+    correlation_id = uuid4().hex[:12]
+    error_class = type(exc).__name__
+    logger.error(
+        "proposal.internal_error",
+        operation=operation,
+        error_class=error_class,
+        correlation_id=correlation_id,
+        exc_info=exc,
+    )
+    return f"{operation} failed: internal error {error_class} (ref {correlation_id})"
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,8 +170,11 @@ class ProposalService:
         except ProposalServiceError:
             raise
         except Exception as exc:
+            message = _internal_error_message(
+                f"ticket-extraction proposal {proposal_id} apply", exc
+            )
             raise ProposalApplyError(
-                f"ticket-extraction proposal {proposal_id} apply failed: {exc}",
+                message,
                 family=family,
                 proposal_id=proposal_id,
             ) from exc
@@ -204,8 +221,11 @@ class ProposalService:
         except ProposalServiceError:
             raise
         except Exception as exc:
+            message = _internal_error_message(
+                f"ticket-extraction proposal {proposal_id} reject", exc
+            )
             raise ProposalApplyError(
-                f"ticket-extraction proposal {proposal_id} reject failed: {exc}",
+                message,
                 family=family,
                 proposal_id=proposal_id,
             ) from exc
@@ -259,8 +279,9 @@ class ProposalService:
         except ProposalServiceError:
             raise
         except Exception as exc:
+            message = _internal_error_message(f"roadmap-curation proposal {proposal_id} apply", exc)
             raise ProposalApplyError(
-                f"roadmap-curation proposal {proposal_id} apply failed: {exc}",
+                message,
                 family=family,
                 proposal_id=proposal_id,
                 operation=operation,
@@ -300,8 +321,11 @@ class ProposalService:
         except ProposalServiceError:
             raise
         except Exception as exc:
+            message = _internal_error_message(
+                f"roadmap-curation proposal {proposal_id} reject", exc
+            )
             raise ProposalApplyError(
-                f"roadmap-curation proposal {proposal_id} reject failed: {exc}",
+                message,
                 family=family,
                 proposal_id=proposal_id,
                 operation=operation,

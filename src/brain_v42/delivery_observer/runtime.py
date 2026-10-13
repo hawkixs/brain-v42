@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
+import tempfile
 import traceback
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -69,6 +71,14 @@ class _UndecodableScanLimitReached(Exception):
 
 _INTERNAL_ERROR = "observer_internal_error"
 _MAX_FAULT_FRAMES = 3
+# A repository or pull request the App cannot see stays unseen until someone fixes the
+# installation: retrying it every 300 s spent the shared request budget forever with
+# nothing turning red (ticket bd1879f6). Its retry quadruples up to a day, which the
+# queue's failure count (capped at 6) reaches at its fifth prior failure.
+_UNREACHABLE_CODES = frozenset({"provider_not_found", "provider_forbidden"})
+_UNREACHABLE_BASE_SECONDS = 300.0
+_UNREACHABLE_MAX_SECONDS = 86400.0
+_BACKOFF_ALERT_PRIOR_FAILURES = 3
 
 
 def _fault_location(error: BaseException) -> str:
@@ -107,6 +117,29 @@ def _diagnose(
     # broken stderr is the journal's problem, not the attempt's. The write is
     # synchronous, like the stdout protocol of this process; the caller runs
     # it only once the attempt is persisted.
+    _write_stderr_line(line)
+
+
+def _diagnose_backoff(
+    subject: str, code: str, *, prior_failures: int, delay_seconds: float
+) -> None:
+    """One JSON line on stderr when an unreachable subject's retry grows long.
+
+    The per-attempt ``observation_error`` line becomes rare once the retry spans
+    hours; this line says the subject is now waiting on an operator fix.
+    """
+    _write_stderr_line(
+        {
+            "event": "observation_backoff",
+            "subject": subject,
+            "error_code": code,
+            "prior_failures": prior_failures,
+            "delay_seconds": delay_seconds,
+        }
+    )
+
+
+def _write_stderr_line(line: Mapping[str, object]) -> None:
     with suppress(OSError, ValueError):
         sys.stderr.write(json.dumps(line) + "\n")
         sys.stderr.flush()
@@ -138,6 +171,37 @@ class DeliveryObserverRuntime:
         self._blocked_keys: set[tuple[UUID, str, str]] = set()
         self._run_lock = asyncio.Lock()
 
+    def _write_heartbeat(self) -> None:
+        """Atomically publish progress so readers never see a partial timestamp."""
+        path = self.settings.heartbeat_path
+        if path is None:
+            return
+        temporary: str | None = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
+            ) as stream:
+                temporary = stream.name
+                stream.write(datetime.now(UTC).isoformat())
+            os.replace(temporary, path)
+        except OSError as error:
+            with suppress(OSError, ValueError):
+                sys.stderr.write(
+                    json.dumps(
+                        {
+                            "event": "observer_heartbeat_write_failed",
+                            "error_type": type(error).__name__,
+                        }
+                    )
+                    + "\n"
+                )
+                sys.stderr.flush()
+        finally:
+            if temporary is not None:
+                with suppress(OSError):
+                    os.unlink(temporary)
+
     async def run_once(self, project_key: str | None = None) -> ObservationRunResult:
         """Acquire for one pass unless run() already owns the connection."""
         async with self._run_lock:
@@ -147,7 +211,10 @@ class DeliveryObserverRuntime:
             try:
                 if release and not await self.owner.acquire():
                     return ObservationRunResult(exit_code=2)
-                return await self._cycle(asyncio.Event(), project_key=project_key)
+                result = await self._cycle(asyncio.Event(), project_key=project_key)
+                if result.exit_code != 2:
+                    self._write_heartbeat()
+                return result
             except ObserverOwnershipLost:
                 return ObservationRunResult(exit_code=2)
             finally:
@@ -166,6 +233,8 @@ class DeliveryObserverRuntime:
                     result = await self._cycle(stop_event)
                 if result.exit_code == 2:
                     return 2
+                if not stop_event.is_set():
+                    self._write_heartbeat()
                 deadline = asyncio.get_running_loop().time() + self.settings.poll_seconds
                 while not stop_event.is_set() and asyncio.get_running_loop().time() < deadline:
                     delay = min(1.0, max(0.0, deadline - asyncio.get_running_loop().time()))
@@ -361,6 +430,9 @@ class DeliveryObserverRuntime:
             for candidate in candidates:
                 seen.add((candidate.ticket_id, candidate.deliverable_key))
                 yield candidate
+                # The consumer has processed this candidate; long backlogs must
+                # keep the externally observed liveness timestamp current.
+                self._write_heartbeat()
             if len(candidates) < _MAX_RELEASE_COMPARES_PER_PASS:
                 return
 
@@ -499,6 +571,37 @@ class DeliveryObserverRuntime:
                     diagnostic=type(error).__name__,
                 )
 
+    def _settled_delay(
+        self,
+        evidence: PullRequestEvidence | RepositoryContextEvidence | None,
+        collection_seconds: float,
+    ) -> float:
+        """How long a successful observation stays good enough not to repeat.
+
+        An open pull request keeps the poll cadence so its merge is seen within a
+        minute. An integrated pull request and a repository context only need to stay
+        fresh, so they wait half the freshness window minus the time this collection
+        took (ticket bd1879f6). The evidence is aged by three things before its next
+        confirmation lands: this delay, up to one poll interval before the loop picks
+        the job, and the next collection, which is many sequential requests plus
+        admission waits. Waiting the whole window would leave it stale at the end of
+        every cycle; subtracting this collection keeps a uniformly slow one no worse
+        than the poll cadence. The caller floors the delay at poll_seconds.
+
+        Accepted residual (coordination ruling A on #362). While freshness/2 - D_prev
+        >= poll, the next confirmation lands at age freshness/2 + poll + (D_next -
+        D_prev): evidence stays fresh while a collection slows by at most
+        freshness/2 - poll (240 s at the defaults) against the previous one. Once
+        the delay is floored at poll, the age is 2 * poll + D_next, the poll
+        cadence's own bound (D_next up to freshness - 2 * poll, 480 s). Past either
+        bound evidence reads stale for at most one cycle, and the only effect is a
+        resolve refused until the next confirmation. No delay longer than
+        poll_seconds could tolerate an arbitrary slowdown.
+        """
+        if isinstance(evidence, PullRequestEvidence) and evidence.integration_sha is None:
+            return 0.0
+        return self.settings.freshness_seconds // 2 - collection_seconds
+
     async def _observe(self, job: ObservationJob) -> _Outcome:
         started_at = datetime.now(UTC)
         evidence: PullRequestEvidence | RepositoryContextEvidence | None = None
@@ -523,7 +626,14 @@ class DeliveryObserverRuntime:
                 if error.code in SAFE_OBSERVATION_ERROR_CODES
                 else "provider_invalid_response"
             )
-            retry = max(error.retry_after_seconds, min(300.0, 5.0 * 2 ** min(job.failure_count, 6)))
+            if error.code in _UNREACHABLE_CODES:
+                retry = min(
+                    _UNREACHABLE_MAX_SECONDS,
+                    _UNREACHABLE_BASE_SECONDS * 4 ** min(job.failure_count, 6),
+                )
+            else:
+                retry = min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
+            retry = max(error.retry_after_seconds, retry)
             provider_code, diagnostic = error.code, error.diagnostic
         except (httpx.HTTPError, TimeoutError) as error:
             # The transport already maps these to ProviderError; this keeps a network
@@ -536,6 +646,9 @@ class DeliveryObserverRuntime:
             code, retry = _INTERNAL_ERROR, min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
             diagnostic = _fault_location(error)
         finished_at = max(started_at, datetime.now(UTC))
+        if code is None:
+            retry = self._settled_delay(evidence, (finished_at - started_at).total_seconds())
+        delay = min(86400, max(self.settings.poll_seconds, retry))
         try:
             async with self.owner.transaction() as session:
                 repo = self.evidence_repository
@@ -578,13 +691,24 @@ class DeliveryObserverRuntime:
                     session,
                     job,
                     expected_version=job.version + 1,
-                    delay_seconds=min(86400, max(self.settings.poll_seconds, retry)),
+                    delay_seconds=delay,
                 )
+            self._write_heartbeat()
             if code is not None:
                 # After the attempt is persisted and rescheduled: stderr is
                 # synchronous, and a journal that stalls may delay only what
                 # comes next, never the record of this attempt.
                 _diagnose(job.identity, code, provider_code=provider_code, diagnostic=diagnostic)
+                if (
+                    provider_code in _UNREACHABLE_CODES
+                    and job.failure_count >= _BACKOFF_ALERT_PRIOR_FAILURES
+                ):
+                    _diagnose_backoff(
+                        job.identity,
+                        code,
+                        prior_failures=job.failure_count,
+                        delay_seconds=delay,
+                    )
             return _Outcome(
                 "collected" if code is None else "failed",
                 finished_at if code is None else None,
