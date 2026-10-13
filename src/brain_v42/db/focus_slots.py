@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 from uuid import UUID
 
 import sqlalchemy as sa
@@ -45,6 +45,11 @@ FocusSlotHistorySource = Literal["slot_open", "session_end", "session_relay", "s
 #: test: `db` must not import `repositories`.
 OBSERVER_IDENTITY = "brain-v42-delivery-observer"
 _ACTOR_CHARS = 64
+
+# "SLOT" fits int4. This is the code base's only two-key advisory-lock class;
+# nothing else uses the two-key form today. PostgreSQL keeps its key space
+# disjoint from all existing one-key locks, including other hashtext keys.
+FOCUS_SLOT_FENCE_CLASS: Final = 0x534C4F54
 
 
 async def record_slot_history(
@@ -340,29 +345,27 @@ async def received_anchor(
 async def lock_anchor_tickets(
     session: AsyncSession, *, project_key: str, anchors: Sequence[SlotAnchor]
 ) -> None:
-    """`FOR KEY SHARE` on every ticket whose receipt writer could complete one of `anchors`.
+    """`FOR KEY SHARE` on tickets eligible to complete `anchors` when this statement runs.
 
-    The receipt writers (`issue_integration_receipt`, `accept`, `record_released`) all open with
-    `tickets ... FOR UPDATE` on the ticket they write for (`lock_decision_scope`,
-    `lock_workflows`), and only afterwards run `close_slots_satisfied_by`, whose snapshot cannot
-    see a slot that is not committed yet. `brain_slot_open` takes the conflicting lock on the SAME
-    rows BEFORE it reads `received_anchor`: it either waits for a writer that already holds the
-    row and then sees its committed receipt, or it commits first and the writer, queued behind
-    it, finds the slot. Either way no slot opens on an anchor already received.
+    The receipt writers (`issue_integration_receipt`, `accept`, `record_released`) take
+    `tickets ... FOR UPDATE` (`lock_decision_scope`, `lock_workflows`) before writing and
+    calling `close_slots_satisfied_by`. These row locks order open against writers on the
+    current set, but cannot protect a ticket integrated or bound to the same PR later.
+    The caller must take the shared project fence AFTER these locks and BEFORE reading
+    `received_anchor`; the hook takes the exclusive fence after all its ticket locks.
 
     Rows: a ticket anchor's own ticket; the ticket of every active binding of a PR anchor; for a
     lot anchor every ticket of the project that has an active binding with an integration SHA,
     the only rows the release observer nominates (`unreleased`), since the tag it measures need
     not belong to a ticket planned for that release. That set grows with the project's integrated
-    tickets: a cost in open's latency and in the rows it dirties, never in correctness.
+    tickets: a cost in open's latency and in the rows it dirties. Growth after this
+    statement is covered by the project fence, rather than these ticket locks alone.
     `record_released` re-checks, under its own ticket lock, that its candidate is still in this
     set, so a stale candidate cannot attest a release this lock did not see.
 
-    Lock order, as the writers take it: the ticket rows first, ordered by id, in ONE statement
-    (two writers' sets are always walked in the same order). The caller holds no other lock when
-    it calls: no slot row, which a writer takes only after its tickets. So no cycle can form
-    between an open and a writer, nor between two opens (an open reaches its slot insert, the
-    only wait it can then meet, only once it owns every ticket lock it needs).
+    Lock order: all ticket rows first, ordered by id in ONE statement, then the project
+    fence, then slot rows. Neither open nor a writer holds the fence while waiting for
+    a ticket lock, so the fence introduces no cycle between them.
     """
     b, t = delivery_artifact_bindings, tickets
     touched: list[Any] = []
@@ -395,6 +398,36 @@ async def lock_anchor_tickets(
     )
 
 
+async def lock_anchor_project_shared(session: AsyncSession, *, project_key: str) -> None:
+    """Fence open's receipt read and insert until its transaction commits.
+
+    Called only after all anchor ticket locks. If a receipt writer owns the exclusive
+    fence first, this waits for its commit; the following `received_anchor` statement
+    gets a fresh READ COMMITTED snapshot and refuses `anchor_already_received`.
+    """
+    await session.execute(
+        sa.select(
+            sa.func.pg_advisory_xact_lock_shared(
+                FOCUS_SLOT_FENCE_CLASS, sa.func.hashtext(project_key)
+            )
+        )
+    )
+
+
+async def lock_anchor_project_exclusive(session: AsyncSession, *, project_key: str) -> None:
+    """Fence receipt auto-close against every concurrent open in the project.
+
+    Called only after all writer ticket locks. If open owns the shared fence first,
+    this waits for open's commit; the hook's NEXT statement gets a fresh READ COMMITTED
+    snapshot, sees the slot and closes it, including for a newly eligible ticket.
+    """
+    await session.execute(
+        sa.select(
+            sa.func.pg_advisory_xact_lock(FOCUS_SLOT_FENCE_CLASS, sa.func.hashtext(project_key))
+        )
+    )
+
+
 def _decisive(states: Sequence[AnchorState]) -> list[AnchorState]:
     lots = [state for state in states if state.kind == "lot"]
     return lots or list(states)
@@ -421,10 +454,16 @@ async def close_slots_satisfied_by(
 ) -> list[UUID]:
     """Close every open slot that the receipt just written satisfies (spec §5, ADR D5).
 
-    Runs inside the receipt writer's transaction, after the workflow locks it
-    already holds; it locks SLOTS only, ordered by id. Candidates are over-chosen
-    on purpose (a ticket anchor on the ticket, a PR anchor whose binding is on
-    it, any lot anchor of its project); the predicate decides, with Q2's rule.
+    Runs inside the receipt writer's transaction, after writing the receipt and taking
+    ALL its ticket/workflow locks. First read the distinct ticket projects, then take
+    their exclusive transaction fences in sorted order, before any slot query. A
+    concurrent open holding the shared fence commits before our next READ COMMITTED
+    snapshot, so we see its slot even if our ticket became eligible after its ticket
+    lock statement. If we fence first, open waits and its receipt read refuses instead.
+    No fence is held while waiting for a ticket lock; slots are locked last, by id.
+    Candidates are over-chosen on purpose: a ticket anchor on the ticket, a PR anchor
+    whose binding is on it, and any lot anchor of its project. The predicate decides
+    with Q2's rule.
     The close writes no base text and no summary. A closed slot is skipped, so a
     replayed receipt or attestation closes nothing twice.
     """
@@ -432,6 +471,13 @@ async def close_slots_satisfied_by(
         return []
     ids = list(ticket_ids)
     a, s, b, t = focus_slot_anchors, focus_slots, delivery_artifact_bindings, tickets
+    projects = (
+        await session.execute(
+            sa.select(t.c.to_project).where(t.c.id.in_(ids)).distinct().order_by(t.c.to_project)
+        )
+    ).scalars()
+    for project_key in projects:
+        await lock_anchor_project_exclusive(session, project_key=project_key)
     touched = sa.or_(
         sa.and_(a.c.kind == "ticket", a.c.ticket_id.in_(ids)),
         sa.and_(
