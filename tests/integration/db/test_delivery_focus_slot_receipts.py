@@ -14,11 +14,12 @@ from uuid import UUID, uuid4
 import pytest
 import sqlalchemy as sa
 
-from brain_v42.db.focus_slots import close_slots_satisfied_by
+from brain_v42.db.focus_slots import close_slots_satisfied_by, received_anchor
 from brain_v42.db.tables import (
     brain_sessions,
     delivery_artifact_bindings,
     delivery_attestations,
+    delivery_receipts,
     delivery_workflows,
     focus_slot_history,
     focus_slots,
@@ -184,6 +185,98 @@ async def test_a_pr_slot_closes_on_its_bound_tickets_integration(session_factory
     )
     receipt = await integrate(session_factory, ticket.id, binding, number)
     assert (await slot(session_factory, opened.slot.id))["close_reason"] == f"receipt:{receipt.id}"
+
+
+async def test_a_pr_bound_after_integration_does_not_satisfy_its_slot(session_factory):
+    ticket, binding, delivery, number = await workflow(session_factory)
+    later_number = number + 100_000
+    # Open requires an active PR binding; this other ticket has no receipt.
+    await workflow(session_factory, pr_number=later_number)
+    opened = await open_slot(
+        session_factory, SlotAnchor(kind="pr", repository_id=RID, pr_number=later_number)
+    )
+    receipt = await integrate(session_factory, ticket.id, binding, number)
+    async with session_factory() as session:
+        payload = await session.scalar(
+            sa.select(delivery_receipts.c.payload).where(
+                delivery_receipts.c.id == receipt.id,
+                delivery_receipts.c.ticket_id == ticket.id,
+                delivery_receipts.c.milestone == "integration",
+            )
+        )
+        version = await session.scalar(
+            sa.select(delivery_workflows.c.row_version).where(
+                delivery_workflows.c.ticket_id == ticket.id
+            )
+        )
+    assert payload is not None
+    assert [proof["binding_id"] for proof in payload["proof"]["artifact_proofs"]] == [
+        str(binding.id)
+    ]
+    later_binding = await delivery.bind_pr(
+        ticket.id,
+        actor_project=EXECUTOR,
+        deliverable_key="implementation",
+        repository_id=RID,
+        pr_number=later_number,
+        expected_revision=1,
+        expected_workflow_version=version,
+        idempotency_key=f"later-binding-{ticket.id}",
+    )
+    assert (later_binding.contract_revision, later_binding.attempt) == (
+        receipt.contract_revision,
+        receipt.attempt,
+    )
+    assert await pending(session_factory, opened.slot.id) is False
+    async with session_factory.begin() as session:
+        closed = await close_slots_satisfied_by(
+            session, ticket_ids=[ticket.id], completing_row_id=receipt.id
+        )
+    assert closed == []
+    assert (await slot(session_factory, opened.slot.id))["closed_at"] is None
+
+
+@pytest.mark.parametrize("same_pr", [False, True], ids=["another-pr", "same-pr-new-binding"])
+async def test_a_pr_bound_after_integration_can_open_a_slot(session_factory, same_pr: bool):
+    ticket, binding, delivery, number = await workflow(session_factory)
+    receipt = await integrate(session_factory, ticket.id, binding, number)
+    later_number = number if same_pr else number + 100_000
+    async with session_factory() as session:
+        assert (
+            await session.scalar(
+                sa.select(delivery_receipts.c.id).where(
+                    delivery_receipts.c.id == receipt.id,
+                    delivery_receipts.c.ticket_id == ticket.id,
+                    delivery_receipts.c.milestone == "integration",
+                )
+            )
+            == receipt.id
+        )
+        version = await session.scalar(
+            sa.select(delivery_workflows.c.row_version).where(
+                delivery_workflows.c.ticket_id == ticket.id
+            )
+        )
+    later_binding = await delivery.bind_pr(
+        ticket.id,
+        actor_project=EXECUTOR,
+        deliverable_key="implementation",
+        repository_id=RID,
+        pr_number=later_number,
+        expected_revision=1,
+        expected_workflow_version=version,
+        idempotency_key=f"later-binding-{ticket.id}",
+    )
+    assert later_binding.id != binding.id
+    assert (later_binding.contract_revision, later_binding.attempt) == (
+        receipt.contract_revision,
+        receipt.attempt,
+    )
+    anchor = SlotAnchor(kind="pr", repository_id=RID, pr_number=later_number)
+    async with session_factory() as session:
+        assert await received_anchor(session, project_key=EXECUTOR, anchor=anchor) is None
+    opened = await open_slot(session_factory, anchor)
+    assert (await slot(session_factory, opened.slot.id))["closed_at"] is None
 
 
 async def test_a_lot_decides_a_mixed_slot_and_closes_on_the_observer_release(session_factory):
