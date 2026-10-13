@@ -183,7 +183,11 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         history_limit: Limit = 20,
         history_cursor: Cursor | None = None,
     ) -> DeliveryView:
-        """Read persisted delivery evidence, freshness, blockers and immutable history."""
+        """Read persisted delivery evidence, freshness, blockers and immutable history.
+
+        For a status check, use brain_delivery_list(ticket_id=...): it returns the
+        compact summary; this tool returns the full view.
+        """
         return await delivery_svc.get(
             UUID(ticket_id),
             actor_project=actor_project,
@@ -201,12 +205,15 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
         | None = None,
         stage: Stage | None = None,
         detail: Literal["summary", "full"] = "summary",
+        ticket_id: TicketId | None = None,
     ) -> DeliveryListPage:
         """List compact delivery state and claim inputs, filtered before pagination.
 
         With `detail="full"`, each item's `view` includes the complete persisted
         delivery view; its attestations remain null. Summary mode omits proof
         bodies, pinned context snapshots and blocker explanations.
+        `ticket_id` restricts the list to one ticket: with the default summary
+        detail, this is the compact status of one delivery.
         """
         page = await delivery_svc.list(
             actor_project=actor_project,
@@ -215,6 +222,7 @@ def register_delivery_tools(mcp: FastMCP, delivery_svc: DeliveryService) -> None
             work=work,
             blocker=blocker,
             stage=stage,
+            ticket_id=ticket_id,
         )
         return DeliveryListPage(
             items=tuple(summarize_view(view, include_view=detail == "full") for view in page.items),

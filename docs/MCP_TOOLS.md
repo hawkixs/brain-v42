@@ -417,7 +417,7 @@ catalog gateways.
 | `brain_delivery_contract_set` | `ticket_id`, `contract`, `expected_revision` (0 for create), `idempotency_key`, required `reason` | `ContractRevision` |
 | `brain_delivery_bind_pr` | `ticket_id`, `deliverable_key`, `repository_id`, `pr_number`, `expected_revision`, `expected_workflow_version`, `idempotency_key` | `ArtifactBinding` |
 | `brain_delivery_get` | `ticket_id`, `history_limit=20`, `history_cursor=None` | `DeliveryView` |
-| `brain_delivery_list` (v2.0) | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None`, `detail="summary"` (`"full"` opt-in) | `DeliveryListPage` |
+| `brain_delivery_list` (v2.0) | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None`, `detail="summary"` (`"full"` opt-in), `ticket_id=None` | `DeliveryListPage` |
 | `brain_delivery_refresh` | `ticket_id` | `{status: "queued", view: DeliveryView}` |
 | `brain_delivery_claim` | `ticket_id`, `owner_key`, `work_kind`, `expected_workflow_version`, `expected_assessment_id`, `ttl_seconds=900` | `ClaimResult` |
 | `brain_delivery_claim_renew` | `ticket_id`, `owner_key`, `claim_token`, `epoch`, `ttl_seconds=900` | `ClaimState` |
@@ -427,6 +427,9 @@ catalog gateways.
 | `brain_delivery_attestation_list` | `ticket_id=None`, `issuer_project=None`, `kind=None`, `since=None`, `until=None`, `limit=20`, `cursor=None` | `DeliveryAttestationPage` |
 
 `brain_delivery_list` summaries omit blocker details, proofs and context snapshots.
+Use `brain_delivery_list(ticket_id=...)` for a compact status check of one delivery;
+`brain_delivery_get` returns the full view. The optional `ticket_id` filter is applied
+before pagination and still returns only tickets visible to the actor project.
 Each summary keeps at most 32 blocker references; `blockers_omitted` counts the
 remaining blockers. With `detail="full"`, the full view is nested under
 `items[i].view`, whose `attestations` is `null`.

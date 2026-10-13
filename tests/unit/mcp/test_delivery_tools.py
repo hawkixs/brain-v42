@@ -34,8 +34,57 @@ async def test_list_defaults_to_summary_and_full_is_opt_in(profile):
         ]
         assert payload["next_cursor"] == "next" and payload["omitted_count"] == 3
     service.list.assert_awaited_with(
-        actor_project="brain-v42", limit=5, cursor=None, work="repair", blocker=None, stage=None
+        actor_project="brain-v42",
+        limit=5,
+        cursor=None,
+        work="repair",
+        blocker=None,
+        stage=None,
+        ticket_id=None,
     )
+
+
+async def test_list_passes_optional_ticket_id_to_service():
+    ticket_id = uuid4()
+    service = AsyncMock()
+    app = await _app(service, "native")
+    await _call(
+        app,
+        "native",
+        "brain_delivery_list",
+        {"actor_project": "brain-v42", "ticket_id": str(ticket_id)},
+    )
+    service.list.assert_awaited_once_with(
+        actor_project="brain-v42",
+        limit=20,
+        cursor=None,
+        work=None,
+        blocker=None,
+        stage=None,
+        ticket_id=str(ticket_id),
+    )
+
+
+@pytest.mark.parametrize("profile", ["native", "compact"])
+async def test_list_refuses_a_malformed_ticket_id_before_the_service(profile):
+    service = AsyncMock()
+    app = await _app(service, profile)
+    result = await _call(
+        app,
+        profile,
+        "brain_delivery_list",
+        {"actor_project": "brain-v42", "ticket_id": "not-a-ticket"},
+    )
+    assert result.is_error and "invalid_arguments" in str(result.content)
+    service.list.assert_not_awaited()
+
+
+def test_single_delivery_summary_fits_status_check_budget():
+    from brain_v42.models.delivery import summarize_view
+    from tests.unit.models.test_delivery_summary import summary_view
+
+    # Measured on this fixture: the summary is 1127 bytes, the full view 4328.
+    assert len(summarize_view(summary_view(), include_view=False).model_dump_json()) < 2048
 
 
 async def test_list_is_published_as_version_two():

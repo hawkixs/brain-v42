@@ -165,6 +165,31 @@ async def test_catalogues_publish_schema_and_dispatch_the_eleven_delivery_tools(
 
 
 @pytest.mark.parametrize("delivery_mcp", ["native", "compact"], indirect=True)
+async def test_list_ticket_filter_limits_to_visible_workflow(delivery_mcp, session_factory):
+    # Two visible workflows, so that only the ticket predicate (applied before the
+    # limit of one) can narrow the page to the requested ticket.
+    visible = [(await _workflow(session_factory))[0] for _ in range(2)]
+    hidden, _, _ = await _workflow(
+        session_factory, requester="other-requester", executor="other-executor"
+    )
+    async with Client(delivery_mcp) as client:
+        compact = await _profile(client)
+        pages = [
+            await _call(
+                client,
+                "brain_delivery_list",
+                {"actor_project": "requester", "ticket_id": _uuid(ticket.id), "limit": 1},
+                compact=compact,
+            )
+            for ticket in (*visible, hidden)
+        ]
+    for ticket, page in zip(visible, pages, strict=False):
+        assert [item["contract"]["ticket_id"] for item in page["items"]] == [_uuid(ticket.id)]
+        assert page["omitted_count"] == 0 and page["next_cursor"] is None
+    assert pages[2]["items"] == [] and pages[2]["omitted_count"] == 0
+
+
+@pytest.mark.parametrize("delivery_mcp", ["native", "compact"], indirect=True)
 async def test_contract_claim_bind_reads_refresh_and_amendment_are_real_pg(
     delivery_mcp, session_factory, caplog, capsys
 ):
