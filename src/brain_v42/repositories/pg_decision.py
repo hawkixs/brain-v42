@@ -36,6 +36,10 @@ from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, Row, 
 logger = structlog.get_logger(__name__)
 
 
+class DecisionNotSupersedableError(ValueError):
+    """Refuse a replacement without an eligible old decision to avoid orphan rows."""
+
+
 #: Passes `_lock_with_referrers` makes before giving up. Each repeat needs a fresh
 #: concurrent commit pointing at the decision, inside a window of a few statements.
 _MAX_LOCK_PASSES = 3
@@ -550,7 +554,11 @@ class PgDecisionRepo(BasePgRepository):
 
         Steps (atomic via transaction()):
         1. INSERT new decision row via super().create(session=s)
-        2. UPDATE old decision: status='superseded', superseded_by=new_id
+        2. UPDATE exactly one old decision that is not already superseded:
+           status='superseded', superseded_by=new_id; otherwise roll back.
+           There is deliberately no project predicate: cross-project supersession
+           exists in production (2 of 56 rows on 2026-10-13, both project
+           renames), so restricting it is an operator decision, not a fix.
         3. COMMIT once (via transaction() context manager exit)
 
         With a caller-owned ``session`` both writes run in a savepoint of the
@@ -563,15 +571,23 @@ class PgDecisionRepo(BasePgRepository):
         payload = self._create_payload(new_data, new_embedding, id=new_id)
         update_stmt = (
             decisions.update()
-            .where(decisions.c.id == old_id)
+            .where(
+                decisions.c.id == old_id,
+                decisions.c.status != "superseded",
+            )
             .values(
                 status="superseded",
                 superseded_by=new_id,
                 updated_at=sa.text("NOW()"),
             )
+            .returning(decisions.c.id)
         )
         async with self.transaction(session) as sess:
             row = await super().create(payload, session=sess)
-            await sess.execute(update_stmt)
+            updated = await sess.execute(update_stmt)
+            if len(updated.scalars().all()) != 1:
+                raise DecisionNotSupersedableError(
+                    f"Decision {old_id} does not exist or is already superseded"
+                )
             logger.debug("pg_decision.supersede", old_id=str(old_id), new_id=str(new_id))
             return self._row_to_decision(row)
