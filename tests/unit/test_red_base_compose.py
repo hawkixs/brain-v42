@@ -16,6 +16,7 @@ import yaml
 from brain_v42.config import Settings
 from brain_v42.delivery_observer.config import load_observer_settings
 from brain_v42.maintenance.session_sweep import build_parser as session_sweep_parser
+from brain_v42.maintenance.trace_retention import build_parser as trace_retention_parser
 from brain_v42.mcp.server import version_check
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -446,13 +447,21 @@ def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
     assert command[:2] == ["/bin/sh", "-c"]
     match = re.fullmatch(
         r"while :; do\s+python -m brain_v42\.maintenance\.session_sweep(?P<args>[^|]*)"
-        r"\|\| echo \"session-sweep: run failed[^\"]*\" >&2;\s+sleep 86400;\s*done\s*",
+        r"\|\| echo \"session-sweep: run failed[^\"]*\" >&2;\s+"
+        r"python -m brain_v42\.maintenance\.trace_retention(?P<retention>[^|]*)"
+        r"\|\| echo \"trace-retention: run failed[^\"]*\" >&2;\s+"
+        r"sleep 86400;\s*done\s*",
         command[2],
     )
     assert match, command[2]
     arguments = session_sweep_parser().parse_args(match["args"].split())
     assert arguments.wet is False
     assert arguments.older_than_days == 7
+    # Ticket 8f319827: retention runs after the sweep in the same daily loop, dry
+    # until a separate configuration pull request passes --execute.
+    retention = trace_retention_parser().parse_args(match["retention"].split())
+    assert retention.execute is False
+    assert (retention.trace_older_than_days, retention.outbox_older_than_days) == (30, 30)
     assert service["env_file"] == ["/etc/brain-v42/postgres-app.env"]
     assert service["environment"] == compose["x-brain-env"]
     assert "secrets" not in service

@@ -205,6 +205,9 @@ best-effort basis: a run that fails before reaching the database (invalid config
 PostgreSQL down) or whose INSERT fails leaves no row, so a missing row does not prove the
 loop is dead. A failed run is retried the next day; the healthcheck proves only that the
 loop process exists, not that a run completed.
+After the sweep, the same loop runs `python -m brain_v42.maintenance.trace_retention`
+(see "Agent trace and graph outbox retention"), dry unless its command line carries
+`--execute`; its two report lines go to the same container log.
 
 **Arming state is measured, not documented.** This document deliberately does not
 state whether the four flags are armed: drop-ins change, and a copied value cannot
@@ -1187,6 +1190,10 @@ SELECT count(*) FROM delivery_confirmations;
 ```
 
 Deleted successes remain recoverable from the preceding backup dump.
+
+## Agent trace and graph outbox retention
+
+`python -m brain_v42.maintenance.trace_retention` previews old, unreferenced closed agent traces and delivered graph outbox rows; deletion is dry by default and requires `--execute`. Trace retention has a 30-day minimum window, and outbox retention has a seven-day minimum (both default to 30 days). It keeps open and operator sessions, traces referenced by artifacts, checkpoints, slot history or relay children, and every undelivered outbox row. Batches default to 5000 rows, with at most 100 batches per purge. A dry run counts every candidate; an execute run is capped at `--max-batches` × `--batch-size` rows. Locked candidates are skipped, and later invocations can process the remainder.
 
 ## Automation service
 
