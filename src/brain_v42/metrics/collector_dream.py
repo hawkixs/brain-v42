@@ -17,7 +17,6 @@ only when non-empty, not the block's own success/failure signal.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -292,92 +291,6 @@ class _DreamCollectorsMixin:
         except Exception as exc:
             logger.warning("metrics.collect_dream_metrics.failed", exc_info=True)
             raise CollectorDegraded({}) from exc
-
-    async def collect_dream_promoted_health(self) -> list[dict[str, Any]]:
-        """Per-target post-promotion health for auto-promoted ADRs and runbooks.
-
-        ADR #4 v2 telemetry: the SQL second-gate prevents bad promotions; this
-        join detects them after the fact. For each materialized promotion
-        (target_adr_id IS NOT NULL or target_runbook_id IS NOT NULL), surfaces
-        signals that distinguish a healthy auto-promotion (used, not
-        superseded) from a regrettable one (ignored, superseded shortly after).
-
-        NOT exposed: it left the scraped `/metrics` payload (one entry per
-        promotion, unbounded, 55.5 KB of 72.8 KB, read by nobody -- tickets
-        `817583e4` and `64debcad`), and no endpoint serves it. Per-target
-        cardinality is unbounded, so never a Prometheus labelled gauge either.
-        Serve it on demand, or reduce it to bounded aggregates, before wiring
-        it to a reader.
-
-        Returns one dict per row:
-            target_type: 'adr' | 'runbook'
-            target_id, title
-            status: 'accepted' | 'superseded' | 'deprecated' | None (runbooks)
-            superseded: bool (False for runbooks)
-            access_count
-            days_since_promotion
-            days_since_last_access: None when never accessed
-            promoted_at: ISO timestamp
-
-        Sorted by promoted_at DESC (newest first). Empty list on DB error.
-        """
-        try:
-            async with self._session_factory() as session:
-                rows = (
-                    await session.execute(
-                        text(
-                            """
-                            SELECT 'adr' AS target_type,
-                                   a.id AS target_id,
-                                   a.title,
-                                   a.status,
-                                   (a.superseded_by IS NOT NULL) AS superseded,
-                                   a.access_count,
-                                   a.last_accessed_at,
-                                   dp.created_at AS promoted_at
-                            FROM dream_promotions dp
-                            JOIN adrs a ON dp.target_adr_id = a.id
-                            WHERE dp.target_type = 'adr'
-                              AND dp.target_adr_id IS NOT NULL
-                            UNION ALL
-                            SELECT 'runbook' AS target_type,
-                                   r.id AS target_id,
-                                   r.title,
-                                   NULL AS status,
-                                   FALSE AS superseded,
-                                   r.access_count,
-                                   r.last_accessed_at,
-                                   dp.created_at AS promoted_at
-                            FROM dream_promotions dp
-                            JOIN runbooks r ON dp.target_runbook_id = r.id
-                            WHERE dp.target_type = 'runbook'
-                              AND dp.target_runbook_id IS NOT NULL
-                            ORDER BY promoted_at DESC
-                            """
-                        )
-                    )
-                ).all()
-
-                now = datetime.now(UTC)
-                return [
-                    {
-                        "target_type": row[0],
-                        "target_id": str(row[1]),
-                        "title": row[2],
-                        "status": row[3],
-                        "superseded": bool(row[4]),
-                        "access_count": int(row[5] or 0),
-                        "days_since_promotion": (now - row[7]).total_seconds() / 86400,
-                        "days_since_last_access": (
-                            (now - row[6]).total_seconds() / 86400 if row[6] is not None else None
-                        ),
-                        "promoted_at": row[7].isoformat(),
-                    }
-                    for row in rows
-                ]
-        except Exception:
-            logger.warning("metrics.collect_dream_promoted_health.failed", exc_info=True)
-            return []
 
     async def collect_dream_promotions(self) -> dict[str, int]:
         """Return current dream_promotions counts grouped by target_type.

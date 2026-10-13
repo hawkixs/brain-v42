@@ -28,6 +28,7 @@ from brain_v42.safe_logging import redact_url
 logger = structlog.get_logger(__name__)
 
 ERROR_WINDOW = 3600.0
+TOOL_LATENCY_WINDOW_SECONDS = 300.0
 
 
 def _endpoint_host(url: str) -> str:
@@ -133,6 +134,7 @@ class MetricsCollector(
         }
         # ── rolling-window state (for /api/cockpit) ──
         self._tool_latencies: deque[tuple[float, float]] = deque(maxlen=10000)  # (ts, ms)
+        self._tool_latency_by_name: dict[str, deque[tuple[float, float]]] = {}
         self._search_latencies: deque[tuple[float, float]] = deque(maxlen=10000)
         self._counter_snapshots: deque[tuple[float, int, int]] = deque(
             maxlen=20
@@ -243,7 +245,11 @@ class MetricsCollector(
             if tool_name not in self._tool_error_times:
                 self._tool_error_times[tool_name] = deque(maxlen=10000)
             self._tool_error_times[tool_name].append(time.time())
-        self._tool_latencies.append((time.time(), latency_ms))
+        sample = (time.time(), latency_ms)
+        self._tool_latencies.append(sample)
+        if tool_name not in self._tool_latency_by_name:
+            self._tool_latency_by_name[tool_name] = deque(maxlen=2000)
+        self._tool_latency_by_name[tool_name].append(sample)
         self._latency_buckets[self._bucket_for(latency_ms)] += 1
 
     def record_search_latency(self, latency_ms: float) -> None:
@@ -602,6 +608,14 @@ class MetricsCollector(
         recent_by_tool: dict[str, int] = {
             name: self._count_recent(times) for name, times in self._tool_error_times.items()
         }
+        cutoff = time.time() - TOOL_LATENCY_WINDOW_SECONDS
+        tool_latency = {
+            name: {
+                **self._percentiles(samples, TOOL_LATENCY_WINDOW_SECONDS),
+                "samples": sum(ts >= cutoff for ts, _ in samples),
+            }
+            for name, samples in self._tool_latency_by_name.items()
+        }
 
         # Determine which agents to include in the output.
         agents_to_include = self._dirty_agents if dirty_only else self._tool_stats.keys()
@@ -620,6 +634,7 @@ class MetricsCollector(
             result[agent] = {"tools": tools}
 
         result["_process"] = {
+            "tool_latency": tool_latency,
             "embedding": {
                 "total_requests": self._embedding_stats["total_requests"],
                 "total_errors": self._embedding_stats["total_errors"],

@@ -22,7 +22,8 @@ returning it plainly, so the cache retries under the short
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime
+import hashlib
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import structlog
@@ -232,6 +233,8 @@ class _DbCollectorsMixin:
 
             agg_tools: dict[str, dict[str, Any]] = {}
             search_rerank: dict[str, Any] = {}
+            tool_latency: dict[str, dict[str, Any]] = {}
+            contributing_processes: dict[str, datetime | None] = {}
             mcp_auth_refused: dict[str, int] = {}
             elevation_refused: dict[str, int] = {}
             mcp_auth_agent_unresolved: dict[str, int] = {}
@@ -281,6 +284,31 @@ class _DbCollectorsMixin:
                 emb_stats = row[5]
                 rss = row[6]
                 is_live = row[7]
+                started_at = row[2]
+                if isinstance(started_at, datetime):
+                    started_at = (
+                        started_at.replace(tzinfo=UTC)
+                        if started_at.tzinfo is None
+                        else started_at.astimezone(UTC)
+                    )
+                    contributing_processes[str(row[1]) + ":" + started_at.isoformat()] = started_at
+                else:
+                    # Legacy/test rows may omit the start time; they still contribute.
+                    contributing_processes.setdefault(str(row[1]) + ":", None)
+
+                if agent_name == "_process" and is_live:
+                    for tool, observed in tool_stats.get("_tool_latency", {}).items():
+                        combined = tool_latency.setdefault(
+                            tool, {"p50": None, "p95": None, "p99": None, "samples": 0}
+                        )
+                        combined["samples"] += observed.get("samples", 0)
+                        for key in ("p50", "p95", "p99"):
+                            value = observed.get(key)
+                            previous = combined[key]
+                            if previous is None:
+                                combined[key] = value
+                            elif value is not None:
+                                combined[key] = max(previous, value)
 
                 # Aggregate tools across ALL rows (real tools + pseudo-tools are disjoint)
                 for name, stats in tool_stats.items():
@@ -444,6 +472,7 @@ class _DbCollectorsMixin:
             active_agents = len({row[0] for row in rows if row[0] != "_process"})
 
             # Compute avg latencies for the global tools block
+            agg_tools.pop("_tool_latency", None)
             tools_with_avg: dict[str, Any] = {}
             for name, stats in agg_tools.items():
                 calls = stats["calls"]
@@ -453,6 +482,12 @@ class _DbCollectorsMixin:
                     "recent_errors": stats["recent_errors"],
                     "avg_latency_ms": round(stats["total_latency"] / calls, 1) if calls else 0.0,
                 }
+                if not name.startswith("_"):
+                    entry.update(
+                        tool_latency.get(
+                            name, {"p50": None, "p95": None, "p99": None, "samples": 0}
+                        )
+                    )
                 if stats.get("total_candidates"):
                     entry["total_candidates"] = stats["total_candidates"]
                 if "by_identity" in stats:
@@ -500,7 +535,16 @@ class _DbCollectorsMixin:
                 }
 
             emb_total = agg_emb["total_requests"]
+            starts = [value for value in contributing_processes.values() if value is not None]
             result = {
+                "counters": {
+                    "epoch": hashlib.sha256(
+                        "\n".join(sorted(contributing_processes)).encode()
+                    ).hexdigest()[:16],
+                    "since": max(starts).isoformat() if starts else None,
+                    "processes": len(contributing_processes),
+                    "tool_latency_window_s": 300.0,
+                },
                 "active_processes": active_processes,
                 "active_agents": active_agents,
                 "total_memory_rss_bytes": total_rss,
@@ -535,6 +579,7 @@ class _DbCollectorsMixin:
             logger.warning("metrics.collect_process_metrics.failed", exc_info=True)
             self._block_health.record("cross_process", "degraded", type(exc).__name__)
             return {
+                "counters": dict.fromkeys(("epoch", "since", "processes", "tool_latency_window_s")),
                 "active_processes": None,
                 "active_agents": None,
                 "total_memory_rss_bytes": None,
