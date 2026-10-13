@@ -1,0 +1,42 @@
+{
+  "digest": "sha256:04764f4346be5955545928939c0ae72fca5f94a0542dde9fe2f66caab29d3b45",
+  "idempotency_key": "released:0.6.13",
+  "issuer": "agent:claude-code:9685aeb7-05fa-46fb-a0d1-70eaa93f2263",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "changelog": [
+        "docs(release): mention the rerank fallback in the 0.6.13 sentence",
+        "chore(release): 0.6.13",
+        "feat(deploy): enable the Cohere rerank fallback on red-base",
+        "test(metrics): pin the new read exposure and keep the local chain block",
+        "feat(metrics): count rerank chain outcomes and per-search acceptance",
+        "feat(rerank): fall back to a second rerank link instead of RRF",
+        "feat(metrics): serve the programmes/v1 block on GET /programmes",
+        "feat(deploy): arm the seven-day session sweep and the trace retention on red-base",
+        "chore(receipts): record the release and the red-base deployment of 0.6.12",
+        "docs(metrics): record that the legacy automation lease is dormant by decision",
+        "fix(metrics): an absent Dream killswitch file is a notice, not an hourly warning",
+        "fix(metrics): log JSON from the sidecar's first line",
+        "fix(programmes): read a programme and its gates from one snapshot",
+        "fix(programmes): order the whole publication by position, test what review found untested",
+        "fix(programmes): bound positions, quota coordinators, refuse every invisible character",
+        "feat(mcp): brain_programme_* tools, signed by the caller's credential",
+        "chore(security): triage the v23 recovery assets' inherited public digests",
+        "fix(db): refuse Unicode spaces at line edges, bound the live extension exemption",
+        "fix(db): check each dependency, every identity and every declared line in 065",
+        "feat(db): migration 065 for programme progress, with recovery contract v23"
+      ],
+      "digest": "sha256:3c299ea595b434989d7fd4fd9ac87b66b0c55303a57990fecdcb7044b50843c1",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:3c299ea595b434989d7fd4fd9ac87b66b0c55303a57990fecdcb7044b50843c1",
+      "platform": "linux/amd64",
+      "sha": "b4a1da1be31715fee361107ad0ad25d13bbb6ee4",
+      "tag": "v0.6.13",
+      "version": "0.6.13"
+    },
+    "kind": "released"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T13:15:13.392436Z",
+  "schema_version": 1
+}
