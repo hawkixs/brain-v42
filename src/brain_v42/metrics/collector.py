@@ -949,6 +949,20 @@ class MetricsCollector(
         except Exception as exc:
             logger.exception("metrics.collect_db_stats.error")
             self._block_health.record("database", "degraded", type(exc).__name__)
+            worker_last_24h = dict.fromkeys(worker_last_24h)
+            graph_outbox_failure = (
+                graph_outbox_stats
+                if graph_outbox_stats["available"]
+                else {
+                    **graph_outbox_stats,
+                    "pending": None,
+                    "ready": None,
+                    "claimed": None,
+                    "exhausted": None,
+                    "oldest_pending_age_seconds": None,
+                    "projector": dict.fromkeys(graph_outbox_stats["projector"]),
+                }
+            )
             return {
                 "pool": pool_stats,
                 "tables": None,
@@ -959,15 +973,7 @@ class MetricsCollector(
                     "by_entity_type": None,
                     "worker_last_24h": worker_last_24h,
                 },
-                "graph_outbox": {
-                    "available": False,
-                    "pending": None,
-                    "ready": None,
-                    "claimed": None,
-                    "exhausted": None,
-                    "oldest_pending_age_seconds": None,
-                    "projector": dict.fromkeys(graph_outbox_stats["projector"]),
-                },
+                "graph_outbox": graph_outbox_failure,
             }
 
         self._block_health.record("database", "ok")
