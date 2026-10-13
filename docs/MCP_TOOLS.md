@@ -9,6 +9,8 @@
 
 `brain_find_tool` is the FastMCP search gateway: pass a natural-language search query to find registered tools. `brain_call_tool(name, arguments)` invokes a discovered tool with its ordinary arguments and preserves that tool's result shape. The search transform returns at most five matches. These gateways are presentation tools and are unavailable to scoped Dream principals.
 
+Calling either gateway through `brain_call_tool` is refused with direct usage guidance. Unknown names return up to three suggestions from the caller's authorized catalogue, followed by the `brain_find_tool(query=...)` hint; project-shaped names also point to the session briefing, `brain_focus_history`, and `brain_list_projects`. Additive aliases resolve common names before dispatch. `brain_recall` resolves to `brain_search`. `brain_get_decision` resolves to `brain_get` with `entity_type="decision"`. `brain_get_learning` resolves to `brain_get` with `entity_type="learning"`. `brain_get_snippet` resolves to `brain_get` with `entity_type="snippet"`. `brain_get_runbook` resolves to `brain_get` with `entity_type="runbook"` only when no real registered tool has that name. `brain_get_adr` resolves to `brain_get` with `entity_type="adr"`. `brain_get_plan` resolves to `brain_get` with `entity_type="plan"`. A conflicting caller supplied `entity_type` is refused. An alias resolves only when its target tool is visible to the caller.
+
 Tools generally return formatted text; lifecycle, fact and delivery tools also expose structured outputs. Through `brain_call_tool`, structured results remain objects and text results use FastMCP's wrapped result shape. Clients should follow each tool's declared output.
 
 Unexpected tool failures return `<operation> failed: internal error <Class> (ref <id>)`, with the same reference in the server log.
@@ -717,9 +719,13 @@ Increment `use_count`, set `last_used_at = now()`. Raises `Invalid UUID: <value>
 ### brain_propose_adr
 ```
 brain_propose_adr(title, context, decision, consequences, project_key,
-                  alternatives_considered=None, tags=None)
+                  alternatives_considered=None, tags=None, claims=None,
+                  alternatives=None)
 ```
 Propose an Architecture Decision Record (`status=proposed`).
+`alternatives` accepts strings like `brain_log_decision`; each string is used
+as both the alternative title and description. Pass it or
+`alternatives_considered` (objects with title and description), never both.
 
 The Dream promotion path is `brain_promote_adr`, a separate tool. Until
 2026-09-03 this signature also published `source_learning_id`, `auto_accept`
@@ -771,7 +777,10 @@ brain_create_runbook(title, description, project_key, trigger, steps,
                      prerequisites=None, rollback_steps=None,
                      estimated_duration=None, tags=None)
 ```
-`steps` is a list of `{order?, description, command?, verification?}`.
+`steps` is a list of step objects or strings. A string supplies the step title;
+steps without an explicit `order` are numbered by position. Empty strings are
+rejected. Objects retain the existing `{order?, title, command?, description?}`
+shape.
 
 The Dream promotion path is `brain_promote_runbook`, a separate tool. Until
 2026-09-04 this signature also published `source_learning_id` and
@@ -813,6 +822,17 @@ Increment `execution_count`, stamp `last_executed_at`, set `last_execution_statu
 
 ---
 
+## Accepted shapes
+
+List-of-text fields such as `tags`, `alternatives` and search `types` accept a
+single non-empty string as a one-element list. JSON-encoded lists are parsed as
+lists; malformed strings beginning with `[` and empty or whitespace-only strings
+are refused. Runbook `steps` and `rollback_steps` also accept a single string as
+a one-element list of step titles, or string items in a list. For
+`brain_propose_adr`, `alternatives` accepts strings while
+`alternatives_considered` accepts structured objects; passing both is refused as
+ambiguous.
+
 ## Global search — 1 tool (`brain_tools.py`)
 
 ### brain_search
@@ -822,6 +842,8 @@ brain_search(query, types=None, project_key=None, project_group=None,
              group_by_type=False, tags=None, include_related=False)
 ```
 Hybrid semantic search: pgvector fan-out across services + `BatchingRerankerClient` rerank (20 ms coalescing window). `types` subset of {decision, learning, snippet, runbook, adr, plan}. `project_key` XOR `project_group` scope. `tags` filter by overlap. Results render with `[s:score]` prefix sorted by score desc. `group_by_type=True` groups output into sections (former `brain_what_do_i_know_about`); `types` still scopes which sections are searched and rendered in grouped mode. `include_related=True` appends a `### Related` graph-neighbour block.
+
+`types` accepts either a list of knowledge types or one type string.
 
 `min_score` defaults to the active reranker's calibrated floor (0.2 shim, 0.50 Voyage rerank-3-lite); diagnostics report the threshold applied and the reranker identity. An explicit caller value overrides this default.
 
