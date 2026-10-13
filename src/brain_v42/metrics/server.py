@@ -672,7 +672,7 @@ class MetricsServer:
         else:
             metrics.setdefault("reranker", {}).setdefault("chain", {})
         # Read MCP's persisted snapshot, never this sidecar's in-memory counter.
-        # Structural zero stays present before the first event/flush and on DB failure.
+        # A measured empty source stays empty; a DB failure publishes nulls.
         metrics["mcp_auth_refused"] = process_agg.pop("mcp_auth_refused", {})
         metrics["elevation_refused"] = process_agg.pop("elevation_refused", {})
         metrics["mcp_auth_agent_unresolved"] = process_agg.pop("mcp_auth_agent_unresolved", {})
@@ -680,7 +680,7 @@ class MetricsServer:
 
         # Override per-process tools/embedding/reranker with cross-process aggregation
         # when multiple processes are active
-        if process_agg["active_processes"] > 0:
+        if process_agg["active_processes"] is not None and process_agg["active_processes"] > 0:
             agg_tools = process_agg["tools"]
             # Extract _reranker pseudo-tool into top-level reranker section
             reranker_agg = agg_tools.pop("_reranker", None)
@@ -747,6 +747,17 @@ class MetricsServer:
                 metrics["embedding_service"]["endpoint_host"] = identity["endpoint_host"]
                 metrics["embedding_service"]["models_seen"] = identity["models_seen"]
                 metrics["embedding_service"]["model_source"] = "live_processes"
+        elif process_agg["active_processes"] is None:
+            # These fields normally come from the aggregate. Do not present this
+            # sidecar's idle counters as measurements of an unavailable source.
+            for key in (
+                "total_requests",
+                "total_errors",
+                "recent_errors",
+                "avg_latency_ms",
+                "usage",
+            ):
+                metrics["embedding_service"][key] = process_agg["embedding"][key]
 
         # decay/embedding_identity are published only via the top-level
         # embedding_service (set above when active): strip them from the raw
@@ -817,8 +828,7 @@ class MetricsServer:
         # (collector_tickets.py) reuses list_grouped's own _ACTIONABLE/_CONFIRMABLE
         # predicates, red-monitor renders whatever it receives with no status logic
         # of its own. `projects: []` (truthy dict) still publishes the key — only a
-        # raised exception (caught by the cache, see slow_block_cache.py) leaves
-        # "tickets" absent from the payload. Same lambda-deferral reasoning as
+        # raised exception leaves "tickets" absent. Same reasoning as
         # "nightly" just above: a collector lacking the method must degrade this
         # block to absent, not 500 the whole endpoint.
         tickets_block = await self._slow_block_cache.get(
@@ -833,6 +843,23 @@ class MetricsServer:
         )
         if slots_block:
             metrics["session_slots"] = slots_block
+
+        # Older collector doubles may not expose health; their unevaluated blocks
+        # are explicitly not_measured rather than assumed healthy.
+        collector_health = (
+            self._collector.block_health
+            if callable(getattr(type(self._collector), "block_health", None))
+            else self._slow_block_cache.health
+        )
+        metrics["block_status"] = {
+            key: collector_health(key) for key in ("database", "search_quality", "cross_process")
+        }
+        slow_keys: tuple[str, ...] = ("dream", "nightly", "tickets", "session_slots")
+        if self._graph_svc is not None:
+            slow_keys += ("graph_inventory",)
+        metrics["block_status"].update(
+            {key: self._slow_block_cache.health(key) for key in slow_keys}
+        )
 
         # Deprecated top-level alias (ticket 3a4ed612): re-synced here, after any
         # cross-process override above, so it never drifts from the field it

@@ -21,6 +21,7 @@ from brain_v42.metrics.collector_nightly import _NightlyCollectorsMixin
 from brain_v42.metrics.collector_programmes import _ProgrammeCollectorsMixin
 from brain_v42.metrics.collector_session_slots import _SessionSlotCollectorsMixin
 from brain_v42.metrics.collector_tickets import _TicketCollectorsMixin
+from brain_v42.metrics.slow_block_cache import BlockHealth
 from brain_v42.repositories.pg_graph_ledger import projection_health, read_projection_state
 from brain_v42.safe_logging import redact_url
 
@@ -72,6 +73,7 @@ class MetricsCollector(
     ) -> None:
         self._engine = engine
         self._session_factory = session_factory
+        self._block_health_tracker = BlockHealth()
         self._started_at = time.time()
         self._tool_stats: dict[str, dict[str, dict[str, Any]]] = {}
         self._embedding_stats: dict[str, Any] = {
@@ -160,6 +162,10 @@ class MetricsCollector(
         # _overflow bucket still counts them).
         self._overflow_warned: bool = False
 
+    def block_health(self, key: str) -> dict[str, Any]:
+        """Expose source health without inserting keys into existing blocks."""
+        return self._block_health.health(key)
+
     @staticmethod
     def _bucket_for(latency_ms: float) -> str:
         if latency_ms < 100:
@@ -245,11 +251,13 @@ class MetricsCollector(
         self._search_latencies.append((time.time(), latency_ms))
 
     @staticmethod
-    def _percentiles(samples: deque[tuple[float, float]], window_s: float) -> dict[str, float]:
+    def _percentiles(
+        samples: deque[tuple[float, float]], window_s: float
+    ) -> dict[str, float | None]:
         cutoff = time.time() - window_s
         values = sorted(v for ts, v in samples if ts >= cutoff)
         if not values:
-            return {"p50": 0.0, "p95": 0.0, "p99": 0.0}
+            return {"p50": None, "p95": None, "p99": None}
         n = len(values)
 
         def pct(p: float) -> float:
@@ -258,11 +266,11 @@ class MetricsCollector(
 
         return {"p50": pct(0.50), "p95": pct(0.95), "p99": pct(0.99)}
 
-    def tool_percentiles(self, window_s: float = 300.0) -> dict[str, float]:
+    def tool_percentiles(self, window_s: float = 300.0) -> dict[str, float | None]:
         """Return p50/p95/p99 of tool latencies within the last `window_s` seconds."""
         return self._percentiles(self._tool_latencies, window_s)
 
-    def retrieval_percentiles(self, window_s: float = 86400.0) -> dict[str, float]:
+    def retrieval_percentiles(self, window_s: float = 86400.0) -> dict[str, float | None]:
         """Return p50/p95 of retrieval latencies within the window (24h default)."""
         p = self._percentiles(self._search_latencies, window_s)
         return {"p50": p["p50"], "p95": p["p95"]}
@@ -938,21 +946,31 @@ class MetricsCollector(
                         },
                     }
 
-        except Exception:
+        except Exception as exc:
             logger.exception("metrics.collect_db_stats.error")
+            self._block_health.record("database", "degraded", type(exc).__name__)
             return {
                 "pool": pool_stats,
-                "tables": {},
-                "db_size_bytes": 0,
-                "dimension_mismatches": 0,
+                "tables": None,
+                "db_size_bytes": None,
+                "dimension_mismatches": None,
                 "embedding_backlog": {
-                    "total": 0,
-                    "by_entity_type": {},
+                    "total": None,
+                    "by_entity_type": None,
                     "worker_last_24h": worker_last_24h,
                 },
-                "graph_outbox": graph_outbox_stats,
+                "graph_outbox": {
+                    "available": False,
+                    "pending": None,
+                    "ready": None,
+                    "claimed": None,
+                    "exhausted": None,
+                    "oldest_pending_age_seconds": None,
+                    "projector": dict.fromkeys(graph_outbox_stats["projector"]),
+                },
             }
 
+        self._block_health.record("database", "ok")
         return {
             "pool": pool_stats,
             "tables": tables,

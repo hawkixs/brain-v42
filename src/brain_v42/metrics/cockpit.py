@@ -21,6 +21,7 @@ from brain_v42.config import get_settings
 from brain_v42.metrics.client_activity import ClientActivityRegistry
 from brain_v42.metrics.collector import MetricsCollector, _get_rss_bytes
 from brain_v42.metrics.memory_stats import collect_memory_stats
+from brain_v42.metrics.slow_block_cache import BlockHealth
 
 logger = structlog.get_logger(__name__)
 
@@ -43,6 +44,7 @@ class CockpitCollector:
         self._cache: dict[str, Any] | None = None
         self._cache_ts: float = 0.0
         self._cache_lock = asyncio.Lock()
+        self._block_health = BlockHealth()
 
     async def snapshot(self) -> dict[str, Any]:
         """Return the full cockpit payload (cached 1s)."""
@@ -65,8 +67,13 @@ class CockpitCollector:
         tool_pct = self._collector.tool_percentiles(window_s=300.0)
         rates = self._collector.compute_rates(window_s=60.0)
         retrieval_pct = self._collector.retrieval_percentiles(window_s=86400.0)
+        self._block_health.record(
+            "retrieval",
+            "not_measured" if retrieval_pct["p95"] is None else "ok",
+            "no_samples" if retrieval_pct["p95"] is None else None,
+        )
 
-        memory = await collect_memory_stats(self._session_factory)
+        memory = await collect_memory_stats(self._session_factory, health=self._block_health)
         retrieval = await self._retrieval_stats(retrieval_pct)
         tools_block = self._tools_block()
 
@@ -141,6 +148,10 @@ class CockpitCollector:
             "skills": [],
             "memory": memory,
             "retrieval": retrieval,
+            "block_status": {
+                "memory": self._block_health.health("memory"),
+                "retrieval": self._block_health.health("retrieval"),
+            },
             "latencyBuckets": buckets,
             "cost": {
                 # None when no record_cost caller exists — honest 'no data source'.
@@ -218,7 +229,7 @@ class CockpitCollector:
         """
         return None
 
-    async def _retrieval_stats(self, pct: dict[str, float]) -> dict[str, Any]:
+    async def _retrieval_stats(self, pct: dict[str, float | None]) -> dict[str, Any]:
         try:
             async with self._session_factory() as session:
                 row = (
