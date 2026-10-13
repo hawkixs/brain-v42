@@ -20,8 +20,9 @@ Design rules (vague 3):
   - _row_to_model uses an allowlist (known_fields) to strip computed columns
     (rank, similarity, distance, search_vector, embedding).
   - list_all ORDER BY number DESC (not created_at).
-  - search() without query DOES NOT filter archived rows — brain_service refilters
-    in Python; filtering in SQL would break include_archived=True use-cases.
+  - search() and vector_search() keep archived rows unless the caller passes
+    live_row_clauses() as extra_clauses (include_archived=True use-cases need them);
+    brain_service refilters in Python as a second line.
   - vector_search returns row["similarity"] as-is (higher = better),
     aligned with the other five shards.
 """
