@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+import traceback
 from collections.abc import AsyncIterator, Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
+import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from brain_v42.delivery_config import DeliverySettings
@@ -44,6 +46,8 @@ class ObservationRunResult(BaseModel):
     deferred: int = Field(default=0, ge=0)
     last_success_at: datetime | None = None
     max_lag_seconds: float = Field(default=0, ge=0)
+    # Failures caused by the observer's own code, a subset of `failed` (ticket e8c26eed).
+    internal_errors: int = Field(default=0, ge=0)
     exit_code: Literal[0, 1, 2] = 0  # success / provider failures / ownership conflict or loss
 
 
@@ -51,6 +55,7 @@ class ObservationRunResult(BaseModel):
 class _Outcome:
     status: Literal["collected", "failed", "deferred"]
     finished_at: datetime | None = None
+    internal: bool = False
 
 
 _MAX_DECODED_JOBS_PER_PASS = 100
@@ -60,6 +65,24 @@ _MAX_RELEASE_COMPARES_PER_PASS = 10
 
 class _UndecodableScanLimitReached(Exception):
     pass
+
+
+_INTERNAL_ERROR = "observer_internal_error"
+_MAX_FAULT_FRAMES = 3
+
+
+def _fault_location(error: BaseException) -> str:
+    """Name the exception and its innermost frames, never its message.
+
+    An exception message can carry a provider body or a credential; the type and
+    the code location are enough to find a defect from the journal.
+    """
+    frames = traceback.extract_tb(error.__traceback__)[-_MAX_FAULT_FRAMES:]
+    where = " <- ".join(
+        f"{frame.filename.rsplit('/', 1)[-1]}:{frame.lineno} {frame.name}"
+        for frame in reversed(frames)
+    )
+    return f"{type(error).__name__} at {where}" if where else type(error).__name__
 
 
 def _diagnose(
@@ -192,7 +215,7 @@ class DeliveryObserverRuntime:
     async def _cycle(
         self, stop_event: asyncio.Event, *, project_key: str | None = None
     ) -> ObservationRunResult:
-        collected = failed = deferred = 0
+        collected = failed = deferred = internal = 0
         latest: datetime | None = None
         lag = 0.0
         seen: set[str] = set()
@@ -255,6 +278,7 @@ class DeliveryObserverRuntime:
                     deferred += len(jobs)
                     break
                 for outcome in outcomes:
+                    internal += outcome.internal
                     if outcome.status == "collected":
                         collected += 1
                         if outcome.finished_at is not None:
@@ -281,6 +305,7 @@ class DeliveryObserverRuntime:
                 deferred=deferred,
                 last_success_at=latest,
                 max_lag_seconds=lag,
+                internal_errors=internal,
                 exit_code=2,
             )
         finally:
@@ -294,6 +319,7 @@ class DeliveryObserverRuntime:
             deferred=deferred,
             last_success_at=latest,
             max_lag_seconds=lag,
+            internal_errors=internal,
             exit_code=exit_code,
         )
 
@@ -499,9 +525,16 @@ class DeliveryObserverRuntime:
             )
             retry = max(error.retry_after_seconds, min(300.0, 5.0 * 2 ** min(job.failure_count, 6)))
             provider_code, diagnostic = error.code, error.diagnostic
-        except Exception as error:
+        except (httpx.HTTPError, TimeoutError) as error:
+            # The transport already maps these to ProviderError; this keeps a network
+            # failure that escapes it an outage rather than a defect.
             code, retry = "provider_unavailable", min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
             diagnostic = type(error).__name__
+        except Exception as error:
+            # Anything else is a defect of this code (AttributeError, KeyError, ...):
+            # recording it as provider_unavailable would read as a GitHub outage.
+            code, retry = _INTERNAL_ERROR, min(300.0, 5.0 * 2 ** min(job.failure_count, 6))
+            diagnostic = _fault_location(error)
         finished_at = max(started_at, datetime.now(UTC))
         try:
             async with self.owner.transaction() as session:
@@ -553,16 +586,23 @@ class DeliveryObserverRuntime:
                 # comes next, never the record of this attempt.
                 _diagnose(job.identity, code, provider_code=provider_code, diagnostic=diagnostic)
             return _Outcome(
-                "collected" if code is None else "failed", finished_at if code is None else None
+                "collected" if code is None else "failed",
+                finished_at if code is None else None,
+                internal=code == _INTERNAL_ERROR,
             )
         except DeliveryError as error:
+            internal = code == _INTERNAL_ERROR
+            if internal:
+                # The attempt was not recorded, but the defect behind it must not
+                # vanish with it: say where it happened before handling the record.
+                _diagnose(job.identity, _INTERNAL_ERROR, provider_code=None, diagnostic=diagnostic)
             if error.code in {
                 "binding_conflict",
                 "binding_superseded",
                 "repository_context_conflict",
                 "repository_context_superseded",
             }:
-                return _Outcome("deferred")
+                return _Outcome("deferred", internal=internal)
             # Any other domain error is confined to this one job: re-raising
             # would end the process, and the oldest due job being retried
             # first, every restart would die on the same one (ticket b78b5144).
@@ -573,4 +613,4 @@ class DeliveryObserverRuntime:
                 provider_code=None,
                 diagnostic=type(error).__name__,
             )
-            return _Outcome("failed")
+            return _Outcome("failed", internal=internal)

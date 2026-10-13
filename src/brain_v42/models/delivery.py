@@ -95,6 +95,8 @@ SAFE_OBSERVATION_ERROR_CODES = frozenset(
         "provider_rate_limited",
         "provider_timeout",
         "provider_unavailable",
+        # A defect of the observer itself, never a provider outage (ticket e8c26eed).
+        "observer_internal_error",
     }
 )
 

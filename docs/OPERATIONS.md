@@ -194,6 +194,18 @@ have no flag of their own; the Dream rule above then only meets what they have n
 closed yet. A failed close is logged (`session_autoopen.close_failed`,
 `agent_trace_net.sweep_failed`) and never holds the connection or the shutdown.
 
+**On red-base** (Compose, no Dream unit), the `session-sweep` service runs the same
+CLI once at start and then every 24 hours, for the seven-day rule only: the net above
+already covers the four-hour rule, so the service does not set
+`BRAIN_SESSION_INACTIVE_SWEEP_ENABLED`. Whether it writes is declared on its command
+line (`--wet` or not) in `deploy/compose.yaml` and changes only through a pull request
+followed by a rail deploy. Each run prints its report to `docker logs brain-v42-session-sweep`
+and records a `dream_runs` row (`phase = 'sweep'`, `phase_dry_run` set accordingly) on a
+best-effort basis: a run that fails before reaching the database (invalid configuration,
+PostgreSQL down) or whose INSERT fails leaves no row, so a missing row does not prove the
+loop is dead. A failed run is retried the next day; the healthcheck proves only that the
+loop process exists, not that a run completed.
+
 **Arming state is measured, not documented.** This document deliberately does not
 state whether the four flags are armed: drop-ins change, and a copied value cannot
 tell it has aged. Measure each flag in the process that reads it. Auto-opening,
