@@ -359,7 +359,9 @@ async def lock_anchor_tickets(
     the only rows the release observer nominates (`unreleased`), since the tag it measures need
     not belong to a ticket planned for that release. That set grows with the project's integrated
     tickets: a cost in open's latency and in the rows it dirties. Growth after this
-    statement is covered by the project fence, rather than these ticket locks alone.
+    statement is covered by the project fence when it comes with a receipt, that is, for
+    every writer that runs `close_slots_satisfied_by`. A `bind_pr` that binds an already
+    integrated ticket to a PR anchor writes no receipt and is NOT covered (ticket 8401c44d).
     `record_released` re-checks, under its own ticket lock, that its candidate is still in this
     set, so a stale candidate cannot attest a release this lock did not see.
 
