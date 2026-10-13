@@ -14,9 +14,28 @@ import re
 import sys
 from collections.abc import Sequence
 from typing import Any, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import structlog
 from structlog.types import EventDict, Processor
+
+
+def redact_url(url: str | None) -> str | None:
+    """Remove URL credentials and parameters before exposing endpoints; path segments are kept."""
+    if url is None:
+        return None
+    try:
+        parsed = urlsplit(url)
+        if not parsed.scheme or not parsed.hostname:
+            return "<unparseable url>"
+        host = parsed.hostname
+        if ":" in host:
+            host = f"[{host}]"
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    except (ValueError, TypeError):
+        return "<unparseable url>"
 
 
 def safe_console_renderer(**kwargs: Any) -> structlog.dev.ConsoleRenderer:

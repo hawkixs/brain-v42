@@ -35,6 +35,22 @@ def fake_embedding_1536() -> list[float]:
 # ---------------------------------------------------------------------------
 
 
+def test_client_created_log_redacts_base_url() -> None:
+    from structlog.testing import capture_logs
+
+    service = GPUEmbeddingService(base_url="https://user:secret@embed.test/api?token=hidden")
+    with capture_logs() as records:
+        service._get_client()
+    created = next(
+        record for record in records if record["event"] == "gpu_embedding_service.client_created"
+    )
+    assert created["base_url"] == "https://embed.test/api"
+    # Only the logged value is redacted: the client still calls the configured URL.
+    assert service._client is not None
+    assert service._client.base_url.userinfo == b"user:secret"
+    assert service._client.base_url.host == "embed.test"
+
+
 class TestEmbed:
     @pytest.mark.asyncio
     async def test_embed_returns_vector(

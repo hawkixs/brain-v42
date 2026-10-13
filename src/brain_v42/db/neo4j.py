@@ -9,6 +9,8 @@ from __future__ import annotations
 import structlog
 from neo4j import AsyncDriver, AsyncGraphDatabase
 
+from brain_v42.safe_logging import redact_url
+
 log = structlog.get_logger(__name__)
 
 
@@ -31,7 +33,7 @@ def create_neo4j_driver(
     """
     if not url or not enabled:
         return None
-    log.info("neo4j.driver.creating", url=url, user=user)
+    log.info("neo4j.driver.creating", url=redact_url(url), user=user)
     # The driver defaults (30 s to connect, 60 s to acquire a pooled connection) let a
     # dead Neo4j hold a request for a minute; per-query budgets already exist
     # (``neo4j_timeout``), these two bound the part before the query starts.

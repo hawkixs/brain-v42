@@ -109,6 +109,37 @@ async def test_graph_outbox_projector_follows_server_lifecycle(monkeypatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_tracing_log_redacts_endpoint_query(monkeypatch) -> None:
+    from structlog.testing import capture_logs
+
+    import brain_v42.mcp.server as server_mod
+
+    monkeypatch.setattr(server_mod, "init_tracing", lambda _endpoint: True)
+    monkeypatch.setattr(server_mod, "shutdown_tracing", lambda _timeout: None)
+    monkeypatch.setattr(server_mod, "dispose_engine", AsyncMock())
+    monkeypatch.setattr(server_mod, "close_neo4j_driver", AsyncMock())
+    monkeypatch.setattr(server_mod, "close_activity_reporter", AsyncMock())
+    settings = SimpleNamespace(
+        otel_tracing_enabled=True,
+        otel_endpoint="https://trace.test/v1?token=hidden",
+        brain_mcp_transport="stdio",
+        brain_mcp_auth_mode="none",
+        mcp_http_stateless=True,
+        brain_session_auto_open_enabled=False,
+        metrics_enabled=False,
+        decay_enabled=False,
+        plan_index_refresh_enabled=False,
+    )
+    services = {"neo4j_driver": None, "access_logger": SimpleNamespace()}
+    with capture_logs() as records:
+        async with server_mod.app_lifecycle(settings, services, metrics_collector=None):
+            pass
+    event = next(record for record in records if record["event"] == "brain_v42.server.tracing")
+    assert event["endpoint"] == "https://trace.test/v1"
+    assert "hidden" not in repr(records)
+
+
+@pytest.mark.asyncio
 async def test_startup_failure_unwinds_every_started_resource(monkeypatch) -> None:
     """A late startup failure must not leak earlier background resources."""
     import brain_v42.mcp.server as server_mod
