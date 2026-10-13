@@ -152,24 +152,14 @@ class PgProgrammeRepo:
     async def published_block(self) -> dict[str, Any]:
         """The sidecar block without `generated_at` (the memo stamps it, contract §4).
 
-        Every live programme, then the done ones updated in the last seven days, the
-        four most recent at most; each group in brain's order (contract §5).
+        Every live programme, plus the done ones updated in the last seven days, the
+        four most recent at most; the whole selection in brain's order (contract §5:
+        position, then creation, then key, whatever the state).
         """
         async with self._session_factory() as session:
             # The window is the database's clock, like every timestamp it compares to.
             now = await session.scalar(sa.select(sa.func.now()))
             assert isinstance(now, datetime)
-            live = (
-                (
-                    await session.execute(
-                        sa.select(programmes)
-                        .where(programmes.c.state.in_(_LIVE))
-                        .order_by(*_PROGRAMME_ORDER)
-                    )
-                )
-                .mappings()
-                .all()
-            )
             recent_done = (
                 sa.select(programmes.c.id)
                 .where(
@@ -179,11 +169,13 @@ class PgProgrammeRepo:
                 .order_by(programmes.c.updated_at.desc(), programmes.c.key)
                 .limit(DONE_PROGRAMMES_PUBLISHED)
             )
-            done = (
+            rows = (
                 (
                     await session.execute(
                         sa.select(programmes)
-                        .where(programmes.c.id.in_(recent_done))
+                        .where(
+                            sa.or_(programmes.c.state.in_(_LIVE), programmes.c.id.in_(recent_done))
+                        )
                         .order_by(*_PROGRAMME_ORDER)
                     )
                 )
@@ -192,7 +184,7 @@ class PgProgrammeRepo:
             )
             return {
                 "version": VERSION,
-                "programmes": [await self._published(session, row) for row in (*live, *done)],
+                "programmes": [await self._published(session, row) for row in rows],
             }
 
     # -- writes ------------------------------------------------------------------

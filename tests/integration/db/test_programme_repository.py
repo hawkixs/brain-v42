@@ -8,6 +8,7 @@ cap is global, so the shared head would make these tests depend on each other.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
@@ -396,3 +397,156 @@ async def test_one_coordinator_cannot_grow_the_table_without_bound(
         "coordinator_limit_reached",
         repo.upsert_programme(caller=coordinator, key="c", title="C", state="done"),
     )
+
+
+# -- Review round 1 of #377 ---------------------------------------------------------
+
+
+async def test_publication_order_is_brains_across_states(factory, coordinator: str) -> None:
+    """Contract §5: position, then creation, then key, over the whole selection."""
+    repo = PgProgrammeRepo(factory)
+    await repo.upsert_programme(caller=coordinator, key="active", title="A", position=10)
+    await repo.upsert_programme(
+        caller=coordinator, key="done-first", title="D", position=0, state="done"
+    )
+    block = await repo.published_block()
+    assert [p["key"] for p in block["programmes"]] == ["done-first", "active"]
+
+
+async def test_a_done_programme_leaves_the_block_after_seven_days_but_stays_readable(
+    factory, coordinator: str
+) -> None:
+    repo = PgProgrammeRepo(factory)
+    await repo.upsert_programme(caller=coordinator, key="recent", title="R", state="done")
+    await repo.upsert_programme(caller=coordinator, key="expired", title="E", state="done")
+    async with factory.begin() as session:
+        await session.execute(
+            sa.update(programmes)
+            .where(programmes.c.key == "expired")
+            .values(updated_at=datetime.now(UTC) - timedelta(days=7, minutes=1))
+        )
+    block = await repo.published_block()
+    assert [p["key"] for p in block["programmes"]] == ["recent"]
+    listed = await repo.list_programmes(key="expired")
+    assert [p["key"] for p in listed] == ["expired"]
+    assert "expired" in [p["key"] for p in await repo.list_programmes(include_done=True)]
+
+
+async def test_the_contract_defaults_are_the_live_caps(factory) -> None:
+    """Contract §5 with the shipped defaults: 8 live in all, 4 per coordinator."""
+    repo = PgProgrammeRepo(factory)
+    first = await _project(factory)
+    second = await _project(factory)
+    third = await _project(factory)
+    for index in range(4):
+        await repo.upsert_programme(caller=first, key=f"a{index}", title="A")
+    await _refusal(
+        "coordinator_limit_reached", repo.upsert_programme(caller=first, key="a4", title="A")
+    )
+    for index in range(4):
+        await repo.upsert_programme(caller=second, key=f"b{index}", title="B")
+    await _refusal(
+        "programme_limit_reached", repo.upsert_programme(caller=third, key="c0", title="C")
+    )
+
+
+async def test_the_contract_default_gate_cap_is_32(factory, coordinator: str, owner: str) -> None:
+    repo = PgProgrammeRepo(factory)
+    await repo.upsert_programme(caller=coordinator, key="many", title="M")
+    for index in range(32):
+        await repo.upsert_gate(
+            caller=coordinator, programme="many", gate=f"G{index}", title="t", owner=owner
+        )
+    await _refusal(
+        "gate_limit_reached",
+        repo.upsert_gate(caller=coordinator, programme="many", gate="G32", title="t", owner=owner),
+    )
+
+
+async def test_the_contract_default_byte_cap_is_16_kib(
+    factory, coordinator: str, owner: str
+) -> None:
+    repo = PgProgrammeRepo(factory)
+    await repo.upsert_programme(caller=coordinator, key="heavy", title="H")
+    title, note = "t" * 120, "n" * 200
+    refused = None
+    for index in range(32):
+        try:
+            await repo.upsert_gate(
+                caller=coordinator, programme="heavy", gate=f"G{index}", title=title, owner=owner
+            )
+            await repo.report_gate(caller=owner, programme="heavy", gate=f"G{index}", note=note)
+        except ProgrammeError as error:
+            refused = error
+            break
+    assert refused is not None and refused.code == "programme_too_large"
+    (published,) = await repo.list_programmes(key="heavy")
+    assert len(json.dumps(published).encode()) <= 16 * 1024
+
+
+async def test_concurrent_creations_never_pass_the_live_cap(factory) -> None:
+    """The advisory lock serialises writers: racing for the last slots, only the
+    allowed number commits and the losers leave no row."""
+    repo = PgProgrammeRepo(factory, max_live=3, max_live_per_coordinator=8)
+    owners = [await _project(factory) for _ in range(6)]
+    results = await asyncio.gather(
+        *(
+            repo.upsert_programme(caller=project, key=f"race{index}", title="R")
+            for index, project in enumerate(owners)
+        ),
+        return_exceptions=True,
+    )
+    committed = [r for r in results if isinstance(r, dict)]
+    refused = [r for r in results if isinstance(r, ProgrammeError)]
+    assert len(committed) == 3 and len(refused) == 3, results
+    assert {r.code for r in refused} == {"programme_limit_reached"}
+    async with factory() as session:
+        count = await session.scalar(sa.select(sa.func.count()).select_from(programmes))
+    assert count == 3
+
+
+async def test_every_write_signs_the_gate_and_only_transitions_move_last_change(
+    factory, coordinator: str, owner: str
+) -> None:
+    repo = PgProgrammeRepo(factory)
+    await repo.upsert_programme(caller=coordinator, key="sig", title="S")
+    await repo.upsert_gate(caller=coordinator, programme="sig", gate="G1", title="t", owner=owner)
+    moved = await repo.report_gate(caller=owner, programme="sig", gate="G1", state="in_progress")
+    change = moved["last_change"]
+    stamp = moved["gates"][0]["updated_at"]
+
+    def signed(published: dict, by: str) -> None:
+        nonlocal stamp
+        gate = published["gates"][0]
+        assert gate["updated_by"] == by
+        assert gate["updated_at"] > stamp
+        stamp = gate["updated_at"]
+        assert published["last_change"] == change
+
+    signed(
+        await repo.upsert_gate(caller=coordinator, programme="sig", gate="G1", weight=3),
+        coordinator,
+    )
+    signed(await repo.report_gate(caller=owner, programme="sig", gate="G1", note="n"), owner)
+    signed(
+        await repo.report_gate(
+            caller=owner, programme="sig", gate="G1", progress={"done": 1, "total": 2, "unit": "t"}
+        ),
+        owner,
+    )
+    signed(await repo.request(caller=owner, programme="sig", gate="G1", ask="go"), owner)
+    signed(await repo.request(caller=owner, programme="sig", gate="G1", ask="go"), owner)
+    signed(
+        await repo.request(caller=coordinator, programme="sig", gate="G1", ask="other"),
+        coordinator,
+    )
+    signed(await repo.request(caller=owner, programme="sig", gate="G1", ask=None), owner)
+    created = await repo.upsert_gate(
+        caller=coordinator, programme="sig", gate="G2", title="t", owner=owner, state="done"
+    )
+    assert created["last_change"] == change, "creating a gate is not a transition"
+    through_upsert = await repo.upsert_gate(
+        caller=coordinator, programme="sig", gate="G1", state="blocked"
+    )
+    assert through_upsert["last_change"]["to"] == "blocked"
+    assert through_upsert["last_change"]["by"] == coordinator
