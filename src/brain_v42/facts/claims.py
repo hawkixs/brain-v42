@@ -11,7 +11,7 @@ from uuid import UUID
 from brain_v42.facts.canonical import assert_expected_within_bounds, claim_key
 from brain_v42.facts.model import FactTarget
 from brain_v42.facts.probe import FactDescriptor, ValueType
-from brain_v42.models.claim_input import ClaimInput
+from brain_v42.models.claim_input import ClaimInput, ClaimMutationError
 
 _MIN_VALIDITY_SECONDS = 60
 _MAX_VALIDITY_SECONDS = 31_536_000
@@ -61,12 +61,12 @@ def _schema_key(
     path = cast(str, expected["path"])
     segments = path[1:].split("/")
     if len(segments) != 1:
-        raise ValueError("path depth rule allows one top-level scalar schema segment")
+        raise ClaimMutationError("path depth rule allows one top-level scalar schema segment")
     key = _decode_pointer_segment(segments[0])
     try:
         return key, descriptor.value_schema[key]
     except KeyError as exc:
-        raise ValueError(
+        raise ClaimMutationError(
             "path schema rule requires a declared key; "
             f"available keys: {sorted(descriptor.value_schema)!r}"
         ) from exc
@@ -89,15 +89,17 @@ def _assert_comparison_type(expected: Mapping[str, object], schema: ValueType) -
         return
     if operator in _ORDERING_OPERATORS:
         if schema != "int" or type(expected["value"]) is not int:
-            raise ValueError("comparison type rule requires an integer ordering comparison")
+            raise ClaimMutationError("comparison type rule requires an integer ordering comparison")
         return
     if operator == "in":
         values = cast(list[object], expected["value"])
         if not all(_matches_declared_type(value, schema) for value in values):
-            raise ValueError("comparison type rule requires every membership value to match schema")
+            raise ClaimMutationError(
+                "comparison type rule requires every membership value to match schema"
+            )
         return
     if not _matches_declared_type(expected["value"], schema):
-        raise ValueError("comparison type rule requires an equality value matching schema")
+        raise ClaimMutationError("comparison type rule requires an equality value matching schema")
 
 
 def _resolved_expected(
@@ -110,7 +112,7 @@ def _resolved_expected(
     try:
         value = descriptor.policies[policy_name]
     except KeyError as exc:
-        raise ValueError(
+        raise ClaimMutationError(
             f"policy rule requires one of {sorted(descriptor.policies)!r}, got {policy_name!r}"
         ) from exc
     resolved = dict(expected)

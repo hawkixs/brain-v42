@@ -10,10 +10,11 @@ from collections import defaultdict
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Never, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
+import structlog
 from fastmcp.exceptions import ToolError
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from brain_v42.models.adr import ADR
 from brain_v42.models.brain import KnowledgeByType, SearchDiagnostics, SearchResult
@@ -23,6 +24,8 @@ from brain_v42.models.learning import Learning
 from brain_v42.models.project_context import ProjectContext
 from brain_v42.models.runbook import Runbook
 from brain_v42.models.snippet import Snippet
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -84,6 +87,41 @@ def format_confirmation(
 def format_error(message: str) -> Never:
     """Surface an unprefixed expected business failure through the MCP error channel."""
     raise ToolError(message)
+
+
+def build_internal_error(operation: str, exc: BaseException) -> str:
+    """Give callers a log reference without disclosing driver payloads or secrets."""
+    correlation_id = uuid4().hex[:12]
+    error_class = type(exc).__name__
+    logger.error(
+        "mcp.tool_internal_error",
+        operation=operation,
+        error_class=error_class,
+        correlation_id=correlation_id,
+        exc_info=exc,
+    )
+    return f"{operation} failed: internal error {error_class} (ref {correlation_id})"
+
+
+def format_internal_error(operation: str, exc: BaseException) -> Never:
+    """Raise the same sanitized message used by batch responses, with one log reference."""
+    raise ToolError(build_internal_error(operation, exc)) from None
+
+
+def format_validation_errors(exc: ValidationError) -> str:
+    """Render field locations and messages without input or validator context values."""
+    details: list[str] = []
+    for error in exc.errors(include_input=False, include_context=False, include_url=False):
+        message = error["msg"]
+        # A value_error carries the text of a ValueError raised by one of this
+        # package's own validators: those messages are written for the caller
+        # (e.g. "statement rule requires 1 to 500 characters"), as before this
+        # change. Assertion text is not, so it stays server-side.
+        if error["type"] == "assertion_error":
+            message = "Assertion failed"
+        location = ".".join(str(part) for part in error["loc"])
+        details.append(f"{location}: {message}")
+    return "; ".join(details)
 
 
 # ---------------------------------------------------------------------------

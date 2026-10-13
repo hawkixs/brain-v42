@@ -16,7 +16,12 @@ from brain_v42.facts import ResolvedClaim, resolve_claim
 from brain_v42.facts.claim_extractor import ClaimCandidate, EntityKind, extract_candidates
 from brain_v42.facts.registry import UnknownFactError
 from brain_v42.mcp.tools.claim_tools import _issuer
-from brain_v42.models.claim_input import MAX_CLAIMS_PER_WRITE, ClaimInput, validate_claim_inputs
+from brain_v42.models.claim_input import (
+    MAX_CLAIMS_PER_WRITE,
+    ClaimInput,
+    ClaimMutationError,
+    validate_claim_inputs,
+)
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.provenance import is_human_actor
 from brain_v42.repositories.pg_knowledge_claims import (
@@ -41,10 +46,6 @@ if TYPE_CHECKING:
 #: The fixed server attribution stamped on every automatic, extracted claim.
 #: The entry author remains in the entry's own provenance, never forged here.
 EXTRACTED_DECLARED_BY = "server:claim-extractor:v1"
-
-
-class ClaimMutationError(ValueError):
-    """A claim PATCH refusal whose caller must roll back its enclosing entry update."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +100,7 @@ def claims_confirmation(outcomes: Sequence[ClaimWriteOutcome]) -> str:
 
 #: The structured-log reason when a writer's claim batch never asked to be measured.
 #: Distinct from "unavailable": since `measure=true` without a service now fails
-#: closed (`ValueError`), the only way to reach `declared` with no attempt is that
+#: closed (`ClaimMutationError`), the only way to reach `declared` with no attempt is that
 #: no claim in the batch requested it.
 CLAIM_VERIFICATION_NOT_REQUESTED = "not_requested"
 
@@ -144,7 +145,7 @@ async def resolve_claim_inputs(
         try:
             descriptor = registry.describe(claim.fact_name)
         except UnknownFactError as exc:
-            raise ValueError(
+            raise ClaimMutationError(
                 f"unknown fact {claim.fact_name!r}; available facts: {list(registry.names())!r}"
             ) from exc
         resolved.append(resolve_claim(claim, descriptor))
@@ -203,7 +204,7 @@ async def _write_claim(
     issuer_identity: str | None = None
     if claim.measure:
         if verification is None:
-            raise ValueError("measure=true claims require a claim verification service")
+            raise ClaimMutationError("measure=true claims require a claim verification service")
         try:
             issuer_identity = _issuer(declared_by)
         except ClaimVerificationError as exc:

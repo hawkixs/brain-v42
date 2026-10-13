@@ -38,7 +38,7 @@ Explicit choice: ALLOWLIST, not pass-through
 Surfacing an arbitrary exception message would disclose paths, connection
 identifiers or internal structure. Only the families below pass through, chosen
 because their message is (a) written for the caller and (b) free of internals.
-Everything else stays masked — the default is refusal.
+Everything else exposes only its class and a reference to the server log.
 
 Deliberate exclusions:
 
@@ -61,10 +61,16 @@ import functools
 from typing import Any
 
 from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import FastMCPError, ToolError
 from fastmcp.tools.function_tool import FunctionTool
+from pydantic import ValidationError
 
 from brain_v42.mcp.fact_errors import FactToolError
+from brain_v42.mcp.tools.formatters import (
+    format_error,
+    format_internal_error,
+    format_validation_errors,
+)
 from brain_v42.models.brain_session import BrainSessionError
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.models.delivery import DeliveryError
@@ -102,15 +108,25 @@ SURFACED_BUSINESS_ERRORS: tuple[type[Exception], ...] = (
 _SURFACED_MARKER = "__brain_business_errors_surfaced__"
 
 
-def _wrap(fn: Any) -> Any:
-    """Convert the allowlisted families into a readable ``ToolError``."""
+def _wrap(fn: Any, *, report_internal_errors: bool = True) -> Any:
+    """Keep curated refusals readable and correlate unexpected failures with server logs."""
 
     @functools.wraps(fn)
     async def surfaced(*args: Any, **kwargs: Any) -> Any:
         try:
             return await fn(*args, **kwargs)
+        except ValidationError as exc:
+            return format_error(format_validation_errors(exc))
         except SURFACED_BUSINESS_ERRORS as exc:
+            # Audited domain messages; proposal driver failures are sanitized at source.
             raise ToolError(str(exc)) from exc
+        except FastMCPError:
+            raise
+        except Exception as exc:
+            if not report_internal_errors:
+                # Delivery's outer transport guard must discard credential-bearing traces.
+                raise
+            return format_internal_error(fn.__name__, exc)
 
     setattr(surfaced, _SURFACED_MARKER, True)
     return surfaced
@@ -134,6 +150,6 @@ async def surface_business_errors(mcp: FastMCP) -> tuple[str, ...]:
     for tool in await mcp._list_tools():
         if not isinstance(tool, FunctionTool) or getattr(tool.fn, _SURFACED_MARKER, False):
             continue
-        tool.fn = _wrap(tool.fn)
+        tool.fn = _wrap(tool.fn, report_internal_errors="delivery" not in tool.tags)
         wrapped.append(tool.name)
     return tuple(wrapped)
