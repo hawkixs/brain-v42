@@ -2,7 +2,7 @@
 
 Persistent, typed project memory exposed through the Model Context Protocol (MCP). It stores decisions, learnings, snippets, runbooks, architecture decision records (ADRs), project focus, tickets, claims, and delivery evidence. PostgreSQL is the source of truth; PostgreSQL full-text search and pgvector provide retrieval, with an optional cross-encoder reranker. Neo4j is an optional relationship projection.
 
-brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.6.15 widens the rerank latency budget (1.6 s for the primary Voyage link, 3.0 s overall, at least 1.4 s kept for the Cohere fallback) on top of release 0.6.14 (direct Voyage rerank with the operator's own key) and 0.6.13 (programmes/v1, migration 065, recovery contract v23), and migrations 063 to 065. See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
+brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.6.15 widens the rerank latency budget (1.6 s for the primary Voyage link within a 3.0 s overall budget; the Cohere fallback gets what remains, nominally 1.4 s after a primary timeout) on top of release 0.6.14 (direct Voyage rerank with the operator's own key) and 0.6.13 (programmes/v1, migration 065, recovery contract v23), and migrations 063 to 065. See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
 
 ## Architecture
 
