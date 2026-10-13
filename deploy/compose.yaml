@@ -315,7 +315,7 @@ services:
     # closes idle agent traces every fifteen minutes, so the four-hour rule stays off
     # here. DRY: without --wet it only enumerates and records a dream_runs row; arming
     # it is a separate pull request, after a dry run's journal was read. A failed run
-    # is recorded and retried the next day instead of crash-looping the container.
+    # is retried the next day instead of crash-looping the container.
     command:
       - /bin/sh
       - -c
@@ -328,7 +328,8 @@ services:
       - /etc/brain-v42/postgres-app.env
     environment: *brain-env
     healthcheck:
-      # Liveness of the daily loop only; the outcome of each run is in dream_runs.
+      # Liveness of the daily loop only, not run progress: reports go to the container log
+      # and, best-effort, to dream_runs.
       test: [CMD, python, -c, "from pathlib import Path; assert b'brain_v42.maintenance.session_sweep' in Path('/proc/1/cmdline').read_bytes()"]
       interval: 30s
       timeout: 5s
