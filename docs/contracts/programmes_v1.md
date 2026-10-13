@@ -79,14 +79,14 @@ This example is pinned by the same test as the samples.
 | `programmes` | array | Published programmes, in brain's order (section 5) |
 | `programme.key` | string | Stable, unique, `[A-Za-z0-9][A-Za-z0-9._-]*`, at most 64 characters |
 | `programme.title` | string | One line, at most 120 characters |
-| `programme.coordinator` | string | Project key of the coordinating project, derived by the server from the creator's credential. It is never a free label |
+| `programme.coordinator` | string | Project identity of the coordinating project, derived by the server from the creator's credential. It is never a free label |
 | `programme.state` | `active` \| `paused` \| `done` | Declared by the coordinator |
 | `programme.last_change` | object \| null | The latest gate **state transition** in this programme. `null` until the first one |
 | `last_change.gate`, `from`, `to` | string | Gate key, previous state, new state (`from` differs from `to`) |
 | `last_change.at`, `by` | RFC 3339, string | When the transition was written, and the identity of the writer |
 | `gate.key` | string | Unique in its programme, `[A-Za-z0-9][A-Za-z0-9._-]*`, at most 32 characters |
 | `gate.title` | string | One line, at most 120 characters |
-| `gate.owner` | string | Project key that owns the gate and may report on it |
+| `gate.owner` | string | Project identity of the project that owns the gate and may report on it |
 | `gate.state` | `todo` \| `in_progress` \| `blocked` \| `done` | Declared by the owner or the coordinator, never measured |
 | `gate.depends_on` | array of strings | Keys of other gates of the same programme. It may be empty, and is never `null`. brain refuses at write a self-edge, an unknown key and a cycle |
 | `gate.weight` | integer, 1 to 100 | Relative remaining effort, default 1. The cockpit's critical path is its only use |
@@ -99,10 +99,24 @@ This example is pinned by the same test as the samples.
 `last_change`, `waiting_on_operator`, `progress` and `note`, and `[]` for `depends_on`.
 `weight` is always an integer: 1 when the writer gave none.
 
-Text fields are checked **at write**: a write that breaks a limit, or that carries a
-control character, a line break or a bidirectional override, is refused. Nothing is
-silently cut. The cockpit's own 200-character cut and character stripping stay as a
-consumer safeguard.
+Text fields are checked **at write**: a write that breaks a limit, that has leading or
+trailing whitespace, or that carries a forbidden character is refused. Nothing is
+silently cut. The forbidden characters are:
+
+- the C0 and C1 controls, line breaks included, and DEL (U+0000 to U+001F, U+007F to
+  U+009F);
+- the zero-width characters (U+200B to U+200F, U+FEFF);
+- the line and paragraph separators (U+2028, U+2029);
+- the bidirectional overrides and isolates (U+202A to U+202E, U+2066 to U+2069).
+
+The cockpit's own 200-character cut and character stripping stay as a consumer
+safeguard.
+
+Keys are matched as a whole string: a trailing line break is not a valid key.
+**Project identities** (`coordinator`, `owner`, `updated_by`, `last_change.by`) are
+canonical brain project keys: lowercase alphanumerics joined by `-` or `:` (for
+example `red-lab:architect`), at most 50 characters. They follow the grammar of
+`src/brain_v42/models/project_key.py`, not the key grammar above.
 
 ## 3. Absent, empty and null
 

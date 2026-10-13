@@ -15,11 +15,13 @@ from typing import Any
 
 import pytest
 
+from brain_v42.models.project_key import canonicalize_project_key
+
 CONTRACTS = Path(__file__).resolve().parents[2] / "docs" / "contracts"
 SHAPE = json.loads((CONTRACTS / "programmes_v1_block.json").read_text())
 SAMPLES = sorted((CONTRACTS / "programmes_v1").glob("*.json"))
 RESERVED = {"served_at", "source_age_s", "source", "available", "reason", "payload"}
-KEY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
 def _kind(value: Any) -> str:
@@ -59,9 +61,10 @@ def conforms(value: Any, shape: Any, objects: dict[str, Any], path: str = "$") -
 #: the basic format and a space separator.
 RFC3339_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{6})?\+00:00$")
 #: What contract section 2 forbids in a declared text: C0 and C1 controls (line breaks
-#: included), DEL, zero-width characters and bidirectional overrides.
+#: included), DEL, zero-width characters, the Unicode line and paragraph separators
+#: and bidirectional overrides.
 FORBIDDEN_TEXT = re.compile(
-    "[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]"
+    "[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]"
 )
 MAX_LIVE, MAX_DONE = 8, 4
 
@@ -74,6 +77,15 @@ def _instant(value: str) -> datetime:
 def _line(value: str, limit: int) -> None:
     assert 0 < len(value) <= limit and value.strip() == value, value
     assert not FORBIDDEN_TEXT.search(value), value
+
+
+def _project(value: str) -> None:
+    """A published identity is a canonical brain project key (`models/project_key.py`)."""
+    try:
+        canonical = canonicalize_project_key(value)
+    except ValueError as refused:
+        raise AssertionError(value) from refused
+    assert len(value) <= 50 and canonical == value, value
 
 
 def _acyclic(gates: dict[str, list[str]]) -> None:
@@ -104,16 +116,17 @@ def check_semantics(block: dict[str, Any]) -> None:
     assert sum(state != "done" for state in states) <= MAX_LIVE
     assert states.count("done") <= MAX_DONE
     for programme in block["programmes"]:
-        assert KEY.match(programme["key"]) and len(programme["key"]) <= 64
+        assert KEY.fullmatch(programme["key"]) and len(programme["key"]) <= 64
         assert programme["state"] in enums["programme.state"]
         _line(programme["title"], 120)
-        assert KEY.match(programme["coordinator"]), programme["coordinator"]
+        _project(programme["coordinator"])
         gates = {g["key"]: g for g in programme["gates"]}
         assert len(gates) == len(programme["gates"]) and len(gates) <= 32
         for gate in programme["gates"]:
-            assert KEY.match(gate["key"]) and len(gate["key"]) <= 32
+            assert KEY.fullmatch(gate["key"]) and len(gate["key"]) <= 32
             _line(gate["title"], 120)
-            assert KEY.match(gate["owner"]) and KEY.match(gate["updated_by"])
+            _project(gate["owner"])
+            _project(gate["updated_by"])
             assert gate["state"] in enums["gate.state"]
             assert 1 <= gate["weight"] <= 100
             assert gate["key"] not in gate["depends_on"]
@@ -142,7 +155,7 @@ def check_semantics(block: dict[str, Any]) -> None:
             # still holds the state it moved to, and was written at or after it.
             assert gate["state"] == change["to"]
             assert _instant(change["at"]) <= _instant(gate["updated_at"])
-            assert KEY.match(change["by"])
+            _project(change["by"])
         assert len(json.dumps(programme).encode()) <= 16 * 1024
 
 
@@ -236,6 +249,14 @@ def test_brain_move_sample_carries_the_structure_the_coordination_confirmed() ->
         lambda b: b.update(generated_at="2026-10-06 16:40:00+00:00"),
         lambda b: b.update(generated_at="2026-10-06T16:40:00Z"),
         lambda b: b["programmes"][0]["gates"][0].update(updated_at="2026-10-06T12:00:00.5+00:00"),
+        # Contract review round 2.
+        lambda b: b["programmes"][0]["gates"][0].update(title="first\u2028second"),
+        lambda b: b["programmes"][0]["gates"][0].update(note="first\u2029second"),
+        lambda b: b["programmes"][0].update(key="brain-move-red-base\n"),
+        lambda b: b["programmes"][0]["gates"][0].update(key="G1\n"),
+        lambda b: b["programmes"][0].update(coordinator="Brain_V42"),
+        lambda b: b["programmes"][0]["gates"][0].update(owner="brain-v42\n"),
+        lambda b: b["programmes"][0]["gates"][0].update(updated_by="x" * 51),
     ],
 )
 def test_the_checks_reject_a_drifted_block(mutate: Any) -> None:
