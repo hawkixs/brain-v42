@@ -286,7 +286,7 @@ class TestFlatEmptyExplainsItself:
             degraded={"rerank_mode": "rrf_fallback"},
         )
 
-        assert "degraded: reranker indisponible" in output
+        assert "degraded: reranker unavailable" in output
         assert "rerank mode: rrf_fallback" not in output
 
     def test_no_diagnostics_falls_back_to_bare_header(self) -> None:
@@ -435,7 +435,7 @@ class TestGroupedEmptyExplainsItself:
             degraded={"rerank_mode": "rrf_fallback"},
         )
 
-        assert "degraded: reranker indisponible" in output
+        assert "degraded: reranker unavailable" in output
         assert "rerank mode: rrf_fallback" not in output
 
     def test_grouped_empty_block_names_ignored_tags_and_include_related(self) -> None:

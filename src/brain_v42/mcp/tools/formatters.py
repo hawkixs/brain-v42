@@ -871,15 +871,15 @@ def format_search_results(
         search_mode = degraded.get("search_mode")
         if search_mode == "fts_fallback":
             banner_lines.append(
-                "degraded: embedding service indisponible — résultats FTS uniquement (ordre textuel)"
+                "degraded: embedding service unavailable — FTS results only (text order)"
             )
         elif rerank_mode == "rrf_fallback":
             banner_lines.append(
-                "degraded: reranker indisponible — ordre RRF (pas de re-scoring cross-encoder)"
+                "degraded: reranker unavailable — RRF order (no cross-encoder re-scoring)"
             )
         elif rerank_mode == "rrf_only":
             banner_lines.append(
-                "note: reranker non configuré — ordre RRF (pas de re-scoring cross-encoder)"
+                "note: reranker not configured — RRF order (no cross-encoder re-scoring)"
             )
 
     n = len(results)
@@ -974,15 +974,15 @@ def format_knowledge_by_type(
         search_mode = degraded.get("search_mode")
         if search_mode == "fts_fallback":
             banner_lines.append(
-                "degraded: embedding service indisponible — résultats FTS uniquement (ordre textuel)"
+                "degraded: embedding service unavailable — FTS results only (text order)"
             )
         elif rerank_mode == "rrf_fallback":
             banner_lines.append(
-                "degraded: reranker indisponible — ordre RRF (pas de re-scoring cross-encoder)"
+                "degraded: reranker unavailable — RRF order (no cross-encoder re-scoring)"
             )
         elif rerank_mode == "rrf_only":
             banner_lines.append(
-                "note: reranker non configuré — ordre RRF (pas de re-scoring cross-encoder)"
+                "note: reranker not configured — RRF order (no cross-encoder re-scoring)"
             )
 
     total = sum(
