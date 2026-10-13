@@ -2320,11 +2320,16 @@ _PROGRAMME_FORBIDDEN = (
     "[\\x01-\\x1f\\x7f-\\x9f\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]"
 )
 
+#: Unicode spaces (category Zs) refused at either end of a line: btrim() alone
+#: strips U+0020 only (review round 2 of #376). Tabs and line breaks at an end are
+#: already forbidden anywhere.
+_PROGRAMME_EDGE_SPACE = "[\\x20\\xa0\\u1680\\u2000-\\u200a\\u202f\\u205f\\u3000]"
+
 
 def _programme_line(column: str, limit: int) -> str:
     """One declared line: no outer space, 1 to `limit` characters, no forbidden one."""
     return (
-        f"{column} = btrim({column}) AND {column} <> '' "
+        f"{column} !~ '^{_PROGRAMME_EDGE_SPACE}|{_PROGRAMME_EDGE_SPACE}$' AND {column} <> '' "
         f"AND char_length({column}) <= {limit} AND {column} !~ '{_PROGRAMME_FORBIDDEN}'"
     )
 

@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
+import json
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -82,3 +83,53 @@ def test_every_written_asset_is_replayed_from_disk(mint) -> None:
     main = source[source.index("async def main(") : source.index("async def replay_written(")]
     assert main.index("dst.write_text(") < main.index("await replay_written(dsn, dst")
     assert "asset.read_text(" in source[source.index("async def replay_written(") :]
+
+
+def _replay(mint, monkeypatch: pytest.MonkeyPatch, asset: Path, observed: str) -> None:
+    """Replay a written asset whose receipt fails extension_versions with `observed`."""
+    receipt = {
+        "checks": [
+            {
+                "id": "extension_versions",
+                "status": "fail",
+                "expected": "pg_stat_statements 1.10, plpgsql 1.0, vector 0.8.2",
+                "observed": observed,
+            }
+        ]
+    }
+    connection = MagicMock()
+    connection.transaction.return_value.__aenter__ = AsyncMock(return_value=None)
+    connection.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+    connection.fetchval = AsyncMock(return_value=json.dumps(receipt))
+    connection.close = AsyncMock()
+    monkeypatch.setattr(mint, "connect", AsyncMock(return_value=connection))
+    asset.write_text("SELECT 1", encoding="utf-8")
+    asyncio.run(mint.replay_written("postgresql://u:p@h:5433/brain_v23_x", asset, restored=False))
+
+
+@pytest.mark.parametrize("version", ["0.8.4", "0.8.5"])
+def test_a_proven_vector_build_passes_the_live_replay(
+    mint, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, version: str
+) -> None:
+    asset = tmp_path / "brain-v42-v23.sql"
+    _replay(mint, monkeypatch, asset, f"pg_stat_statements 1.10, plpgsql 1.0, vector {version}")
+    assert asset.exists()
+
+
+@pytest.mark.parametrize(
+    "observed",
+    [
+        # Review round 2 of #376: an extra extension is outside the 065 footprint.
+        "pg_stat_statements 1.10, pgcrypto 1.3, plpgsql 1.0, vector 0.8.5",
+        # A vector build nobody proved harmless.
+        "pg_stat_statements 1.10, plpgsql 1.0, vector 0.9.0",
+        "plpgsql 1.0, vector 0.8.5",
+    ],
+)
+def test_any_other_extension_inventory_fails_the_live_replay(
+    mint, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, observed: str
+) -> None:
+    asset = tmp_path / "brain-v42-v23.sql"
+    with pytest.raises(SystemExit):
+        _replay(mint, monkeypatch, asset, observed)
+    assert not asset.exists()

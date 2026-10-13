@@ -121,6 +121,17 @@ PINNED_RUNTIME_DRIFT = {
     "session_constraint_mismatches": 0,
     "artifact_constraint_mismatches": 0,
 }
+#: The live asset's extension drift is exempt only as exactly this inventory with a
+#: vector build PROVED harmless (review round 2 of #376): any other extension, or an
+#: unproven vector build, is a divergence and stops the mint.
+EXTENSIONS_EXPECTED = "pg_stat_statements 1.10, plpgsql 1.0, vector 0.8.2"
+
+
+def proven_extension_inventories() -> frozenset[str]:
+    proven = json.loads((RECOVERY / "proven_vector_versions.json").read_text(encoding="utf-8"))
+    return frozenset(
+        f"pg_stat_statements 1.10, plpgsql 1.0, vector {version}" for version in proven["versions"]
+    )
 
 
 def allowed_addition(name: str, key: tuple) -> bool:
@@ -397,7 +408,12 @@ async def replay_written(dsn: str, asset: Path, *, restored: bool) -> None:
             continue
         if check_id == "brain_runtime_032_036_037" and failure["observed"] == PINNED_RUNTIME_DRIFT:
             continue
-        if check_id == "extension_versions" and not restored:
+        if (
+            check_id == "extension_versions"
+            and not restored
+            and failure.get("expected") == EXTENSIONS_EXPECTED
+            and failure.get("observed") in proven_extension_inventories()
+        ):
             continue
         unexplained[check_id] = failure
     if unexplained:

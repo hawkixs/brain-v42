@@ -1761,7 +1761,7 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programme_gates',
          'programme_gates_note_valid',
-         '292930078214d69d1312a8dc60f130a8'
+         '2dd0a3fcfee8f2e73d3b5def939aa0e9'
      ),
      (
          'programme_gates',
@@ -1791,7 +1791,7 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programme_gates',
          'programme_gates_progress_valid',
-         'e7d9f0be4b451bffedee04d5b3fec585'
+         '08fc2db3434a26b9f46006f19b5d6bea'
      ),
      (
          'programme_gates',
@@ -1801,7 +1801,7 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programme_gates',
          'programme_gates_title_valid',
-         'f115bf6e08458f2171e8915a68e69bff'
+         '924164a2213a13a004680068f6bc33e5'
      ),
      (
          'programme_gates',
@@ -1811,7 +1811,7 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programme_gates',
          'programme_gates_waiting_valid',
-         '6243a9095885b3bb58fa944596830d50'
+         '2edb3840d1001e5ce3b84c0d24fae03e'
      ),
      (
          'programme_gates',
@@ -1856,7 +1856,7 @@ expected_table_constraints(table_name, constraint_name, definition_md5) AS (
      (
          'programmes',
          'programmes_title_valid',
-         'f115bf6e08458f2171e8915a68e69bff'
+         '924164a2213a13a004680068f6bc33e5'
      ),
      (
          'programmes',

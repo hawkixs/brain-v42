@@ -22,8 +22,8 @@ V22_ASSETS = {
 }
 V23_ASSETS = {
     "brain-v42-v23.json": "140d4de9cee2d9e5f87880bf543322d1edcef6642648ad925c0461876bb319ec",
-    "brain-v42-v23.sql": "214581f7f7440315c1283e3503dc18979658fe99288803eae7ac6b1da06e686b",
-    "brain-v42-v23-pgrestore.sql": "32bcf735af16456359dcf4b5906b482b5ebfbc7cbc7bbb3fe357b2a5136c5e85",
+    "brain-v42-v23.sql": "e59850438487828fc9aaae6cbe9c64077e258dff843216b837b91542dd782004",
+    "brain-v42-v23-pgrestore.sql": "c714e423dd4128154790cb026f108cd1e582061e760a25401583e2e6719c346e",
 }
 VARIANTS = ("brain-v42-v23.sql", "brain-v42-v23-pgrestore.sql")
 NEW_TABLES = ["programme_gates", "programmes"]

@@ -177,6 +177,10 @@ async def test_a_valid_programme_and_gate_round_trip_with_server_times(
         {"title": "bidi" + chr(0x202E) + "flip"},
         {"by": "Brain_V42"},
         {"by": ""},
+        # Review round 2 of #376: Unicode spaces at the edges, not only U+0020.
+        {"title": chr(0xA0) + "padded"},
+        {"title": "padded" + chr(0x2003)},
+        {"title": chr(0x3000) + "ideographic"},
     ],
 )
 async def test_programme_shapes_outside_the_contract_are_refused(
@@ -265,6 +269,11 @@ async def test_programme_last_change_is_all_or_nothing(
         {"ask": "tab" + chr(9) + "inside", "since": NOW},
         {"done": 1, "total": 2, "unit": " t"},
         {"by": "BAD_KEY"},
+        # Review round 2 of #376: Unicode spaces at the edges, not only U+0020.
+        {"note": "narrow" + chr(0x202F)},
+        {"ask": chr(0x1680) + "ogham", "since": NOW},
+        {"done": 1, "total": 2, "unit": "t" + chr(0x205F)},
+        {"title": chr(0x2000) + "en quad"},
     ],
 )
 async def test_gate_shapes_outside_the_contract_are_refused(
@@ -283,6 +292,8 @@ async def test_valid_dependencies_and_clean_text_still_pass(
     await _gate(connection, programme_id, key, key="G1")
     await _gate(connection, programme_id, key, key="G2")
     await _gate(connection, programme_id, key, key="G3", depends_on=["G1", "G2"], note="naïve 50 %")
+    # A Unicode space inside a line is text, not padding.
+    await _gate(connection, programme_id, key, key="G4", note="50" + chr(0xA0) + "%")
 
 
 async def test_gate_keys_are_unique_per_programme_only(
