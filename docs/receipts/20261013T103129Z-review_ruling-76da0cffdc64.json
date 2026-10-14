@@ -1,0 +1,19 @@
+{
+  "digest": "sha256:76da0cffdc6495b577282df8cfafeb63369efe2b930157b441ada5a3b4404e11",
+  "idempotency_key": "review_ruling:hawkixs/brain-v42#376:F-376-2:1",
+  "issuer": "operator",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "decision": "Fixed in 6efd960c: tables.py _PROGRAMME_DEPENDS_ON mirrors the migration's split-cardinality clause; [''], ['G2,G3'], ['G1,'] are refused; the fresh-head yardstick proves create_all() equals the chain constraint by constraint.",
+      "finding": "F-376-2",
+      "pr": 376,
+      "repository": "hawkixs/brain-v42",
+      "ruling": "fix"
+    },
+    "kind": "review_ruling"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T10:31:29.631743Z",
+  "schema_version": 1
+}

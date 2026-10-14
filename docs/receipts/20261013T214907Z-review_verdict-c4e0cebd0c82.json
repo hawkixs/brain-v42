@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:c4e0cebd0c826eeace840f7b9de229c6034706d363372298f32e2c74b980947e",
+  "idempotency_key": "review_verdict:28f28fbf6bf79dbacea205f4ed03523cdac6f1c2:115557545410",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115557545410,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "if the untruncated diff does not include a uv.lock update to 0.6.17 for brain_v42, the hardened uv version parity test shipped in 0.6.16 should fail; the visible portion shows only pyproject.toml and README, so check that uv.lock's brain_v42 entry reads version 0.6.17",
+          "file": "uv.lock",
+          "id": "F-422-1",
+          "line": null,
+          "severity": "important",
+          "status": "still_open",
+          "title": "uv.lock bump claimed in the description but not visible in the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The new blurb states 0.6.17 ships 'three MCP ergonomics changes of lot 0.7.1' (guidance for invented tool names and nested gateway calls, widened input schemas of 14 knowledge tools plus optional `alternatives` on `brain_propose_adr`, capture tool descriptions opening with the routing rule), while t",
+          "file": "README.md",
+          "id": "F-422-2",
+          "line": 5,
+          "severity": "minor",
+          "status": "new",
+          "title": "Release blurb lists lot 0.7.1 ergonomics absent from the PR description"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 422,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "28f28fbf6bf79dbacea205f4ed03523cdac6f1c2",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T21:49:07.885312Z",
+  "schema_version": 1
+}

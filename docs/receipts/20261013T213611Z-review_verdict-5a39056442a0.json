@@ -1,0 +1,99 @@
+{
+  "digest": "sha256:5a39056442a0f0d1e27159d9ecbce3e17a782994eeb5f3de7e250d830cfe5979",
+  "idempotency_key": "review_verdict:c65a3546dfb12852610172d4006c2dd38d0bf16c:115550522970",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115550522970,
+      "diff_truncated": false,
+      "finding_count": 6,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Lines 7-11 re-declare the rule text locally rather than importing brain_v42.mcp.tools.capture_rule.CAPTURE_RULE. This works as a pin (a wording change to the shared constant fails the test until the copy is updated), but the canonical source the tools actually publish and the test's copy can be upda",
+          "file": "tests/unit/mcp/test_capture_tool_descriptions.py",
+          "id": "F-380-1",
+          "line": 7,
+          "severity": "minor",
+          "status": "new",
+          "title": "CAPTURE_RULE duplicated as a literal instead of imported"
+        },
+        {
+          "class": "note",
+          "evidence": "assert \"Until 20\" not in description only catches the 'Until YYYY-MM-DD' phrasing; other history patterns (lowercase 'until', ticket ids, 'previously published') would pass. Adequate for the current texts, weak as a general regression guard.",
+          "file": "tests/unit/mcp/test_capture_tool_descriptions.py",
+          "id": "F-380-2",
+          "line": 44,
+          "severity": "minor",
+          "status": "new",
+          "title": "Maintainer-history guard is a narrow substring"
+        },
+        {
+          "class": "note",
+          "evidence": "The moved comment keeps ticket af3b58dd, the 2026-09-03 date, and the removed parameters, but drops the removed docstring's 'refused their meaningless combinations at runtime' and 'Two paths now publish two schemas' resolution; the runbook_tools.py counterpart (brain_create_runbook) retains both det",
+          "file": "src/brain_v42/mcp/tools/brain_tools.py",
+          "id": "F-380-3",
+          "line": 710,
+          "severity": "minor",
+          "status": "new",
+          "title": "ADR maintainer comment thinner than the docstring text it replaces"
+        },
+        {
+          "class": "note",
+          "evidence": "First line 'Capture a durable architecture decision as an ADR (status 'proposed').' is followed, after the rule, by 'Propose an Architecture Decision Record (ADR) in status='proposed'.' \u2014 redundant in the caller-visible text.",
+          "file": "src/brain_v42/mcp/tools/brain_tools.py",
+          "id": "F-380-4",
+          "line": 720,
+          "severity": "minor",
+          "status": "new",
+          "title": "brain_propose_adr published description states 'proposed' twice"
+        },
+        {
+          "class": "note",
+          "evidence": "test_capture_descriptions_keep_caller_useful_details pins brain_learn's source_type/confidence vocabularies and brain_save_snippet's intention wording, but not the 'related_to items: {\"id\": UUID, \"type\": ...}' detail the PR lists among caller-useful content preserved for brain_log_decision.",
+          "file": "tests/unit/mcp/test_capture_tool_descriptions.py",
+          "id": "F-380-5",
+          "line": 52,
+          "severity": "minor",
+          "status": "new",
+          "title": "related_to item shape not pinned for brain_log_decision"
+        },
+        {
+          "class": "note",
+          "evidence": "The PR description says 'architecture decision' now ranks brain_propose_adr first and 'learn' ranks brain_learn first, but the test only requires top-3 for those queries (the pre-change bound), so a silent regression from 1st to 2nd/3rd for the improved queries would still pass.",
+          "file": "tests/unit/mcp/test_find_tool_capture_retrieval.py",
+          "id": "F-380-6",
+          "line": 35,
+          "severity": "minor",
+          "status": "new",
+          "title": "Described retrieval improvements pinned at the looser pre-change bound"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 380,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "c65a3546dfb12852610172d4006c2dd38d0bf16c",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T21:36:11.842724Z",
+  "schema_version": 1
+}
