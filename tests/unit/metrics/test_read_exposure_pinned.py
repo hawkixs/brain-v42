@@ -87,6 +87,8 @@ METRICS_SCHEMA = {
         "total_errors": None,
         "gpu_busy_errors": None,
         "unreachable_errors": None,
+        "rate_limited_errors": None,
+        "deadline_errors": None,
         "recent_errors": None,
         "usage": {
             "read": {"total_tokens": None, "reported_requests": None},
