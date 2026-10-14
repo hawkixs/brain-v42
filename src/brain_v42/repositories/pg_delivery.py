@@ -1036,11 +1036,15 @@ class PgDeliveryRepo(BasePgRepository):
                     tickets.c.from_project == actor_project, tickets.c.to_project == actor_project
                 )
             ]
+            if selected.ticket_id is not None:
+                predicates.append(delivery_workflows.c.ticket_id == selected.ticket_id)
             if after is not None:
                 predicates.append(delivery_workflows.c.ticket_id > after)
             base = sa.select(delivery_workflows.c.ticket_id).join(tickets).where(*predicates)
             now = datetime.now(UTC)
-            if selected == DeliveryListFilters():
+            if selected.model_dump(exclude={"ticket_id"}) == DeliveryListFilters().model_dump(
+                exclude={"ticket_id"}
+            ):
                 ids = list(
                     (
                         await sess.execute(

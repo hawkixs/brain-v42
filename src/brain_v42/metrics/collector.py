@@ -18,14 +18,17 @@ from brain_v42.config import get_settings
 from brain_v42.metrics.collector_db import _DbCollectorsMixin
 from brain_v42.metrics.collector_dream import _DreamCollectorsMixin
 from brain_v42.metrics.collector_nightly import _NightlyCollectorsMixin
+from brain_v42.metrics.collector_programmes import _ProgrammeCollectorsMixin
 from brain_v42.metrics.collector_session_slots import _SessionSlotCollectorsMixin
 from brain_v42.metrics.collector_tickets import _TicketCollectorsMixin
+from brain_v42.metrics.slow_block_cache import BlockHealth
 from brain_v42.repositories.pg_graph_ledger import projection_health, read_projection_state
 from brain_v42.safe_logging import redact_url
 
 logger = structlog.get_logger(__name__)
 
 ERROR_WINDOW = 3600.0
+TOOL_LATENCY_WINDOW_SECONDS = 300.0
 
 
 def _endpoint_host(url: str) -> str:
@@ -56,6 +59,7 @@ class MetricsCollector(
     _NightlyCollectorsMixin,
     _TicketCollectorsMixin,
     _SessionSlotCollectorsMixin,
+    _ProgrammeCollectorsMixin,
 ):
     """Accumulates metrics counters in memory (asyncio-safe, single-threaded).
 
@@ -70,6 +74,7 @@ class MetricsCollector(
     ) -> None:
         self._engine = engine
         self._session_factory = session_factory
+        self._block_health_tracker = BlockHealth()
         self._started_at = time.time()
         self._tool_stats: dict[str, dict[str, dict[str, Any]]] = {}
         self._embedding_stats: dict[str, Any] = {
@@ -97,6 +102,18 @@ class MetricsCollector(
             "total_candidates": 0,
         }
         self._rerank_by_identity: dict[str, dict[str, Any]] = {}
+        self._rerank_chain: dict[str, Any] = {
+            "operations": 0,
+            "served_by": {},
+            "handovers": 0,
+            "failed_all": 0,
+        }
+        self._search_rerank = {
+            "rerank_searches": 0,
+            "rerank_eligible": 0,
+            "rerank_rrf": 0,
+            "emitter_started_at": self._started_at,
+        }
         self._rerank_backend: str | None = None
         self._rerank_attempt_latencies: dict[str, deque[tuple[float, float]]] = {}
         self._rerank_operation_latencies: dict[str, deque[tuple[float, float]]] = {}
@@ -117,6 +134,7 @@ class MetricsCollector(
         }
         # ── rolling-window state (for /api/cockpit) ──
         self._tool_latencies: deque[tuple[float, float]] = deque(maxlen=10000)  # (ts, ms)
+        self._tool_latency_by_name: dict[str, deque[tuple[float, float]]] = {}
         self._search_latencies: deque[tuple[float, float]] = deque(maxlen=10000)
         self._counter_snapshots: deque[tuple[float, int, int]] = deque(
             maxlen=20
@@ -145,6 +163,10 @@ class MetricsCollector(
         # offending name + the cap; subsequent overflows are silent (the
         # _overflow bucket still counts them).
         self._overflow_warned: bool = False
+
+    def block_health(self, key: str) -> dict[str, Any]:
+        """Expose source health without inserting keys into existing blocks."""
+        return self._block_health.health(key)
 
     @staticmethod
     def _bucket_for(latency_ms: float) -> str:
@@ -223,7 +245,11 @@ class MetricsCollector(
             if tool_name not in self._tool_error_times:
                 self._tool_error_times[tool_name] = deque(maxlen=10000)
             self._tool_error_times[tool_name].append(time.time())
-        self._tool_latencies.append((time.time(), latency_ms))
+        sample = (time.time(), latency_ms)
+        self._tool_latencies.append(sample)
+        if tool_name not in self._tool_latency_by_name:
+            self._tool_latency_by_name[tool_name] = deque(maxlen=2000)
+        self._tool_latency_by_name[tool_name].append(sample)
         self._latency_buckets[self._bucket_for(latency_ms)] += 1
 
     def record_search_latency(self, latency_ms: float) -> None:
@@ -231,11 +257,13 @@ class MetricsCollector(
         self._search_latencies.append((time.time(), latency_ms))
 
     @staticmethod
-    def _percentiles(samples: deque[tuple[float, float]], window_s: float) -> dict[str, float]:
+    def _percentiles(
+        samples: deque[tuple[float, float]], window_s: float
+    ) -> dict[str, float | None]:
         cutoff = time.time() - window_s
         values = sorted(v for ts, v in samples if ts >= cutoff)
         if not values:
-            return {"p50": 0.0, "p95": 0.0, "p99": 0.0}
+            return {"p50": None, "p95": None, "p99": None}
         n = len(values)
 
         def pct(p: float) -> float:
@@ -244,11 +272,11 @@ class MetricsCollector(
 
         return {"p50": pct(0.50), "p95": pct(0.95), "p99": pct(0.99)}
 
-    def tool_percentiles(self, window_s: float = 300.0) -> dict[str, float]:
+    def tool_percentiles(self, window_s: float = 300.0) -> dict[str, float | None]:
         """Return p50/p95/p99 of tool latencies within the last `window_s` seconds."""
         return self._percentiles(self._tool_latencies, window_s)
 
-    def retrieval_percentiles(self, window_s: float = 86400.0) -> dict[str, float]:
+    def retrieval_percentiles(self, window_s: float = 86400.0) -> dict[str, float | None]:
         """Return p50/p95 of retrieval latencies within the window (24h default)."""
         p = self._percentiles(self._search_latencies, window_s)
         return {"p50": p["p50"], "p95": p["p95"]}
@@ -383,6 +411,29 @@ class MetricsCollector(
     def record_rerank_backend(self, backend: str) -> None:
         """Expose configuration even when an intentional rollback makes no calls."""
         self._rerank_backend = backend
+
+    def on_chain(self, outcome: str, served_identity: str | None) -> None:
+        """Count the serving link once, independently of its retries."""
+        self._rerank_chain["operations"] += 1
+        if outcome == "failed_all":
+            self._rerank_chain["failed_all"] += 1
+        elif served_identity is not None:
+            served = self._rerank_chain["served_by"]
+            served[served_identity] = served.get(served_identity, 0) + 1
+
+    def on_handover(self) -> None:
+        self._rerank_chain["handovers"] += 1
+
+    def record_search_rerank(self, eligible: bool, rrf: bool) -> None:
+        """The denominator counts searches that actually submitted candidates."""
+        self._search_rerank["rerank_searches"] += 1
+        self._search_rerank["rerank_eligible"] += int(eligible)
+        self._search_rerank["rerank_rrf"] += int(eligible and rrf)
+
+    def _rerank_chain_snapshot(self) -> dict[str, Any]:
+        if not self._rerank_chain["operations"] and not self._rerank_chain["handovers"]:
+            return {}
+        return {**self._rerank_chain, "served_by": dict(self._rerank_chain["served_by"])}
 
     def _rerank_stats_for(self, identity: str) -> dict[str, Any]:
         if identity not in self._rerank_by_identity:
@@ -557,6 +608,14 @@ class MetricsCollector(
         recent_by_tool: dict[str, int] = {
             name: self._count_recent(times) for name, times in self._tool_error_times.items()
         }
+        cutoff = time.time() - TOOL_LATENCY_WINDOW_SECONDS
+        tool_latency = {
+            name: {
+                **self._percentiles(samples, TOOL_LATENCY_WINDOW_SECONDS),
+                "samples": sum(ts >= cutoff for ts, _ in samples),
+            }
+            for name, samples in self._tool_latency_by_name.items()
+        }
 
         # Determine which agents to include in the output.
         agents_to_include = self._dirty_agents if dirty_only else self._tool_stats.keys()
@@ -575,6 +634,7 @@ class MetricsCollector(
             result[agent] = {"tools": tools}
 
         result["_process"] = {
+            "tool_latency": tool_latency,
             "embedding": {
                 "total_requests": self._embedding_stats["total_requests"],
                 "total_errors": self._embedding_stats["total_errors"],
@@ -590,6 +650,7 @@ class MetricsCollector(
                 },
             },
             "reranker": {
+                "chain": self._rerank_chain_snapshot(),
                 "backend": self._rerank_backend,
                 "total_calls": self._reranker_stats["total_calls"],
                 "total_errors": self._reranker_stats["total_errors"],
@@ -599,6 +660,7 @@ class MetricsCollector(
                 "by_identity": self._rerank_identity_snapshot(),
                 "last_probe": {key: dict(probe) for key, probe in self._rerank_last_probe.items()},
             },
+            "search": dict(self._search_rerank),
             "graph": {
                 "total_queries": self._graph_stats["total_queries"],
                 "total_errors": self._graph_stats["total_errors"],
@@ -650,14 +712,20 @@ class MetricsCollector(
                 aggregated[name]["errors"] += stats["errors"]
                 aggregated[name]["total_latency"] += stats["total_latency"]
         tools: dict[str, Any] = {}
+        # Same percentile keys as the cross-process merge: the handler publishes
+        # these entries when no process row is live, and the shape must not move.
+        cutoff = time.time() - TOOL_LATENCY_WINDOW_SECONDS
         for name, agg in aggregated.items():
             calls = agg["calls"]
             error_times = self._tool_error_times.get(name, deque())
+            samples = self._tool_latency_by_name.get(name, deque())
             tools[name] = {
                 "calls": calls,
                 "errors": agg["errors"],
                 "recent_errors": self._count_recent(error_times),
                 "avg_latency_ms": round(agg["total_latency"] / calls, 1) if calls else 0.0,
+                **self._percentiles(samples, TOOL_LATENCY_WINDOW_SECONDS),
+                "samples": sum(ts >= cutoff for ts, _ in samples),
             }
 
         # Embedding stats with avg latency
@@ -699,6 +767,7 @@ class MetricsCollector(
         # Reranker stats
         reranker_total = self._reranker_stats["total_calls"]
         reranker = {
+            "chain": self._rerank_chain_snapshot(),
             "backend": self._rerank_backend,
             "total_calls": reranker_total,
             "total_errors": self._reranker_stats["total_errors"],
@@ -739,6 +808,7 @@ class MetricsCollector(
             "tools": tools,
             "search_quality": search_quality,
             "reranker": reranker,
+            "search": dict(self._search_rerank),
             "decay": dict(self._decay_stats),
             "graph": graph,
         }
@@ -897,21 +967,37 @@ class MetricsCollector(
                         },
                     }
 
-        except Exception:
+        except Exception as exc:
             logger.exception("metrics.collect_db_stats.error")
+            self._block_health.record("database", "degraded", type(exc).__name__)
+            worker_last_24h = dict.fromkeys(worker_last_24h)
+            graph_outbox_failure = (
+                graph_outbox_stats
+                if graph_outbox_stats["available"]
+                else {
+                    **graph_outbox_stats,
+                    "pending": None,
+                    "ready": None,
+                    "claimed": None,
+                    "exhausted": None,
+                    "oldest_pending_age_seconds": None,
+                    "projector": dict.fromkeys(graph_outbox_stats["projector"]),
+                }
+            )
             return {
                 "pool": pool_stats,
-                "tables": {},
-                "db_size_bytes": 0,
-                "dimension_mismatches": 0,
+                "tables": None,
+                "db_size_bytes": None,
+                "dimension_mismatches": None,
                 "embedding_backlog": {
-                    "total": 0,
-                    "by_entity_type": {},
+                    "total": None,
+                    "by_entity_type": None,
                     "worker_last_24h": worker_last_24h,
                 },
-                "graph_outbox": graph_outbox_stats,
+                "graph_outbox": graph_outbox_failure,
             }
 
+        self._block_health.record("database", "ok")
         return {
             "pool": pool_stats,
             "tables": tables,

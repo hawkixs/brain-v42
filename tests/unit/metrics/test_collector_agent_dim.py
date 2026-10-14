@@ -119,7 +119,19 @@ def test_process_block_carries_all_global_subblocks(collector: MetricsCollector)
 
     proc = collector.get_flush_data()["_process"]
 
-    assert set(proc) == {"embedding", "reranker", "graph", "cost", "buckets", "decay"}
+    assert set(proc) == {
+        "embedding",
+        "reranker",
+        "search",
+        "graph",
+        "cost",
+        "buckets",
+        "decay",
+        "tool_latency",
+    }
+    assert proc["search"]["rerank_searches"] == 0
+    assert proc["search"]["emitter_started_at"] > 0
+    assert proc["tool_latency"] == {}
     assert proc["embedding"]["total_requests"] == 1
     assert proc["reranker"]["total_calls"] == 1
     assert proc["graph"]["total_queries"] == 1

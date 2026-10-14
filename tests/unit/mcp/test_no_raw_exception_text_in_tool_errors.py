@@ -17,6 +17,12 @@ CALLER_SAFE_SITES: dict[tuple[str, str, str, str], str] = {
         "return self._transport_refusal(request, exc.reason, None)",
     ): "CredentialRefused carries a closed reason code, never an underlying error payload.",
     (
+        "mcp/argument_guidance.py",
+        "on_call_tool",
+        "ValidationError",
+        "ToolError(_guidance(name, exc, parameters, context.message.arguments or {}))",
+    ): "Guidance reads errors(include_input=False): field paths and expected types, never values.",
+    (
         "mcp/business_errors.py",
         "surfaced",
         "SURFACED_BUSINESS_ERRORS",
@@ -85,9 +91,15 @@ CALLER_SAFE_SITES: dict[tuple[str, str, str, str], str] = {
     (
         "mcp/tools/decay_tools.py",
         "brain_merge_entities",
-        "ConsolidationEntityNotFoundError",
+        "(ConsolidationEntityNotFoundError, ConsolidationEndpointMergedError)",
         "format_error(str(exc))",
-    ): "Consolidation constructs a missing source/target message from entity type and UUID.",
+    ): "Consolidation constructs a missing or already-merged endpoint message from entity type and UUID.",
+    (
+        "mcp/tools/brain_tools.py",
+        "brain_supersede_decision",
+        "DecisionNotSupersedableError",
+        "format_error(str(exc))",
+    ): "Supersession refuses a missing or already-superseded decision by its UUID only.",
     (
         "mcp/tools/crud_tools.py",
         "brain_update",
@@ -206,6 +218,16 @@ def raw_exception_sites(source: str) -> list[tuple[int, str, str, str]]:
             if node.value is not None and len(sites) == before:
                 self.record(node, [node.value])
 
+        def visit_Raise(self, node: ast.Raise) -> None:
+            # Keep existing call sites stable and ignore bare raises and causes.
+            before = len(sites)
+            self.generic_visit(node)
+            if isinstance(node.exc, ast.Call) and len(sites) == before:
+                self.record(
+                    node.exc,
+                    [*node.exc.args, *(kw.value for kw in node.exc.keywords)],
+                )
+
         def visit_AugAssign(self, node: ast.AugAssign) -> None:
             self.record(node, [node.value])
             self.generic_visit(node)
@@ -220,6 +242,9 @@ def raw_exception_sites(source: str) -> list[tuple[int, str, str, str]]:
         'format_error(f"x {exc}")',
         "raise ToolError(str(exc))",
         "raise errors.ToolError(str(exc))",
+        "raise Refusal(str(exc))",
+        'raise SomeFailure(f"{exc}")',
+        'raise failures.Refusal(message=f"{exc}")',
         'lines.append(f"failed: {exc}")',
         'return f"failed: {exc}"',
         'return {"error": str(exc)}',
@@ -235,12 +260,20 @@ def test_guard_rejects_raw_exception_responses(statement: str, name: str) -> Non
     assert len(raw_exception_sites(source)) == 1
 
 
-def test_guard_accepts_constant_errors_and_server_logs() -> None:
-    source = """try:
+@pytest.mark.parametrize(
+    "statement",
+    [
+        'raise ToolError("safe refusal") from exc',
+        'raise Refusal("safe refusal") from exc',
+        "raise",
+    ],
+)
+def test_guard_accepts_constant_errors_and_server_logs(statement: str) -> None:
+    source = f"""try:
     run()
 except Exception as exc:
     logger.error("failed", exc_info=exc)
-    raise ToolError("safe refusal") from exc
+    {statement}
 """
     assert raw_exception_sites(source) == []
 

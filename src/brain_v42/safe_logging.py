@@ -163,6 +163,31 @@ def _sanitize_access_event(logger: Any, method: str, event_dict: EventDict) -> E
     return event_dict
 
 
+def configure_console_logging(processors: Sequence[Processor]) -> None:
+    """Sanitize stdlib tracebacks on stderr without changing structlog's output stream."""
+    handler = logging.StreamHandler(sys.stderr)
+    handler.setFormatter(
+        structlog.stdlib.ProcessorFormatter(
+            pass_foreign_args=True,
+            foreign_pre_chain=[
+                _sanitize_access_event,
+                structlog.stdlib.add_logger_name,
+                *build_logging_processors("console")[:-1],
+            ],
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                processors[-1],
+            ],
+        )
+    )
+    logging.basicConfig(handlers=[handler], level=logging.INFO, force=True)
+    for name in ("fastmcp", "uvicorn", "uvicorn.error", "uvicorn.access"):
+        log = logging.getLogger(name)
+        log.handlers.clear()
+        log.propagate = True
+        log.setLevel(logging.NOTSET)
+
+
 def configure_json_logging(processors: Sequence[Processor]) -> None:
     """Share exception redaction with stdlib and keep one stderr wire format."""
     # Keep foreign formatter metadata out of the sidecar's structured recent-log

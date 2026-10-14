@@ -111,6 +111,47 @@ def tools_with_access_logger(
 
 
 class TestBrainCreateRunbook:
+    @pytest.mark.asyncio
+    async def test_client_parses_json_encoded_steps(self, mock_runbook_svc: MagicMock) -> None:
+        mcp = FastMCP("test-runbook-json-steps")
+        register_runbook_tools(mcp, mock_runbook_svc)
+
+        async with Client(mcp) as client:
+            await client.call_tool(
+                "brain_create_runbook",
+                {
+                    "title": "Deploy",
+                    "description": "Deploy it",
+                    "project_key": "brain-v42",
+                    "trigger": "release",
+                    "steps": '["build","deploy"]',
+                },
+            )
+
+        steps = mock_runbook_svc.create.await_args.args[0].steps
+        assert [step.title for step in steps] == ["build", "deploy"]
+
+    @pytest.mark.asyncio
+    async def test_client_rejects_empty_step(self, mock_runbook_svc: MagicMock) -> None:
+        mcp = FastMCP("test-runbook-empty-step")
+        register_runbook_tools(mcp, mock_runbook_svc)
+
+        async with Client(mcp) as client:
+            with pytest.raises(ToolError) as exc_info:
+                await client.call_tool(
+                    "brain_create_runbook",
+                    {
+                        "title": "Deploy",
+                        "description": "Deploy it",
+                        "project_key": "brain-v42",
+                        "trigger": "release",
+                        "steps": "  ",
+                    },
+                )
+
+        assert "steps" in str(exc_info.value)
+        mock_runbook_svc.create.assert_not_called()
+
     async def test_returns_confirmation_string(
         self, tools: tuple[dict[str, Any], MagicMock]
     ) -> None:

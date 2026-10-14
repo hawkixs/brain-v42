@@ -34,9 +34,43 @@ from brain_v42.metrics.codex_telemetry import (
     CodexTelemetryMalformedError,
 )
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.metrics.dream_scheduler import DreamSchedulerMode
 from brain_v42.metrics.slow_block_cache import SlowBlockCache
 
 logger = structlog.get_logger(__name__)
+
+EXCLUDABLE_METRICS_KEYS = frozenset(
+    {
+        "collected_at",
+        "started_at",
+        "version",
+        "model",
+        "embedding_dim",
+        "uptime_seconds",
+        "memory_rss_bytes",
+        "embedding_service",
+        "tools",
+        "search_quality",
+        "reranker",
+        "decay",
+        "graph",
+        "receiver_rejections",
+        "receiver_refused",
+        "client_activity_registry",
+        "database",
+        "mcp_auth_refused",
+        "elevation_refused",
+        "mcp_auth_agent_unresolved",
+        "search_rerank",
+        "author_binding_candidates",
+        "cross_process",
+        "dream",
+        "nightly",
+        "tickets",
+        "session_slots",
+        "block_status",
+    }
+)
 
 _OTLP_READ_CHUNK_BYTES = 64 * 1024
 _OTLP_BODY_READ_TIMEOUT_SECONDS = 5.0
@@ -253,6 +287,7 @@ class MetricsServer:
         receiver_bucket: TokenBucket | None = None,
         database_probe: Callable[[], Awaitable[object]] | None = None,
         database_probe_timeout_seconds: float = 2.0,
+        dream_scheduler: DreamSchedulerMode = "systemd_user",
     ) -> None:
         if receiver_auth not in {"none", "credentials"}:
             raise ValueError("METRICS_RECEIVER_AUTH must be none or credentials")
@@ -267,6 +302,7 @@ class MetricsServer:
         self._database_probe_timeout_seconds = database_probe_timeout_seconds
         self._probe_cleanups: set[asyncio.Future[object]] = set()
         self._collector = collector
+        self._dream_scheduler = dream_scheduler
         self._embedding_svc = embedding_svc
         self._port = port
         self._fail_on_bind_error = fail_on_bind_error
@@ -300,6 +336,10 @@ class MetricsServer:
             app.cleanup_ctx.append(self._credential_registry_lifecycle)
         app.router.add_get("/metrics", self._handle_metrics)
         app.router.add_get("/api/cockpit", self._handle_cockpit)
+        # Programme progress (contract docs/contracts/programmes_v1.md): its own
+        # route, so the /metrics payload red-monitor stores on every probe does not
+        # carry it. Same listener and same read exposure as /metrics.
+        app.router.add_get("/programmes", self._handle_programmes)
         # Always registered, including on a bind that has no receivers: it is the
         # ONLY place a monitor can read that they are missing. The startup line
         # below says it once, to whoever reads a boot; nobody greps a log to build
@@ -401,6 +441,19 @@ class MetricsServer:
                 "metrics_receiver.refused", receiver=receiver, reason=reason, status=status
             )
         return response
+
+    async def _handle_programmes(self, _request: web.Request) -> web.Response:
+        """`{"programmes": <block>}`, or `{}` while this cycle's read failed (contract §3).
+
+        Memoised with the slow blocks (decision 1669d429): one read per TTL for every
+        poller, `generated_at` stamped by the cache. The attribute lookup happens
+        inside the cache's protected `compute`, as for the tickets block: a collector
+        lacking the method degrades to `{}`, never to a 500.
+        """
+        block = await self._slow_block_cache.get(
+            "programmes", lambda: self._collector.collect_programmes()
+        )
+        return web.json_response({"programmes": block} if block else {})
 
     async def _handle_healthz(self, _request: web.Request) -> web.Response:
         """Whether the three POST receivers are being served, in one field.
@@ -599,7 +652,9 @@ class MetricsServer:
         otherwise a partial refresh could mix a fresh `last_run` with a stale
         `promotions` sub-block.
         """
-        dream_metrics = await self._collector.collect_dream_metrics()
+        dream_metrics = await self._collector.collect_dream_metrics(
+            scheduler_mode=self._dream_scheduler
+        )
         if not dream_metrics:
             return {}
         promo_counts = await self._collector.collect_dream_promotions()
@@ -622,6 +677,28 @@ class MetricsServer:
         - tool/embedding stats aggregated from all active process_metrics rows
         - DB row counts, coverage, pool stats from collect_db_stats()
         """
+        raw_exclude_parameter = request.query.get("exclude")
+        exclude_parameter = (
+            raw_exclude_parameter if isinstance(raw_exclude_parameter, str) else None
+        )
+        excluded: set[str] = set()
+        if exclude_parameter is not None:
+            tokens = [token.strip() for token in exclude_parameter.split(",")]
+            empty_tokens = [token for token in tokens if not token]
+            unknown_tokens = [
+                token for token in tokens if token and token not in EXCLUDABLE_METRICS_KEYS
+            ]
+            if empty_tokens or unknown_tokens:
+                return web.json_response(
+                    {
+                        "error": "empty_exclude_key" if empty_tokens else "unknown_exclude_key",
+                        "keys": empty_tokens or unknown_tokens,
+                        "allowed": sorted(EXCLUDABLE_METRICS_KEYS),
+                    },
+                    status=400,
+                )
+            excluded.update(tokens)
+
         metrics = self._collector.get_metrics()
 
         # Rejections served by the POST receivers — the structure is always
@@ -645,8 +722,17 @@ class MetricsServer:
 
         # Cross-process aggregated tool/embedding stats
         process_agg = await self._collector.collect_process_metrics()
+        # These counters belong to MCP's single emitter, not this sidecar.
+        metrics["search_rerank"] = process_agg.pop("search_rerank", {})
+        metrics.pop("search", None)
+        # Persisted by MCP's emitter; this sidecar's own collector never reranks.
+        aggregated_chain = (process_agg.get("tools") or {}).get("_reranker", {}).get("chain")
+        if aggregated_chain is not None:
+            metrics.setdefault("reranker", {})["chain"] = aggregated_chain
+        else:
+            metrics.setdefault("reranker", {}).setdefault("chain", {})
         # Read MCP's persisted snapshot, never this sidecar's in-memory counter.
-        # Structural zero stays present before the first event/flush and on DB failure.
+        # A measured empty source stays empty; a DB failure publishes nulls.
         metrics["mcp_auth_refused"] = process_agg.pop("mcp_auth_refused", {})
         metrics["elevation_refused"] = process_agg.pop("elevation_refused", {})
         metrics["mcp_auth_agent_unresolved"] = process_agg.pop("mcp_auth_agent_unresolved", {})
@@ -654,7 +740,7 @@ class MetricsServer:
 
         # Override per-process tools/embedding/reranker with cross-process aggregation
         # when multiple processes are active
-        if process_agg["active_processes"] > 0:
+        if process_agg["active_processes"] is not None and process_agg["active_processes"] > 0:
             agg_tools = process_agg["tools"]
             # Extract _reranker pseudo-tool into top-level reranker section
             reranker_agg = agg_tools.pop("_reranker", None)
@@ -668,6 +754,7 @@ class MetricsServer:
                     "total_candidates": reranker_agg.get("total_candidates", 0),
                     "avg_latency_ms": reranker_agg["avg_latency_ms"],
                     "by_identity": reranker_agg.get("by_identity", {}),
+                    "chain": reranker_agg.get("chain", {}),
                     "last_probe_ok": probe["ok"] if probe else None,
                     "last_probe_reason": probe["reason"] if probe else None,
                     "last_probe_age_s": round(max(0.0, time.time() - probe["at"]), 1)
@@ -720,6 +807,39 @@ class MetricsServer:
                 metrics["embedding_service"]["endpoint_host"] = identity["endpoint_host"]
                 metrics["embedding_service"]["models_seen"] = identity["models_seen"]
                 metrics["embedding_service"]["model_source"] = "live_processes"
+        elif process_agg["active_processes"] is None:
+            # These fields normally come from the aggregate. Do not present this
+            # sidecar's idle counters as measurements of an unavailable source.
+            metrics["tools"] = None
+            for key in (
+                "total_calls",
+                "total_errors",
+                "recent_errors",
+                "total_candidates",
+                "avg_latency_ms",
+                "by_identity",
+            ):
+                metrics["reranker"][key] = None
+            for key in (
+                "total_queries",
+                "total_errors",
+                "recent_errors",
+                "avg_latency_ms",
+            ):
+                metrics["graph"][key] = None
+            metrics["decay"] = {
+                "stale_count": None,
+                "archived_count": None,
+                "access_log_size": None,
+            }
+            for key in (
+                "total_requests",
+                "total_errors",
+                "recent_errors",
+                "avg_latency_ms",
+                "usage",
+            ):
+                metrics["embedding_service"][key] = process_agg["embedding"][key]
 
         # decay/embedding_identity are published only via the top-level
         # embedding_service (set above when active): strip them from the raw
@@ -747,29 +867,32 @@ class MetricsServer:
             except Exception:
                 graph_healthy = False
             graph_stats = metrics.get("graph", {})
-            inventory = await self._slow_block_cache.get(
-                "graph_inventory", lambda: self._collector.collect_graph_inventory(self._graph_svc)
-            )
-            inventory = inventory or {}
-            metrics["graph"] = {
-                "status": "up" if graph_healthy else "down",
-                "total_queries": graph_stats.get("total_queries", 0),
-                "total_errors": graph_stats.get("total_errors", 0),
-                "recent_errors": graph_stats.get("recent_errors", 0),
-                "avg_latency_ms": graph_stats.get("avg_latency_ms", 0.0),
-                "nodes_total": inventory.get("nodes_total", {}),
-                "edges_total": inventory.get("edges_total", {}),
-                "orphans_total": inventory.get("orphans_total", {}),
-                "generated_at": inventory.get("generated_at"),
-            }
+            if "graph" not in excluded:
+                inventory = await self._slow_block_cache.get(
+                    "graph_inventory",
+                    lambda: self._collector.collect_graph_inventory(self._graph_svc),
+                )
+                inventory = inventory or {}
+                metrics["graph"] = {
+                    "status": "up" if graph_healthy else "down",
+                    "total_queries": graph_stats.get("total_queries", 0),
+                    "total_errors": graph_stats.get("total_errors", 0),
+                    "recent_errors": graph_stats.get("recent_errors", 0),
+                    "avg_latency_ms": graph_stats.get("avg_latency_ms", 0.0),
+                    "nodes_total": inventory.get("nodes_total", {}),
+                    "edges_total": inventory.get("edges_total", {}),
+                    "orphans_total": inventory.get("orphans_total", {}),
+                    "generated_at": inventory.get("generated_at"),
+                }
 
         # Dream run metrics — merge run-level data + cumulative promotions counts
         # + per-target post-promotion health (ADR #4 v2 telemetry). Assembled
         # inside one `compute` so the cache memoizes the three collector calls
         # (and their generated_at) as a single block (1669d429 item 2).
-        dream_metrics = await self._slow_block_cache.get("dream", self._compute_dream_block)
-        if dream_metrics:
-            metrics["dream"] = dream_metrics
+        if "dream" not in excluded:
+            dream_metrics = await self._slow_block_cache.get("dream", self._compute_dream_block)
+            if dream_metrics:
+                metrics["dream"] = dream_metrics
 
         # Nightly-ops (killswitches, roadmap/extract review, last failure) —
         # consumed by red-monitor's nightly-ops panel (ticket de1ad785).
@@ -779,33 +902,53 @@ class MetricsServer:
         # a collector double that lacks the method must degrade this block to
         # absent, never 500 the whole endpoint (a real incident: a `MinimalCollector`
         # test double raised AttributeError here, outside any try/except).
-        nightly = await self._slow_block_cache.get(
-            "nightly", lambda: self._collector.collect_nightly_ops()
-        )
-        if nightly:
-            metrics["nightly"] = nightly
+        if "nightly" not in excluded:
+            nightly = await self._slow_block_cache.get(
+                "nightly",
+                lambda: self._collector.collect_nightly_ops(scheduler_mode=self._dream_scheduler),
+            )
+            if nightly:
+                metrics["nightly"] = nightly
 
         # Per-project ticket counters (ticket 0fb857ef) — replaces red-monitor's
         # abandoned roadmap tab. Categorisation is brain's alone: collect_ticket_counts
         # (collector_tickets.py) reuses list_grouped's own _ACTIONABLE/_CONFIRMABLE
         # predicates, red-monitor renders whatever it receives with no status logic
         # of its own. `projects: []` (truthy dict) still publishes the key — only a
-        # raised exception (caught by the cache, see slow_block_cache.py) leaves
-        # "tickets" absent from the payload. Same lambda-deferral reasoning as
+        # raised exception leaves "tickets" absent. Same reasoning as
         # "nightly" just above: a collector lacking the method must degrade this
         # block to absent, not 500 the whole endpoint.
-        tickets_block = await self._slow_block_cache.get(
-            "tickets", lambda: self._collector.collect_ticket_counts()
-        )
-        if tickets_block:
-            metrics["tickets"] = tickets_block
+        if "tickets" not in excluded:
+            tickets_block = await self._slow_block_cache.get(
+                "tickets", lambda: self._collector.collect_ticket_counts()
+            )
+            if tickets_block:
+                metrics["tickets"] = tickets_block
 
         # Read-only slot and operator-session state for red-cockpit (ADR #34 D12).
-        slots_block = await self._slow_block_cache.get(
-            "session_slots", lambda: self._collector.collect_session_slots()
+        if "session_slots" not in excluded:
+            slots_block = await self._slow_block_cache.get(
+                "session_slots", lambda: self._collector.collect_session_slots()
+            )
+            if slots_block:
+                metrics["session_slots"] = slots_block
+
+        # Older collector doubles may not expose health; their unevaluated blocks
+        # are explicitly not_measured rather than assumed healthy.
+        collector_health = (
+            self._collector.block_health
+            if callable(getattr(type(self._collector), "block_health", None))
+            else self._slow_block_cache.health
         )
-        if slots_block:
-            metrics["session_slots"] = slots_block
+        metrics["block_status"] = {
+            key: collector_health(key) for key in ("database", "search_quality", "cross_process")
+        }
+        slow_keys: tuple[str, ...] = ("dream", "nightly", "tickets", "session_slots")
+        if self._graph_svc is not None:
+            slow_keys += ("graph_inventory",)
+        metrics["block_status"].update(
+            {key: self._slow_block_cache.health(key) for key in slow_keys}
+        )
 
         # Deprecated top-level alias (ticket 3a4ed612): re-synced here, after any
         # cross-process override above, so it never drifts from the field it
@@ -815,6 +958,9 @@ class MetricsServer:
         embedding_service_block = metrics.get("embedding_service", {})
         if "model" in embedding_service_block:
             metrics["model"] = embedding_service_block["model"]
+
+        for key in excluded:
+            metrics.pop(key, None)
 
         return web.json_response(metrics)
 

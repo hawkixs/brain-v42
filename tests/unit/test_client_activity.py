@@ -113,12 +113,27 @@ def _claude_api_request(
     }
 
 
-def _claude_session(session_id: str = FAKE_UUID) -> bytes:
+def _claude_session(
+    session_id: str = FAKE_UUID,
+    *,
+    input_tokens: int = 10,
+    cache_read_tokens: int = 1_000,
+    cache_creation_tokens: int = 190,
+    output_tokens: int = 340,
+    cost_usd: float = 0.05,
+) -> bytes:
     """A nominal Claude session: a prompt, then an API request."""
     return _envelope(
         [
             _claude_prompt(session_id=session_id),
-            _claude_api_request(session_id=session_id),
+            _claude_api_request(
+                session_id=session_id,
+                input_tokens=input_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_creation_tokens=cache_creation_tokens,
+                output_tokens=output_tokens,
+                cost_usd=cost_usd,
+            ),
         ]
     )
 
@@ -729,6 +744,105 @@ class TestLegacyContract:
 
 
 class TestBounds:
+    def test_conversation_capacity_evictions_are_counted_per_agent(self) -> None:
+        registry = _registry()
+        registry.ingest_otlp_json(_codex_payload())
+        registry.ingest_otlp_json(_codex_completion())
+        brain_before = registry.eviction_counters()
+
+        for index in range(MAX_ACTIVE_CONVERSATIONS + 3):
+            registry.ingest_claude_otlp_json(_claude_session(session_id=_nth_uuid(index)))
+
+        counters = registry.eviction_counters()
+        assert counters["conversation_evictions_total"] == {
+            "codex": {"ttl": 0, "capacity": 0},
+            "claude": {"ttl": 0, "capacity": 3},
+        }
+        assert counters["conversation_evictions_bearing_total"] == {
+            "codex": 0,
+            "claude": 3,
+        }
+        brain_keys = {
+            "evictions_total",
+            "evictions_bearing_total",
+            "occupancy",
+            "capacity",
+            "folded_observations_total",
+        }
+        assert {key: counters[key] for key in brain_keys} == {
+            key: brain_before[key] for key in brain_keys
+        }
+
+    def test_cost_alone_makes_a_conversation_eviction_bearing(self) -> None:
+        registry = _registry()
+        registry.ingest_claude_otlp_json(
+            _claude_session(
+                input_tokens=0,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                output_tokens=0,
+                cost_usd=0.01,
+            )
+        )
+
+        for index in range(1, MAX_ACTIVE_CONVERSATIONS + 1):
+            registry.ingest_claude_otlp_json(_claude_session(session_id=_nth_uuid(index)))
+
+        counters = registry.eviction_counters()
+        assert counters["conversation_evictions_total"]["claude"]["capacity"] == 1
+        assert counters["conversation_evictions_bearing_total"]["claude"] == 1
+
+    def test_zero_tokens_and_zero_cost_are_not_bearing(self) -> None:
+        registry = _registry()
+        registry.ingest_claude_otlp_json(
+            _claude_session(
+                input_tokens=0,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                output_tokens=0,
+                cost_usd=0.0,
+            )
+        )
+
+        for index in range(1, MAX_ACTIVE_CONVERSATIONS + 1):
+            registry.ingest_claude_otlp_json(_claude_session(session_id=_nth_uuid(index)))
+
+        counters = registry.eviction_counters()
+        assert counters["conversation_evictions_total"]["claude"]["capacity"] == 1
+        assert counters["conversation_evictions_bearing_total"]["claude"] == 0
+
+    def test_conversation_ttl_evictions_are_counted_per_agent(self) -> None:
+        clock = _Clock()
+        registry = _registry(clock)
+        registry.ingest_otlp_json(_codex_payload())
+        registry.ingest_otlp_json(_codex_completion())
+        registry.ingest_otlp_json(_codex_payload(conversation_id=_nth_uuid(1)))
+
+        clock.advance(ACTIVITY_TTL_SECONDS + 1.0)
+        registry.snapshot()
+
+        counters = registry.eviction_counters()
+        assert counters["conversation_evictions_total"] == {
+            "codex": {"ttl": 2, "capacity": 0},
+            "claude": {"ttl": 0, "capacity": 0},
+        }
+        assert counters["conversation_evictions_bearing_total"] == {
+            "codex": 1,
+            "claude": 0,
+        }
+
+    def test_unmeasured_conversation_eviction_is_not_bearing(self) -> None:
+        registry = _registry()
+        for index in range(MAX_ACTIVE_CONVERSATIONS + 1):
+            registry.ingest_otlp_json(_codex_payload(conversation_id=_nth_uuid(index)))
+
+        counters = registry.eviction_counters()
+        assert counters["conversation_evictions_total"]["codex"]["capacity"] == 1
+        assert counters["conversation_evictions_bearing_total"] == {
+            "codex": 0,
+            "claude": 0,
+        }
+
     def test_rows_expire_after_the_ttl(self) -> None:
         """The TTL holds on both halves of the merged registry."""
         clock = _Clock()

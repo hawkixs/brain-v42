@@ -17,7 +17,7 @@ from brain_v42.metrics.runtime import (
     build_sidecar_structlog_processors,
     run_cleanup_loop,
 )
-from brain_v42.safe_logging import configure_json_logging
+from brain_v42.safe_logging import configure_console_logging, configure_json_logging
 
 # Temporary rollback facades for internal imports kept stable during ARC1 lot 1.
 _dedup_loop = run_dedup_loop
@@ -67,6 +67,7 @@ def _configure_logging(collector: MetricsCollector) -> None:
             logger_factory=structlog.PrintLoggerFactory(),
             cache_logger_on_first_use=True,
         )
+        configure_console_logging(processors)
     structlog.get_logger(__name__).info(
         "logging.configured", renderer=log_format, service="brain-v42-metrics", pid=os.getpid()
     )

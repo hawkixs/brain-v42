@@ -85,6 +85,8 @@ class TimeseriesFlusher:
                 ("p95", pct["p95"]),
                 ("err_rate", rates["err_rate"]),
             ):
+                if value is None:
+                    continue
                 await session.execute(
                     text(
                         "INSERT INTO metrics_timeseries (bucket_ts, metric, value) "

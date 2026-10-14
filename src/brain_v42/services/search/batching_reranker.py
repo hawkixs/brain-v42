@@ -52,9 +52,12 @@ Metrics note:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
+
+if TYPE_CHECKING:
+    from brain_v42.services.reranker_client import RerankClientLike
 
 logger = structlog.get_logger(__name__)
 
@@ -92,7 +95,7 @@ class _PendingBatch:
     def __init__(
         self,
         query: str,
-        inner: Any,
+        inner: RerankClientLike,
         window_seconds: float,
         batch_map: dict[str, Any],
     ) -> None:
@@ -250,7 +253,7 @@ class BatchingRerankerClient:
 
     def __init__(
         self,
-        inner: Any,
+        inner: RerankClientLike,
         window_seconds: float = 0.02,
     ) -> None:
         self._inner = inner
@@ -317,4 +320,4 @@ class BatchingRerankerClient:
         Returns:
             True if the inner service is available, False otherwise.
         """
-        return await self._inner.is_available()  # type: ignore[no-any-return]
+        return await self._inner.is_available()

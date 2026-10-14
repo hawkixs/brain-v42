@@ -54,6 +54,7 @@ from brain_v42.services.embedding_factory import (
 from brain_v42.services.feature_dedup_job import FeatureDedupJob
 from brain_v42.services.gpu_embedding_service import GPUEmbeddingService
 from brain_v42.services.graph_service import GraphService
+from brain_v42.services.reranker_client import RerankClientLike
 from brain_v42.services.status_engine import StatusEngine
 
 logger = structlog.get_logger(__name__)
@@ -73,7 +74,7 @@ class AsyncDisposer(Protocol):
 class LegacyAutomationResources:
     """Business resources constructed only after the legacy lease is acquired."""
 
-    reranker: AsyncCloser | None
+    reranker: RerankClientLike | None
     dedup_job: FeatureDedupJobProtocol
     gitlab_ingestor: GitLabEventProcessor | None
     project_key_resolver: ProjectKeyResolver | None
@@ -90,7 +91,7 @@ class MetricsResources:
     server: MetricsServer | None
     neo4j_driver: AsyncDriver | None = None
     lease: AutomationOwnershipLease | None = None
-    reranker: AsyncCloser | None = None
+    reranker: RerankClientLike | None = None
     dedup_job: FeatureDedupJobProtocol | None = None
     legacy_factory: Callable[[AutomationOwnershipLease], LegacyAutomationResources] | None = None
     server_factory: (
@@ -440,6 +441,7 @@ def build_metrics_runtime(
             collector=collector,
             embedding_svc=embedding_svc,
             port=effective_settings.metrics_port,
+            dream_scheduler=effective_settings.metrics_dream_scheduler,
             host=effective_settings.metrics_host,
             gitlab_ingestor=gitlab_ingestor,
             project_key_resolver=project_key_resolver,

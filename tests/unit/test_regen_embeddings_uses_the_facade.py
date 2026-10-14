@@ -42,6 +42,8 @@ class TestConfiguredPrefixReachesTheRegeneratedVectors:
         monkeypatch.setenv(
             "BRAIN_POSTGRES_URL", "postgresql+asyncpg://brain:brain@localhost:5433/brain"
         )
+        # The fake vectors below are 1-dimensional; the client checks the configured size.
+        monkeypatch.setenv("BRAIN_EMBEDDING_DIMENSION", "1")
         from brain_v42.config import Settings
         from brain_v42.services.embedding_factory import build_embedding_service
 

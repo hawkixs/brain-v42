@@ -11,7 +11,10 @@ Normalizing in the model instead makes both paths share one definition.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
+from fastmcp import FastMCP
 
 from brain_v42.models.runbook import RunbookCreate, RunbookUpdate
 
@@ -60,6 +63,34 @@ def test_mixed_payload_numbers_only_the_steps_that_omit_order() -> None:
     steps = [{"title": "a"}, {"title": "b", "order": 99}, {"title": "c"}]
 
     assert [s.order for s in _create(steps=steps).steps] == [1, 99, 3]
+
+
+def test_string_steps_are_titled_and_numbered_by_position() -> None:
+    runbook = _create(steps=["build", "deploy"])
+    assert [(step.order, step.title) for step in runbook.steps] == [(1, "build"), (2, "deploy")]
+
+
+def test_mixed_string_and_object_steps_keep_explicit_order() -> None:
+    runbook = _create(steps=["build", {"title": "deploy", "order": 9}])
+    assert [(step.order, step.title) for step in runbook.steps] == [(1, "build"), (9, "deploy")]
+
+
+def test_empty_string_step_is_refused() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="title"):
+        _create(steps=[""])
+
+
+@pytest.mark.asyncio
+async def test_create_steps_schema_publishes_string_and_object_items() -> None:
+    from brain_v42.mcp.tools.runbook_tools import register_runbook_tools
+
+    mcp = FastMCP("schema")
+    register_runbook_tools(mcp, MagicMock())
+    tool = await mcp.get_tool("brain_create_runbook")
+    items = tool.parameters["properties"]["steps"]["items"]
+    assert {branch["type"] for branch in items["anyOf"]} == {"object", "string"}
 
 
 def test_rollback_steps_are_normalized_like_steps() -> None:
