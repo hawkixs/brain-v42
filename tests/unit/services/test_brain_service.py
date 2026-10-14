@@ -1091,12 +1091,18 @@ class TestBrainServiceHybridSearcher:
 
         learning_svc.semantic_search.assert_awaited_once()
 
+    @pytest.mark.parametrize("include_archived", [True, False])
     @pytest.mark.parametrize("entrypoint", ["search", "what_do_i_know_about"])
-    async def test_include_archived_reaches_only_plan_hybrid_callables(
+    async def test_include_archived_reaches_every_type_in_the_hybrid_callables(
         self,
         entrypoint: str,
+        include_archived: bool,
     ) -> None:
-        """Public archive policy is forwarded to plan SQL without widening peers."""
+        """Archive policy is forwarded to every type's search so SQL filters before LIMIT.
+
+        Ticket 73e68261: this used to pin the opposite (only plan received the
+        flag), which left archived/merged rows to be dropped after the LIMIT.
+        """
         svcs = make_mock_services()
         domain_svcs = list(svcs[:5])
         for svc in domain_svcs:
@@ -1120,18 +1126,71 @@ class TestBrainServiceHybridSearcher:
             await brain.search(
                 "roadmap",
                 types=["decision", "plan"],
-                include_archived=True,
+                include_archived=include_archived,
             )
             called_domain_svcs = domain_svcs[:1]
         else:
-            await brain.what_do_i_know_about("roadmap", include_archived=True)
+            await brain.what_do_i_know_about("roadmap", include_archived=include_archived)
             called_domain_svcs = domain_svcs
 
-        assert plan_svc.search.await_args.kwargs["include_archived"] is True
-        assert plan_svc.semantic_search.await_args.kwargs["include_archived"] is True
+        assert plan_svc.search.await_args.kwargs["include_archived"] is include_archived
+        assert plan_svc.semantic_search.await_args.kwargs["include_archived"] is include_archived
         for svc in called_domain_svcs:
-            assert "include_archived" not in svc.search.await_args.kwargs
-            assert "include_archived" not in svc.semantic_search.await_args.kwargs
+            assert svc.search.await_args.kwargs["include_archived"] is include_archived
+            assert svc.semantic_search.await_args.kwargs["include_archived"] is include_archived
+
+    @pytest.mark.parametrize("include_archived", [True, False])
+    async def test_include_archived_reaches_every_type_without_hybrid(
+        self,
+        include_archived: bool,
+    ) -> None:
+        """Plain semantic branch (no HybridSearcher) forwards the flag to every type."""
+        brain, svcs = make_brain_service()
+
+        await brain._fan_out(
+            ["decision", "learning", "snippet", "runbook", "adr"],
+            "q",
+            None,
+            10,
+            include_archived=include_archived,
+        )
+
+        for svc in svcs[:5]:
+            assert svc.semantic_search.await_args.kwargs["include_archived"] is include_archived
+
+    @pytest.mark.parametrize("include_archived", [True, False])
+    async def test_include_archived_reaches_every_type_in_the_fts_only_fallback(
+        self,
+        include_archived: bool,
+    ) -> None:
+        """FTS-only fallback (embedding service down) forwards the flag to every type."""
+        from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable
+
+        svcs = make_mock_services()
+        for svc in svcs[:5]:
+            svc.search = AsyncMock(return_value=[])
+        svcs[5].embed_query = AsyncMock(
+            side_effect=EmbeddingUnavailable("GPU down", kind="unreachable")
+        )
+        brain = BrainService(
+            decision_svc=svcs[0],
+            learning_svc=svcs[1],
+            snippet_svc=svcs[2],
+            runbook_svc=svcs[3],
+            adr_svc=svcs[4],
+            embedding_svc=svcs[5],
+        )
+
+        await brain._fan_out(
+            ["decision", "learning", "snippet", "runbook", "adr"],
+            "q",
+            None,
+            10,
+            include_archived=include_archived,
+        )
+
+        for svc in svcs[:5]:
+            assert svc.search.await_args.kwargs["include_archived"] is include_archived
 
 
 class _ContractReranker:

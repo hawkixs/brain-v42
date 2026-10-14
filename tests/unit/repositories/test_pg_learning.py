@@ -701,7 +701,10 @@ class TestSearchVector:
         result = await repo.search_vector(query_embedding, project_key="brain_v42")
 
         assert isinstance(result, list)
-        mock_session.execute.assert_awaited_once()
+        # Exactly one vector SELECT, and it is the last statement executed.
+        statements = [str(c.args[0]) for c in mock_session.execute.await_args_list]
+        assert sum("<=>" in text for text in statements) == 1
+        assert "<=>" in statements[-1]
 
     @pytest.mark.asyncio
     async def test_search_vector_with_confidence(self) -> None:
@@ -716,7 +719,9 @@ class TestSearchVector:
         result = await repo.search_vector(query_embedding, confidence="high")
 
         assert isinstance(result, list)
-        mock_session.execute.assert_awaited_once()
+        statements = [str(c.args[0]) for c in mock_session.execute.await_args_list]
+        assert sum("<=>" in text for text in statements) == 1
+        assert "<=>" in statements[-1]
 
     @pytest.mark.asyncio
     async def test_search_vector_empty_result(self) -> None:

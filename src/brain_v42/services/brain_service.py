@@ -266,7 +266,9 @@ class BrainService:
                 logger.debug("brain_service.fan_out.no_service", type=t)
                 continue
 
-            plan_archive_kwargs = {"include_archived": include_archived} if t == "plan" else {}
+            # Every type filters archived/merged rows in its SQL, before the LIMIT.
+            # The Python post-filter in _build_search_results stays as a second line.
+            archive_kwargs = {"include_archived": include_archived}
             if fts_only_fallback:
                 # FTS-only: call svc.search (not semantic_search, which would re-embed)
                 coro = svc.search(
@@ -274,24 +276,13 @@ class BrainService:
                     limit=limit,
                     **({"project_key": project_key} if project_key is not None else {}),
                     **({"project_keys": project_keys} if project_keys is not None else {}),
-                    **plan_archive_kwargs,
+                    **archive_kwargs,
                 )
             elif self._hybrid_searcher:
-                fts_search_fn = svc.search
-                vector_search_fn = svc.semantic_search
-                if t == "plan":
-                    fts_search_fn = partial(
-                        fts_search_fn,
-                        include_archived=include_archived,
-                    )
-                    vector_search_fn = partial(
-                        vector_search_fn,
-                        include_archived=include_archived,
-                    )
                 coro = self._hybrid_searcher.search(
                     query=query,
-                    fts_search_fn=fts_search_fn,
-                    vector_search_fn=vector_search_fn,
+                    fts_search_fn=partial(svc.search, **archive_kwargs),
+                    vector_search_fn=partial(svc.semantic_search, **archive_kwargs),
                     text_extractor=_TEXT_EXTRACTORS[t],
                     limit=limit,
                     project_key=project_key,
@@ -306,7 +297,7 @@ class BrainService:
                     project_keys=project_keys,
                     limit=limit,
                     embedding=shared_embedding,
-                    **plan_archive_kwargs,
+                    **archive_kwargs,
                 )
             tasks.append(asyncio.create_task(coro))
             task_types.append(t)

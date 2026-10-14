@@ -28,7 +28,7 @@ from brain_v42.models.runbook import (
     RunbookUpdate,
 )
 from brain_v42.repositories.capture_guard import lock_unless_captured
-from brain_v42.repositories.pg_base import BasePgRepository, Row
+from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, Row
 from brain_v42.repositories.promotion import (
     SourceLearningNotFound,
     lock_runbook_promotion_target,
@@ -290,6 +290,7 @@ class PgRunbookRepo(BasePgRepository):
         limit: int = 20,
         offset: int = 0,
         *,
+        extra_clauses: ExtraClauses = None,
         session: Any = None,
     ) -> list[Runbook]:
         """FTS search on title/description/trigger/tags via DB-generated search_vector.
@@ -310,6 +311,7 @@ class PgRunbookRepo(BasePgRepository):
             limit=limit,
             session=session,
             skip_count=True,
+            extra_clauses=extra_clauses,
         )
         return [_row_to_runbook(r) for r in rows]
 
@@ -324,6 +326,7 @@ class PgRunbookRepo(BasePgRepository):
         project_keys: list[str] | None = None,
         limit: int = 10,
         *,
+        extra_clauses: ExtraClauses = None,
         session: Any = None,
     ) -> list[tuple[Runbook, float]]:
         """Semantic search using pgvector cosine similarity.
@@ -341,6 +344,7 @@ class PgRunbookRepo(BasePgRepository):
             embedding,
             filters=filters if filters else None,
             limit=limit,
+            extra_clauses=extra_clauses,
             session=session,
         )
         results: list[tuple[Runbook, float]] = []

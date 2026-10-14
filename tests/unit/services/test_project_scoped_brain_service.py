@@ -166,6 +166,7 @@ async def test_scoped_vector_fan_out_overrides_forged_project_arguments() -> Non
         project_keys=None,
         limit=7,
         embedding=FAKE_EMBEDDING,
+        include_archived=False,
     )
 
 
@@ -187,6 +188,7 @@ async def test_admin_vector_fan_out_preserves_historical_call_shape() -> None:
         project_keys=["admin-a", "admin-b"],
         limit=7,
         embedding=FAKE_EMBEDDING,
+        include_archived=False,
     )
 
 
@@ -232,6 +234,7 @@ async def test_scoped_fts_fallback_overrides_forged_project_arguments() -> None:
         query="query",
         limit=7,
         project_key=PROJECT_KEY,
+        include_archived=False,
     )
 
 
