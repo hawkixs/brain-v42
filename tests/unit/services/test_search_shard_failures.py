@@ -127,7 +127,7 @@ async def test_all_failed_shards_explain_an_incomplete_search(grouped: bool) -> 
     text = _render(response)
     names = ", ".join(ALL_TYPES)
     assert text.count(f"degraded: incomplete search — failed types: {names}") == 1
-    assert f"failed types: {names}" in text
+    assert f"Search incomplete; failed types: {names}" in text
     assert "0 candidates in scope" not in text
 
 
@@ -220,7 +220,7 @@ def test_empty_failure_explanation_uses_marker_without_diagnostics(grouped: bool
         text = format_knowledge_by_type(KnowledgeByType(), "topic", degraded=marker)
     else:
         text = format_search_results([], "topic", degraded=marker)
-    assert "failed types: decision, learning" in text
+    assert "Search incomplete; failed types: decision, learning" in text
     assert "0 candidates in scope" not in text
 
 
@@ -240,7 +240,7 @@ def test_incomplete_search_keeps_the_threshold_hint_of_the_types_that_answered()
         [], "topic", degraded={"failed_types": ["learning"]}, diagnostics=diagnostics
     )
 
-    assert "failed types: learning" in text
+    assert "Search incomplete; failed types: learning" in text
     assert "none above min_score 0.2 (best raw score 0.15" in text
 
 
@@ -257,6 +257,6 @@ def test_failed_types_with_no_candidate_do_not_claim_an_empty_scope() -> None:
         [], "topic", degraded={"failed_types": ["learning"]}, diagnostics=diagnostics
     )
 
-    assert "failed types: learning" in text
+    assert "Search incomplete; failed types: learning" in text
     assert "0 candidates in the types that answered" in text
     assert "0 candidates in scope" not in text
