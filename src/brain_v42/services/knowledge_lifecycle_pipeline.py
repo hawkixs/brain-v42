@@ -144,6 +144,8 @@ class LifecyclePipeline:
         scope: Mapping[str, Any],
         ceiling_usd: float,
         backup_proof: BackupProof | None = None,
+        *,
+        run_id: str | None = None,
     ) -> RunReport:
         mode = Mode(mode)
         if set(scope) - {"project_key", "project_keys"}:
@@ -154,7 +156,8 @@ class LifecyclePipeline:
             if not acquired:
                 raise PipelineRefusal("run_locked")
             await self._gate(mode)
-            run_id = "lifecycle-" + uuid4().hex
+            if run_id is None:
+                run_id = "lifecycle-" + uuid4().hex
             async with self.engine.begin() as conn:
                 await self.repo.create_run(conn, run_id, mode, scope)
                 await self.repo.record_run(conn, run_id, counts={"ceiling_usd": ceiling_usd})

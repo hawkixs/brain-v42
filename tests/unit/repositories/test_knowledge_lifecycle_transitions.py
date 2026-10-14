@@ -2,6 +2,7 @@
 
 from datetime import time
 from itertools import product
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -48,3 +49,25 @@ def test_invalidation_is_only_from_terminal_runs(source: RunStatus) -> None:
 )
 def test_apply_window_boundaries(instant: time, allowed: bool) -> None:
     assert apply_window_open(instant) is allowed
+
+
+async def test_read_run_raises_typed_not_found_only_for_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.repositories import pg_knowledge_lifecycle as module
+
+    monkeypatch.setattr(module, "_row", AsyncMock(return_value=None))
+    with pytest.raises(module.RunNotFound):
+        await module.PgKnowledgeLifecycleRepo().read_run(AsyncMock(), "missing")
+
+
+async def test_read_run_does_not_translate_internal_keyerror(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from brain_v42.repositories import pg_knowledge_lifecycle as module
+
+    failure = KeyError("internal field")
+    monkeypatch.setattr(module, "_row", AsyncMock(side_effect=failure))
+    with pytest.raises(KeyError) as exc:
+        await module.PgKnowledgeLifecycleRepo().read_run(AsyncMock(), "r")
+    assert exc.value is failure

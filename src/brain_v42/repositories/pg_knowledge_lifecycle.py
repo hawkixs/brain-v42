@@ -76,6 +76,10 @@ class StaleRunState(RuntimeError):
     """Another checkpoint has already consumed the expected from-state."""
 
 
+class RunNotFound(LookupError):
+    """An existence read found no durable run, rather than malformed run data."""
+
+
 class StaleAtApply(RuntimeError):
     """The entry or cache changed; leave this entry for a later evaluation."""
 
@@ -266,7 +270,7 @@ class PgKnowledgeLifecycleRepo:
             ),
         )
         if row is None:
-            raise KeyError(run_id)
+            raise RunNotFound(run_id)
         return row
 
     async def transition_run(
