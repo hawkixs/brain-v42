@@ -881,8 +881,28 @@ on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text)
 
 ## Migration history
 
-The repository migration target is 065. No page in this repository proves a live
+The repository migration target is 067. No page in this repository proves a live
 schema head; read `alembic_version` in the target database.
+
+Migration 067 adds nullable `brain_client_credentials.allowed_projects` without a
+default or backfill. `NULL` preserves unrestricted scope. Change exact project keys
+in place with `brain-credentials scope <id> --projects brain-v42,red-shrik:agent-a
+--reason "restrict projects"`; restore `NULL` with `brain-credentials scope <id>
+--clear --reason "restore unrestricted scope"`. The CLI canonicalizes known aliases,
+rejects empty or duplicate keys and keys longer than 50 characters, and never prints
+a bearer for this operation. Both `list` and `list --json` show `allowed_projects`.
+Each change commits a `credentials.scope_changed` outbox record with the old and
+new scope, author and reason; repeat changes are separate audit rows. The existing
+drainer includes `audit_id` on scope events so consumers can deduplicate retries
+without dropping subsequent changes to the same credential. The
+NOTIFY trigger reloads the verifier after commit, with periodic refresh as fallback.
+The own-focus grant requires `write` and an exact allowed key; ordinary writes keep
+their existing family authorization. Downgrade refuses while any credential is
+scoped unless `-x allow_credential_scope_downgrade=yes` explicitly accepts widening
+authority. The scope audit vocabulary and rows survive downgrade; an older drainer
+that cannot render these events requires an operator upgrade before draining them.
+Recovery contract v25 (`ops/recovery/current.json`) describes 067; replay it against
+the target before deploying this schema.
 
 `brain-v42-migrate` uses the owner credentials from `POSTGRES_URL` and the
 wheel's Alembic chain. It refuses an uninitialized database and any head newer

@@ -116,6 +116,21 @@ async def test_projects_are_read_from_the_same_refreshed_snapshot(repo: Repo, cl
     assert not core.project_exists("brain_v42")
 
 
+async def test_credential_scope_reloads_without_rotating_the_token(
+    repo: Repo, clock: Clock
+) -> None:
+    original = row("scope-test-token")
+    repo.rows = [original]
+    core = verifier(repo, clock)
+    assert await core.refresh()
+    assert getattr(await core.verify("scope-test-token"), "allowed_projects", "missing") is None
+    repo.rows = [replace(original, allowed_projects=["red-shrik:agent-a"])]
+    assert await core.notify()
+    assert (await core.verify("scope-test-token")).allowed_projects == frozenset(
+        {"red-shrik:agent-a"}
+    )
+
+
 async def test_failed_project_load_keeps_both_old_snapshots(repo: Repo, clock: Clock) -> None:
     repo.rows = [row("old-test-token")]
     core = verifier(repo, clock)

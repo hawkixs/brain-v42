@@ -25,6 +25,7 @@ from brain_v42.credentials.families import STORABLE_FAMILIES
 from brain_v42.credentials.redact import sanitize_label, short_id
 from brain_v42.db.engine import dispose_engine, get_session_factory
 from brain_v42.db.tables import brain_session_connections, brain_sessions
+from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.repositories.pg_client_credentials import (
     MAX_ELEVATION,
     ClientCredentialError,
@@ -90,6 +91,17 @@ def _client_id(value: str) -> str:
     return value
 
 
+def _projects(value: str) -> list[str]:
+    """Resolve historical aliases before checking an exact, nonempty project scope."""
+    try:
+        keys = [canonicalize_project_key(key) for key in value.split(",")]
+    except ValueError:
+        raise argparse.ArgumentTypeError("projects must be canonical project keys") from None
+    if any(not key or len(key) > 50 for key in keys) or len(set(keys)) != len(keys):
+        raise argparse.ArgumentTypeError("projects must be distinct keys of 1..50 characters")
+    return keys
+
+
 def _issuer(value: str) -> str:
     """Limit delegated actors to exact labels, prefixes or existing projects."""
     if value != "@project" and not re.fullmatch(r"[a-z0-9][a-z0-9.:-]{0,63}\*?", value):
@@ -126,7 +138,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     elevate.add_argument("id", type=_identifier)
     elevate.add_argument("--ttl", type=_ttl, required=True)
     elevate.add_argument("--yes", action="store_true", help="Skip TTY confirmation")
-    for command in ("issue", "revoke", "elevate", "unelevate"):
+    scope = commands.add_parser(
+        "scope", help="Change exact project scope without rotating a bearer"
+    )
+    scope.add_argument("id", type=_identifier)
+    scope_options = scope.add_mutually_exclusive_group(required=True)
+    scope_options.add_argument("--projects", type=_projects)
+    scope_options.add_argument("--clear", action="store_true", help="Restore unrestricted scope")
+    for command in ("issue", "revoke", "elevate", "unelevate", "scope"):
         commands.choices[command].add_argument("--reason", type=_reason, required=True)
     for command in ("list", "elevations"):
         commands.add_parser(command).add_argument("--json", action="store_true")
@@ -143,6 +162,7 @@ def _credential_fields(row: CredentialRow) -> dict[str, Any]:
         "id": str(row.id),
         "client_id": row.client_id,
         "families": row.families,
+        "allowed_projects": row.allowed_projects,
         "transition": row.transition,
         "expires_at": _iso(row.expires_at),
         "revoked_at": _iso(row.revoked_at),
@@ -251,7 +271,15 @@ async def _preview(session: AsyncSession, session_id: UUID, allowed: Collection[
 
 async def _execute(args: argparse.Namespace, repo: PgClientCredentialRepo) -> tuple[str, str]:
     if args.command == "list":
-        fields = ("id", "client_id", "families", "transition", "expires_at", "revoked_at")
+        fields: Sequence[str] = (
+            "id",
+            "client_id",
+            "families",
+            "allowed_projects",
+            "transition",
+            "expires_at",
+            "revoked_at",
+        )
         return _listing(
             [_credential_fields(row) for row in await repo.list_rows()], args.json, fields
         ), ""
@@ -290,6 +318,15 @@ async def _execute(args: argparse.Namespace, repo: PgClientCredentialRepo) -> tu
                 args.id, args.reason, datetime.now(UTC), author=author, session=session
             )
             output, summary = "", f"Revoked {revoked.id} for {revoked.client_id}.\n"
+        elif args.command == "scope":
+            scoped = await repo.set_scope(
+                args.id,
+                None if args.clear else args.projects,
+                author=author,
+                reason=args.reason,
+                session=session,
+            )
+            output, summary = "", f"Updated scope for {scoped.id} ({scoped.client_id}).\n"
         elif args.command == "unelevate":
             ended = await repo.end_elevation(
                 args.id, datetime.now(UTC), author=author, reason=args.reason, session=session
