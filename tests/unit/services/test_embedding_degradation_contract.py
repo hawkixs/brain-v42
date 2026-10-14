@@ -36,7 +36,7 @@ class TestClientErrorsDegradeInsteadOfCrashing:
 
         with pytest.raises(EmbeddingUnavailable) as caught:
             await service.embed_query("q")
-        assert caught.value.kind == "other"
+        assert caught.value.kind == ("rate_limited" if status == 429 else "other")
 
     @pytest.mark.asyncio
     async def test_the_shim_path_degrades_too(self) -> None:

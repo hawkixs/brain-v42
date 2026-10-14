@@ -250,6 +250,7 @@ class ADRService:
         tags: list[str] | None = None,
         limit: int = 20,
         offset: int = 0,
+        include_archived: bool = True,
     ) -> list[ADR]:
         """Search ADRs using FTS and optional filters.
 
@@ -261,10 +262,15 @@ class ADRService:
             tags: Filter by tags overlap (optional).
             limit: Maximum number of results (default 20).
             offset: Pagination offset (default 0).
+            include_archived: False excludes merged and archived ADRs in the SQL
+                WHERE, before the LIMIT; the default keeps them.
 
         Returns:
             List of ADR models.
         """
+        live: dict[str, Any] = (
+            {} if include_archived else {"extra_clauses": self._repo.live_row_clauses()}
+        )
         return await self._repo.search(
             query=query,
             project_key=project_key,
@@ -273,6 +279,7 @@ class ADRService:
             tags=tags,
             limit=limit,
             offset=offset,
+            **live,
         )
 
     async def semantic_search(
@@ -282,6 +289,7 @@ class ADRService:
         project_keys: list[str] | None = None,
         limit: int = 10,
         embedding: list[float] | None = None,
+        include_archived: bool = True,
     ) -> list[tuple[ADR, float]]:
         """Semantic search using pgvector cosine similarity.
 
@@ -293,6 +301,8 @@ class ADRService:
             project_key: Optional project filter.
             limit: Maximum number of results (default 10).
             embedding: Optional pre-computed embedding vector.
+            include_archived: False excludes merged and archived ADRs in the SQL
+                WHERE, before the LIMIT; the default keeps them.
 
         Returns:
             List of (ADR, similarity_score) tuples, or [] if no embedding_svc.
@@ -302,11 +312,15 @@ class ADRService:
                 logger.warning("adr_service.semantic_search.no_embedding_svc")
                 return []
             embedding = await self._embedding_svc.embed_query(query)
+        live: dict[str, Any] = (
+            {} if include_archived else {"extra_clauses": self._repo.live_row_clauses()}
+        )
         return await self._repo.vector_search(
             query_embedding=embedding,
             limit=limit,
             project_key=project_key,
             project_keys=project_keys,
+            **live,
         )
 
     async def list_all(

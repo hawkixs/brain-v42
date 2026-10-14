@@ -186,7 +186,9 @@ async def record_dream_run(
                     },
                 )
     except Exception as exc:  # noqa: BLE001 — the trace must never kill the phase
-        print(f"! warning: could not record dream_run: {exc}", file=sys.stderr)
+        # Type only: a database error message can carry connection details
+        # (ticket 45d99407).
+        print(f"! warning: could not record dream_run: {type(exc).__name__}", file=sys.stderr)
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -229,7 +231,10 @@ async def _run(args: argparse.Namespace) -> int:
             dry_run=dry,
         )
     except Exception as exc:  # noqa: BLE001 — traduit en row dream_runs + rc=1
-        detail = f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_CHARS]
+        # Type only, on stderr and in dream_runs.error_message alike: the
+        # message of a database error can carry connection details (ticket
+        # 45d99407), and the briefing renders this column.
+        detail = type(exc).__name__[:_MAX_ERROR_CHARS]
         await record_dream_run(
             session_factory, "fail", dry=dry, duration_s=time.monotonic() - started, error=detail
         )

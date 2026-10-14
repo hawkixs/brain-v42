@@ -101,6 +101,10 @@ def _registered_merge(
 
 def _job_for_graph(graph: MagicMock) -> tuple[ConsolidationJob, MagicMock]:
     session = AsyncMock()
+    # The only statement left unmocked is the scoped count of foreign children.
+    session.execute = AsyncMock(
+        return_value=MagicMock(scalar_one_or_none=MagicMock(return_value=0))
+    )
     transaction = AsyncMock()
     transaction.__aenter__ = AsyncMock(return_value=None)
     transaction.__aexit__ = AsyncMock(return_value=False)
@@ -111,8 +115,9 @@ def _job_for_graph(graph: MagicMock) -> tuple[ConsolidationJob, MagicMock]:
     log_repo = MagicMock()
     log_repo.log_action_in_session = AsyncMock(return_value=None)
     job = ConsolidationJob(MagicMock(return_value=session_context), log_repo, graph=graph)
+    # (source row, target row, ids of the source's children): no children here.
     job._lock_merge_pair = AsyncMock(  # type: ignore[method-assign]
-        return_value=({"tags": ["source"]}, {"tags": ["target"]})
+        return_value=({"tags": ["source"]}, {"tags": ["target"]}, [])
     )
     job._update_merge_pair = AsyncMock(return_value=None)  # type: ignore[method-assign]
     return job, log_repo

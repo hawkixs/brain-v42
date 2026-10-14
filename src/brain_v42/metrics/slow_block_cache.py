@@ -45,7 +45,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 
@@ -54,6 +54,44 @@ logger = structlog.get_logger(__name__)
 
 def _default_wall_clock() -> datetime:
     return datetime.now(UTC)
+
+
+class BlockHealth:
+    """Keep evaluation health separate from payloads that already own status keys."""
+
+    def __init__(self, wall_clock: Callable[[], datetime] = _default_wall_clock) -> None:
+        self._wall_clock = wall_clock
+        self._entries: dict[str, dict[str, Any]] = {}
+
+    def record(
+        self,
+        key: str,
+        status: Literal["ok", "degraded", "not_measured"],
+        error_type: str | None = None,
+        *,
+        as_of: datetime | None = None,
+    ) -> None:
+        """Retain the last success across failures and windows without samples."""
+        timestamp = (as_of or self._wall_clock()).astimezone(UTC).isoformat()
+        self._entries[key] = {
+            "status": status,
+            "error_type": error_type,
+            "as_of": timestamp,
+            "last_ok_at": timestamp
+            if status == "ok"
+            else self._entries.get(key, {}).get("last_ok_at"),
+        }
+
+    def health(self, key: str) -> dict[str, Any]:
+        """Return a copy so response assembly cannot alter measurement history."""
+        if key not in self._entries:
+            return {
+                "status": "not_measured",
+                "error_type": None,
+                "as_of": self._wall_clock().astimezone(UTC).isoformat(),
+                "last_ok_at": None,
+            }
+        return dict(self._entries[key])
 
 
 class _Missing:
@@ -111,8 +149,13 @@ class SlowBlockCache:
         self._error_ttl_seconds = error_ttl_seconds
         self._clock = clock
         self._wall_clock = wall_clock
+        self._health = BlockHealth(wall_clock)
         self._entries: dict[str, tuple[float, dict[str, Any] | None]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+
+    def health(self, key: str) -> dict[str, Any]:
+        """Expose the last computation's health without changing its cached value."""
+        return self._health.health(key)
 
     def _lock_for(self, key: str) -> asyncio.Lock:
         lock = self._locks.get(key)
@@ -148,16 +191,29 @@ class SlowBlockCache:
                 value = await compute()
             except CollectorDegraded as degraded:
                 logger.warning("metrics.slow_block_cache.compute_degraded", key=key, exc_info=True)
-                return self._store(key, degraded.payload, ttl=self._error_ttl_seconds)
-            except Exception:
+                return self._store(
+                    key,
+                    degraded.payload,
+                    ttl=self._error_ttl_seconds,
+                    error_type=type(degraded.__cause__).__name__
+                    if degraded.__cause__ is not None
+                    else "CollectorDegraded",
+                )
+            except Exception as exc:
                 logger.warning("metrics.slow_block_cache.compute_failed", key=key, exc_info=True)
-                self._entries[key] = (self._clock() + self._error_ttl_seconds, None)
-                return None
+                return self._store(
+                    key, None, ttl=self._error_ttl_seconds, error_type=type(exc).__name__
+                )
 
             return self._store(key, value, ttl=self._ttl_seconds)
 
     def _store(
-        self, key: str, value: dict[str, Any] | None, *, ttl: float
+        self,
+        key: str,
+        value: dict[str, Any] | None,
+        *,
+        ttl: float,
+        error_type: str | None = None,
     ) -> dict[str, Any] | None:
         """Stamp a truthy value with `generated_at` and memoize it for `ttl`.
 
@@ -166,8 +222,10 @@ class SlowBlockCache:
         dict) is stamped exactly like a success would be -- only the TTL
         differs, never the shape.
         """
+        as_of = self._wall_clock()
+        self._health.record(key, "degraded" if error_type else "ok", error_type, as_of=as_of)
         if value:
-            value = {**value, "generated_at": self._wall_clock().isoformat()}
+            value = {**value, "generated_at": as_of.isoformat()}
         self._entries[key] = (self._clock() + ttl, value)
         return value
 

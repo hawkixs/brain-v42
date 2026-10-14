@@ -251,10 +251,23 @@ class RunbookService:
         project_keys: list[str] | None = None,
         limit: int = 20,
         offset: int = 0,
+        include_archived: bool = True,
     ) -> list[Runbook]:
-        """Full-text search using PostgreSQL tsvector. Returns list[Runbook]."""
+        """Full-text search using PostgreSQL tsvector. Returns list[Runbook].
+
+        ``include_archived=False`` excludes merged and archived rows in the SQL
+        WHERE, before the LIMIT; the default keeps them.
+        """
+        live: dict[str, Any] = (
+            {} if include_archived else {"extra_clauses": self._repo.live_row_clauses()}
+        )
         return await self._repo.search_fts(
-            query, project_key=project_key, project_keys=project_keys, limit=limit, offset=offset
+            query,
+            project_key=project_key,
+            project_keys=project_keys,
+            limit=limit,
+            offset=offset,
+            **live,
         )
 
     async def record_execution(
@@ -328,10 +341,13 @@ class RunbookService:
         project_keys: list[str] | None = None,
         limit: int = 10,
         embedding: list[float] | None = None,
+        include_archived: bool = True,
     ) -> list[tuple[Runbook, float]]:
         """Semantic search using pgvector cosine similarity.
 
         When a pre-computed ``embedding`` is provided, skips the embed() call.
+        ``include_archived=False`` excludes merged and archived rows in the SQL
+        WHERE, before the LIMIT; the default keeps them.
         Returns list of (Runbook, score) tuples sorted by similarity DESC.
         Returns [] if no embedding_svc is configured and no embedding provided.
         """
@@ -339,8 +355,11 @@ class RunbookService:
             if self._embedding_svc is None:
                 return []
             embedding = await self._embedding_svc.embed_query(query)
+        live: dict[str, Any] = (
+            {} if include_archived else {"extra_clauses": self._repo.live_row_clauses()}
+        )
         return await self._repo.vector_search(
-            embedding, project_key=project_key, project_keys=project_keys, limit=limit
+            embedding, project_key=project_key, project_keys=project_keys, limit=limit, **live
         )
 
     async def delete(

@@ -19,8 +19,14 @@ Usage:
 
 from __future__ import annotations
 
+# `time` and `monotonic` are both imported on purpose: Retry-After dates compare
+# against wall-clock time.time(), budgets against monotonic(), and the tests patch
+# each one separately.
 import asyncio
+import time
 from collections.abc import Callable
+from email.utils import parsedate_to_datetime
+from time import monotonic
 from typing import TypeVar
 
 import httpx
@@ -46,7 +52,9 @@ class EmbeddingUnavailable(Exception):
     differently:
         - "gpu_busy"     — supervisor returned 503 gpu_busy after retries
         - "unreachable"  — TCP layer never produced a response
-        - "other"        — non-503 5xx that exhausted retries, any 4xx, or a
+        - "rate_limited" — 429 exhausted retries or its cooldown exceeds the budget
+        - "deadline"     — the elapsed call budget expired
+        - "other"        — non-503 5xx that exhausted retries, other 4xx, or a
                            200 whose payload the wire could not parse
     """
 
@@ -60,6 +68,11 @@ class EmbeddingUnavailable(Exception):
 # backoffs just waste retry budget.
 _GPU_BUSY_BACKOFF_SEC = (5.0, 10.0, 20.0)
 
+# Longest provider cooldown a client WITHOUT a budget will wait out. Without this
+# bound, a huge (or infinite) Retry-After would park the caller indefinitely; a
+# cooldown above it is refused as rate_limited, never shortened.
+_MAX_UNBUDGETED_COOLDOWN_SEC = 60.0
+
 
 class GPUEmbeddingService:
     """Text embedding service backed by a GPU HTTP server.
@@ -69,7 +82,7 @@ class GPUEmbeddingService:
       sync construction and avoid event loop issues.
     - Retry with backoff: transient errors (ConnectionError, TimeoutException,
       HTTP 5xx) retried up to max_retries times with exponential backoff
-      (0.5s, 1s, 2s). 4xx is not retried but is still reported as
+      (0.5s, 1s, 2s). 429 honours Retry-After; other 4xx are not retried but are reported as
       EmbeddingUnavailable, so callers degrade instead of failing.
     - Every failure mode a caller can meet — transport, status, or an
       unparseable 200 — arrives as EmbeddingUnavailable. That single exception
@@ -89,6 +102,9 @@ class GPUEmbeddingService:
         query_prefix: str = "",
         document_prefix: str = "",
         api_key: str = "",
+        retry_budget_seconds: float | None = None,
+        query_deadline_seconds: float | None = None,
+        expected_dimension: int | None = None,
     ) -> None:
         """Initialize GPUEmbeddingService without creating the HTTP client.
 
@@ -101,6 +117,9 @@ class GPUEmbeddingService:
             document_prefix: Instruction prefix prepended by ``embed()`` and
                 ``embed_texts()``.
             api_key: Sent as ``Authorization: Bearer`` when non-empty.
+            retry_budget_seconds: Total attempt and sleep budget, so writes can degrade promptly.
+            query_deadline_seconds: Shorter search budget, so FTS fallback does not stall.
+            expected_dimension: Reject incompatible vectors before they reach pgvector.
 
         Both prefixes default to empty and the wire defaults to the shim, which
         makes every outgoing request byte-identical to the unprefixed contract.
@@ -112,6 +131,9 @@ class GPUEmbeddingService:
         self._query_prefix = query_prefix
         self._document_prefix = document_prefix
         self._api_key = api_key
+        self._retry_budget_seconds = retry_budget_seconds
+        self._query_deadline_seconds = query_deadline_seconds
+        self._expected_dimension = expected_dimension
         self._client: httpx.AsyncClient | None = None
 
     def _get_client(self) -> httpx.AsyncClient:
@@ -139,23 +161,28 @@ class GPUEmbeddingService:
         self,
         method: str,
         url: str,
+        *,
+        budget_seconds: float | None = None,
         **kwargs: object,
     ) -> httpx.Response:
-        """Execute an HTTP request with retry logic on connection errors.
+        """Bound the whole retry loop, including an HTTP attempt that never returns."""
+        budget = self._retry_budget_seconds if budget_seconds is None else budget_seconds
+        deadline = monotonic() + budget if budget is not None else None
+        try:
+            async with asyncio.timeout(budget):
+                return await self._retry_request(method, url, deadline=deadline, **kwargs)
+        except TimeoutError as exc:
+            raise EmbeddingUnavailable("embedding call deadline expired", kind="deadline") from exc
 
-        Args:
-            method: HTTP method ("GET" or "POST").
-            url: URL path (relative to base_url).
-            **kwargs: Additional arguments passed to httpx request.
-
-        Returns:
-            httpx.Response on success.
-
-        Raises:
-            httpx.ConnectError: After exhausting all retries on connection errors.
-            httpx.TimeoutException: After exhausting all retries on timeouts.
-            httpx.HTTPStatusError: After exhausting retries on 5xx, or immediately on 4xx.
-        """
+    async def _retry_request(
+        self,
+        method: str,
+        url: str,
+        *,
+        deadline: float | None,
+        **kwargs: object,
+    ) -> httpx.Response:
+        """Preserve transport retries while refusing cooldowns that cannot fit the budget."""
         client = self._get_client()
         last_error: Exception | None = None
 
@@ -178,10 +205,25 @@ class GPUEmbeddingService:
                         backoff_seconds=backoff,
                         error=str(exc),
                     )
-                    await asyncio.sleep(backoff)
+                    await self._retry_sleep(backoff, deadline, kind="deadline")
             except httpx.HTTPStatusError as exc:
                 last_error = exc
                 code = exc.response.status_code
+                if code == 429:
+                    if attempt == self._max_retries:
+                        raise EmbeddingUnavailable(
+                            f"HTTP 429 after {self._max_retries} retries", kind="rate_limited"
+                        ) from exc
+                    backoff = self._rate_limit_delay(exc.response, attempt)
+                    logger.warning(
+                        "gpu_embedding_service.retry",
+                        attempt=attempt + 1,
+                        max_retries=self._max_retries,
+                        backoff_seconds=backoff,
+                        status_code=429,
+                    )
+                    await self._retry_sleep(backoff, deadline, kind="rate_limited")
+                    continue
                 is_gpu_busy = self._is_gpu_busy_response(exc.response)
                 if code >= 500 and attempt < self._max_retries:
                     # Long backoff for 503 gpu_busy — GPU likely held for a
@@ -202,7 +244,7 @@ class GPUEmbeddingService:
                         status_code=code,
                         gpu_busy=is_gpu_busy,
                     )
-                    await asyncio.sleep(backoff)
+                    await self._retry_sleep(backoff, deadline, kind="deadline")
                 elif code >= 500:
                     # Exhausted retries on 5xx (incl gpu_busy) — surface as
                     # EmbeddingUnavailable so callers degrade gracefully.
@@ -217,7 +259,7 @@ class GPUEmbeddingService:
                     ) from exc
                 else:
                     # 4xx from an embedding endpoint still means "no embedding
-                    # right now" — a rejected API key, a rate limit, an unknown
+                    # right now" — a rejected API key or an unknown
                     # model name. Surfacing it raw would take down brain_search
                     # itself instead of degrading it to FTS, which is exactly
                     # what the EmbeddingUnavailable contract exists to prevent.
@@ -236,6 +278,41 @@ class GPUEmbeddingService:
             f"embedding service unreachable after {self._max_retries} retries",
             kind="unreachable",
         ) from last_error
+
+    @staticmethod
+    def _rate_limit_delay(response: httpx.Response, attempt: int) -> float:
+        """Keep the provider's cooldown intact; malformed headers use the existing backoff."""
+        retry_after = response.headers.get("Retry-After")
+        if retry_after is not None:
+            try:
+                return max(0.0, float(retry_after))
+            except ValueError:
+                try:
+                    return max(0.0, parsedate_to_datetime(retry_after).timestamp() - time.time())
+                except (ValueError, TypeError, OverflowError):
+                    pass
+        return 0.5 * 2.0**attempt
+
+    @staticmethod
+    async def _retry_sleep(delay: float, deadline: float | None, *, kind: str) -> None:
+        """Do not sleep past the deadline or shorten an advertised cooldown to retry early."""
+        if deadline is not None and monotonic() + delay >= deadline:
+            raise EmbeddingUnavailable(
+                "embedding retry delay exceeds the remaining budget", kind=kind
+            )
+        if deadline is None and delay > _MAX_UNBUDGETED_COOLDOWN_SEC:
+            raise EmbeddingUnavailable(
+                "embedding retry delay exceeds the longest unbudgeted cooldown", kind=kind
+            )
+        await asyncio.sleep(delay)
+
+    def _validated_vector(self, vector: list[float]) -> list[float]:
+        """Reject wrong dimensions at the degradation boundary, before pgvector can fail a write."""
+        if self._expected_dimension is not None and len(vector) != self._expected_dimension:
+            raise ValueError(
+                f"embedding dimension {len(vector)}, expected {self._expected_dimension}"
+            )
+        return vector
 
     def _record_usage(self, payload: object) -> None:
         """Count provider-reported usage; never let the accounting decide the call.
@@ -302,7 +379,7 @@ class GPUEmbeddingService:
         response = await self._request_with_retry("POST", path, json=body)
         payload = self._parsed(response.json)
         self._record_usage(payload)
-        return self._parsed(lambda: self._wire.parse_single(payload))
+        return self._parsed(lambda: self._validated_vector(self._wire.parse_single(payload)))
 
     async def embed_query(self, text: str) -> list[float]:
         """Embed a SEARCH QUERY into a vector.
@@ -319,10 +396,17 @@ class GPUEmbeddingService:
             list[float], one vector of the configured embedding dimension.
         """
         path, body = self._wire.single_request(self._query_prefix + text)
-        response = await self._request_with_retry("POST", path, json=body)
+        limits = [
+            limit
+            for limit in (self._query_deadline_seconds, self._retry_budget_seconds)
+            if limit is not None
+        ]
+        response = await self._request_with_retry(
+            "POST", path, budget_seconds=min(limits) if limits else None, json=body
+        )
         payload = self._parsed(response.json)
         self._record_usage(payload)
-        return self._parsed(lambda: self._wire.parse_single(payload))
+        return self._parsed(lambda: self._validated_vector(self._wire.parse_single(payload)))
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of DOCUMENTS into vectors.
@@ -342,7 +426,12 @@ class GPUEmbeddingService:
         response = await self._request_with_retry("POST", path, json=body)
         payload = self._parsed(response.json)
         self._record_usage(payload)
-        return self._parsed(lambda: self._wire.parse_batch(payload, expected=len(texts)))
+        return self._parsed(
+            lambda: [
+                self._validated_vector(vector)
+                for vector in self._wire.parse_batch(payload, expected=len(texts))
+            ]
+        )
 
     def similarity(self, vec_a: list[float], vec_b: list[float]) -> float:
         """Compute dot product similarity between two vectors.

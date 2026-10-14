@@ -259,6 +259,9 @@ def build_embedding_service(settings: Settings) -> GPUEmbeddingService:
     return GPUEmbeddingService(
         base_url=settings.embedding_service_url,
         timeout=settings.embedding_timeout,
+        retry_budget_seconds=settings.embedding_retry_budget_seconds,
+        query_deadline_seconds=settings.embedding_query_deadline_seconds,
+        expected_dimension=settings.embedding_dimension,
         wire=wire,
         query_prefix=settings.embedding_query_prefix,
         document_prefix=settings.embedding_document_prefix,
