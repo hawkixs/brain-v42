@@ -1,0 +1,69 @@
+{
+  "digest": "sha256:911094fc1d71fc613b861bb24f6fee42b81649154980a55dfb7119ecba35107e",
+  "idempotency_key": "review_verdict:bbbc9a941dd82b81b557d8796faf0026bb22d79d:115730531135",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115730531135,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Check whether _assign_feature requires an explicit await session.commit(). Unlike ClusterGuard._commit or PlanIndexer._link_plan_to_feature, _assign_feature executes an UPDATE on gitlab_events inside async with self._sf() as session without calling commit(), which leaves the update uncommitted if se",
+          "file": "src/brain_v42/services/gitlab_ingestor.py",
+          "id": "F-426-1",
+          "line": 339,
+          "severity": "important",
+          "status": "new",
+          "title": "_assign_feature leaves session uncommitted"
+        },
+        {
+          "class": "note",
+          "evidence": "The tests pin that resolve executes pg_advisory_xact_lock(hashtext(:key)) before the candidate read and holds it through later updates within the transaction, while consolidation re-locks merge rows under savepoints; whether a serialization failure / deadlock abort raised when these two lock mechani",
+          "file": "tests/unit/test_cluster_guard.py",
+          "id": "F-426-2",
+          "line": 230,
+          "severity": "important",
+          "status": "new",
+          "title": "Advisory-lock vs consolidation lock ordering unverified (deadlock victim handling)"
+        },
+        {
+          "class": "note",
+          "evidence": "In test_resolve_reports_lost_when_status_compare_and_swap_fails the fresh-status read is routed by `isinstance(statement, sa.sql.selectable.Select) and len(statement._order_by_clauses) == 0`; any other now-ORDER_BY-free SELECT added to the resolve flow (e.g. a liveness probe) would silently claim th",
+          "file": "tests/unit/test_cluster_guard.py",
+          "id": "F-426-3",
+          "line": 108,
+          "severity": "minor",
+          "status": "new",
+          "title": "Statement disambiguation by _order_by_clauses is brittle"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 426,
+      "providers": [
+        "agy",
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "bbbc9a941dd82b81b557d8796faf0026bb22d79d",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T07:45:56.695818Z",
+  "schema_version": 1
+}

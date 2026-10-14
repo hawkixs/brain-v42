@@ -36,19 +36,12 @@ def test_v24_assets_remain_byte_identical() -> None:
         assert hashlib.sha256((RECOVERY / name).read_bytes()).hexdigest() == digest
 
 
-def test_current_binding_names_v25_and_pins_each_asset() -> None:
+def test_current_binding_has_moved_past_v25() -> None:
+    """v25 stays frozen for 067; the current 068 contract is v26."""
     current = json.loads((RECOVERY / "current.json").read_text())
-    assert current["contract_id"] == "brain-v42/postgresql-recovery/v25"
-    assert current["contract_version"] == 25
-    assert current["schema_head"] == "067"
-    for key, suffix in (
-        ("attestation_sql", ".sql"),
-        ("restored_attestation_sql", "-pgrestore.sql"),
-        ("manifest", ".json"),
-    ):
-        path = f"ops/recovery/brain-v42-v25{suffix}"
-        assert current[key]["path"] == path
-        assert current[key]["sha256"] == hashlib.sha256((ROOT / path).read_bytes()).hexdigest()
+    assert current["contract_version"] > 25
+    assert current["schema_head"] != "067"
+    assert "brain-v42-v25" not in json.dumps(current)
 
 
 def test_v25_identity_and_recounted_catalog_counts_in_both_variants() -> None:

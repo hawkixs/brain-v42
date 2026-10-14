@@ -13,8 +13,9 @@ Codex gateway at 037, once in the recovery contract at 039, here at 040). This
 test makes the constant self-checking: a new migration fails it immediately, in
 the unit suite, instead of surfacing as an opaque runtime refusal much later.
 
-066 was reviewed: foreign keys and ACL changes stay on the seven new lifecycle
-tables; the repair's tables and statements are unaffected.
+068 was reviewed: six partial indexes and six deferred constraint triggers stay
+on the six mergeable knowledge tables and share refuse_merge_chain(). The
+repair's tables and statements are unaffected.
 
 Bumping the constant stays a deliberate act. The failure message says what to
 review before doing it.

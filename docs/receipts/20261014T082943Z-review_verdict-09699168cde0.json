@@ -1,0 +1,49 @@
+{
+  "digest": "sha256:09699168cde08a6b28b7a23abb184674e49b81bf0eefe041c775664a02bea5bf",
+  "idempotency_key": "review_verdict:b669aad95a51670d4c5ac833f882431e660e13fd:115755145113",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115755145113,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "If the old row's status changes between the failed UPDATE and the diagnostic SELECT (e.g., a concurrent supersede commits in that window), the code falls through to DecisionNotSupersedableError instead of DecisionCrossProjectSuperseError; both refusals are safe and write nothing, so this only affect",
+          "file": "src/brain_v42/repositories/pg_decision.py",
+          "id": "F-427-1",
+          "line": 597,
+          "severity": "minor",
+          "status": "new",
+          "title": "Cross-project classification is best-effort under concurrency"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 427,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "b669aad95a51670d4c5ac833f882431e660e13fd",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T08:29:43.430057Z",
+  "schema_version": 1
+}

@@ -1,0 +1,68 @@
+{
+  "digest": "sha256:d9090ab72e5fb1f484061086156d1e29066b3c29865bbe68738a298704c703be",
+  "idempotency_key": "review_verdict:c1607c4509f8f082c5f99bd5c1e27610dde494e4:115685045057",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115685045057,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "detail = type(exc).__name__[:_MAX_ERROR_CHARS] and the record_dream_run handler keep only the type; the exception object is otherwise discarded with no sanitized traceback, so a nightly sweep failure leaves no clue beyond e.g. 'OSError' in stderr and dream_runs.error_message. This is the explicit ti",
+          "file": "src/brain_v42/maintenance/session_sweep.py",
+          "id": "F-383-1",
+          "line": 235,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Failure diagnostics reduced to the exception type"
+        },
+        {
+          "class": "note",
+          "evidence": "The description claims the invalid-configuration message is unchanged because Settings sets hide_input_in_errors=True, and lines 1-204 of session_sweep.py appear in neither the diff nor the quoted excerpt: check no other handler in this file still prints {exc} and that the Settings claim holds befor",
+          "file": "src/brain_v42/maintenance/session_sweep.py",
+          "id": "F-383-2",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Remaining message-bearing paths not verifiable from the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "Both new tests reference MagicMock (the get_session_factory patch) and AsyncMock (the record_dream_run stand-in) but the diff adds no import line; verify the unchanged header of the test file imports unittest.mock \u2014 the claimed ruff run (F821 for undefined names) and green tests would already cover ",
+          "file": "tests/unit/maintenance/test_session_sweep.py",
+          "id": "F-383-3",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Added tests use MagicMock/AsyncMock whose imports are outside the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 383,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "c1607c4509f8f082c5f99bd5c1e27610dde494e4",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T04:44:38.191142Z",
+  "schema_version": 1
+}

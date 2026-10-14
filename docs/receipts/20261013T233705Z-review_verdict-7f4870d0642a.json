@@ -1,0 +1,49 @@
+{
+  "digest": "sha256:7f4870d0642a18abf3f31b0d4fcaa9b351ed69604018efdee924744fd1f893ea",
+  "idempotency_key": "review_verdict:6446654cd5019b7f0f2ac70b848b3136e8c90d8b:115596276390",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115596276390,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "if collect_session_slots() can ever succeed with exactly {} (its degraded/empty payload shape is defined outside this diff), _handle_session_slots returns {} both for that success and for a failed read; the contract pins failed_read:{} so this is benign, but block_status.session_slots on /metrics is",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-425-1",
+          "line": 478,
+          "severity": "minor",
+          "status": "new",
+          "title": "Successful empty block indistinguishable from failed read"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 425,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "6446654cd5019b7f0f2ac70b848b3136e8c90d8b",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T23:37:05.038314Z",
+  "schema_version": 1
+}

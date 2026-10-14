@@ -1,0 +1,68 @@
+{
+  "digest": "sha256:1bfccca019e799f33ac64611208876dc8cb06f0a704b4f1cd9d1e56025398e12",
+  "idempotency_key": "review_verdict:ddb59e2778bd19c71590b9a33293c0393a6a7f84:115873421401",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115873421401,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Question to check: the new check delegates entirely to focus_shrink_override_allowed(), whose implementation is outside this diff; the relay fix is only as strong as that helper. Confirm it validates an active /brain-admin elevation bound to the verified credential and the current MCP connection (as",
+          "file": "src/brain_v42/services/focus_shrink_override.py",
+          "id": "F-436-1",
+          "line": 27,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Confirm the elevation gate reads server-side state, not caller-declared data"
+        },
+        {
+          "class": "note",
+          "evidence": "The elevation gate sits before the relay_expects_one_revision check and before repo.relay, where replay is detected. Consequences: an unelevated caller sending a structurally invalid payload with allow_focus_shrink=true now gets focus_shrink_override_refused instead of relay_expects_one_revision, an",
+          "file": "src/brain_v42/services/brain_session_service.py",
+          "id": "F-436-2",
+          "line": 458,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Gate precedence over payload validation and replay detection"
+        },
+        {
+          "class": "note",
+          "evidence": "The operator half now monkeypatches require_focus_shrink_override and only asserts it is awaited once; the real gate behaviour for a relay is delegated to test_focus_shrink_override.py::test_relay_override_requires_elevation_before_repository_call, and the integration test in test_focus_writer_guard",
+          "file": "tests/unit/services/test_brain_session_bind_relay.py",
+          "id": "F-436-3",
+          "line": 205,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Adapted test stubs the elevation gate instead of exercising it"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 436,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "ddb59e2778bd19c71590b9a33293c0393a6a7f84",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T13:27:41.872750Z",
+  "schema_version": 1
+}

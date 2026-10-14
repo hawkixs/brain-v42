@@ -1,0 +1,136 @@
+{
+  "digest": "sha256:2178102f338131d0ae73a64017e712a4d791e44ce0e38b1f2bfbe2ef1bf70dfe",
+  "idempotency_key": "review_verdict:a981619bd5a4d1858c2cea158e64f5cbb36b78bd:115686072205",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115686072205,
+      "diff_truncated": true,
+      "finding_count": 9,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "may be a stale row: this runbook says the v24 assets 'await minting on disposable PostgreSQL databases', 'none is claimed by this offline preparation', and the ACL row says 'assets await --acl', while the PR description states the assets were minted on disposable databases and that red_59 verified t",
+          "file": "docs/PLAN_INDEX_REPAIR_RUNBOOK.md",
+          "id": "F-428-1",
+          "line": 28,
+          "severity": "important",
+          "status": "new",
+          "title": "Minting status of the v24 assets contradicts the PR description"
+        },
+        {
+          "class": "note",
+          "evidence": "status TEXT NOT NULL on knowledge_lifecycle_runs is the one enum-like column without a vocabulary CHECK, while mode, request status, lifecycle states, kinds, polarities, precisions and entity types are all pinned; SCHEMA.md documents the deferral ('Run-status transitions are enforced by the later pi",
+          "file": "alembic/versions/066_knowledge_lifecycle.py",
+          "id": "F-428-2",
+          "line": 37,
+          "severity": "minor",
+          "status": "new",
+          "title": "knowledge_lifecycle_runs.status has no CHECK"
+        },
+        {
+          "class": "note",
+          "evidence": "if a consumer reads runtime_acl_064's grants.tables [SELECT, INSERT, UPDATE, DELETE] as the exhaustive per-table grant set for revision 066, it would overstate the real ACL: the SQL asset excludes the seven lifecycle tables from that expectation and grants only SELECT/INSERT (plus UPDATE on runs/req",
+          "file": "ops/recovery/brain-v42-v24-acl.json",
+          "id": "F-428-3",
+          "line": 1,
+          "severity": "minor",
+          "status": "new",
+          "title": "ACL JSON attests broader table grants than the SQL check expects"
+        },
+        {
+          "class": "note",
+          "evidence": "The asset hardcodes ~600 expected MD5 digests (columns, constraints, indexes). The digests appear internally consistent (e.g. shared constraint digests like cc3552dbb61b18accca876af5296eb1f reused for identical id pkeys, same-name constraints sharing digests across tables). They cannot be recomputed",
+          "file": "ops/recovery/brain-v42-v24-pgrestore.sql",
+          "id": "F-428-4",
+          "line": 1,
+          "severity": "important",
+          "status": "new",
+          "title": "Asset integrity rests on mint script reproducibility"
+        },
+        {
+          "class": "note",
+          "evidence": "The extension_versions check states \"vector 0.8.2\"; the PR description says tests ran against pgvector 0.8.4. Assets are minted from real disposable databases, so this likely reflects the minting environment rather than an error, but it is worth confirming the inventory matches what production resto",
+          "file": "ops/recovery/brain-v42-v24.json",
+          "id": "F-428-5",
+          "line": 1,
+          "severity": "minor",
+          "status": "new",
+          "title": "Extension inventory records vector 0.8.2 while PR text cites pgvector 0.8.4"
+        },
+        {
+          "class": "note",
+          "evidence": "The diff was truncated after expected_artifact_columns (~2000 of 6200 lines); the unviewed remainder is expected to contain extension pins, the brain_app role/ACL attestation, and the closing verification SELECT that aggregates table/column/constraint/index/catalog/vector/orphan observations plus th",
+          "file": "ops/recovery/brain-v42-v24.sql",
+          "id": "F-428-6",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Tail of the 6200-line asset beyond the received diff"
+        },
+        {
+          "class": "note",
+          "evidence": "In find_block, `opening = next(i for i in range(header, index) if lines[i].rstrip().endswith(\" AS (\"))` has no default; a CTE declared in the plain `name(` form (matched by the first branch) would exhaust the generator and raise StopIteration instead of the intended SystemExit. Maintainer-only mint ",
+          "file": "scripts/mint_recovery_contract_v24.py",
+          "id": "F-428-7",
+          "line": 205,
+          "severity": "minor",
+          "status": "new",
+          "title": "find_block can abort with a raw StopIteration"
+        },
+        {
+          "class": "note",
+          "evidence": "Sibling operational vocabularies are pinned (runs.mode, requests.status, all state/kind/polarity/precision columns), but runs.status is a free Text column. Since this PR is storage-only and no service code exists yet, the run-status vocabulary may legitimately still be open; it is a question to sett",
+          "file": "src/brain_v42/db/tables.py",
+          "id": "F-428-8",
+          "line": 2507,
+          "severity": "minor",
+          "status": "new",
+          "title": "knowledge_lifecycle_runs.status has no vocabulary CHECK"
+        },
+        {
+          "class": "note",
+          "evidence": "The assertion reads: assert all(line + \",\" in new.splitlines() for line in removed), (name, removed) \u2014 every line removed from the patched-v23 expected text must exist somewhere in the v24 text with a trailing comma, but the membership check is not positional, so a deleted line that coincidentally r",
+          "file": "tests/unit/test_recovery_contract_v24.py",
+          "id": "F-428-9",
+          "line": 93,
+          "severity": "minor",
+          "status": "new",
+          "title": "Fingerprint deletion check matches by content, not position"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 428,
+      "providers": [
+        "glm",
+        "glm",
+        "glm",
+        "glm",
+        "glm",
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "a981619bd5a4d1858c2cea158e64f5cbb36b78bd",
+      "unseen_count": 2,
+      "unseen_files": [
+        "ops/recovery/brain-v42-v24-pgrestore.sql",
+        "ops/recovery/brain-v42-v24.sql"
+      ],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T04:58:01.640542Z",
+  "schema_version": 1
+}

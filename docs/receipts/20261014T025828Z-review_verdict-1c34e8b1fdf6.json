@@ -1,0 +1,109 @@
+{
+  "digest": "sha256:1c34e8b1fdf639e1c3b375a25cce6a467f984aba9679ecd3469410d7757101ef",
+  "idempotency_key": "review_verdict:b759da4f25d0eca925c15ccc9fb72fa90112d8af:115649998526",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115649998526,
+      "diff_truncated": false,
+      "finding_count": 7,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "In the candidates_before_threshold == 0 branch, incomplete_types non-empty always selects \"the types that answered\", but in the all-shards-failed case no type answered; the reason would read \"0 candidates in the types that answered (...)\". test_all_failed_shards_explain_an_incomplete_search only ass",
+          "file": "src/brain_v42/mcp/tools/formatters.py",
+          "id": "F-387-1",
+          "line": 760,
+          "severity": "minor",
+          "status": "new",
+          "title": "'the types that answered' is inaccurate when every shard failed"
+        },
+        {
+          "class": "note",
+          "evidence": "The DreamProjectAuthorizationError handler, previously a silent pass, now sets diagnostics.graph_degraded = True. The field description says \"True when optional graph enrichment raised\"; an expected scope denial is not a malfunction, so this may conflate \"enrichment skipped by policy\" with \"enrichme",
+          "file": "src/brain_v42/services/brain_service.py",
+          "id": "F-387-2",
+          "line": 851,
+          "severity": "minor",
+          "status": "new",
+          "title": "Authorization denial now reported as graph_degraded"
+        },
+        {
+          "class": "note",
+          "evidence": "The preamble string ends \"Missing knowledge cannot be inferred from this response\" with no period before the reason line follows on the next line; purely cosmetic inconsistency with the surrounding sentences.",
+          "file": "src/brain_v42/mcp/tools/formatters.py",
+          "id": "F-387-3",
+          "line": 755,
+          "severity": "minor",
+          "status": "new",
+          "title": "Preamble sentence ends without terminal punctuation"
+        },
+        {
+          "class": "note",
+          "evidence": "The test calls _make_diagnostics(degraded=True, failed_types=[\"learning\"], graph_degraded=True) but the helper is not part of the visible diff; if it filters or does not forward unknown kwargs the assertions on the log event could pass vacuously or the test could fail. If the helper passes **kwargs ",
+          "file": "tests/unit/mcp/tools/test_brain_search_tools.py",
+          "id": "F-387-4",
+          "line": 78,
+          "severity": "minor",
+          "status": "new",
+          "title": "New log test relies on _make_diagnostics accepting new kwargs"
+        },
+        {
+          "class": "note",
+          "evidence": "test_all_failed_shards_explain_an_incomplete_search asserts response.degraded == {\"failed_types\": ALL_TYPES} and formats the joined names from ALL_TYPES; this holds only if _collect_shards appends failures in the same order the shards are iterated. It passes per the described run, but a future reord",
+          "file": "tests/unit/services/test_search_shard_failures.py",
+          "id": "F-387-5",
+          "line": 128,
+          "severity": "minor",
+          "status": "new",
+          "title": "Ordering assumption: failed_types order must equal ALL_TYPES"
+        },
+        {
+          "class": "note",
+          "evidence": "_score_scale_degraded returns True if \"search_mode\" or \"rerank_mode\" is present regardless of value. Today _collect_shards only sets these keys with real fallback values, so this is correct; if a caller ever stores a None/empty value under these keys the floor would be lifted spuriously. A docstring",
+          "file": "src/brain_v42/services/brain_service.py",
+          "id": "F-387-6",
+          "line": 76,
+          "severity": "minor",
+          "status": "new",
+          "title": "Predicate is key-presence based, value-agnostic"
+        },
+        {
+          "class": "note",
+          "evidence": "In format_search_results (line 882) and format_knowledge_by_type (line 993), failed_types is extracted exclusively via (degraded or {}).get('failed_types', []). While _format_empty_search_reason falls back to diagnostics.failed_types when rendering the empty reason preamble, the top-level degraded b",
+          "file": "src/brain_v42/mcp/tools/formatters.py",
+          "id": "F-387-7",
+          "line": 882,
+          "severity": "minor",
+          "status": "new",
+          "title": "Formatter degraded banner derives failed_types solely from degraded mapping"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 387,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "b759da4f25d0eca925c15ccc9fb72fa90112d8af",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T02:58:28.481295Z",
+  "schema_version": 1
+}

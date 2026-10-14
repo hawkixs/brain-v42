@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:c7a56a5dc3179dc5e83aec1543cba80320e338224eb352e2a9204a90d686bea4",
+  "idempotency_key": "review_verdict:554f31381915e6a10e61d1eaf0692d77de8ddf4b:115703642563",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115703642563,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "may double-report: the diff does not show lines 220-268 of `_run`; if the existing `try` around `sweep_open_sessions` both records the failure (which itself prints a FAIL line) and re-raises, `main()`'s new guard would print a second `sweep: FAIL \u2014 <Type>` line and force exit 1. Check whether the in",
+          "file": "src/brain_v42/maintenance/session_sweep.py",
+          "id": "F-430-1",
+          "line": 278,
+          "severity": "minor",
+          "status": "new",
+          "title": "Possible duplicate FAIL line if an inner handler re-raises"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 430,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "554f31381915e6a10e61d1eaf0692d77de8ddf4b",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T05:51:57.436183Z",
+  "schema_version": 1
+}

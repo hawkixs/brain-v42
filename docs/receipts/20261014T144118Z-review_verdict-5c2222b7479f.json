@@ -1,0 +1,59 @@
+{
+  "digest": "sha256:5c2222b7479f0f48bd0c54e3c7fb5dc19dd943de93a17e8f6e65bc385546681f",
+  "idempotency_key": "review_verdict:37ad42f4ae3d39b79dd19bf1d8121e545fc10580:115913727202",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115913727202,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The diff rewrites only the merge-chain repair hunk (~lines 1404-1433); other sections of OPERATIONS.md or other runbooks referencing the old '--expect N' invocation are not visible in the shown part of the diff \u2014 check whether any remaining references need the per-table TABLE=N syntax. tests/unit/te",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-438-1",
+          "line": 1414,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Other doc sections may still show the legacy single-count --expect syntax"
+        },
+        {
+          "class": "note",
+          "evidence": "The description's test plan lists 'CI green' as unchecked; merge should follow a green CI run on the head 18fe0fa.",
+          "file": "tests/integration/db/test_merge_chain_repair.py",
+          "id": "F-438-2",
+          "line": null,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "CI checkbox unchecked in the PR test plan"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 438,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "37ad42f4ae3d39b79dd19bf1d8121e545fc10580",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T14:41:18.263497Z",
+  "schema_version": 1
+}

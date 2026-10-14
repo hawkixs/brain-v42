@@ -1,0 +1,88 @@
+{
+  "digest": "sha256:38e28c67707c64e7a9fe2a54f7c47da7ee574eba020089a4e142b7e959967a55",
+  "idempotency_key": "review_verdict:6a3a74b1376cd3919a391cc588bfa2775812e9aa:115661935632",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115661935632,
+      "diff_truncated": false,
+      "finding_count": 5,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "PR description states #387 adds 'degraded: recherche incompl\u00e8te \u2014 types en \u00e9chec : ...' in both formatters with three pinning tests, and this branch must translate that line via update-branch before leaving draft; merging before that would leave a French LLM-facing banner contradicting brain decisio",
+          "file": "src/brain_v42/mcp/tools/formatters.py",
+          "id": "F-398-1",
+          "line": null,
+          "severity": "important",
+          "status": "fixed",
+          "title": "Merge is gated on translating #387's new French banner"
+        },
+        {
+          "class": "note",
+          "evidence": "if any other in-repo module (outside the two formatters and the two docs) duplicates the old French phrases, it would remain untranslated; the description reports greps only for external repos (red-rail, red-cockpit), so a repo-wide grep for 'indisponible'/'non configur\u00e9' within hawkixs/brain-v42 wo",
+          "file": "src/brain_v42/mcp/tools/formatters.py",
+          "id": "F-398-2",
+          "line": null,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Leftover French banner text elsewhere in this repo cannot be verified from the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "Four assertions were tightened to pin 'Search incomplete; failed types: {names}' (this hunk plus the ones at ~222, ~242 and ~257), but the only failed-types line the visible formatters.py diff changes renders 'degraded: incomplete search \u2014 failed types: \u2026' \u2014 different text. The old weaker assertions",
+          "file": "tests/unit/services/test_search_shard_failures.py",
+          "id": "F-398-3",
+          "line": 129,
+          "severity": "important",
+          "status": "new",
+          "title": "Tightened 'Search incomplete; failed types: \u2026' assertions depend on unshown formatter text"
+        },
+        {
+          "class": "note",
+          "evidence": "The description says the branch must take #387's 'types en \u00e9chec' line through update-branch and translate it before leaving draft, but the head diff already translates it in both formatters and updates its three pinning assertions in test_search_shard_failures.py; either #387 has merged (the note c",
+          "file": "PR description",
+          "id": "F-398-4",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "PR body's 'Still to do before merge' no longer matches head"
+        },
+        {
+          "class": "note",
+          "evidence": "test_documents_quote_the_rendered_banner covers only fts_fallback, rrf_fallback and rrf_none via BANNERS, leaving the newly translated 'degraded: incomplete search \u2014 failed types: \u2026' line without a docs-quote pin; if either markdown doc quotes that rendered banner in an unshown region, code and docs",
+          "file": "tests/unit/mcp/tools/test_search_banners_are_english.py",
+          "id": "F-398-5",
+          "line": 57,
+          "severity": "minor",
+          "status": "new",
+          "title": "Doc-quoting test omits the failed_types banner"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 398,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "6a3a74b1376cd3919a391cc588bfa2775812e9aa",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T03:23:00.857200Z",
+  "schema_version": 1
+}

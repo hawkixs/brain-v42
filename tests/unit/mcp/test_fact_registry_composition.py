@@ -22,6 +22,7 @@ _RELEASE_DECLARED = {"release_sha": "a" * 40, "package_version": "0.6.0"}
 _HOST_DECLARED = {"hostname": "host-a"}
 _PRODUCTION_FACTS = (
     "graph_projection_lag",
+    "merge_chains",
     "alembic_head",
     "dream_last_night",
     "claims_verification_last_night",
@@ -34,6 +35,7 @@ def test_with_a_declared_identity_the_first_fact_is_registered_and_the_catalogue
     assert registry.names() == _PRODUCTION_FACTS
     assert registry.briefing_names() == (
         "graph_projection_lag",
+        "merge_chains",
         "alembic_head",
         "claims_verification_last_night",
         "delivery_observer_liveness",
@@ -47,6 +49,7 @@ def test_with_a_declared_identity_the_first_fact_is_registered_and_the_catalogue
     }
     assert "dream_last_night" not in registry.briefing_names()
     assert registry.describe("graph_projection_lag").target is FactTarget.PRODUCTION
+    assert registry.describe("merge_chains").target is FactTarget.PRODUCTION
     with pytest.raises(RegistryFrozenError):
         registry.register(MagicMock(name="late", target=FactTarget.PRODUCTION))
 
@@ -60,6 +63,7 @@ def test_a_declared_host_identity_registers_the_dream_killswitch_fact() -> None:
     )
     assert registry.names() == (
         "graph_projection_lag",
+        "merge_chains",
         "alembic_head",
         "live_release_sha",
         "alembic_head_shipped",
@@ -70,6 +74,7 @@ def test_a_declared_host_identity_registers_the_dream_killswitch_fact() -> None:
     )
     assert registry.briefing_names() == (
         "graph_projection_lag",
+        "merge_chains",
         "alembic_head",
         "live_release_sha",
         "alembic_head_shipped",
@@ -130,6 +135,7 @@ def test_a_refused_probe_is_recorded_with_its_reason_for_the_briefing() -> None:
     registry = build_fact_registry(None, session_factory=MagicMock())
     assert registry.refusals() == {
         "graph_projection_lag": "unverifiable_target",
+        "merge_chains": "unverifiable_target",
         "alembic_head": "unverifiable_target",
         "live_release_sha": "unverifiable_target",
         "alembic_head_shipped": "unverifiable_target",
@@ -147,6 +153,7 @@ def test_undeclared_live_release_refuses_its_facts_while_production_still_regist
 
     assert registry.names() == (
         "graph_projection_lag",
+        "merge_chains",
         "alembic_head",
         "dream_killswitches_declared",
         "dream_last_night",

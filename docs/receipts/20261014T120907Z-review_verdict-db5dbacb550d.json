@@ -1,0 +1,55 @@
+{
+  "digest": "sha256:db5dbacb550dd6b82d9c53d079c08b8a3a18ef6ed59df0bc1c6e733db0b6b436",
+  "idempotency_key": "review_verdict:9033f3694b1f6a0048f447250829f73eb8517f8e:115843997367",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carried_from": "554f31381915e6a10e61d1eaf0692d77de8ddf4b",
+      "carry_decision": "57fa86dc",
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115843997367,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "may double-report: the diff does not show lines 220-268 of `_run`; if the existing `try` around `sweep_open_sessions` both records the failure (which itself prints a FAIL line) and re-raises, `main()`'s new guard would print a second `sweep: FAIL \u2014 <Type>` line and force exit 1. Check whether the in",
+          "file": "src/brain_v42/maintenance/session_sweep.py",
+          "id": "F-430-1",
+          "line": 278,
+          "severity": "minor",
+          "status": "new",
+          "title": "Possible duplicate FAIL line if an inner handler re-raises"
+        }
+      ],
+      "independent": true,
+      "judged_base": "b08b2519322845f7b4d261db2af1b875733c5b92",
+      "mode": "light",
+      "new_base": "23743a36bc00dda7f81034d6183ca8f94e20bb20",
+      "not_reviewed": [],
+      "patch_id": "e88e2301343070451647022bdf9c5739ea83a664",
+      "pr": 430,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "9033f3694b1f6a0048f447250829f73eb8517f8e",
+      "source_check_run_id": 115703642563,
+      "source_status_creator_id": 8717916,
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T12:09:07.500698Z",
+  "schema_version": 1
+}

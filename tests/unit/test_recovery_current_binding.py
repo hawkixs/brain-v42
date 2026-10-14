@@ -131,9 +131,9 @@ def test_the_live_binding_agrees_with_the_schema_the_code_ships() -> None:
 
 def test_a_stale_schema_head_is_refused() -> None:
     binding = load_binding(CURRENT_JSON)
-    binding["schema_head"] = "066"
+    binding["schema_head"] = "067"
 
-    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="067")
+    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="068")
 
     assert any("schema_head" in problem for problem in problems)
 
@@ -142,7 +142,7 @@ def test_a_missing_asset_path_is_refused() -> None:
     binding = load_binding(CURRENT_JSON)
     binding["manifest"] = {"path": "ops/recovery/does-not-exist.json", "sha256": "0" * 64}
 
-    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="067")
+    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="068")
 
     assert any("does not exist" in problem for problem in problems)
 
@@ -153,7 +153,7 @@ def test_a_wrong_sha256_is_refused() -> None:
     attestation["sha256"] = "0" * 64
     binding["attestation_sql"] = attestation
 
-    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="067")
+    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="068")
 
     assert any("sha256 mismatch" in problem for problem in problems)
 
@@ -162,7 +162,7 @@ def test_a_contract_id_diverging_from_the_manifest_is_refused() -> None:
     binding = load_binding(CURRENT_JSON)
     binding["contract_id"] = "brain-v42/postgresql-recovery/v13"
 
-    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="067")
+    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="068")
 
     assert any("contract_id" in problem for problem in problems)
 
@@ -171,7 +171,7 @@ def test_a_contract_version_diverging_from_the_manifest_is_refused() -> None:
     binding = load_binding(CURRENT_JSON)
     binding["contract_version"] = 13
 
-    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="067")
+    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="068")
 
     assert any("contract_version" in problem for problem in problems)
 
@@ -180,7 +180,7 @@ def test_an_unknown_key_is_refused() -> None:
     binding = load_binding(CURRENT_JSON)
     binding["surprise"] = "unexpected"
 
-    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="067")
+    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="068")
 
     assert any("unknown key" in problem for problem in problems)
 
@@ -189,7 +189,7 @@ def test_a_missing_key_is_refused() -> None:
     binding = load_binding(CURRENT_JSON)
     del binding["schema_head"]
 
-    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="067")
+    problems = validate_binding(binding, repo_root=REPO_ROOT, shipped_head="068")
 
     assert any("missing key" in problem for problem in problems)
 

@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:1b70cd7c7e6d5fc2059c499a8e01cc567adc0cea7d14307be7cb9dd02f36e3e2",
+  "idempotency_key": "review_verdict:5957b18d74ea10820ccc2788268b14580f76fcfd:115589712392",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115589712392,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Line 98 returns f\"{name}()\" immediately when props is empty without verifying len(f\"{name}()\") <= cap, unlike the general return path at line 136 which enforces the length limit.",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-374-1",
+          "line": 98,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "_signature returns parameterless signature without checking cap"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 374,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "5957b18d74ea10820ccc2788268b14580f76fcfd",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T23:20:16.504089Z",
+  "schema_version": 1
+}

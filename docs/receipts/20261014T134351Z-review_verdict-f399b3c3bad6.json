@@ -1,0 +1,292 @@
+{
+  "digest": "sha256:f399b3c3bad6d6562353b283a7bc8aeb3847f1af9d48322aeb30d6cfbbf7fd0b",
+  "idempotency_key": "review_verdict:f8a3569e4c77743ebcd1cc4513ff0f06bbc6404c:115869571290",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115869571290,
+      "diff_truncated": true,
+      "finding_count": 24,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "may be a stale row: this runbook says the v24 assets 'await minting on disposable PostgreSQL databases', 'none is claimed by this offline preparation', and the ACL row says 'assets await --acl', while the PR description states the assets were minted on disposable databases and that red_59 verified t",
+          "file": "docs/PLAN_INDEX_REPAIR_RUNBOOK.md",
+          "id": "F-428-1",
+          "line": 28,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Minting status of the v24 assets contradicts the PR description"
+        },
+        {
+          "class": "note",
+          "evidence": "status TEXT NOT NULL on knowledge_lifecycle_runs is the one enum-like column without a vocabulary CHECK, while mode, request status, lifecycle states, kinds, polarities, precisions and entity types are all pinned; SCHEMA.md documents the deferral ('Run-status transitions are enforced by the later pi",
+          "file": "alembic/versions/066_knowledge_lifecycle.py",
+          "id": "F-428-2",
+          "line": 37,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "knowledge_lifecycle_runs.status has no CHECK"
+        },
+        {
+          "class": "note",
+          "evidence": "if a consumer reads runtime_acl_064's grants.tables [SELECT, INSERT, UPDATE, DELETE] as the exhaustive per-table grant set for revision 066, it would overstate the real ACL: the SQL asset excludes the seven lifecycle tables from that expectation and grants only SELECT/INSERT (plus UPDATE on runs/req",
+          "file": "ops/recovery/brain-v42-v24-acl.json",
+          "id": "F-428-3",
+          "line": 1,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "ACL JSON attests broader table grants than the SQL check expects"
+        },
+        {
+          "class": "note",
+          "evidence": "The asset hardcodes ~600 expected MD5 digests (columns, constraints, indexes). The digests appear internally consistent (e.g. shared constraint digests like cc3552dbb61b18accca876af5296eb1f reused for identical id pkeys, same-name constraints sharing digests across tables). They cannot be recomputed",
+          "file": "ops/recovery/brain-v42-v24-pgrestore.sql",
+          "id": "F-428-4",
+          "line": 1,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Asset integrity rests on mint script reproducibility"
+        },
+        {
+          "class": "note",
+          "evidence": "The extension_versions check states \"vector 0.8.2\"; the PR description says tests ran against pgvector 0.8.4. Assets are minted from real disposable databases, so this likely reflects the minting environment rather than an error, but it is worth confirming the inventory matches what production resto",
+          "file": "ops/recovery/brain-v42-v24.json",
+          "id": "F-428-5",
+          "line": 1,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Extension inventory records vector 0.8.2 while PR text cites pgvector 0.8.4"
+        },
+        {
+          "class": "note",
+          "evidence": "The diff was truncated after expected_artifact_columns (~2000 of 6200 lines); the unviewed remainder is expected to contain extension pins, the brain_app role/ACL attestation, and the closing verification SELECT that aggregates table/column/constraint/index/catalog/vector/orphan observations plus th",
+          "file": "ops/recovery/brain-v42-v24.sql",
+          "id": "F-428-6",
+          "line": null,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Tail of the 6200-line asset beyond the received diff"
+        },
+        {
+          "class": "note",
+          "evidence": "In find_block, `opening = next(i for i in range(header, index) if lines[i].rstrip().endswith(\" AS (\"))` has no default; a CTE declared in the plain `name(` form (matched by the first branch) would exhaust the generator and raise StopIteration instead of the intended SystemExit. Maintainer-only mint ",
+          "file": "scripts/mint_recovery_contract_v24.py",
+          "id": "F-428-7",
+          "line": 205,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "find_block can abort with a raw StopIteration"
+        },
+        {
+          "class": "note",
+          "evidence": "Sibling operational vocabularies are pinned (runs.mode, requests.status, all state/kind/polarity/precision columns), but runs.status is a free Text column. Since this PR is storage-only and no service code exists yet, the run-status vocabulary may legitimately still be open; it is a question to sett",
+          "file": "src/brain_v42/db/tables.py",
+          "id": "F-428-8",
+          "line": 2507,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "knowledge_lifecycle_runs.status has no vocabulary CHECK"
+        },
+        {
+          "class": "note",
+          "evidence": "The assertion reads: assert all(line + \",\" in new.splitlines() for line in removed), (name, removed) \u2014 every line removed from the patched-v23 expected text must exist somewhere in the v24 text with a trailing comma, but the membership check is not positional, so a deleted line that coincidentally r",
+          "file": "tests/unit/test_recovery_contract_v24.py",
+          "id": "F-428-9",
+          "line": 93,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Fingerprint deletion check matches by content, not position"
+        },
+        {
+          "class": "note",
+          "evidence": "The diff cuts mid-row inside expected_table_indexes (last visible text is \"('graph_outbox', 'graph_outbox\"), leaving roughly 4600 lines unviewed: the remaining index rows, expected_sequences, extension inventory, and the closing verification SELECT. Parallel to F-428-6 for the live asset; partially ",
+          "file": "ops/recovery/brain-v42-v24-pgrestore.sql",
+          "id": "F-428-10",
+          "line": null,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Tail of the 6045-line pgrestore asset beyond the received diff"
+        },
+        {
+          "class": "note",
+          "evidence": "tests/unit/test_recovery_contract_v24.py:76-78 pins the asset to embed \"('{seq}', (SELECT max(id) FROM public.{table}))\"; for an empty restored history table max(id) is NULL, so the closing comparison in the unviewed tail must use NULL-tolerant equality (IS NOT DISTINCT FROM or equivalent) to avoid ",
+          "file": "ops/recovery/brain-v42-v24.sql",
+          "id": "F-428-11",
+          "line": null,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Empty-table high-water handling unseen"
+        },
+        {
+          "class": "note",
+          "evidence": "test_runtime_cannot_rewrite_history parametrizes TABLES[4:6] (justifications, events) only; extraction/evaluation UPDATE/DELETE denial is covered indirectly by test_runtime_acl_is_exact's privilege matrix rather than by an attempted statement. Coverage note only.",
+          "file": "tests/integration/db/test_migration_066_knowledge_lifecycle.py",
+          "id": "F-428-12",
+          "line": 386,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "DML rewrite denial tested only for justifications and events"
+        },
+        {
+          "class": "note",
+          "evidence": "Line 28: 'Prepared candidate for head 066; assets await minting on disposable PostgreSQL databases.' and line 39/44 repeat 'assets await minting' / 'assets await --acl', while the PR description says the assets were minted and red_59 verified the binding. Possibly a stale or conventionally-worded ro",
+          "file": "docs/PLAN_INDEX_REPAIR_RUNBOOK.md",
+          "id": "F-428-13",
+          "line": 28,
+          "severity": "important",
+          "status": "new",
+          "title": "Runbook still says v24 assets await minting"
+        },
+        {
+          "class": "note",
+          "evidence": "Line 37 'status TEXT NOT NULL' in the quoted migration, and tables.py:2506 likewise; sibling vocabularies (mode, requests.status) are pinned while run status is free. SCHEMA.md documents the deferral per the earlier finding. [not in the part this judge read]",
+          "file": "alembic/versions/066_knowledge_lifecycle.py",
+          "id": "F-428-14",
+          "line": 37,
+          "severity": "important",
+          "status": "new",
+          "title": "knowledge_lifecycle_runs.status has no CHECK"
+        },
+        {
+          "class": "note",
+          "evidence": "The file is a single minified line partially shown; whether a consumer reads runtime_acl_064's grants.tables as exhaustive for revision 066 remains unverifiable from what I received. The unit test at test_recovery_contract_v24.py:112-118 pins the strict field shape and the 064-equal grants, which mi",
+          "file": "ops/recovery/brain-v42-v24-acl.json",
+          "id": "F-428-15",
+          "line": 1,
+          "severity": "important",
+          "status": "new",
+          "title": "ACL JSON grants visibility question remains"
+        },
+        {
+          "class": "note",
+          "evidence": "Partial file (lines 1-60 of 6045) shows the expected_tables VALUES rows; digests beyond view cannot be recomputed. Test test_v24_attests_sequence_ownership_shape_and_high_water shows shared digest reuse is intentional, so no change from last round. [not in the part this judge read]",
+          "file": "ops/recovery/brain-v42-v24-pgrestore.sql",
+          "id": "F-428-16",
+          "line": 1,
+          "severity": "important",
+          "status": "new",
+          "title": "~600 hardcoded MD5 digests rest on mint reproducibility"
+        },
+        {
+          "class": "note",
+          "evidence": "mint_recovery_contract_v24.py:196 EXTENSIONS_EXPECTED = 'pg_stat_statements 1.10, plpgsql 1.0, vector 0.8.2' and test_recovery_contract_v24.py:135 asserts this expected string. The proven_vector_versions.json mechanism (lines 199-203, and tests at test_mint_recovery_contract_v24_guard.py) now admits",
+          "file": "ops/recovery/brain-v42-v24.json",
+          "id": "F-428-17",
+          "line": 1,
+          "severity": "important",
+          "status": "new",
+          "title": "Extension inventory still pins vector 0.8.2"
+        },
+        {
+          "class": "note",
+          "evidence": "Received file is lines 1-60 of 6200; extension pins, brain_app ACL attestation and the closing verification SELECT with any NULL-tolerant comparison are beyond the excerpt. [not in the part this judge read]",
+          "file": "ops/recovery/brain-v42-v24.sql",
+          "id": "F-428-18",
+          "line": 1,
+          "severity": "important",
+          "status": "new",
+          "title": "Tail of the 6200-line live asset remains unviewed"
+        },
+        {
+          "class": "note",
+          "evidence": "Current find_block at lines 229-235 now scans all lines with startswith((f\"{name}(\", f\"{name} AS (\", f\"WITH {name}(\")) and sets header directly, no bare next() visible in the shown range; the block is partial, so the remainder of the function is unverified from the diff I read. [not in the part this",
+          "file": "scripts/mint_recovery_contract_v24.py",
+          "id": "F-428-19",
+          "line": 205,
+          "severity": "important",
+          "status": "new",
+          "title": "find_block rewrite, bare-generator-abort question"
+        },
+        {
+          "class": "note",
+          "evidence": "Line 2506: Column(\"status\", Text, nullable=False) with only mode/batch_ids/invalidation CHECKs at 2516-2524; same deferral question as F-428-2. [not in the part this judge read]",
+          "file": "src/brain_v42/db/tables.py",
+          "id": "F-428-20",
+          "line": 2506,
+          "severity": "important",
+          "status": "new",
+          "title": "runs.status free Text column persists"
+        },
+        {
+          "class": "note",
+          "evidence": "Whole file shown; line 93 reads `assert all(line + \",\" in new.splitlines() for line in removed), (name, removed)` \u2014 membership, not position, per the original finding.",
+          "file": "tests/unit/test_recovery_contract_v24.py",
+          "id": "F-428-21",
+          "line": 93,
+          "severity": "minor",
+          "status": "new",
+          "title": "Fingerprint deletion check still non-positional"
+        },
+        {
+          "class": "note",
+          "evidence": "File shown as lines 1-60 of 6045; the diff cuts inside the expected_tables list, leaving remaining index rows, expected_sequences, extension inventory and the closing SELECT unverified. [not in the part this judge read]",
+          "file": "ops/recovery/brain-v42-v24-pgrestore.sql",
+          "id": "F-428-22",
+          "line": 1,
+          "severity": "important",
+          "status": "new",
+          "title": "Tail of the 6045-line pgrestore asset remains unviewed"
+        },
+        {
+          "class": "note",
+          "evidence": "test_recovery_contract_v24.py:78 pins the asset to embed \"('{row[0]}', (SELECT max(id) FROM public.{row[1]}))\"; the closing comparison in the unviewed tail must be NULL-tolerant for a freshly migrated empty history table. Question to check against the asset tail. [not in the part this judge read]",
+          "file": "ops/recovery/brain-v42-v24.sql",
+          "id": "F-428-23",
+          "line": 1,
+          "severity": "important",
+          "status": "new",
+          "title": "Empty-table NULL high-water handling still unseen"
+        },
+        {
+          "class": "note",
+          "evidence": "The diff shows `@pytest.mark.parametrize(\"table\", TABLES[4:6])` on test_runtime_cannot_rewrite_history; extraction/evaluation denial remains covered only via the test_runtime_acl_is_exact privilege matrix. Coverage note unchanged.",
+          "file": "tests/integration/db/test_migration_066_knowledge_lifecycle.py",
+          "id": "F-428-24",
+          "line": 386,
+          "severity": "minor",
+          "status": "new",
+          "title": "DML rewrite denial still parametrized over TABLES[4:6] only"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [
+        "F-428-10",
+        "F-428-11",
+        "F-428-4",
+        "F-428-6"
+      ],
+      "pr": 428,
+      "providers": [
+        "glm",
+        "glm",
+        "agy",
+        "glm",
+        "glm",
+        "glm",
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "f8a3569e4c77743ebcd1cc4513ff0f06bbc6404c",
+      "unseen_count": 2,
+      "unseen_files": [
+        "ops/recovery/brain-v42-v24-pgrestore.sql",
+        "ops/recovery/brain-v42-v24.sql"
+      ],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T13:43:51.680516Z",
+  "schema_version": 1
+}
