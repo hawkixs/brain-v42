@@ -67,7 +67,10 @@ def _compose_value(inputs: FactInputs, key: str, shared: str) -> str | None:
     therefore remain unknown in this pure snapshot parser.
     """
     text = inputs.files.get("deploy/compose.yaml", "")
-    service = _block(_block(text, "services"), "mcp")
+    services = _block(text, "services")
+    service = _block(services, "mcp")
+    if services and not service:
+        return None  # a services file without mcp: never read a sibling's value
     environment = _block(service, "environment")
     if re.search(rf"(?m)^\s*(?:-\s*)?{re.escape(key)}\s*[:=]", environment):
         return _scalar(environment, key)

@@ -169,6 +169,10 @@ class FactsRegistryTests(unittest.TestCase):
                 )
                 self.assertIsNone(self.measure("graph.neo4j", text))
 
+    def test_services_without_mcp_do_not_read_another_service(self) -> None:
+        text = 'services:\n  metrics:\n    environment:\n      GRAPH_PROJECTOR_ENABLED: "false"\n'
+        self.assertIsNone(self.measure("graph.neo4j", text))
+
     def test_mcp_override_has_precedence(self) -> None:
         text = 'x-graph-env: &graph-env\n  GRAPH_PROJECTOR_ENABLED: "true"\nservices:\n  mcp:\n    environment:\n      <<: *graph-env\n      GRAPH_PROJECTOR_ENABLED: "false"\n'
         self.assertEqual(self.measure("graph.neo4j", text), "disabled")

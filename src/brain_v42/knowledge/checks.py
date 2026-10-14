@@ -125,11 +125,10 @@ def check(
         if not ref or ref in {".", "/"} or claimed not in {"exists", "absent"}:
             return None
         path = kind == "code_path" or _path_like(ref)
-        present = (
-            _path_present(ref, sources.tree)
-            if path
-            else ref.rsplit(".", 1)[-1] in sources.identifiers
-        )
+        symbol = ref.rsplit(".", 1)[-1]
+        if not path and not symbol:
+            return None  # "Server." names no identifier: unchecked, never an absence
+        present = _path_present(ref, sources.tree) if path else symbol in sources.identifiers
         current = "exists" if present else "absent"
         equal = claimed == current
         source_kind = "code"

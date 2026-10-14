@@ -109,6 +109,11 @@ class CheckTests(unittest.TestCase):
                 with self.subTest(kind=kind, ref=ref):
                     self.assertIsNone(self.evaluate(check=kind, ref=ref))
 
+    def test_trailing_dot_symbol_is_unchecked(self) -> None:
+        for ref in ("Server.", "module."):
+            with self.subTest(ref=ref):
+                self.assertIsNone(self.evaluate(check="code_symbol", ref=ref))
+
     def test_invalid_existence_claim_is_unchecked(self) -> None:
         self.assertIsNone(self.evaluate(asserts="maybe"))
 
