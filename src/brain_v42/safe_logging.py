@@ -15,7 +15,7 @@ import io
 import logging
 import re
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, TextIO
 from urllib.parse import urlsplit, urlunsplit
 
@@ -225,6 +225,24 @@ def configure_json_logging(processors: Sequence[Processor]) -> None:
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
+
+
+def configure_stderr_logging(
+    log_format: Literal["console", "json"],
+    *,
+    json_configurer: Callable[[Sequence[Processor]], None] | None = None,
+    console_configurer: Callable[[Sequence[Processor]], None] | None = None,
+) -> None:
+    """Configure structlog and stdlib logging on stderr for service entry points."""
+    processors = build_logging_processors(log_format, colors=False)
+    if log_format == "json":
+        (json_configurer or configure_json_logging)(processors)
+    else:
+        structlog.configure(
+            logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
+            processors=processors,
+        )
+        (console_configurer or configure_console_logging)(processors)
 
 
 def configure_cli_logging(log_format: Literal["console", "json"]) -> None:
