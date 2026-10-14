@@ -540,9 +540,9 @@ persisted even without calls; the latest process report wins across processes.
 | `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
 | `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole hosted operation: connection, write, read, parsing and backoff sleeps. |
 | `BRAIN_RERANK_FALLBACK_MODEL` | empty | Optional second Cohere model, such as `cohere/rerank-4-fast`; must differ from the primary and have a measured calibration. |
-| `BRAIN_RERANK_FALLBACK_PROVIDER` | unset | JSON routing for the fallback, such as `{"only": ["cohere"]}`; required on OpenRouter and subject to the same author and privacy policy as the primary. |
-| `BRAIN_RERANK_FALLBACK_URL` | empty | Fallback Cohere endpoint, such as `https://openrouter.ai/api`. Required with a Voyage primary and a configured fallback; otherwise defaults to the primary URL. |
-| `BRAIN_RERANK_FALLBACK_API_KEY_FILE` | unset | Fallback key file, with the same format and permissions as the primary key file. Required with a Voyage primary and a configured fallback; otherwise reuses the primary key. |
+| `BRAIN_RERANK_FALLBACK_PROVIDER` | unset | JSON routing for the fallback, such as `{"only": ["cohere"]}`; required on OpenRouter and subject to the same author and privacy policy as the primary. Refused without `BRAIN_RERANK_FALLBACK_MODEL`. |
+| `BRAIN_RERANK_FALLBACK_URL` | empty | Fallback Cohere endpoint, such as `https://openrouter.ai/api`; must be an http(s) base URL without credentials, query or fragment. Required with a Voyage primary and a configured fallback; otherwise defaults to the primary URL. Refused without `BRAIN_RERANK_FALLBACK_MODEL`. |
+| `BRAIN_RERANK_FALLBACK_API_KEY_FILE` | unset | Fallback key file, with the same format and permissions as the primary key file. Required with a Voyage primary and a configured fallback; otherwise reuses the primary key. Refused without `BRAIN_RERANK_FALLBACK_MODEL`. |
 | `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS` | `1.0` | Positive primary-link budget; must be strictly below the overall budget when a fallback is configured. |
 
 With a fallback configured, the primary gets one attempt, with no retry sleep,

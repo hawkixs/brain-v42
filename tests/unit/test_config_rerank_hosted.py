@@ -447,3 +447,70 @@ def test_cohere_checks_routing_against_separate_fallback_host() -> None:
             rerank_fallback_url=OPENROUTER,
             rerank_fallback_api_key_file=Path("fallback-key"),
         )
+
+
+@pytest.mark.parametrize("backend", ["shim", "cohere", "voyage"])
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("rerank_fallback_provider", {"only": ["cohere"]}),
+        ("rerank_fallback_url", OPENROUTER),
+        ("rerank_fallback_api_key_file", Path("fallback-key")),
+    ],
+)
+def test_orphan_fallback_settings_are_refused(backend: str, field: str, value: object) -> None:
+    primary = {"shim": _settings, "cohere": _openrouter, "voyage": _voyage}[backend]
+    with pytest.raises(ValidationError, match=field) as excinfo:
+        primary(**{field: value})
+    assert "rerank_fallback_model is required" in str(excinfo.value)
+    assert str(value) not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("backend", ["shim", "cohere", "voyage"])
+def test_orphan_fallback_error_names_all_configured_fields(backend: str) -> None:
+    primary = {"shim": _settings, "cohere": _openrouter, "voyage": _voyage}[backend]
+    with pytest.raises(ValidationError) as excinfo:
+        primary(
+            rerank_fallback_provider={"only": ["cohere"]},
+            rerank_fallback_url=OPENROUTER,
+        )
+    message = str(excinfo.value)
+    assert "rerank_fallback_model is required" in message
+    assert "rerank_fallback_provider" in message
+    assert "rerank_fallback_url" in message
+    assert OPENROUTER not in message
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "not a url",
+        "ftp://host",
+        "https://user:pw@openrouter.ai/api",
+        "https://openrouter.ai/api?x=1",
+        "https://openrouter.ai/api#f",
+        "https://",
+        "https://openrouter.ai:invalid/api",
+    ],
+)
+def test_invalid_fallback_url_is_refused_without_rendering_value(url: str) -> None:
+    with pytest.raises(ValidationError, match="rerank_fallback_url") as excinfo:
+        _fallback(rerank_fallback_url=url)
+    # Pydantic's help link contains "https://" even when the input is hidden.
+    for error in excinfo.value.errors(include_url=False, include_input=False):
+        assert url not in str(error)
+    if url != "https://":
+        assert url not in str(excinfo.value)
+
+
+@pytest.mark.parametrize("url", [OPENROUTER, "http://127.0.0.1:8080"])
+def test_valid_fallback_base_url_is_accepted(url: str) -> None:
+    assert _fallback(rerank_fallback_url=url).rerank_fallback_url == url
+
+
+def test_shim_key_file_refusal_names_both_hosted_backends() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="rerank_api_key_file requires rerank_backend='cohere' or 'voyage'",
+    ):
+        _settings(rerank_api_key_file=Path("key"))

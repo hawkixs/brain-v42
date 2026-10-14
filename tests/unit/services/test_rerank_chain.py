@@ -285,6 +285,18 @@ async def test_batching_slices_aligned_fallback_scores() -> None:
         await chain.close()
 
 
+def test_uncalibrated_primary_is_refused_at_construction() -> None:
+    from brain_v42.services.rerank_chain import RerankChain
+
+    with pytest.raises(ValueError, match="primary.*calibrat"):
+        RerankChain(
+            RerankerClient(wire=CohereRerankWire("unknown/model")),
+            RerankerClient(wire=CohereRerankWire(FALLBACK)),
+            overall_budget=1.5,
+            primary_budget=1.0,
+        )
+
+
 def test_uncalibrated_fallback_is_refused_at_construction() -> None:
     from brain_v42.services.rerank_chain import RerankChain
 
