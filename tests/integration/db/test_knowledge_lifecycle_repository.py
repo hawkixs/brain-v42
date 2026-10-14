@@ -20,7 +20,6 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
 
 from brain_v42.db import tables as t
-from brain_v42.knowledge.hysteresis import confirmed
 from brain_v42.repositories import pg_knowledge_lifecycle as lifecycle
 from brain_v42.repositories.pg_knowledge_lifecycle import (
     ApplyWindowClosed,
@@ -267,41 +266,28 @@ async def test_evaluation_and_justifications_are_atomic_and_replayed(conn: Async
     assert await repo.read_evaluation(conn, first["id"]) == first
 
 
-async def test_history_excludes_incomplete_and_invalidated_but_keeps_disagreements(
+async def test_evaluations_for_entry_retains_candidates_and_run_provenance(
     conn: AsyncConnection,
 ) -> None:
     entity_id = uuid4()
     first_run = await run(conn)
-    await evaluation(conn, first_run, entity_id)
-    await evaluation(conn, await run(conn), entity_id, complete=False, fingerprint="bad")
-    later = date(2026, 10, 15)
-    await evaluation(conn, await run(conn), entity_id, observed_day=later)
-    history = await repo.evaluation_history(conn, "decisions", entity_id)
-    assert len(history) == 2 and confirmed(history[:-1], history[-1])
+    first = await evaluation(conn, first_run, entity_id)
+    second_run = await run(conn)
+    second = await evaluation(conn, second_run, entity_id, complete=False, fingerprint="bad")
+    await conn.execute(
+        t.knowledge_lifecycle_runs.update()
+        .where(t.knowledge_lifecycle_runs.c.run_id == second_run)
+        .values(mode="dry_run")
+    )
+    await evaluation(conn, await run(conn), uuid4())
     await repo.transition_run(conn, first_run, "created", "failed", reason="test")
     await repo.invalidate_run(conn, first_run, "wrong")
-    history = await repo.evaluation_history(conn, "decisions", entity_id)
-    assert len(history) == 1 and not confirmed([], history[0])
-    await evaluation(conn, await run(conn), entity_id, fingerprint="disagrees")
-    await evaluation(conn, await run(conn), entity_id, observed_day=date(2026, 10, 16))
-    history = await repo.evaluation_history(conn, "decisions", entity_id)
-    assert not confirmed(history[:-1], history[-1])
-
-
-async def test_propagation_history_does_not_reset_check_agreement(conn: AsyncConnection) -> None:
-    entity_id = uuid4()
-    await evaluation(conn, await run(conn), entity_id)
-    await evaluation(
-        conn,
-        await run(conn),
-        entity_id,
-        state="contested",
-        reason="propagated_from_parent",
-        justifications=[observation(source_kind="propagation", source_rank=2)],
-    )
-    await evaluation(conn, await run(conn), entity_id, observed_day=date(2026, 10, 15))
-    history = await repo.evaluation_history(conn, "decisions", entity_id)
-    assert history[1].layer == "propagation" and confirmed(history[:-1], history[-1])
+    history = await repo.evaluations_for_entry(conn, "decisions", entity_id)
+    assert [row["id"] for row in history] == [first["id"], second["id"]]
+    assert history[0]["invalidated"] and history[0]["run_status"] == "invalidated"
+    assert not history[1]["invalidated"] and not history[1]["complete"]
+    assert history[1]["mode"] == "dry_run" and history[1]["fingerprint"] == "bad"
+    assert history[0]["state"] == first["state"] and history[0]["reason"] == first["reason"]
 
 
 async def test_apply_replay_and_stale_write_nothing(conn: AsyncConnection) -> None:
@@ -426,6 +412,8 @@ async def test_compensation_and_cache_replay(conn: AsyncConnection) -> None:
     }
     compensation = await repo.append_compensation(conn, **kwargs)
     assert await repo.append_compensation(conn, **kwargs) == compensation
+    assert await repo.compensations_for_run(conn, run2) == [compensation]
+    assert await repo.compensations_for_run(conn, ev1["run_id"]) == []
     counts = (await repo.read_run(conn, run2))["counts"]
     assert counts["applied_events"] == 1 and counts["compensation_events"] == 1
     assert (await repo.read_run(conn, ev1["run_id"]))["counts"] == {"applied_events": 1}
@@ -644,11 +632,19 @@ async def test_obsolete_event_requires_an_end_date_and_rolls_back(conn: AsyncCon
     assert event["valid_from"] == DAY
 
 
-async def test_structural_history_retains_its_immediate_layer(conn: AsyncConnection) -> None:
-    entity_id = uuid4()
-    await evaluation(conn, await run(conn), entity_id, state="obsolete", reason="merged")
-    history = await repo.evaluation_history(conn, "decisions", entity_id)
-    assert history[0].layer == "structural" and confirmed([], history[0])
+async def test_count_key_updates_preserve_siblings_and_allow_removal(conn: AsyncConnection) -> None:
+    run_id = await run(conn)
+    await repo.record_run(conn, run_id, counts={"unrelated": 42})
+    await repo.set_count_key(conn, run_id, "snapshots", "one", {"structure": "a"})
+    await repo.set_count_key(conn, run_id, "snapshots", "two", {"structure": "b"})
+    await repo.set_count_key(conn, run_id, "deferred", "decisions:one", "stale_at_apply")
+    await repo.set_count_key(conn, run_id, "deferred", "decisions:one", None)
+    counts = (await repo.read_run(conn, run_id))["counts"]
+    assert counts == {
+        "unrelated": 42,
+        "snapshots": {"one": {"structure": "a"}, "two": {"structure": "b"}},
+        "deferred": {},
+    }
 
 
 async def test_event_cache_and_counters_remain_in_caller_transaction(conn: AsyncConnection) -> None:

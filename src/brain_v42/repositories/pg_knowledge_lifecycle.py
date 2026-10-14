@@ -26,8 +26,6 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 from sqlalchemy.sql.dml import Insert, Update
 
 from brain_v42.db import tables as t
-from brain_v42.knowledge.decide import Layer
-from brain_v42.knowledge.hysteresis import EvaluationRecord
 
 # Separate namespace from delivery and graph locks; one lifecycle run globally.
 LIFECYCLE_RUN_LOCK = 7_311_066_001
@@ -188,15 +186,6 @@ _TEXT_FIELDS = {
     ),
     "adrs": ("title", "context", "decision", "consequences", "alternatives_considered"),
 }
-_STRUCTURAL_REASONS = frozenset(
-    {
-        "merged",
-        "superseded_decision",
-        "superseded_adr",
-        "deprecated_adr",
-        "decay_archived",
-    }
-)
 _REQUEST_STATUSES = frozenset({"succeeded", "errored", "expired", "canceled", "missing", "invalid"})
 
 
@@ -359,6 +348,35 @@ class PgKnowledgeLifecycleRepo:
         if row is None:
             raise KeyError(run_id)
         return row
+
+    async def set_count_key(
+        self,
+        conn: AsyncConnection,
+        run_id: str,
+        section: str,
+        key: str,
+        value: Any,
+    ) -> None:
+        """Update one nested counter without sending its growing siblings back."""
+        table = t.knowledge_lifecycle_runs
+        current = sa.func.coalesce(table.c.counts[section], sa.cast({}, JSONB))
+        nested = (
+            current.op("-")(key)
+            if value is None
+            else current.op("||")(sa.cast({key: value}, JSONB))
+        )
+        updated = await conn.scalar(
+            table.update()
+            .where(table.c.run_id == run_id)
+            .values(
+                counts=sa.func.jsonb_set(
+                    table.c.counts, sa.cast([section], sa.ARRAY(sa.Text)), nested
+                )
+            )
+            .returning(table.c.run_id)
+        )
+        if updated is None:
+            raise KeyError(run_id)
 
     async def insert_requests(
         self, conn: AsyncConnection, run_id: str, requests: Mapping[str, Mapping[str, Any]]
@@ -537,6 +555,30 @@ class PgKnowledgeLifecycleRepo:
             raise KeyError(evaluation_id)
         return row
 
+    async def evaluations_for_entry(
+        self, conn: AsyncConnection, entity_type: str, entity_id: UUID
+    ) -> list[dict[str, Any]]:
+        """Supply candidate identities for resume and invalidation replay.
+
+        Keep incomplete and invalidated records visible: the orchestrator must
+        replay hysteresis rather than infer a state from the last event alone.
+        """
+        evaluations, runs = t.knowledge_evaluations, t.knowledge_lifecycle_runs
+        rows = await conn.execute(
+            sa.select(
+                evaluations,
+                runs.c.mode,
+                runs.c.status.label("run_status"),
+                sa.or_(
+                    runs.c.invalidated_at.is_not(None), runs.c.status == RunStatus.INVALIDATED
+                ).label("invalidated"),
+            )
+            .join(runs, runs.c.run_id == evaluations.c.run_id)
+            .where(_identity(evaluations, entity_type, entity_id))
+            .order_by(evaluations.c.id)
+        )
+        return [dict(row) for row in rows.mappings()]
+
     async def read_justifications(
         self, conn: AsyncConnection, evaluation_id: int
     ) -> list[dict[str, Any]]:
@@ -551,55 +593,6 @@ class PgKnowledgeLifecycleRepo:
                 )
             ).mappings()
         ]
-
-    async def evaluation_history(
-        self, conn: AsyncConnection, entity_type: str, entity_id: UUID
-    ) -> list[EvaluationRecord]:
-        """Return complete, non-invalidated history oldest first for confirmed().
-
-        Do not filter by digest or fingerprint: a disagreeing revision must reset
-        hysteresis. No arbitrary row limit may hide the previous distinct day.
-        Layer is derived from v1 structural reasons and the observation kinds;
-        066 has no layer column. Propagation lift evaluations must retain a
-        propagation observation (including polarity=none), not an empty list.
-        """
-        evaluations, runs, observations = (
-            t.knowledge_evaluations,
-            t.knowledge_lifecycle_runs,
-            t.knowledge_justifications,
-        )
-        propagation = sa.exists(
-            sa.select(observations.c.id).where(
-                observations.c.evaluation_id == evaluations.c.id,
-                observations.c.source_kind == "propagation",
-            )
-        )
-        rows = (
-            await conn.execute(
-                sa.select(evaluations, propagation.label("propagation"))
-                .join(runs, runs.c.run_id == evaluations.c.run_id)
-                .where(
-                    _identity(evaluations, entity_type, entity_id),
-                    evaluations.c.complete.is_(True),
-                    runs.c.invalidated_at.is_(None),
-                    runs.c.status != RunStatus.INVALIDATED,
-                )
-                .order_by(evaluations.c.id)
-            )
-        ).mappings()
-        result = []
-        for row in rows:
-            layer: Layer = "check"
-            if row["reason"] in _STRUCTURAL_REASONS:
-                layer = "structural"
-            elif row["propagation"] or row["reason"].startswith("propagated_from_"):
-                layer = "propagation"
-            result.append(
-                EvaluationRecord(
-                    row["observed_day"], row["entry_digest"], row["fingerprint"], True, False, layer
-                )
-            )
-        return result
 
     async def read_cache(
         self, conn: AsyncConnection, entity_type: str, entity_id: UUID
@@ -1050,6 +1043,16 @@ class PgKnowledgeLifecycleRepo:
             for row in (await conn.execute(query)).mappings():
                 result.append(await self._entry_inputs(conn, entity_type, dict(row)))
         return result
+
+    async def compensations_for_run(
+        self, conn: AsyncConnection, run_id: str
+    ) -> list[dict[str, Any]]:
+        """Attribute compensations to the invalidation, including out-of-scope entries."""
+        events = t.knowledge_lifecycle_events
+        rows = await conn.execute(
+            sa.select(events).where(events.c.invalidated_run_id == run_id).order_by(events.c.id)
+        )
+        return [dict(row) for row in rows.mappings()]
 
     async def direct_dependents(
         self, conn: AsyncConnection, entity_type: str, entity_id: UUID
