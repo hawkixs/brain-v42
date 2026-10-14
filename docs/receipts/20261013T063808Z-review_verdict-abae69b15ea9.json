@@ -1,0 +1,55 @@
+{
+  "digest": "sha256:abae69b15ea9a8a1bef5cc66be011d2bf2b50fb0e4fc00cabb0793f8bd84e7ec",
+  "idempotency_key": "review_verdict:cc29933fc5c56e892cf31a7e6542ead0b4166918:115163341556",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115163341556,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "In brain_ticket_list, parse_target_release is isolated in its own try/except block to surface curated format errors, but project_key is passed directly to ticket_svc.list_grouped without prior validation via _validate_ticket_inputs. A ValueError arising from project_key canonicalization in the servi",
+          "file": "src/brain_v42/mcp/tools/ticket_tools.py",
+          "id": "F-361-1",
+          "line": 434,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "brain_ticket_list omits isolated project_key validation before service invocation"
+        },
+        {
+          "class": "note",
+          "evidence": "The Visitor in raw_exception_sites inspects Call nodes (matching format_error, names ending in Error, or append/extend), Return nodes, and AugAssign nodes, but does not define a visit_Raise handler. An exception instantiation whose type name does not end with 'Error' or a re-raised exception express",
+          "file": "tests/unit/mcp/test_no_raw_exception_text_in_tool_errors.py",
+          "id": "F-361-2",
+          "line": 169,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "AST guard inspects calls ending in Error but does not visit Raise nodes"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "pr": 361,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "cc29933fc5c56e892cf31a7e6542ead0b4166918",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T06:38:08.475001Z",
+  "schema_version": 1
+}

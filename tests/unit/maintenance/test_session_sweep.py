@@ -374,3 +374,85 @@ class TestTheInactivityRuleIsDeliveredClosed:
 
         assert captured["dry_run"] is True
         assert captured["close_inactive_after"] == AGENT_INACTIVE_AFTER
+
+
+_SECRET = "password=hunter2@db.internal:5432"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_sweep_reports_the_error_type_only(monkeypatch, capsys) -> None:
+    """Ticket 45d99407: a database error message can carry connection details; the
+    failure reaches stderr and dream_runs.error_message as its type only."""
+    from brain_v42.maintenance.session_sweep import _run, build_parser
+
+    monkeypatch.setenv("POSTGRES_URL", "postgresql+asyncpg://b:b@localhost:5433/test")
+    monkeypatch.setattr("brain_v42.db.engine.get_session_factory", lambda: MagicMock())
+    record = AsyncMock()
+    monkeypatch.setattr("brain_v42.maintenance.session_sweep.record_dream_run", record)
+
+    async def failing_sweep(self, **_kwargs):
+        raise OSError(_SECRET)
+
+    monkeypatch.setattr(
+        "brain_v42.repositories.pg_brain_session.PgBrainSessionRepo.sweep_open_sessions",
+        failing_sweep,
+    )
+
+    assert await _run(build_parser().parse_args([])) == 1
+    err = capsys.readouterr().err
+    assert "OSError" in err and _SECRET not in err
+    assert record.await_args.kwargs["error"] == "OSError"
+
+
+@pytest.mark.asyncio
+async def test_session_factory_setup_failure_reports_only_type_without_recording(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from brain_v42.maintenance.session_sweep import _run, build_parser
+
+    def broken_factory() -> None:
+        raise OSError(_SECRET)
+
+    record = AsyncMock()
+    monkeypatch.setenv("POSTGRES_URL", "postgresql+asyncpg://b:b@localhost:5433/test")
+    monkeypatch.setattr("brain_v42.db.engine.get_session_factory", broken_factory)
+    monkeypatch.setattr("brain_v42.maintenance.session_sweep.record_dream_run", record)
+
+    assert await _run(build_parser().parse_args([])) == 1
+    captured = capsys.readouterr()
+    assert "OSError" in captured.err
+    assert _SECRET not in captured.err + captured.out
+    assert "hunter2" not in captured.err + captured.out
+    record.assert_not_awaited()
+
+
+def test_main_reports_unexpected_run_failure_by_type_only(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import sys
+
+    from brain_v42.maintenance import session_sweep
+
+    async def broken_run(_args: object) -> int:
+        raise RuntimeError(_SECRET)
+
+    monkeypatch.setattr(session_sweep, "_run", broken_run)
+    monkeypatch.setattr(sys, "argv", ["session_sweep"])
+
+    assert session_sweep.main() == 1
+    captured = capsys.readouterr()
+    assert "RuntimeError" in captured.err
+    assert _SECRET not in captured.err + captured.out
+    assert "hunter2" not in captured.err + captured.out
+
+
+@pytest.mark.asyncio
+async def test_a_failed_trace_record_reports_the_error_type_only(capsys) -> None:
+    from brain_v42.maintenance.session_sweep import record_dream_run
+
+    def broken_factory():
+        raise RuntimeError(_SECRET)
+
+    await record_dream_run(broken_factory, "done", dry=True, duration_s=1.0, error=None)
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err and _SECRET not in err

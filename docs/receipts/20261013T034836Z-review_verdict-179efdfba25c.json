@@ -1,0 +1,45 @@
+{
+  "digest": "sha256:179efdfba25cf0a41fe320271614b7fa4dbc75d3790db7a107daa1e3b585b9cc",
+  "idempotency_key": "review_verdict:8da806423bbe79d9fb5b11cf726db0ae0e66fabf:115118088921",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115118088921,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The forbidden-character regex excludes neither U+061C (ARABIC LETTER MARK, a bidi control) nor U+2060 (WORD JOINER, a zero-width character). Embedded values such as \"a\\u061cb\" and \"a\\u2060b\" therefore pass line(), despite the documented rejection of bidi and zero-width characters. Extend the filter ",
+          "file": "src/brain_v42/models/programme.py",
+          "id": "F-377-1",
+          "line": 41,
+          "severity": "minor",
+          "status": "new",
+          "title": "Invisible-character filtering misses advertised cases"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 377,
+      "providers": [
+        "codex"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "8da806423bbe79d9fb5b11cf726db0ae0e66fabf",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T03:48:36.970970Z",
+  "schema_version": 1
+}

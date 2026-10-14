@@ -68,6 +68,21 @@ class TestItFailsClosed:
     def test_wrong_usage_is_not_a_pass(self, tmp_path: Path) -> None:
         assert main(["prog"]) == 2
 
+    def test_any_missing_report_fails_and_names_it(self, tmp_path: Path, capsys) -> None:
+        first = _report(tmp_path, _passed("ok"))
+        missing = tmp_path / "missing-shard.xml"
+        assert main(["prog", str(first), str(missing)]) == 1
+        assert str(missing) in capsys.readouterr().err
+
+    def test_db_skip_in_any_report_fails_and_names_it(self, tmp_path: Path, capsys) -> None:
+        first = _report(tmp_path, _passed("ok"))
+        second = tmp_path / "shard-2.xml"
+        second.write_text(
+            f"<testsuites><testsuite>{_skipped('needs_db', _DB_SKIP)}</testsuite></testsuites>"
+        )
+        assert main(["prog", str(first), str(second)]) == 1
+        assert str(second) in capsys.readouterr().err
+
 
 class TestItNamesWhatItFound:
     def test_it_lists_the_skipped_tests(self, tmp_path: Path, capsys) -> None:

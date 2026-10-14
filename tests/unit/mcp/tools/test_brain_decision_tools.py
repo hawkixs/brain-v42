@@ -103,6 +103,25 @@ async def test_supersede_without_project_reaches_the_service() -> None:
     svc.supersede.assert_awaited_once()
 
 
+@pytest.mark.asyncio
+async def test_cross_project_supersede_returns_clean_error_without_project_key() -> None:
+    """A scoped caller gets a clean refusal without information about the foreign project."""
+    tools, svc = _make_mcp_and_svc()
+    message = "The old decision belongs to a different project scope; supersede it from its own project (same project_key)"
+    svc.supersede = AsyncMock(side_effect=pg_decision.DecisionCrossProjectSupersedeError(message))
+
+    result = await tools["brain_supersede_decision"](
+        old_decision_id=str(OLD_UUID),
+        title="Replacement",
+        context="Context",
+        decision_made="Choice",
+        reasoning="Reason",
+        project_key="brain-v42",
+    )
+
+    assert result == message
+
+
 class TestBrainLogDecision:
     async def test_creates_decision_with_correct_description(self) -> None:
         tools, svc = _make_mcp_and_svc()

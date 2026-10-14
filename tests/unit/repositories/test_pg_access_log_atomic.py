@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
+from sqlalchemy.dialects import postgresql
 
 from brain_v42.repositories.pg_access_log import PgAccessLogRepo
 
@@ -39,22 +40,16 @@ def _make_session(
         session.execute = AsyncMock(side_effect=[lock_result, max_id_result])
         return session
 
-    # 3rd execute: aggregate GROUP BY → rows
+    # 3rd execute: DELETE RETURNING + aggregate GROUP BY → rows
     if agg_rows is None:
         agg_rows = []
     agg_result = MagicMock()
     agg_result.mappings.return_value.all.return_value = agg_rows
 
-    # 4th execute: DELETE WHERE id <= max_id
-    del_result = MagicMock()
-
-    # journal_result sits between the aggregation and the delete: the durable
-    # journal (052) is written inside this same transaction and BEFORE the queue
-    # is emptied. A double that omitted it would prove an order production no
-    # longer has.
+    # 4th execute: journal write, after the drain but in the same transaction.
     journal_result = MagicMock()
     session.execute = AsyncMock(
-        side_effect=[lock_result, max_id_result, agg_result, journal_result, del_result]
+        side_effect=[lock_result, max_id_result, agg_result, journal_result]
     )
     return session
 
@@ -74,6 +69,7 @@ class TestAggregateInSession:
         result = await repo.aggregate_in_session(session)
 
         assert result == {}
+        assert session.execute.call_count == 2, "empty queue must not write the journal"
 
     @pytest.mark.asyncio
     async def test_returns_aggregated_stats(self) -> None:
@@ -157,9 +153,23 @@ class TestAggregateInSession:
         )
 
     @pytest.mark.asyncio
-    async def test_does_not_commit(self) -> None:
+    @pytest.mark.parametrize("has_rows", [False, True])
+    async def test_does_not_commit(self, has_rows: bool) -> None:
         """aggregate_in_session must NOT call session.commit() — caller owns txn."""
-        session = _make_session(max_id=None)
+        now = datetime.now(tz=UTC)
+        session = _make_session(
+            max_id=10 if has_rows else None,
+            agg_rows=[
+                {
+                    "entity_type": "learning",
+                    "entity_id": uuid4(),
+                    "actor": "red-lab",
+                    "day": now.date(),
+                    "max_accessed": now,
+                    "cnt": 1,
+                }
+            ],
+        )
         repo = PgAccessLogRepo(session_factory=MagicMock())
 
         await repo.aggregate_in_session(session)
@@ -188,35 +198,83 @@ class TestAggregateInSession:
 
         await repo.aggregate_in_session(session)
 
-        # Found by SHAPE, never by position. The index used to be `[3]`, and 052
-        # inserted the journal write before the delete: an ordinal double freezes
-        # the NUMBER of statements the implementation may emit, which is not what
-        # this test is about.
+        # The DELETE now lives inside the aggregating statement: a separate
+        # statement would acquire a newer snapshot and could lose uncounted rows.
         deletes = [
             call[0][0]
             for call in session.execute.call_args_list
-            if str(call[0][0]).lstrip().upper().startswith("DELETE")
+            if "DELETE FROM access_log " in str(call[0][0])
         ]
         assert len(deletes) == 1, "exactly one DELETE, and it is the queue's"
         delete_stmt = deletes[0]
         compiled = str(delete_stmt.compile(compile_kwargs={"literal_binds": True}))
         assert "WHERE" in compiled, f"DELETE must have WHERE clause, got: {compiled}"
-        assert str(max_id) in compiled, (
+        assert f"access_log.id <= {max_id}" in compiled, (
             f"DELETE WHERE must reference max_id={max_id}, got: {compiled}"
         )
 
     @pytest.mark.asyncio
     async def test_returns_empty_dict_when_no_agg_rows(self) -> None:
-        """Returns {} (and skips DELETE) when max_id exists but aggregate is empty."""
+        """An empty drain returns {} without writing an empty journal batch."""
         session = _make_session(max_id=5, agg_rows=[])
         repo = PgAccessLogRepo(session_factory=MagicMock())
 
         result = await repo.aggregate_in_session(session)
 
-        # No rows → empty result AND no delete should be issued
         assert result == {}
-        # Only 3 executes: lock + max_id + aggregate (no delete)
+        # Only 3 executes: lock + max_id + drain/aggregate (no journal)
         assert session.execute.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_aggregates_exactly_the_rows_deleted_in_one_statement(self) -> None:
+        """One snapshot must feed both counters and journal from DELETE RETURNING."""
+        now = datetime.now(tz=UTC)
+        session = _make_session(
+            agg_rows=[
+                {
+                    "entity_type": "learning",
+                    "entity_id": uuid4(),
+                    "actor": "red-lab",
+                    "day": now.date(),
+                    "max_accessed": now,
+                    "cnt": 1,
+                }
+            ]
+        )
+        repo = PgAccessLogRepo(session_factory=MagicMock())
+
+        await repo.aggregate_in_session(session)
+
+        statements = [
+            str(call.args[0].compile(dialect=postgresql.dialect()))
+            for call in session.execute.call_args_list
+        ]
+        aggregates = [sql for sql in statements if "GROUP BY" in sql]
+        assert len(aggregates) == 1
+        aggregate = aggregates[0]
+        assert "WITH drained AS" in aggregate
+        assert "DELETE FROM access_log" in aggregate
+        assert (
+            "RETURNING access_log.entity_type, access_log.entity_id, "
+            "access_log.actor, access_log.accessed_at"
+        ) in aggregate
+        assert "FROM drained GROUP BY" in " ".join(aggregate.split())
+        assert sum("DELETE FROM access_log" in sql for sql in statements) == 1
+        assert not any(sql.lstrip().startswith("DELETE") for sql in statements)
+        assert "INSERT INTO access_log_daily" in statements[-1]
+
+    @pytest.mark.asyncio
+    async def test_utc_day_is_literal_in_select_and_group_by(self) -> None:
+        """PostgreSQL must see identical UTC expressions without zone parameters."""
+        session = _make_session(agg_rows=[])
+        repo = PgAccessLogRepo(session_factory=MagicMock())
+
+        await repo.aggregate_in_session(session)
+
+        stmt = session.execute.call_args_list[-1].args[0]
+        compiled = stmt.compile(dialect=postgresql.asyncpg.dialect())
+        assert str(compiled).count("date(timezone('UTC', drained.accessed_at))") == 2
+        assert "UTC" not in compiled.params.values()
 
 
 class TestAdvisoryLockConstant:

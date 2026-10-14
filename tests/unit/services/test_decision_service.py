@@ -104,6 +104,32 @@ async def test_supersede_rejection_propagates_without_graph_enrichment() -> None
     graph.create_relation.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("caller_owned", [False, True])
+async def test_cross_project_supersede_refusal_skips_graph_enrichment(caller_owned: bool) -> None:
+    """Both transaction paths propagate the safe refusal before derived writes."""
+    svc, repo, _embedding_svc = _make_service()
+    graph = MagicMock()
+    graph.upsert_node = AsyncMock()
+    graph.create_relation = AsyncMock()
+    svc._graph = graph
+    error = pg_decision.DecisionCrossProjectSupersedeError(
+        "The old decision belongs to a different project scope; supersede it from its own project (same project_key)"
+    )
+    repo.supersede = AsyncMock(side_effect=error)
+    data = DecisionCreate(
+        title="Replacement", description="Context", reasoning="Reason", project_key="brain-v42"
+    )
+    session = MagicMock(spec=AsyncSession) if caller_owned else None
+
+    with pytest.raises(pg_decision.DecisionCrossProjectSupersedeError) as raised:
+        await svc.supersede(OLD_UUID, data, session=session, new_embedding=FAKE_EMBEDDING)
+
+    assert raised.value is error
+    graph.upsert_node.assert_not_awaited()
+    graph.create_relation.assert_not_awaited()
+
+
 class TestCreate:
     async def test_create_in_caller_transaction_defers_derived_work(self) -> None:
         """A caller-owned transaction controls durability and leaves enrichment queued."""

@@ -883,10 +883,18 @@ async def test_only_decided_read_routes_are_credential_free(
         "/programmes",
         "/healthz",
         "/api/brain-graph/v1",
+        "/api/session-slots/v1",
     }
     client = await aiohttp_client(app)
     allowed = set()
-    for path in ("/metrics", "/api/cockpit", "/programmes", "/healthz", "/api/brain-graph/v1"):
+    for path in (
+        "/metrics",
+        "/api/cockpit",
+        "/programmes",
+        "/healthz",
+        "/api/brain-graph/v1",
+        "/api/session-slots/v1",
+    ):
         response = await client.get(path)
         if response.status == 200:
             allowed.add(path)
@@ -895,6 +903,25 @@ async def test_only_decided_read_routes_are_credential_free(
         response = await client.post(path, json={})
         assert response.status == 401
         assert await response.json() == {"reason": "missing_token"}
+
+
+async def test_session_slots_route_uses_existing_block_schema(
+    populated_server: BrainGraphMetricsServer,
+) -> None:
+    response = await populated_server._handle_session_slots(
+        make_mocked_request(
+            "GET",
+            "/api/session-slots/v1",
+            transport=MagicMock(get_extra_info=MagicMock(return_value=("127.0.0.1", 9200))),
+        )
+    )
+    assert response.status == 200
+    _assert_schema(
+        json.loads(response.body),
+        {"session_slots": METRICS_SCHEMA["session_slots"]},
+        "/api/session-slots/v1",
+        set(),
+    )
 
 
 @pytest.mark.parametrize(

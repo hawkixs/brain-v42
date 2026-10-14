@@ -1,0 +1,69 @@
+{
+  "digest": "sha256:90e1ee2bfc97f9450c782f775d9962879d5af80c598ca47b61b90338f3f1fd90",
+  "idempotency_key": "review_verdict:7d824e0b5777999edc2f716346f556f912802b1b:115476049156",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115476049156,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The error body uses `\"error\": \"empty_exclude_key\" if empty_tokens else \"unknown_exclude_key\"` and `\"keys\": empty_tokens or unknown_tokens`, so a request like `?exclude=,nope` reports only the empty token; the caller must fix one class at a time.",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-418-1",
+          "line": 692,
+          "severity": "minor",
+          "status": "new",
+          "title": "400 response reports only one error class when both empty and unknown tokens are present"
+        },
+        {
+          "class": "note",
+          "evidence": "When `\"graph\" not in excluded` is false, the `graph_healthy` evaluation and `graph_stats` fetch still execute above the guarded block; only the slow `collect_graph_inventory` call and the response key are skipped. Consistent with the stated contract (only slow blocks skip computation) but worth know",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-418-2",
+          "line": 870,
+          "severity": "minor",
+          "status": "new",
+          "title": "Excluding 'graph' still runs the health probe, only omits the payload key"
+        },
+        {
+          "class": "note",
+          "evidence": "Keys such as `version`, `cross_process`, or `model` are fully computed and only removed by the final `metrics.pop` loop; correct per the description, which promises skipped computation only for slow blocks.",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-418-3",
+          "line": 962,
+          "severity": "minor",
+          "status": "new",
+          "title": "Fast blocks named in exclude are computed then popped, not skipped"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 418,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "7d824e0b5777999edc2f716346f556f912802b1b",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T18:54:12.426398Z",
+  "schema_version": 1
+}

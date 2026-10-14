@@ -477,7 +477,7 @@ def test_graph_recon_sleeps_before_each_weekly_inventory(compose: dict[str, Any]
     )
 
 
-def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
+def test_session_sweep_runs_the_seven_day_rule_daily_and_armed(
     compose: dict[str, Any], clean_settings_env: pytest.MonkeyPatch
 ) -> None:
     """Ticket 888660a9: red-base had no runner for the seven-day rule.
@@ -493,14 +493,17 @@ def test_session_sweep_runs_the_seven_day_rule_daily_and_dry(
     assert command[:2] == ["/bin/sh", "-c"]
     # Ticket abbfabfd item 3: each job touches its own heartbeat file only when it
     # succeeds, so the healthcheck can tell a loop that still runs from one that
-    # still works.
+    # still works. A heartbeat that cannot be written is reported as such, never as
+    # a failed run (rail note F-395-2).
     match = re.fullmatch(
-        r"while :; do\s+python -m brain_v42\.maintenance\.session_sweep(?P<args>[^&|]*)"
-        r"&& touch (?P<sweep_beat>/tmp/[\w.-]+) "
-        r"\|\| echo \"session-sweep: run failed[^\"]*\" >&2;\s+"
-        r"python -m brain_v42\.maintenance\.trace_retention(?P<retention>[^&|]*)"
-        r"&& touch (?P<retention_beat>/tmp/[\w.-]+) "
-        r"\|\| echo \"trace-retention: run failed[^\"]*\" >&2;\s+"
+        r"while :; do\s+if python -m brain_v42\.maintenance\.session_sweep(?P<args>[^;&|]*); "
+        r"then touch (?P<sweep_beat>/tmp/[\w.-]+) "
+        r"\|\| echo \"session-sweep: [^\"]*\" >&2; "
+        r"else echo \"session-sweep: run failed[^\"]*\" >&2; fi;\s+"
+        r"if python -m brain_v42\.maintenance\.trace_retention(?P<retention>[^;&|]*); "
+        r"then touch (?P<retention_beat>/tmp/[\w.-]+) "
+        r"\|\| echo \"trace-retention: [^\"]*\" >&2; "
+        r"else echo \"trace-retention: run failed[^\"]*\" >&2; fi;\s+"
         r"sleep 86400;\s*done\s*",
         command[2],
     )
@@ -566,6 +569,57 @@ def test_session_sweep_healthcheck_reads_both_heartbeats(
         )
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, timeout=30)
     assert (result.returncode == 0) is healthy
+
+
+@pytest.mark.parametrize(
+    ("sweep_rc", "retention_rc", "touch_rc", "failed", "unwritten"),
+    [
+        (0, 0, 0, set(), set()),
+        (0, 0, 1, set(), {"session-sweep", "trace-retention"}),
+        (1, 0, 0, {"session-sweep"}, set()),
+        (0, 1, 0, {"trace-retention"}, set()),
+    ],
+)
+def test_session_sweep_loop_reports_a_failed_run_apart_from_a_lost_heartbeat(
+    compose: dict[str, Any], tmp_path: Path, sweep_rc, retention_rc, touch_rc, failed, unwritten
+) -> None:
+    """Run the loop's own shell with stub commands (rail note F-395-2).
+
+    A run that succeeded but could not write its heartbeat must not be logged as a
+    failed run, and a failed run must not write its heartbeat.
+    """
+    import subprocess
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    touched = tmp_path / "touched"
+    stubs = {
+        "python": f'case "$2" in *session_sweep) exit {sweep_rc};; *) exit {retention_rc};; esac',
+        "touch": f'echo "$1" >> {touched}; exit {touch_rc}',
+        # One pass only: the stub sleep terminates the loop's shell.
+        "sleep": "kill -TERM $PPID",
+    }
+    for name, body in stubs.items():
+        stub = bin_dir / name
+        stub.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        stub.chmod(0o755)
+    command = compose["services"]["session-sweep"]["command"]
+    result = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={"PATH": str(bin_dir)},
+    )
+    beats = touched.read_text().split() if touched.exists() else []
+    for job, beat in (
+        ("session-sweep", "/tmp/brain-v42-session-sweep.heartbeat"),
+        ("trace-retention", "/tmp/brain-v42-trace-retention.heartbeat"),
+    ):
+        lines = [line for line in result.stderr.splitlines() if line.startswith(f"{job}:")]
+        assert any("run failed" in line for line in lines) is (job in failed), result.stderr
+        assert (beat in beats) is (job not in failed)
+        assert any("heartbeat" in line for line in lines) is (job in unwritten), result.stderr
 
 
 def test_embedding_backfill_drains_the_backlog_hourly_and_dry(
