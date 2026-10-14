@@ -512,6 +512,67 @@ async def test_lifecycle_batch_still_processing_logs_retrieve_cause(
 
 
 @pytest.mark.parametrize("command", ["run", "resume"])
+async def test_lifecycle_recovered_retrieve_reports_batch_still_processing(
+    command: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import brain_v42.lifecycle_cli.command as module
+    from brain_v42.knowledge import extraction
+    from brain_v42.lifecycle_cli.adapters import SDKExtraction
+
+    seconds = 0.0
+
+    def now() -> float:
+        return seconds
+
+    async def sleep(duration: float) -> None:
+        nonlocal seconds
+        seconds += duration
+
+    batches = SimpleNamespace(
+        retrieve=Mock(
+            side_effect=[
+                RuntimeError("temporary failure"),
+                SimpleNamespace(processing_status="in_progress"),
+                SimpleNamespace(processing_status="in_progress"),
+            ]
+        ),
+        results=Mock(side_effect=AssertionError("Unfinished results must not be downloaded")),
+    )
+    sdk = SimpleNamespace(messages=SimpleNamespace(batches=batches))
+    adapter = SDKExtraction(Mock(return_value=sdk), max_wait_seconds=65, clock=now, sleep=sleep)
+    pipeline, output, logger = AsyncMock(), io.StringIO(), Mock()
+    monkeypatch.setattr(module, "log", logger)
+
+    async def unfinished(*args: object, **kwargs: object) -> RunReport:
+        await adapter.collect("batch", extraction.Manifest("r", (), ()))
+        raise AssertionError("The batch must still be processing")
+
+    getattr(pipeline, "start" if command == "run" else "resume").side_effect = unfinished
+    pipeline.report.side_effect = RuntimeError("report unavailable")
+    argv = (
+        ["run", "--mode", "dry-run", "--scope", "all", "--ceiling-usd", "1"]
+        if command == "run"
+        else ["resume", "--run", "r"]
+    )
+    code = await execute(
+        argv + ["--json"],
+        settings(brain_knowledge_lifecycle_enabled=True),
+        pipeline,
+        AsyncMock(return_value="dry_run"),
+        stdout=output,
+    )
+    result = json.loads(output.getvalue())
+    assert code == 5 and result["status"] == "submitted"
+    assert result["failure_reason"] == "batch_still_processing"
+    logger.error.assert_not_called()
+    assert batches.retrieve.call_count == 3 and seconds == 65
+    batches.results.assert_not_called()
+
+
+@pytest.mark.parametrize("command", ["run", "resume"])
 @pytest.mark.parametrize("with_cause", [False, True])
 async def test_lifecycle_batch_still_processing_report_read_failure_keeps_exit_five(
     command: str, with_cause: bool

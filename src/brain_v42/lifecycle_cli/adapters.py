@@ -184,6 +184,7 @@ class SDKExtraction:
             except Exception as exc:
                 last_error = exc
             else:
+                last_error = None
                 if batch.processing_status == "ended":
                     return await asyncio.to_thread(extraction.collect, batch_id, manifest, client)
             remaining = self.max_wait_seconds - (self.clock() - started)
