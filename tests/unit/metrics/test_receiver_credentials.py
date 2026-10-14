@@ -88,6 +88,17 @@ def test_credentials_configuration_requires_a_verifier() -> None:
 
 
 @pytest.mark.parametrize(("path", "handler", "receiver"), ROUTES)
+async def test_loopback_post_still_requires_a_bearer(
+    monkeypatch: pytest.MonkeyPatch, path: str, handler: str, receiver: str
+) -> None:
+    server, _, _ = await make_server(monkeypatch)
+    response = await getattr(server, handler)(_request(path, transport=_transport("127.0.0.1")))
+    assert response.status == 401
+    assert json.loads(response.body) == {"reason": "missing_token"}
+    assert server._receiver_refused == {"missing_token": 1}
+
+
+@pytest.mark.parametrize(("path", "handler", "receiver"), ROUTES)
 @pytest.mark.parametrize(
     ("reason", "status"),
     [
