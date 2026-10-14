@@ -1151,6 +1151,8 @@ def register_tools(
                 rerank_mode=diag.rerank_mode,
                 rerank_identity=diag.rerank_identity,
                 degraded=diag.degraded,
+                failed_types=diag.failed_types,
+                graph_degraded=diag.graph_degraded,
                 min_score_effective=diag.min_score_effective,
                 project_key_effective=diag.project_key_effective,
             )
@@ -1234,6 +1236,8 @@ def register_tools(
             rerank_mode=diag.rerank_mode,
             rerank_identity=diag.rerank_identity,
             degraded=diag.degraded,
+            failed_types=diag.failed_types,
+            graph_degraded=diag.graph_degraded,
             min_score_effective=diag.min_score_effective,
             project_key_effective=diag.project_key_effective,
         )
