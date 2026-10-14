@@ -288,7 +288,12 @@ if TYPE_CHECKING:
 # and delete no `project_contexts` row, so a referencing RESTRICT key cannot fire
 # on anything it issues. No trigger, CHECK or column on `project_contexts`,
 # `indexed_plans` or `indexed_plan_chunks` (`grep -c` → 0 for the latter two).
-_REQUIRED_ALEMBIC_HEAD = "065"
+# Bumped to 066 after reviewing the complete migration: seven knowledge lifecycle
+# tables with foreign keys only among themselves, four owned sequences, two extra
+# indexes and narrower runtime grants on those new tables. No trigger, column,
+# constraint, index or grant on indexed_plans, indexed_plan_chunks or
+# project_contexts changes; the repair's DELETEs and UPDATEs keep their behavior.
+_REQUIRED_ALEMBIC_HEAD = "066"
 
 
 class RepairStore:

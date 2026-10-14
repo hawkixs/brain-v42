@@ -1707,7 +1707,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_065_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_066_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1794,7 +1794,7 @@ def test_repository_head_065_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     head = _repository_head()
-    assert head == "065"
+    assert head == "066"
 
     # Everything below is DERIVED from that measured head. It used to be COPIED,
     # and that is precisely how `SCHEMA.md` came to announce 049 while the chain
@@ -2526,7 +2526,8 @@ _SLOT_RELAY_AMENDMENT = (
     "and handover; the mod only triggers the turn and replays the result at compaction. The "
     "base form writes the handover as the project's whole base focus under a "
     "compare-and-swap on its revision, and refuses a handover under 70% of the current base "
-    "(`base_focus_shrink`): only an operator relay may override that guard, never the mod. "
+    "(`base_focus_shrink`): only an operator relay with an active /brain-admin elevation "
+    "may override that guard, never the mod. "
     "The standing command covers nothing else: not `brain_session_abandon`, not "
     "`brain_session_end` of any session, not the relay of a server-opened trace, not any write "
     "of the project base outside that relay, not opening, closing or changing a slot, and "

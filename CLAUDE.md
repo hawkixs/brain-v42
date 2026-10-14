@@ -112,7 +112,7 @@ brain-v42
 > `brain_session_end` or `brain_session_abandon` only
 > after the user's corresponding explicit command.
 > No hook, auto-close, work delivery or end of response closes a session on the agent or client side.
-> **Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly enabled counts as a standing user command for one gesture only: `brain_session_relay` of an open operator session, onto its focus slot when it is bound to one and onto the project base when it is not — capture, end and start of its successor under a new `client_key`, in one transaction. The model makes the call and chooses its captures, summary and handover; the mod only triggers the turn and replays the result at compaction. The base form writes the handover as the project's whole base focus under a compare-and-swap on its revision, and refuses a handover under 70% of the current base (`base_focus_shrink`): only an operator relay may override that guard, never the mod. The standing command covers nothing else: not `brain_session_abandon`, not `brain_session_end` of any session, not the relay of a server-opened trace, not any write of the project base outside that relay, not opening, closing or changing a slot, and not `start`, `resume` or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Hooks still never capture, close or commit on their own.
+> **Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly enabled counts as a standing user command for one gesture only: `brain_session_relay` of an open operator session, onto its focus slot when it is bound to one and onto the project base when it is not — capture, end and start of its successor under a new `client_key`, in one transaction. The model makes the call and chooses its captures, summary and handover; the mod only triggers the turn and replays the result at compaction. The base form writes the handover as the project's whole base focus under a compare-and-swap on its revision, and refuses a handover under 70% of the current base (`base_focus_shrink`): only an operator relay with an active /brain-admin elevation may override that guard, never the mod. The standing command covers nothing else: not `brain_session_abandon`, not `brain_session_end` of any session, not the relay of a server-opened trace, not any write of the project base outside that relay, not opening, closing or changing a slot, and not `start`, `resume` or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Hooks still never capture, close or commit on their own.
 > Cross-cutting work without a ticket needs no anchor: left unbound, it is relayed onto the project base, under the same guards.
 > A delivered feature may update the roadmap, never close Brain.
 >
@@ -132,7 +132,7 @@ brain-v42
 | `brain session heartbeat` | `brain_session_heartbeat(session_id=..., expected_client_key=...)` |
 | `brain session end` | `brain_session_end(session_id=..., expected_client_key=..., summary=..., next_focus=..., expected_focus_revision=...)` |
 | `brain session bind` | `brain_session_bind(session_id=..., expected_client_key=..., slot_id=...)` |
-| `brain session relay` | bound: `brain_session_relay(session_id=..., expected_client_key=..., summary=..., handover=..., expected_slot_revision=..., new_client_key=..., initiator="operator")`; unbound, onto the project base: the same with `expected_focus_revision=...` in place of `expected_slot_revision` (and `allow_focus_shrink=true`, operator only, to pass the shrink guard) |
+| `brain session relay` | bound: `brain_session_relay(session_id=..., expected_client_key=..., summary=..., handover=..., expected_slot_revision=..., new_client_key=..., initiator="operator")`; unbound, onto the project base: the same with `expected_focus_revision=...` in place of `expected_slot_revision` (and `allow_focus_shrink=true` with an active /brain-admin elevation, operator only, to pass the shrink guard) |
 | `brain session abandon` | `brain_session_abandon(session_id=..., expected_client_key=..., reason=...)` |
 
 The v4 lifecycle rests on migration 037, which itself depends on 036. It has been active
@@ -306,7 +306,7 @@ MCP over HTTP loopback in production, stdio in dev/fallback → PostgreSQL 16 + 
 - **GPU embedding** — Qodo-Embed-1-1.5B GGUF Q8_0 via llama.cpp + a Starlette shim on
   `localhost:8003`, 1536 dims; PyTorch rollback: `docker compose --profile legacy up -d embedding`
 - **Reranker** — unified embedding endpoint `:8003/rerank` (ONNX cross-encoder on CPU)
-- **Schema** managed by Alembic; the **repository** carries migration 065. The **live**
+- **Schema** managed by Alembic; the **repository** carries migration 066. The **live**
   head is measured, it is not read here.
 - **Ledger/outbox** PostgreSQL → Neo4j, active in production
 - **Network model**: personal agents on a trusted LAN; MCP, PostgreSQL, Neo4j and the

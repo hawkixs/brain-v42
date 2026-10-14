@@ -22,8 +22,9 @@ def _mint():
     return module
 
 
-def test_head_built_negative_mutations_use_the_064_acl_era() -> None:
-    assert mutations.ACL_ASSET == RECOVERY / "brain-v42-v22-acl.sql"
+def test_head_built_negative_mutations_use_the_066_acl_era() -> None:
+    # v24 (066) narrowed the runtime grants on the knowledge lifecycle tables.
+    assert mutations.ACL_ASSET == RECOVERY / "brain-v42-v24-acl.sql"
 
 
 def test_v22_acl_mint_preserves_every_historical_negative_witness() -> None:
