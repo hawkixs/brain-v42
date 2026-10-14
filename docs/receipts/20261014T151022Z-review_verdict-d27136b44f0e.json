@@ -1,0 +1,146 @@
+{
+  "digest": "sha256:d27136b44f0e591c833dd6a4535a721f9f50d95059baea9890b264278372f09b",
+  "idempotency_key": "review_verdict:29ab8cb9a2b1b3c2126bc1abe0e6c89dd3656187:115918049785",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115918049785,
+      "diff_truncated": true,
+      "finding_count": 10,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The new paragraph says 'Migration 066 adds nullable `brain_client_credentials.allowed_projects`' \u2014 but this diff's own alembic/versions/067_credential_scope.py adds it, and every sibling doc updated in the same PR (SCHEMA.md, ARCHITECTURE.md, PLAN_INDEX_REPAIR_RUNBOOK.md, README.md) names 066 as kno",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-442-1",
+          "line": 888,
+          "severity": "important",
+          "status": "new",
+          "title": "Stale migration-history paragraph misattributes 067 to 066 and cites superseded v23 contract state"
+        },
+        {
+          "class": "note",
+          "evidence": "The new brain-v42/postgresql-recovery/v25-acl contract documents the grants as valid for head 067 (runbook: 'advanced to head 067 without changing a grant'), yet the runtime_acl_064 check object stamps revision \"066\". Since the runbook says the -acl asset 'moves only its identity', this may be a del",
+          "file": "ops/recovery/brain-v42-v25-acl.json",
+          "id": "F-442-2",
+          "line": 1,
+          "severity": "minor",
+          "status": "new",
+          "title": "runtime_acl_064 check retains revision \"066\" inside the v25 ACL contract"
+        },
+        {
+          "class": "note",
+          "evidence": "The diff is truncated mid-file (cut off in vector_observations, around line ~2950 of 6050); the remainder of the verification statements and any final assertion logic were not read and are assumed to follow the same pattern. [not in the part this judge read]",
+          "file": "ops/recovery/brain-v42-v25-pgrestore.sql",
+          "id": "F-442-3",
+          "line": 1,
+          "severity": "important",
+          "status": "new",
+          "title": "Diff truncated; unseen remainder cannot be verified"
+        },
+        {
+          "class": "note",
+          "evidence": "The check carries revision \"066\" while ids elsewhere pair name and revision numerically (e.g. project_context_updated_at_039 \u2192 \"039\"); since 066 is the last revision touching the ACL, this is plausibly intentional and the invariant body lives outside this part.",
+          "file": "ops/recovery/brain-v42-v25.json",
+          "id": "F-442-4",
+          "line": 1,
+          "severity": "minor",
+          "status": "new",
+          "title": "runtime_acl_064 pinned to revision 066"
+        },
+        {
+          "class": "note",
+          "evidence": "The description states the red-backup pre-check (precheck_binding.py, binding v25, 31 checks, no new kind against v24) ran on d4021e49, after which head fixes landed in 29ab8cb9, and the definitive on-image-digest proof plus CI/independent review on the exact head are still marked due/unchecked. Dis",
+          "file": "ops/recovery/brain-v42-v25.sql",
+          "id": "F-442-5",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Binding proof does not yet cover the exact head"
+        },
+        {
+          "class": "note",
+          "evidence": "The expected md5 values (brain_client_credentials columns 279ccede1154a0a792e683c15fe9325f, brain_credential_audit_event_valid 16349c8904b4e38587cbf110987e1d91, new constraint brain_client_credentials_allowed_projects_valid 914531fa30ab3282b57038a5df7200ab) cannot be recomputed from the diff alone; ",
+          "file": "ops/recovery/brain-v42-v25.sql",
+          "id": "F-442-6",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Embedded fingerprints attest rather than derive"
+        },
+        {
+          "class": "note",
+          "evidence": "The presented diff (6205 lines) is truncated inside expected_session_constraint_fragments; the remaining rows (session fragment checks, head_observation comparison, row/orphan/vector thresholds, and the final mismatch surface) were not read, so their correctness is unverifiable from this part and is",
+          "file": "ops/recovery/brain-v42-v25.sql",
+          "id": "F-442-7",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Verification tail exceeds the review window"
+        },
+        {
+          "class": "note",
+          "evidence": "The docstring now says consumers deduplicate scope edits on audit_id, and render_event adds audit_id only to this event, but no consumer of the credential outbox appears in this part: does the delivery consumer (possibly among the parts not read here, or external to the repo) actually key credential",
+          "file": "src/brain_v42/credentials/audit.py",
+          "id": "F-442-8",
+          "line": 5,
+          "severity": "important",
+          "status": "new",
+          "title": "Outbox consumer dedupe contract for credentials.scope_changed is asserted, not shown"
+        },
+        {
+          "class": "note",
+          "evidence": "['a','a'] passes the CHECK (equal cardinalities and 'a,a' matches the regex) and keys longer than 50 characters also pass; the PR description declares both limits as CLI/repository responsibilities (tests pin them there), and resolve_client_principal refuses non-canonical, duplicate, or >50-char key",
+          "file": "src/brain_v42/db/tables.py",
+          "id": "F-442-9",
+          "line": 1087,
+          "severity": "minor",
+          "status": "new",
+          "title": "Inline CHECK does not enforce distinctness or the 50-character key limit"
+        },
+        {
+          "class": "note",
+          "evidence": "The renamed test's updated history says 'Bumped to 067 for exact credential scopes, with no deployment claim and the recovery contract update reserved for a separate operator delivery', while this same change (per the description and the review context's part list) minted and bound contract v25 in o",
+          "file": "tests/unit/test_documentation_contract.py",
+          "id": "F-442-10",
+          "line": 1721,
+          "severity": "minor",
+          "status": "new",
+          "title": "Guard docstring calls the recovery contract update a separate operator delivery"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 442,
+      "providers": [
+        "glm",
+        "glm",
+        "glm",
+        "glm",
+        "glm",
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "29ab8cb9a2b1b3c2126bc1abe0e6c89dd3656187",
+      "unseen_count": 2,
+      "unseen_files": [
+        "ops/recovery/brain-v42-v25-pgrestore.sql",
+        "ops/recovery/brain-v42-v25.sql"
+      ],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T15:10:22.597004Z",
+  "schema_version": 1
+}

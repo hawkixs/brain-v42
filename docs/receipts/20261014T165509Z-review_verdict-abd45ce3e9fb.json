@@ -1,0 +1,79 @@
+{
+  "digest": "sha256:abd45ce3e9fb39e52a1b67b20726a5760b71499bac63f644dd541e649bacb721",
+  "idempotency_key": "review_verdict:bd92706a28e2967f8805fff61df4cf86a9b5bc87:115968881005",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": true,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115968881005,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "In LifecyclePipeline._propagation_entry (lines 647-665), previous is resolved from history to check for an existing evaluation in child_id. When previous is not None and no transition event was emitted (such as when inputs.cache matched decision.state and decision.reason on an earlier attempt), line",
+          "file": "src/brain_v42/services/knowledge_lifecycle_pipeline.py",
+          "id": "F-445-1",
+          "line": 661,
+          "severity": "blocking",
+          "status": "new",
+          "title": "Unconditional re-insertion of existing propagation evaluation in _propagation_entry"
+        },
+        {
+          "class": "note",
+          "evidence": "In LifecyclePipeline._changed_parents (lines 553-556), await self.repo.read_evaluation(conn, event[\"evaluation_id\"]) executes inside a nested loop over each entry and event for that entry, issuing individual point queries per event rather than loading required evaluations in a batch.",
+          "file": "src/brain_v42/services/knowledge_lifecycle_pipeline.py",
+          "id": "F-445-2",
+          "line": 554,
+          "severity": "minor",
+          "status": "new",
+          "title": "N+1 queries for evaluation lookup in _changed_parents"
+        },
+        {
+          "class": "note",
+          "evidence": "append_transition dedupes by (evaluation_id, kind) and insert_evaluation returns an existing row silently; the doublesafety-seeking tests then pass even if the real repository lacks these dedupes, so resume-no-duplicate assertions partly test the fake itself. Worth confirming the pg repo provides th",
+          "file": "tests/unit/knowledge/test_lifecycle_pipeline.py",
+          "id": "F-445-3",
+          "line": 96,
+          "severity": "minor",
+          "status": "new",
+          "title": "MemoryRepo fakes encode idempotency the production repo may not have"
+        },
+        {
+          "class": "note",
+          "evidence": "Tests call _freeze, _submit, _collect, _evaluate, _edge, _defer, _recomputed, _propagation_decision, _propagation_entry and _save_snapshot; these are exercise hooks not public API, so refactors of the pipeline will churn the tests even when behavior is unchanged. Acceptable for checkpoint-unit tests",
+          "file": "tests/unit/knowledge/test_lifecycle_pipeline.py",
+          "id": "F-445-4",
+          "line": 390,
+          "severity": "minor",
+          "status": "new",
+          "title": "Heavy use of private pipeline methods in tests"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 445,
+      "providers": [
+        "agy",
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "bd92706a28e2967f8805fff61df4cf86a9b5bc87",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "request_changes"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T16:55:09.978318Z",
+  "schema_version": 1
+}

@@ -1,0 +1,65 @@
+{
+  "digest": "sha256:f6723b378b003f7d22c4dea96029bfb992ed6c534eec10545770bd969083e425",
+  "idempotency_key": "review_verdict:9df2c67a95f179e98c090feae20c373fed3c6161:115931527146",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carried_from": "9a0ab4da7e937ce2a34782646ee17ffc94199668",
+      "carry_decision": "57fa86dc",
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115931527146,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The test builds a synthetic ValidationError, calls _guidance, and asserts required_guidance in message, where required_guidance is the exact string hard-coded in the same commit; this proves the branch executes but cannot catch incorrect advice content or wording drift in the real refusal envelope.",
+          "file": "tests/unit/mcp/test_argument_guidance.py",
+          "id": "F-439-1",
+          "line": 388,
+          "severity": "minor",
+          "status": "new",
+          "title": "Guidance test asserts its own output literal"
+        },
+        {
+          "class": "note",
+          "evidence": "The appended clauses point callers to brain_session_resume current_focus_revision, session.started_focus_revision from brain_session_start, brain_session_resume current_focus, and the base_focus_shrink 70% rule; none of these names are verifiable in the shown diff, so confirm they match the actual t",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-439-2",
+          "line": 316,
+          "severity": "minor",
+          "status": "new",
+          "title": "Advice references symbols not visible in the diff"
+        }
+      ],
+      "independent": true,
+      "judged_base": "30f308eb9833dbdddd641f63b08838c2cb264523",
+      "mode": "light",
+      "new_base": "a0cbd7f6cfb148768155545e052378bfc6ed9428",
+      "not_reviewed": [],
+      "patch_id": "351b99938d4db3b3cf6d7579fe6096a0defdf96e",
+      "pr": 439,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "9df2c67a95f179e98c090feae20c373fed3c6161",
+      "source_check_run_id": 115908501848,
+      "source_status_creator_id": 8717916,
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T15:10:28.933345Z",
+  "schema_version": 1
+}

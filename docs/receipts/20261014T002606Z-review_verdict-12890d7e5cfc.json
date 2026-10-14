@@ -1,0 +1,59 @@
+{
+  "digest": "sha256:12890d7e5cfc5c9a04610ee3ac967c54f7a1a9b90305751e02faf58b115321cd",
+  "idempotency_key": "review_verdict:c6096ee88c152120d8240f2a496457c9dae3d991:115610706745",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115610706745,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "float(\"nan\") parses successfully, so max(0.0, float(\"nan\")) returns 0.0 and the client retries immediately rather than using the documented existing backoff for malformed headers (\"inf\" is handled, \"nan\" is not); impact is one extra request, bounded by max_retries",
+          "file": "src/brain_v42/services/gpu_embedding_service.py",
+          "id": "F-365-1",
+          "line": 288,
+          "severity": "minor",
+          "status": "new",
+          "title": "Retry-After 'nan' yields a zero delay instead of the backoff fallback"
+        },
+        {
+          "class": "note",
+          "evidence": "kinds \"rate_limited\" and \"deadline\" are now emitted on the public embed paths; the description asserts the metrics collector already accepts them without a schema change and /metrics is untouched, but the collector is outside the diff \u2014 the question to confirm is that no consumer of EmbeddingUnavail",
+          "file": "src/brain_v42/services/gpu_embedding_service.py",
+          "id": "F-365-2",
+          "line": 56,
+          "severity": "minor",
+          "status": "new",
+          "title": "New EmbeddingUnavailable kinds reach consumers outside this diff"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 365,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "c6096ee88c152120d8240f2a496457c9dae3d991",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T00:26:06.150070Z",
+  "schema_version": 1
+}

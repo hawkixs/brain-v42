@@ -1,0 +1,79 @@
+{
+  "digest": "sha256:6ca10c5af7c4b4a97bbd521f28feb97a26a8d616f98735ebc5599f3064c61c5a",
+  "idempotency_key": "review_verdict:afd7d32aa2beff8c245e1f900520c4389b96de78:115624244506",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115624244506,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "If IndexedPlanSearchService contains a second similarity query that calls _execute_query without vector_limit (e.g. a neighbour or dedup lookup), it still runs with pgvector's default ef_search=40; the diff only routes _run_vector through the tuning, so verify no such internal caller exists.",
+          "file": "src/brain_v42/services/indexed_plan_search_service.py",
+          "id": "F-367-1",
+          "line": 218,
+          "severity": "minor",
+          "status": "new",
+          "title": "Any other <=> query in the plan service would keep default ef_search"
+        },
+        {
+          "class": "note",
+          "evidence": "pg_decision.search_fts and search_vector lack a keyword-only marker, so the new positional-or-keyword extra_clauses shifts the position of any external caller passing session positionally; all in-repo callers use keyword arguments and mypy/tests are clean \u2014 the question is only whether an out-of-tre",
+          "file": "src/brain_v42/repositories/pg_decision.py",
+          "id": "F-367-2",
+          "line": 385,
+          "severity": "minor",
+          "status": "new",
+          "title": "extra_clauses inserted before session in non-keyword-only signatures"
+        },
+        {
+          "class": "note",
+          "evidence": "_parse_version('0.8') yields (0, 8) and (0, 8) >= (0, 8, 0) is False, so a patch-less extversion would silently skip iterative_scan; real pgvector extversions are always x.y.z, so this is a defensive edge only.",
+          "file": "src/brain_v42/repositories/pg_base.py",
+          "id": "F-367-3",
+          "line": 74,
+          "severity": "minor",
+          "status": "new",
+          "title": "Short extversion string would read as below 0.8"
+        },
+        {
+          "class": "note",
+          "evidence": "VectorScanSettings._supports_iterative_scan caches the extversion verdict per instance, so an in-process pgvector upgrade from <0.8 to >=0.8 keeps iterative_scan disabled until the repository is rebuilt; after caching True a downgrade would fail set_config and be absorbed by the savepoint, so the im",
+          "file": "src/brain_v42/repositories/pg_base.py",
+          "id": "F-367-4",
+          "line": 92,
+          "severity": "minor",
+          "status": "new",
+          "title": "Version verdict cached for the process lifetime"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 367,
+      "providers": [
+        "glm",
+        "codex"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "afd7d32aa2beff8c245e1f900520c4389b96de78",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T01:04:47.305343Z",
+  "schema_version": 1
+}

@@ -1,0 +1,78 @@
+{
+  "digest": "sha256:9cb089cc8c769e321f31a5fdcd975ba01f43385f7217412b1f18c86282b56ded",
+  "idempotency_key": "review_verdict:bf7a516b2e219ef57b3d99dc8b652a8018462900:115708830379",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115708830379,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "If `configure_console_logging`/`configure_json_logging` (in brain_v42.safe_logging, outside this diff) attach handlers to any logger other than root, fastmcp, uvicorn, uvicorn.error or uvicorn.access, `restore_logging` would not remove them; check safe_logging's handler targets to confirm the saved ",
+          "file": "tests/unit/codex_gateway/test_entrypoint_logging.py",
+          "id": "F-421-1",
+          "line": 15,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Fixture may miss handlers attached to loggers outside the saved set"
+        },
+        {
+          "class": "note",
+          "evidence": "`assert order == [(\"configured\", log_format), (\"serve\", order[-1][1])]` uses the observed kwargs dict as its own expected value; it still verifies length, order and the configured-first invariant, but asserting the serve kwargs dict contents explicitly would be slightly stronger.",
+          "file": "tests/unit/codex_gateway/test_entrypoint_logging.py",
+          "id": "F-421-2",
+          "line": 83,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Ordering assertion is partly self-referential"
+        },
+        {
+          "class": "note",
+          "evidence": "Lines 23-27 call structlog.configure(logger_factory=PrintLoggerFactory(file=sys.stderr)) then configure_console_logging(processors); if safe_logging.configure_console_logging itself calls structlog.configure, the explicit factory here is overridden (harmless only if it also targets stderr), and repe",
+          "file": "src/brain_v42/codex_gateway/log_setup.py",
+          "id": "F-421-3",
+          "line": 23,
+          "severity": "minor",
+          "status": "new",
+          "title": "Console branch depends on unseen safe_logging semantics"
+        },
+        {
+          "class": "note",
+          "evidence": "The diff adds monkeypatch.setattr(launcher, \"configure_gateway_logging\", lambda _: None) only to test_run_selects_interactive_engine_profile_before_composing_the_app; if any other test in this module drives launcher.run() up to the uvicorn stub, it now executes the real configure_gateway_logging and",
+          "file": "tests/unit/codex_gateway/test_launcher.py",
+          "id": "F-421-4",
+          "line": 107,
+          "severity": "minor",
+          "status": "new",
+          "title": "Only one launcher test stubs the new configurator"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 421,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "bf7a516b2e219ef57b3d99dc8b652a8018462900",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T06:16:16.461332Z",
+  "schema_version": 1
+}

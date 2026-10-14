@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:412f9057fed4273dda44f29d132cd9bd019eccf08184a8e75f7547ca45d745a5",
+  "idempotency_key": "review_verdict:c37bf512559a4a404edb715874363e83ca4a16be:115667095746",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115667095746,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Assuming no other test, doc, or consumer pins the old French wording \u2014 the description states no document quotes these notices and red-rail/red-cockpit do not parse them, and everything visible in the diff is consistent with that, but a grep for 'plafonn\u00e9'/'remont\u00e9' across the repo would confirm not",
+          "file": "src/brain_v42/mcp/tools/formatters.py",
+          "id": "F-399-1",
+          "line": 1131,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Residual check: no French-text references outside the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 399,
+      "providers": [
+        "codex"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "c37bf512559a4a404edb715874363e83ca4a16be",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T03:49:43.677881Z",
+  "schema_version": 1
+}

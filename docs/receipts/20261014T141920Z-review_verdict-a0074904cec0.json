@@ -1,0 +1,78 @@
+{
+  "digest": "sha256:a0074904cec07f45ddbfa5e797b0d107cd13e224c26eed03b26dde7a4b30d176",
+  "idempotency_key": "review_verdict:65c0074d7f625581963261a47120949f834a014a:115902487386",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115902487386,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The diff removes configure_json_logging/configure_console_logging from mcp.server's imports, so tests that monkeypatch brain_v42.mcp.server.<configurer> would now fail (AttributeError or silently not bind) \u2014 the gateway needed the configurer-injection workaround for exactly this pattern; check tests",
+          "file": "src/brain_v42/mcp/server.py",
+          "id": "F-441-1",
+          "line": 135,
+          "severity": "important",
+          "status": "new",
+          "title": "mcp.server logging configurers no longer module-patchable"
+        },
+        {
+          "class": "note",
+          "evidence": "configure_stderr_logging is defined by this PR, so the 'safe_logging.configure_stderr_logging(log_format)  # type: ignore[attr-defined]' comment looks stale unless tooling outside the diff requires it.",
+          "file": "tests/unit/test_safe_logging_setup.py",
+          "id": "F-441-2",
+          "line": 22,
+          "severity": "minor",
+          "status": "new",
+          "title": "Unnecessary type: ignore[attr-defined]"
+        },
+        {
+          "class": "note",
+          "evidence": "For the console case the real function runs structlog.configure with PrintLoggerFactory(sys.stderr) and a Mock processor; if no fixture restores structlog config this may leak into tests collected after this file.",
+          "file": "tests/unit/test_safe_logging_setup.py",
+          "id": "F-441-3",
+          "line": 22,
+          "severity": "minor",
+          "status": "new",
+          "title": "Console param mutates real structlog state"
+        },
+        {
+          "class": "note",
+          "evidence": "The new test exercises only the default configurers; the json_configurer/console_configurer parameters the gateway depends on have no direct unit coverage in this file (possibly covered indirectly by gateway entrypoint tests).",
+          "file": "tests/unit/test_safe_logging_setup.py",
+          "id": "F-441-4",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Configurer-injection path untested here"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 441,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "65c0074d7f625581963261a47120949f834a014a",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T14:19:20.109481Z",
+  "schema_version": 1
+}

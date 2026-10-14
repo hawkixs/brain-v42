@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:0e2b5545c7b4a28b428c792324643699320cd7cc6ff043b114c4d34b46a1c036",
+  "idempotency_key": "review_verdict:9a0ab4da7e937ce2a34782646ee17ffc94199668:115908501848",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115908501848,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The test builds a synthetic ValidationError, calls _guidance, and asserts required_guidance in message, where required_guidance is the exact string hard-coded in the same commit; this proves the branch executes but cannot catch incorrect advice content or wording drift in the real refusal envelope.",
+          "file": "tests/unit/mcp/test_argument_guidance.py",
+          "id": "F-439-1",
+          "line": 388,
+          "severity": "minor",
+          "status": "new",
+          "title": "Guidance test asserts its own output literal"
+        },
+        {
+          "class": "note",
+          "evidence": "The appended clauses point callers to brain_session_resume current_focus_revision, session.started_focus_revision from brain_session_start, brain_session_resume current_focus, and the base_focus_shrink 70% rule; none of these names are verifiable in the shown diff, so confirm they match the actual t",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-439-2",
+          "line": 316,
+          "severity": "minor",
+          "status": "new",
+          "title": "Advice references symbols not visible in the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 439,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "9a0ab4da7e937ce2a34782646ee17ffc94199668",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T14:35:42.534643Z",
+  "schema_version": 1
+}

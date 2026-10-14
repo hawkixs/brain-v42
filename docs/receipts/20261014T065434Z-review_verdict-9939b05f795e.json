@@ -1,0 +1,78 @@
+{
+  "digest": "sha256:9939b05f795e46744c46fb82ab79c67a2dd2d609a7ecfdbc0d950f2aed6b7d95",
+  "idempotency_key": "review_verdict:9ceec8c07cacafa7bb64c98b794144f32532b632:115720652417",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115720652417,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "_compose_value ends with `return _scalar(block or text, key)`: when neither the mcp service block nor the shared anchor block exists, the whole deploy/compose.yaml is scanned, so a services-only file without an mcp service attributes a sibling's environment scalar (e.g. metrics' GRAPH_PROJECTOR_ENAB",
+          "file": "src/brain_v42/knowledge/facts_registry.py",
+          "id": "F-431-1",
+          "line": 81,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Compose fallback can measure another service's value"
+        },
+        {
+          "class": "note",
+          "evidence": "For code_symbol, `ref.rsplit(\".\", 1)[-1]` yields \"\" for refs like \"Server.\", which is not in identifiers, so present=False and a malformed ref emits a CONTRADICTS 'absent' code observation for an exists claim instead of being dropped like refs \".\" and \"/\"; question to check whether malformed refs sh",
+          "file": "src/brain_v42/knowledge/checks.py",
+          "id": "F-431-2",
+          "line": 131,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Trailing-dot symbol ref measures 'absent' instead of being dropped"
+        },
+        {
+          "class": "note",
+          "evidence": "`_scalar(_block(text, \"deploy\") or text, \"site\")` reads any `site:` key when no deploy block exists, so a `site:` under an unrelated block would be measured; impact is limited by the domain filter to the three pinned host values.",
+          "file": "src/brain_v42/knowledge/facts_registry.py",
+          "id": "F-431-3",
+          "line": 86,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Host measurement falls back to the whole rail.yaml"
+        },
+        {
+          "class": "note",
+          "evidence": "_embedding returns the named EMBEDDING_BACKEND scalar before consulting EMBEDDING_SERVICE_URL, so a contradictory pair (backend mistral-api with a shim URL) reconciles to the backend value rather than unmeasurable; a priority trade-off, but if the intent is competing-evidence-drops-out as in _ci_sys",
+          "file": "src/brain_v42/knowledge/facts_registry.py",
+          "id": "F-431-4",
+          "line": 92,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Embedding backend silently overrides a conflicting URL"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "not_reviewed": [],
+      "pr": 431,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "9ceec8c07cacafa7bb64c98b794144f32532b632",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T06:54:34.139785Z",
+  "schema_version": 1
+}
