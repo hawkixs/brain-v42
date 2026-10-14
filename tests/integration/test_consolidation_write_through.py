@@ -296,8 +296,6 @@ async def test_real_child_audit_failure_rolls_back_the_entire_merge(
 
 
 @pytest.mark.asyncio
-# No "foreign" case: cross-project supersession exists in production (2 of 56
-# rows on 2026-10-13, both project renames); restricting it is an operator decision.
 @pytest.mark.parametrize("invalid_old", ["missing", "superseded"])
 async def test_real_supersede_rejection_rolls_back_replacement(
     session_factory: async_sessionmaker[AsyncSession],
@@ -320,9 +318,11 @@ async def test_real_supersede_rejection_rolls_back_replacement(
         title="Replacement", description="Context", reasoning="Reason", project_key=merge_project
     )
 
-    with pytest.raises(pg_decision.DecisionNotSupersedableError):
+    with pytest.raises(pg_decision.DecisionNotSupersedableError) as raised:
         await repo.supersede(old_id, data)
 
+    assert type(raised.value) is pg_decision.DecisionNotSupersedableError
+    assert str(raised.value) == f"Decision {old_id} does not exist or is already superseded"
     assert await repo.get_by_id(old_id) == before
     async with session_factory() as observer:
         assert (
@@ -332,6 +332,140 @@ async def test_real_supersede_rejection_rolls_back_replacement(
                 .where(decisions.c.project_key == merge_project, decisions.c.title == "Replacement")
             )
         ).scalar_one() == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("old_scope", "replacement_scope"),
+    [("project", "foreign"), ("project", "unscoped"), ("unscoped", "project")],
+)
+async def test_real_cross_project_supersede_refusal_writes_nothing(
+    session_factory: async_sessionmaker[AsyncSession],
+    merge_project: str,
+    old_scope: str,
+    replacement_scope: str,
+) -> None:
+    """NULL is a project boundary too; every refused replacement must disappear."""
+    repo = PgDecisionRepo(session_factory)
+    projects = {"project": merge_project, "foreign": f"{merge_project}-foreign", "unscoped": None}
+    old_title = f"{merge_project} old"
+    replacement_title = f"{merge_project} replacement"
+    try:
+        old = await repo.create(
+            DecisionCreate(
+                title=old_title,
+                description="Private old context",
+                reasoning="Project isolation",
+                project_key=projects[old_scope],
+            )
+        )
+        data = DecisionCreate(
+            title=replacement_title,
+            description="Replacement context",
+            reasoning="Project isolation",
+            project_key=projects[replacement_scope],
+        )
+        with pytest.raises(pg_decision.DecisionCrossProjectSupersedeError) as raised:
+            await repo.supersede(old.id, data)
+
+        assert (
+            str(raised.value)
+            == "The old decision belongs to a different project scope; supersede it from its own project (same project_key)"
+        )
+        assert await repo.get_by_id(old.id) == old
+        async with session_factory() as observer:
+            assert (
+                await observer.execute(
+                    sa.select(sa.func.count())
+                    .select_from(decisions)
+                    .where(decisions.c.title == replacement_title)
+                )
+            ).scalar_one() == 0
+    finally:
+        # Unique titles also find unscoped rows and any replacement left by a regression.
+        async with session_factory() as observer:
+            ids = list(
+                (
+                    await observer.execute(
+                        sa.select(decisions.c.id).where(
+                            decisions.c.title.in_([old_title, replacement_title])
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        await _cleanup_postgres(session_factory, ids)
+
+
+@pytest.mark.asyncio
+async def test_real_caller_owned_cross_project_supersede_rolls_back_savepoint(
+    session_factory: async_sessionmaker[AsyncSession],
+    merge_project: str,
+) -> None:
+    """Catching a refusal and committing the caller's transaction cannot leave a replacement."""
+    repo = PgDecisionRepo(session_factory)
+    old_id = await _create_decision(repo, project_key=merge_project, title="Old", tags=[])
+    before = await repo.get_by_id(old_id)
+    data = DecisionCreate(
+        title="Caller replacement",
+        description="Context",
+        reasoning="Project isolation",
+        project_key=f"{merge_project}-foreign",
+    )
+
+    async with session_factory() as session, session.begin():
+        with pytest.raises(pg_decision.DecisionCrossProjectSupersedeError):
+            await repo.supersede(old_id, data, session=session)
+        assert (
+            await session.execute(
+                sa.select(sa.func.count())
+                .select_from(decisions)
+                .where(decisions.c.project_key == data.project_key)
+            )
+        ).scalar_one() == 0
+        assert await repo.get_by_id(old_id, session=session) == before
+
+    assert await repo.get_by_id(old_id) == before
+    assert await repo.list_all(project_key=data.project_key) == []
+
+
+@pytest.mark.asyncio
+async def test_real_unscoped_supersede_updates_old_decision(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """NULL-safe equality permits supersession when neither decision has a project."""
+    repo = PgDecisionRepo(session_factory)
+    marker = uuid4().hex
+    titles = [f"Unscoped old {marker}", f"Unscoped replacement {marker}"]
+    try:
+        old = await repo.create(
+            DecisionCreate(title=titles[0], description="Context", reasoning="Unscoped proof")
+        )
+        replacement = await repo.supersede(
+            old.id,
+            DecisionCreate(title=titles[1], description="Context", reasoning="Unscoped proof"),
+        )
+
+        updated = await repo.get_by_id(old.id)
+        assert updated is not None
+        assert updated.status == "superseded"
+        assert updated.superseded_by == replacement.id
+        assert updated.project_key is None
+        assert replacement.project_key is None
+        assert await repo.get_by_id(replacement.id) == replacement
+    finally:
+        async with session_factory() as observer:
+            ids = list(
+                (
+                    await observer.execute(
+                        sa.select(decisions.c.id).where(decisions.c.title.in_(titles))
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        await _cleanup_postgres(session_factory, ids)
 
 
 @pytest.mark.asyncio
