@@ -193,6 +193,10 @@ ignore_missing_imports = true
 [tool.coverage.run]
 source = ["src/brain_v42"]
 branch = true
+# Each unit shard measures coverage on its own runner; relative paths let
+# `coverage combine` in the test-coverage aggregator merge the shard data files
+# whatever their absolute paths were.
+relative_files = true
 
 [tool.coverage.report]
 exclude_lines = [

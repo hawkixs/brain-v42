@@ -69,14 +69,48 @@ jobs:
       - name: Check types
         run: .venv/bin/mypy src/
 
+  # The two static guards that used to ride test-unit's database. They need no
+  # Postgres and no schema, so they moved out of the shard: a unit shard no longer
+  # carries them, and their failure no longer stops the whole unit suite.
+  repo-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - name: Install uv
+        run: pip install "uv==$UV_VERSION"
+      - name: Install dependencies
+        run: uv sync --locked --no-dev --extra dev
+      - name: Check module layering
+        run: .venv/bin/python scripts/check_module_layering.py --package src/brain_v42
+      - name: Check container image pins
+        run: .venv/bin/python scripts/check_container_image_pins.py
+
   # tests/unit/ is not database-free: eight of its files opt into a real PostgreSQL
   # through require_test_db_url() (tests/conftest.py) and skip when
   # BRAIN_V42_TEST_DB_URL is unset. Only test-integration carried it, so those
   # tests had never run here either — a skip is green, so nothing reported the hole.
   # Count measured 2026-08-10: 51 tests unlock, not the 45 first recorded here.
-  test-unit:
+  #
+  # Sharding (decisions ad491597 + 57fa86dc): the suite is split across a matrix of
+  # hosted runners, BY TEST FILE. Every shard computes the same deterministic
+  # partition from the same collection, so the union of shards is the whole suite
+  # and shards are disjoint by construction. N lives ONLY in the matrix below and
+  # reaches the runner as `strategy.job-total` — never a hardcoded denominator.
+  unit-shard:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     services:
       # Same topology note as test-integration: reached over the mapped port,
       # because without a job container the runner is not on the service network.
@@ -123,83 +157,43 @@ jobs:
       # `python -m <module>` in CI and refuses the workflow.
       - name: Apply the schema to the test database
         run: .venv/bin/alembic upgrade head
-      - name: Check module layering
-        run: .venv/bin/python scripts/check_module_layering.py --package src/brain_v42
-      - name: Check container image pins
-        run: .venv/bin/python scripts/check_container_image_pins.py
+      # Each shard measures coverage into its own data file and writes its own
+      # JUnit report: test-coverage combines the data files and the witness reads
+      # every report. `--cov-report=` (empty) suppresses the per-shard report —
+      # the data file is the deliverable here, not a term printout.
       - name: Run unit tests
-        run: .venv/bin/pytest tests/unit/ -v --tb=short
-
-  # The same topology as test-unit, and that is the POINT: without the Postgres
-  # service, without BRAIN_V42_TEST_DB_URL and without the schema applied,
-  # `require_test_db_url()` (tests/conftest.py) SKIPS the database-backed tests.
-  # Coverage then described a subset of the code actually tested, and nothing
-  # said so to whoever read the percentage. Measured 2026-08-22: 60 tests
-  # skipped, 19 statements and 1 branch never counted.
-  #
-  # The two comments this recipe replaces announced "51 tests" — ticket
-  # f779092b announced 55, the measurement finds 60. Three numbers, three
-  # dates: which is why the guard below counts NOTHING and merely demands zero
-  # skips from this cause.
-  test-coverage:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    services:
-      postgres:
-        image: pgvector/pgvector:pg16@sha256:1d533553fefe4f12e5d80c7b80622ba0c382abb5758856f52983d8789179f0fb
         env:
-          POSTGRES_DB: brain_test
-          POSTGRES_USER: brain
-          POSTGRES_PASSWORD: brain
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U brain -d brain_test"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 20
-    env:
-      POSTGRES_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
-      BRAIN_V42_TEST_DB_URL: "postgresql+asyncpg://brain:brain@localhost:5432/brain_test"
-      GRAPH_ENABLED: "false"
-      EMBEDDING_SERVICE_URL: "http://localhost:8003"
-    steps:
-      - name: Check out source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
-        with:
-          persist-credentials: false
-      - name: Install Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - name: Install uv
-        run: pip install "uv==$UV_VERSION"
-      - name: Install dependencies
-        run: uv sync --locked --no-dev --extra dev
-      # Same reason as in test-unit: tests/unit/ has no equivalent of the
-      # run_migrations fixture, and a bare pgvector database would make the
-      # database-backed tests FAIL on missing relations instead of passing.
-      - name: Apply the schema to the test database
-        run: .venv/bin/alembic upgrade head
-      - name: Measure coverage
+          COVERAGE_FILE: .coverage.unit-${{ matrix.shard }}
         run: >-
-          .venv/bin/pytest tests/unit/ --cov=brain_v42 --cov-report=term-missing
-          --cov-report=xml:coverage.xml --cov-fail-under=60
-          --junitxml=coverage-junit.xml
-      # THE INVERTED WITNESS, and it is the deliverable — not the percentage.
-      # Repairing the number alone would let it drift again at the next recipe
-      # gap: a test that SKIPS does not turn a job red, so CI would have stayed
-      # green on partial coverage, exactly as before.
-      #
-      # `if: always()`: it must speak even when the measurement fails elsewhere,
-      # otherwise a red `--cov-fail-under` would mask the real reason.
-      - name: Refuse a coverage measured on a subset
+          .venv/bin/pytest tests/unit/ -v --tb=short
+          --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+          --shard-plan=tests/ci/shard_plan_unit.json
+          --cov=brain_v42 --cov-report=
+          --junitxml=unit-junit-${{ matrix.shard }}.xml
+      # `if: always()`: a red shard still explains itself through its JUnit
+      # report, which the test-coverage witness reads to refuse a measurement
+      # made on a subset.
+      - name: Upload the shard reports
         if: always()
-        run: .venv/bin/python scripts/check_coverage_saw_the_db_tests.py coverage-junit.xml
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unit-shard-${{ matrix.shard }}
+          path: |
+            .coverage.unit-${{ matrix.shard }}
+            unit-junit-${{ matrix.shard }}.xml
+          include-hidden-files: true
+          retention-days: 7
 
-  test-integration:
+  # The integration suite sharded the same way as the unit suite. The whole
+  # PostgreSQL cluster stays a throwaway service container per shard, and the
+  # faulthandler flags that caught this job's two hangs stay explicit.
+  integration-shard:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     services:
       # Reached over the mapped port: without a job container, GitHub does not put
       # the runner on the service network, so the GitLab `alias: postgres` host has
@@ -255,7 +249,81 @@ jobs:
       - name: Run integration tests
         run: >-
           .venv/bin/pytest tests/integration/ -v --tb=short
+          --shard=${{ matrix.shard }}/${{ strategy.job-total }}
+          --shard-plan=tests/ci/shard_plan_integration.json
           -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true
+
+  # The three historical check names become short aggregators over their shard
+  # matrices: a green check named `test-unit` still means "the whole suite
+  # passed". They checkout nothing and run no tests; their one step fails unless
+  # every shard of the matrix succeeded.
+  test-unit:
+    needs: unit-shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every unit shard to pass
+        run: test "${{ needs.unit-shard.result }}" = "success"
+
+  test-integration:
+    needs: integration-shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every integration shard to pass
+        run: test "${{ needs.integration-shard.result }}" = "success"
+
+  # Coverage is measured ONCE, from the unit shards. Each shard already uploaded
+  # its own data file and JUnit report; this aggregator combines the data files,
+  # reports the whole-suite percentage against the unchanged 60 threshold, and
+  # then replays the witness over every JUnit report.
+  test-coverage:
+    needs: unit-shard
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Require every unit shard to pass
+        run: test "${{ needs.unit-shard.result }}" = "success"
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # Pinned to the version uv.lock resolves, installed as a console script —
+      # never `python -m coverage`: check_container_image_pins.py refuses
+      # `python -m <module>` in CI.
+      - name: Install coverage
+        run: pip install "coverage==7.13.4"
+      - name: Download the unit shard reports
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: unit-shard-*
+          merge-multiple: true
+      # `relative_files = true` under [tool.coverage.run] lets the shards combine
+      # whatever their absolute paths were.
+      - name: Combine the shard coverage
+        run: coverage combine
+      - name: Report the combined coverage
+        run: coverage report --fail-under=60 -m
+      - name: Export the combined coverage
+        run: coverage xml
+      # THE INVERTED WITNESS, and it is the deliverable — not the percentage.
+      # Repairing the number alone would let it drift again at the next recipe
+      # gap: a test that SKIPS does not turn a job red, so CI would have stayed
+      # green on partial coverage, exactly as before.
+      #
+      # `if: always()`: it must speak even when the measurement fails elsewhere,
+      # otherwise a red `coverage report` would mask the real reason. It reads
+      # every shard's JUnit report, not just one.
+      - name: Refuse a coverage measured on a subset
+        if: always()
+        run: python scripts/check_coverage_saw_the_db_tests.py unit-junit-*.xml
 
   # The delivery build and smoke of continuous-delivery.yml, minus everything that
   # leaves the runner: no registry login, no cache pulled from the registry, no

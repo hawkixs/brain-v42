@@ -25,6 +25,8 @@ from tests.database_guards import (
     validate_test_database_url,
 )
 
+pytest_plugins = ["tests.ci_shard"]
+
 
 def pytest_configure(config: pytest.Config) -> None:
     """Restore SIGINT when the suite was launched with it ignored (ticket 29e9d695).
