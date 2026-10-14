@@ -63,6 +63,17 @@ class TestRateLimits:
         assert [call.args[0] for call in sleep.await_args_list] == [0.5, 1.0]
 
     @pytest.mark.asyncio
+    async def test_non_finite_retry_after_uses_backoff(self) -> None:
+        service = GPUEmbeddingService()
+        client = AsyncMock(spec=httpx.AsyncClient)
+        limited = _http_response(429, retry_after="nan")
+        client.post.side_effect = [limited, limited, _http_response(200)]
+        service._client = client
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep:
+            await service.embed("document")
+        assert [call.args[0] for call in sleep.await_args_list] == [0.5, 1.0]
+
+    @pytest.mark.asyncio
     async def test_retry_after_cannot_be_shortened_to_fit_the_remaining_budget(self) -> None:
         service = GPUEmbeddingService(retry_budget_seconds=10.0)
         client = AsyncMock(spec=httpx.AsyncClient)
@@ -141,6 +152,18 @@ class TestRateLimits:
 
 
 class TestElapsedBudgets:
+    @pytest.mark.asyncio
+    async def test_read_error_degrades_to_embedding_unavailable(self) -> None:
+        service = GPUEmbeddingService(max_retries=0)
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.side_effect = httpx.ReadError(
+            "connection dropped", request=httpx.Request("POST", "http://embed.test")
+        )
+        service._client = client
+        with pytest.raises(EmbeddingUnavailable) as caught:
+            await service.embed("document")
+        assert caught.value.kind == "unreachable"
+
     @pytest.mark.parametrize("method", ["embed", "embed_query", "embed_texts"])
     @pytest.mark.asyncio
     async def test_hanging_attempt_degrades_on_deadline(self, method: str) -> None:

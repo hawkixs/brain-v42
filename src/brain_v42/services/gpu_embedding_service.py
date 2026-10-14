@@ -23,6 +23,7 @@ from __future__ import annotations
 # against wall-clock time.time(), budgets against monotonic(), and the tests patch
 # each one separately.
 import asyncio
+import math
 import time
 from collections.abc import Callable
 from email.utils import parsedate_to_datetime
@@ -194,7 +195,7 @@ class GPUEmbeddingService:
                     response = await client.post(url, **kwargs)  # type: ignore[arg-type]
                 response.raise_for_status()
                 return response
-            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            except httpx.TransportError as exc:
                 last_error = exc
                 if attempt < self._max_retries:
                     backoff = 0.5 * (2**attempt)
@@ -285,12 +286,15 @@ class GPUEmbeddingService:
         retry_after = response.headers.get("Retry-After")
         if retry_after is not None:
             try:
-                return max(0.0, float(retry_after))
+                delay = float(retry_after)
+                if not math.isnan(delay):
+                    return max(0.0, delay)
             except ValueError:
-                try:
-                    return max(0.0, parsedate_to_datetime(retry_after).timestamp() - time.time())
-                except (ValueError, TypeError, OverflowError):
-                    pass
+                pass
+            try:
+                return max(0.0, parsedate_to_datetime(retry_after).timestamp() - time.time())
+            except (ValueError, TypeError, OverflowError):
+                pass
         return 0.5 * 2.0**attempt
 
     @staticmethod

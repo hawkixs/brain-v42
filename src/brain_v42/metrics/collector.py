@@ -84,6 +84,8 @@ class MetricsCollector(
             # contention (lazy supervisor 503) from real outages (TCP layer).
             "gpu_busy_errors": 0,
             "unreachable_errors": 0,
+            "rate_limited_errors": 0,
+            "deadline_errors": 0,
             "total_latency": 0.0,
             "usage": {
                 "read": {"total_tokens": 0, "reported_requests": 0},
@@ -380,6 +382,10 @@ class MetricsCollector(
                 self._embedding_stats["gpu_busy_errors"] += 1
             elif error_kind == "unreachable":
                 self._embedding_stats["unreachable_errors"] += 1
+            elif error_kind == "rate_limited":
+                self._embedding_stats["rate_limited_errors"] += 1
+            elif error_kind == "deadline":
+                self._embedding_stats["deadline_errors"] += 1
 
     def record_embedding_usage(
         self,
@@ -640,6 +646,8 @@ class MetricsCollector(
                 "total_errors": self._embedding_stats["total_errors"],
                 "gpu_busy_errors": self._embedding_stats["gpu_busy_errors"],
                 "unreachable_errors": self._embedding_stats["unreachable_errors"],
+                "rate_limited_errors": self._embedding_stats["rate_limited_errors"],
+                "deadline_errors": self._embedding_stats["deadline_errors"],
                 "recent_errors": self._count_recent(self._embedding_error_times),
                 "total_latency": self._embedding_stats["total_latency"],
                 "usage": self._embedding_usage_snapshot(),
@@ -745,6 +753,8 @@ class MetricsCollector(
             "total_errors": self._embedding_stats["total_errors"],
             "gpu_busy_errors": self._embedding_stats["gpu_busy_errors"],
             "unreachable_errors": self._embedding_stats["unreachable_errors"],
+            "rate_limited_errors": self._embedding_stats["rate_limited_errors"],
+            "deadline_errors": self._embedding_stats["deadline_errors"],
             "recent_errors": self._count_recent(self._embedding_error_times),
             "usage": self._embedding_usage_snapshot(),
             "model": settings.embedding_model,

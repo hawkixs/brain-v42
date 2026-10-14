@@ -58,6 +58,14 @@ class TestEmbeddingRecording:
         assert collector._embedding_stats["gpu_busy_errors"] == 1
         assert collector._embedding_stats["unreachable_errors"] == 2
 
+    def test_record_embedding_request_splits_rate_limited_and_deadline(self) -> None:
+        collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
+        collector.record_embedding_request(10.0, error=True, error_kind="rate_limited")
+        collector.record_embedding_request(20.0, error=True, error_kind="deadline")
+
+        assert collector._embedding_stats["rate_limited_errors"] == 1
+        assert collector._embedding_stats["deadline_errors"] == 1
+
     def test_record_embedding_request_no_error_does_not_bump_split_counters(self) -> None:
         collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
         collector.record_embedding_request(latency_ms=10.0)
