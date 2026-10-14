@@ -26,7 +26,7 @@ ROOT = Path(__file__).parents[2]
 PASSWORD = "unit-only-password-'\\-never-log"
 OWNER_URL = "postgresql+asyncpg://owner:unit-only-owner-password@localhost:5432/test"
 #: The repository head, read like the CLI reads it: a literal here broke 33 tests the
-#: day 065 landed. NEWER is one revision past it, which no code head knows.
+#: day 065 landed; it also follows 066 without another literal bump. NEWER is one revision past it, which no code head knows.
 HEAD = shipped_alembic_head()
 NEWER = f"{int(HEAD) + 1:03d}"
 RESTORE_COMMENT = "brain-v42-restore sha256=" + "a" * 64 + " at=2026-10-09T12:00:00Z"
