@@ -1,0 +1,49 @@
+{
+  "digest": "sha256:94892b9fc0c43fd0509383041a7c53db1ea754bd26660755a01f4a1db539e1fd",
+  "idempotency_key": "review_verdict:7b79b5344b1ffb76eb0f5d49b936f3a43846ed6b:115597759675",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115597759675,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The test-plan box '[ ] tests/integration/db/test_delivery_mcp.py::test_list_ticket_filter_limits_to_visible_workflow runs in CI on PostgreSQL' is unchecked. This test is the only check that exercises the new SQL predicate against a real database on both native and compact catalogues, including the p",
+          "file": "tests/integration/db/test_delivery_mcp.py",
+          "id": "F-384-1",
+          "line": 168,
+          "severity": "important",
+          "status": "new",
+          "title": "End-to-end PostgreSQL verification of the ticket filter is pending CI"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 384,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "7b79b5344b1ffb76eb0f5d49b936f3a43846ed6b",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T23:43:13.541467Z",
+  "schema_version": 1
+}

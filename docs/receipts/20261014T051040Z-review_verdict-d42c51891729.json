@@ -1,0 +1,78 @@
+{
+  "digest": "sha256:d42c51891729aa22cd6a1dfbe54d9a97dd65166d3fc40191450223b0188e50a0",
+  "idempotency_key": "review_verdict:d0be3db5e34c6b7f17bfb6f682c3cf114fcd4886:115691894163",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115691894163,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The new orphan check (line 459) and the rerank_fallback_url syntax check (line 484) are placed after the rerank_backend=='none' branch returns at line 458, so for backend 'none' refusal of these three fallback fields depends on the pre-existing 'conflicts' list whose contents are not in the diff; th",
+          "file": "src/brain_v42/config.py",
+          "id": "F-414-1",
+          "line": 459,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Orphan and URL checks sit after the 'none' early return; coverage there rests on unseen code"
+        },
+        {
+          "class": "note",
+          "evidence": "The new fallback-URL block calls httpx.URL and catches httpx.InvalidURL (head lines ~494-506), but the diff has no import hunk and the quoted excerpt starts at line 429. The claimed pass-at-head suite implies module-level `import httpx` exists in config.py; worth confirming since the whole check dep",
+          "file": "src/brain_v42/config.py",
+          "id": "F-414-2",
+          "line": 496,
+          "severity": "minor",
+          "status": "new",
+          "title": "httpx import not visible in diff or excerpt"
+        },
+        {
+          "class": "note",
+          "evidence": "test_invalid_fallback_url_is_refused_without_rendering_value asserts `url not in str(excinfo.value)` for six inputs; if pydantic's default ValidationError str rendered input_value (pydantic_hide_input not set on the settings model), the configured value would be rendered and the test would fail. It ",
+          "file": "tests/unit/test_config_rerank_hosted.py",
+          "id": "F-414-3",
+          "line": 504,
+          "severity": "minor",
+          "status": "new",
+          "title": "value non-containment on str(excinfo.value) rests on a mechanism outside the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "RerankChain now fails startup when the primary identity is uncalibrated whenever a fallback is configured (F-400-3), but the doc hunk only annotates the three fallback rows; the visible fallback-model row speaks of the fallback's calibration. Fine if the chain-mode prose elsewhere in the file alread",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-414-4",
+          "line": 545,
+          "severity": "minor",
+          "status": "new",
+          "title": "new uncalibrated-primary startup refusal not stated in the touched doc region"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 414,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "d0be3db5e34c6b7f17bfb6f682c3cf114fcd4886",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T05:10:40.468701Z",
+  "schema_version": 1
+}

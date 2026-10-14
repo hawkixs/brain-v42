@@ -1,0 +1,68 @@
+{
+  "digest": "sha256:bf731e4651e7f9a6b5864b99d45979158ce07271cedc1f665b716b359f851543",
+  "idempotency_key": "review_verdict:3538db208cefea9bb5e72576250c93ca5bb80d48:115764349392",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115764349392,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "pyproject.toml is confirmed at version 0.6.18, but the hunk the description claims for uv.lock is not among the visible hunks. Check that the lock's brain_v42 entry resolves to 0.6.18 so the stated version parity holds after truncation.",
+          "file": "uv.lock",
+          "id": "F-433-1",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "uv.lock 0.6.18 parity not visible in the shown portion"
+        },
+        {
+          "class": "note",
+          "evidence": "The description and the new README text both state the session_slots block contract now lists the /api/session-slots/v1 route and brain-graph, but no hunk for docs/contracts/session_slots_block.json appears in the visible portion. Verify the contract file is actually updated in the head, since aREAD",
+          "file": "docs/contracts/session_slots_block.json",
+          "id": "F-433-2",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Announced contract change not visible in the shown portion"
+        },
+        {
+          "class": "note",
+          "evidence": "The intro's lot 0.6.12 list says 'orphan rerank fallback settings refused' without the 'uncalibrated primary refused' item, and its lot 0.7.0 list drops 'cluster-guard races closed'; both appear in the PR description's grouped change list, so the shipped summary is slightly less complete than what i",
+          "file": "README.md",
+          "id": "F-433-3",
+          "line": 5,
+          "severity": "minor",
+          "status": "new",
+          "title": "Release summary omits two items the description lists"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 433,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "3538db208cefea9bb5e72576250c93ca5bb80d48",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T08:49:23.518824Z",
+  "schema_version": 1
+}

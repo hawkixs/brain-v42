@@ -1,0 +1,55 @@
+{
+  "digest": "sha256:8487734a62d0dac681ea4a83287056b18604c23664aa6d22634b07282a8b1c37",
+  "idempotency_key": "review_verdict:96e7404ee043b521b3d81cab11977890d5334f2a:115916670192",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carried_from": "16867ba7ec0d19e3bcb8bef17d23fc207e3a7088",
+      "carry_decision": "57fa86dc",
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115916670192,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The test-plan item 'Plans regenerated from this PR's own hosted run in a second commit, then shard wall times compared' is unchecked and this diff contains only the first commit; merging before it leaves the committed shard_plan_*.json files still weighed from the local run, and the new parser is ex",
+          "file": "scripts/build_shard_plan.py",
+          "id": "F-437-1",
+          "line": null,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Plans not yet regenerated from a hosted run"
+        }
+      ],
+      "independent": true,
+      "judged_base": "23743a36bc00dda7f81034d6183ca8f94e20bb20",
+      "mode": "incremental",
+      "new_base": "4b245efa5ae089c5107a01d41a951b9110bd38d1",
+      "not_reviewed": [],
+      "patch_id": "931b5f155a12dbf541b4a631a65b5a49e1f3df01",
+      "pr": 437,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "96e7404ee043b521b3d81cab11977890d5334f2a",
+      "source_check_run_id": 115866602115,
+      "source_status_creator_id": 8717916,
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T14:41:25.696465Z",
+  "schema_version": 1
+}

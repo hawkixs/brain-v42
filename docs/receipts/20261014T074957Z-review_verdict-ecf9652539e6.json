@@ -1,0 +1,88 @@
+{
+  "digest": "sha256:ecf9652539e64d040a08007c816c527ebb150176a6e2d842f4b34abeb15e5ecc",
+  "idempotency_key": "review_verdict:2c73fd5e3ff7f0eb4bfe1dd341b6506d4ccaffe0:115740971753",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115740971753,
+      "diff_truncated": false,
+      "finding_count": 5,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Check whether _assign_feature requires an explicit await session.commit(). Unlike ClusterGuard._commit or PlanIndexer._link_plan_to_feature, _assign_feature executes an UPDATE on gitlab_events inside async with self._sf() as session without calling commit(), which leaves the update uncommitted if se",
+          "file": "src/brain_v42/services/gitlab_ingestor.py",
+          "id": "F-426-1",
+          "line": 339,
+          "severity": "important",
+          "status": "fixed",
+          "title": "_assign_feature leaves session uncommitted"
+        },
+        {
+          "class": "note",
+          "evidence": "The tests pin that resolve executes pg_advisory_xact_lock(hashtext(:key)) before the candidate read and holds it through later updates within the transaction, while consolidation re-locks merge rows under savepoints; whether a serialization failure / deadlock abort raised when these two lock mechani",
+          "file": "tests/unit/test_cluster_guard.py",
+          "id": "F-426-2",
+          "line": 230,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Advisory-lock vs consolidation lock ordering unverified (deadlock victim handling)"
+        },
+        {
+          "class": "note",
+          "evidence": "In test_resolve_reports_lost_when_status_compare_and_swap_fails the fresh-status read is routed by `isinstance(statement, sa.sql.selectable.Select) and len(statement._order_by_clauses) == 0`; any other now-ORDER_BY-free SELECT added to the resolve flow (e.g. a liveness probe) would silently claim th",
+          "file": "tests/unit/test_cluster_guard.py",
+          "id": "F-426-3",
+          "line": 108,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Statement disambiguation by _order_by_clauses is brittle"
+        },
+        {
+          "class": "note",
+          "evidence": "The hunk adds only the trailing comment; the module tuple `_TABLES` and the statement-construction code it vouches for lie above the hunk and outside the delta, so the claim that no caller or operator input reaches the SQL cannot be verified from this diff. Check that `_TABLES` is a literal module-l",
+          "file": "src/brain_v42/maintenance/merge_chain_repair.py",
+          "id": "F-426-4",
+          "line": 123,
+          "severity": "minor",
+          "status": "new",
+          "title": "S608/B608 suppression justified by code outside the visible delta"
+        },
+        {
+          "class": "note",
+          "evidence": "A trailing `# noqa: S608  # nosec B608` on the closing-quote line silences only diagnostics attributed to that line; the string construction that S608/B608 would flag sits above the hunk. Check which line ruff and bandit report for this literal and that `ruff check src/brain_v42/maintenance/merge_ch",
+          "file": "src/brain_v42/maintenance/merge_chain_repair.py",
+          "id": "F-426-5",
+          "line": 123,
+          "severity": "minor",
+          "status": "new",
+          "title": "Trailing noqa may not cover the line ruff/bandit actually flags"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "not_reviewed": [],
+      "pr": 426,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "2c73fd5e3ff7f0eb4bfe1dd341b6506d4ccaffe0",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T07:49:57.486571Z",
+  "schema_version": 1
+}

@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:563de98415ec33f4fc8ef6b7dbbd324fcfc006408ffdfa3b61e9377eb7a787f1",
+  "idempotency_key": "review_verdict:1f3d8d5dddbd306d2e386d1cac051039a4755a41:115822806530",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115822806530,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Question to check: the new check delegates entirely to focus_shrink_override_allowed(), whose implementation is outside this diff; the relay fix is only as strong as that helper. Confirm it validates an active /brain-admin elevation bound to the verified credential and the current MCP connection (as",
+          "file": "src/brain_v42/services/focus_shrink_override.py",
+          "id": "F-436-1",
+          "line": 27,
+          "severity": "important",
+          "status": "new",
+          "title": "Confirm the elevation gate reads server-side state, not caller-declared data"
+        },
+        {
+          "class": "note",
+          "evidence": "The elevation gate sits before the relay_expects_one_revision check and before repo.relay, where replay is detected. Consequences: an unelevated caller sending a structurally invalid payload with allow_focus_shrink=true now gets focus_shrink_override_refused instead of relay_expects_one_revision, an",
+          "file": "src/brain_v42/services/brain_session_service.py",
+          "id": "F-436-2",
+          "line": 458,
+          "severity": "minor",
+          "status": "new",
+          "title": "Gate precedence over payload validation and replay detection"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 436,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "1f3d8d5dddbd306d2e386d1cac051039a4755a41",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T11:22:46.765128Z",
+  "schema_version": 1
+}

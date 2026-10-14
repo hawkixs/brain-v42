@@ -1,0 +1,75 @@
+{
+  "digest": "sha256:0bfc0883c668d3e87c9752a34f3991cd0d1793541a108fea646acd637ef98ac2",
+  "idempotency_key": "review_verdict:40ea687263818ce9006a54944f6bbf9dab31d02c:115992064954",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carried_from": "627dd6174c67bffd491bb29c634ef2d3f38aae30",
+      "carry_decision": "57fa86dc",
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115992064954,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "if the variable is an allowlist whose unset default permits other named readers (e.g. dashboards or agents), pinning it to only \"red-cockpit\" narrows access rather than adding one. The Settings model and metrics read middleware are outside the diff; check that red-cockpit is added to, or that the on",
+          "file": "deploy/compose.yaml",
+          "id": "F-444-1",
+          "line": 269,
+          "severity": "important",
+          "status": "new",
+          "title": "Reader allowlist semantics of METRICS_READ_CLIENTS not verifiable from the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The loop over (mcp, metrics) at lines 158-160 already sets every key of the metrics environment, which now includes METRICS_READ_CLIENTS, so the extra clean_settings_env.setenv(\"METRICS_READ_CLIENTS\", metrics[\"METRICS_READ_CLIENTS\"]) at line 162 repeats the same value. Harmless duplication.",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-444-2",
+          "line": 162,
+          "severity": "minor",
+          "status": "new",
+          "title": "Redundant explicit setenv of METRICS_READ_CLIENTS"
+        },
+        {
+          "class": "note",
+          "evidence": "assert settings.metrics_read_clients == [\"red-cockpit\"] presumes Settings defines metrics_read_clients and splits the env string into a list; those definitions are not in the diff. If the field or its parsing differ, the test fails visibly in CI rather than silently, so this is only a confirm-the-mo",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-444-3",
+          "line": 167,
+          "severity": "minor",
+          "status": "new",
+          "title": "Settings field behavior relies on code outside the diff"
+        }
+      ],
+      "independent": true,
+      "judged_base": "aeba6832c6854ad1ffcfdb1380b3a5b56a2d334c",
+      "mode": "light",
+      "new_base": "9050fafbb4dd0836745fb20ba3586b13ec14edd7",
+      "not_reviewed": [],
+      "patch_id": "e5b09acadb08f2c459c6c20889d00c0de868af93",
+      "pr": 444,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "40ea687263818ce9006a54944f6bbf9dab31d02c",
+      "source_check_run_id": 115932865433,
+      "source_status_creator_id": 8717916,
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T17:11:49.325769Z",
+  "schema_version": 1
+}

@@ -1,0 +1,69 @@
+{
+  "digest": "sha256:939d627a6a13ab1bbfa635742c9aeaa5870a684b9cb3ed3ad34d693182dd4699",
+  "idempotency_key": "review_verdict:45241aeb6789de9c371bb76b9b874d24c5428cd4:115723089783",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115723089783,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "if collect_session_slots() can ever succeed with exactly {} (its degraded/empty payload shape is defined outside this diff), _handle_session_slots returns {} both for that success and for a failed read; the contract pins failed_read:{} so this is benign, but block_status.session_slots on /metrics is",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-425-1",
+          "line": 478,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Successful empty block indistinguishable from failed read"
+        },
+        {
+          "class": "note",
+          "evidence": "_refuse_read only emits logger.warning(\"metrics.read_refused\", ...) and returns; no counter is incremented and no /metrics field records read-side refusals, so repeated 401/403/429 attempts against the reads are observable only through logs, unlike the receivers' _receiver_refused/_rejection_counter",
+          "file": "src/brain_v42/metrics/read_admission.py",
+          "id": "F-425-2",
+          "line": 23,
+          "severity": "minor",
+          "status": "new",
+          "title": "Read refusals are logged but never counted"
+        },
+        {
+          "class": "note",
+          "evidence": "bucket.allow is only called (line 76) after verifier.verify, allowlist and family checks pass, so every well-formed bearer reaches the verifier unthrottled; cost is likely bounded by the registry snapshot cache (tests show reads without repo loads), but per-source limiting, if any, lives in verify()",
+          "file": "src/brain_v42/metrics/read_admission.py",
+          "id": "F-425-3",
+          "line": 68,
+          "severity": "minor",
+          "status": "new",
+          "title": "No throttling precedes the verifier call on the read path"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 425,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "45241aeb6789de9c371bb76b9b874d24c5428cd4",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T07:03:46.482741Z",
+  "schema_version": 1
+}

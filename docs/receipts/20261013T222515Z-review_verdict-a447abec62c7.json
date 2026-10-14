@@ -1,0 +1,99 @@
+{
+  "digest": "sha256:a447abec62c700da67470cedc867194b1d3010b5a31a4792b00e726b0d5acafe",
+  "idempotency_key": "review_verdict:bc273cdc172e03e08f5301d1150f9bd9cd642f22:115567072235",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115567072235,
+      "diff_truncated": false,
+      "finding_count": 6,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "if any registered tool's input schema contains a recursive #/$defs/ $ref (e.g. a self-referential pydantic model parameter), _short_type follows it with no cycle guard and would raise RecursionError at request time; check whether any catalogue tool has a recursive parameter type",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-371-1",
+          "line": 61,
+          "severity": "important",
+          "status": "new",
+          "title": "Unbounded recursion on self-referential $ref"
+        },
+        {
+          "class": "note",
+          "evidence": "anyOf/oneOf branches are joined with ' | ' with no cap, unlike the 8-value enum cap with ellipsis, so a wide union produces a long type string; only matters for pathological schemas beyond the measured catalogue",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-371-2",
+          "line": 80,
+          "severity": "minor",
+          "status": "new",
+          "title": "Union short types are not length-capped"
+        },
+        {
+          "class": "note",
+          "evidence": "uses transform._mcp._list_tools(), and the alias-precedence semantics (a real registered name, even a family-hidden one, blocks alias resolution) depend on that call returning unfiltered registered names; verify this holds across fastmcp upgrades",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-371-3",
+          "line": 130,
+          "severity": "minor",
+          "status": "new",
+          "title": "Exact-name path relies on FastMCP private internals"
+        },
+        {
+          "class": "note",
+          "evidence": "if the base BM25SearchTransform also routes native (non-compact) on-request rendering through search_result_serializer, native requests would return compact summaries contrary to the class docstring; the pre-existing suite passing suggests the native path is separate, but confirm in BM25SearchTransf",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-371-4",
+          "line": 51,
+          "severity": "minor",
+          "status": "new",
+          "title": "Serializer applies to every render path of this transform"
+        },
+        {
+          "class": "note",
+          "evidence": "schema['enum'] == [] returns '' from _short_type; such a schema is invalid per JSON Schema, so cosmetic only",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-371-5",
+          "line": 64,
+          "severity": "minor",
+          "status": "new",
+          "title": "Empty enum yields empty type string"
+        },
+        {
+          "class": "note",
+          "evidence": "the size-bound test builds its old-format baseline via the private server._list_tools() API, coupling the test to fastmcp internals; acceptable in tests but a maintenance note",
+          "file": "tests/unit/mcp/test_tool_catalog.py",
+          "id": "F-371-6",
+          "line": 333,
+          "severity": "minor",
+          "status": "new",
+          "title": "Size test uses private server._list_tools()"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 371,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "bc273cdc172e03e08f5301d1150f9bd9cd642f22",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T22:25:15.902041Z",
+  "schema_version": 1
+}
