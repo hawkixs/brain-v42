@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import sqlalchemy as sa
+from structlog.testing import capture_logs
 
 from brain_v42.automation.ownership import OwnershipLostError
 from brain_v42.services.cluster_guard import CREATING_SIGNALS, FALLBACK_LINK, ClusterGuard
@@ -69,6 +70,178 @@ def _build_guard(deps: dict[str, Any]) -> ClusterGuard:
 
 
 @pytest.mark.asyncio
+async def test_status_update_compares_the_live_candidate_status(mock_deps: dict[str, Any]) -> None:
+    """A stale candidate must not overwrite a curation decision after waiting."""
+    feature = _make_feature_row(status="planned")
+    result = MagicMock(rowcount=1)
+    mock_deps["session"].execute = AsyncMock(return_value=result)
+
+    await _build_guard(mock_deps)._maybe_update_status(mock_deps["session"], feature, "learning")
+
+    statement = mock_deps["session"].execute.call_args.args[0]
+    sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+    assert "features.merged_into IS NULL" in sql
+    assert "features.status != 'archived'" in sql
+    assert "features.status = 'planned'" in sql
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("similarity", [0.85, 0.66])
+@pytest.mark.parametrize("lost_state", ["archived", "merged", "gone"])
+async def test_resolve_reports_lost_when_status_compare_and_swap_fails(
+    mock_deps: dict[str, Any], similarity: float, lost_state: str
+) -> None:
+    """Both linking branches must refuse a candidate changed by curation."""
+    candidate = _make_feature_row(similarity=similarity)
+    search_result = MagicMock()
+    search_result.fetchall.return_value = [candidate]
+    fresh = _make_feature_row(status="archived" if lost_state == "archived" else "planned")
+    fresh.merged_into = uuid.uuid4() if lost_state == "merged" else None
+    fresh_result = MagicMock()
+    fresh_result.fetchone.return_value = None if lost_state == "gone" else fresh
+
+    async def execute(statement: Any, *args: Any) -> MagicMock:
+        if isinstance(statement, sa.sql.dml.Update):
+            return MagicMock(rowcount=0)
+        if (
+            isinstance(statement, sa.sql.selectable.Select)
+            and len(statement._order_by_clauses) == 0
+        ):
+            return fresh_result
+        return search_result
+
+    mock_deps["session"].execute = AsyncMock(side_effect=execute)
+    with capture_logs() as logs:
+        outcome = await _build_guard(mock_deps).resolve(
+            "Private signal body", [0.1] * 1536, "brain-v42", "learning"
+        )
+
+    assert outcome == (None, "lost")
+    assert not any(log["event"] == "cluster_guard.status_update_skipped" for log in logs)
+    assert "Private signal body" not in str(logs)
+    assert not any(log["event"] == "cluster_guard.status_updated" for log in logs)
+    mock_deps["session"].commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second_wins", [True, False])
+async def test_status_cas_retries_from_fresh_live_status(mock_deps, second_wins):
+    """A status-only race preserves the link and never regresses the fresh status."""
+    candidate = _make_feature_row(status="planned")
+    fresh = _make_feature_row(status="building", pinned=True)
+    fresh.merged_into = None
+    fresh_result = MagicMock()
+    fresh_result.fetchone.return_value = fresh
+    mock_deps["session"].execute.side_effect = [
+        MagicMock(rowcount=0),
+        fresh_result,
+        MagicMock(rowcount=int(second_wins)),
+    ]
+    mock_deps["status_engine"].compute_status.side_effect = ["research", "done"]
+
+    with capture_logs() as logs:
+        assert (
+            await _build_guard(mock_deps)._maybe_update_status(
+                mock_deps["session"], candidate, "learning"
+            )
+            is True
+        )
+
+    assert mock_deps["status_engine"].compute_status.call_args_list[-1].args == (
+        "building",
+        "learning",
+        True,
+    )
+    retry = mock_deps["session"].execute.call_args.args[0]
+    assert retry.compile().params["status_2"] == "building"
+    assert retry.compile().params["status"] == "done"
+    assert any(log["event"] == "cluster_guard.status_update_skipped" for log in logs) is (
+        not second_wins
+    )
+
+
+@pytest.mark.asyncio
+async def test_status_cas_keeps_a_live_feature_when_fresh_status_needs_no_promotion(mock_deps):
+    candidate = _make_feature_row()
+    fresh = _make_feature_row(status="building")
+    fresh.merged_into = None
+    result = MagicMock()
+    result.fetchone.return_value = fresh
+    mock_deps["session"].execute.side_effect = [MagicMock(rowcount=0), result]
+    mock_deps["status_engine"].compute_status.side_effect = ["research", "building"]
+    assert (
+        await _build_guard(mock_deps)._maybe_update_status(
+            mock_deps["session"], candidate, "learning"
+        )
+        is True
+    )
+    assert mock_deps["session"].execute.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_loss", ["resolve", "insert"])
+async def test_resolve_and_link_retries_a_lost_target_once(mock_deps, first_loss):
+    guard = _build_guard(mock_deps)
+    first, survivor = _make_feature_row(), _make_feature_row()
+    guard.resolve = AsyncMock(
+        side_effect=[
+            (None, "lost") if first_loss == "resolve" else (first, "linked"),
+            (survivor, "created"),
+        ]
+    )
+    live, lost = MagicMock(), MagicMock()
+    live.scalar_one.return_value = True
+    lost.scalar_one.return_value = False
+    mock_deps["session"].execute.side_effect = [live] if first_loss == "resolve" else [lost, live]
+    score_for = MagicMock(return_value=0.9)
+    assert await guard.resolve_and_link(
+        "Signal", [0.1], "brain-v42", "plan", "plan", uuid.uuid4(), score_for
+    ) == (survivor, "created", True)
+    assert guard.resolve.await_count == 2
+    assert score_for.call_args.args == ("created",)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["lost", "skipped", "linked"])
+async def test_resolve_and_link_bounds_losses_and_skips(mock_deps, action):
+    guard = _build_guard(mock_deps)
+    guard.resolve = AsyncMock(
+        return_value=(_make_feature_row() if action == "linked" else None, action)
+    )
+    lost = MagicMock()
+    lost.scalar_one.return_value = False
+    mock_deps["session"].execute.return_value = lost
+    outcome = await guard.resolve_and_link(
+        "Signal", [0.1], "brain-v42", "learning", "learning", uuid.uuid4(), lambda _: 1.0
+    )
+    assert outcome == (None, "skipped" if action == "skipped" else "lost", False)
+    assert guard.resolve.await_count == (1 if action == "skipped" else 2)
+
+
+@pytest.mark.asyncio
+async def test_resolve_locks_the_project_before_reading_candidates(
+    mock_deps: dict[str, Any],
+) -> None:
+    """The empty-project read and subsequent creation must share one lock."""
+    result = MagicMock()
+    result.fetchall.return_value = []
+    mock_deps["session"].execute = AsyncMock(return_value=result)
+
+    assert await _build_guard(mock_deps).resolve(
+        "Knowledge signal", [0.1] * 1536, "brain-v42", "decision"
+    ) == (None, "skipped")
+
+    calls = mock_deps["session"].execute.call_args_list
+    assert "pg_advisory_xact_lock(hashtext(:key))" in str(calls[0].args[0])
+    key = calls[0].args[1]["key"]
+    assert key.endswith(":brain-v42")
+    assert key != "brain_v42_adr_number:brain-v42"
+    assert isinstance(calls[1].args[0], sa.sql.selectable.Select)
+    mock_deps["session"].commit.assert_not_awaited()
+    mock_deps["session_factory"].return_value.__aexit__.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_resolve_links_when_high_cosine(mock_deps):
     """Cosine >= 0.70 -> linked. Status promotion is preserved for knowledge
     signals: planned -> research."""
@@ -76,8 +249,7 @@ async def test_resolve_links_when_high_cosine(mock_deps):
     result_set = MagicMock()
     result_set.fetchall.return_value = [feature_row]
 
-    # First execute: cosine search returns a high-similarity feature
-    # Second execute: update status (if needed)
+    # Advisory lock, then cosine search, then update status (if needed).
     mock_deps["session"].execute = AsyncMock(return_value=result_set)
 
     guard = _build_guard(mock_deps)
@@ -103,13 +275,12 @@ async def test_resolve_creates_when_no_candidates(mock_deps):
     result_set = MagicMock()
     result_set.fetchall.return_value = []
 
-    # First execute: cosine search returns nothing
-    # Second execute: INSERT returning new row
+    # Advisory lock, then cosine search returns nothing, then INSERT.
     new_feature_row = _make_feature_row(name="memory decay system"[:200])
     insert_result = MagicMock()
     insert_result.fetchone.return_value = new_feature_row
 
-    mock_deps["session"].execute = AsyncMock(side_effect=[result_set, insert_result])
+    mock_deps["session"].execute = AsyncMock(side_effect=[MagicMock(), result_set, insert_result])
 
     guard = _build_guard(mock_deps)
     feature, action = await guard.resolve(
@@ -140,8 +311,8 @@ async def test_resolve_skips_when_no_candidates_for_knowledge_signal(mock_deps):
     )
 
     assert (feature, action) == (None, "skipped")
-    # Only the candidate search ran — no INSERT into features.
-    assert mock_deps["session"].execute.await_count == 1
+    # Only the advisory lock and candidate search ran — no INSERT.
+    assert mock_deps["session"].execute.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -160,7 +331,7 @@ async def test_resolve_skips_for_unknown_signal_type(mock_deps):
     )
 
     assert (feature, action) == (None, "skipped")
-    assert mock_deps["session"].execute.await_count == 1
+    assert mock_deps["session"].execute.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -196,7 +367,7 @@ async def test_resolve_creates_below_fallback_threshold_for_creating_signal(mock
     insert_result = MagicMock()
     insert_result.fetchone.return_value = new_feature_row
 
-    mock_deps["session"].execute = AsyncMock(side_effect=[result_set, insert_result])
+    mock_deps["session"].execute = AsyncMock(side_effect=[MagicMock(), result_set, insert_result])
 
     guard = _build_guard(mock_deps)
     feature, action = await guard.resolve(
@@ -237,8 +408,8 @@ async def test_resolve_skips_below_fallback_threshold_for_knowledge_signal(mock_
     assert (feature, action) == (None, "skipped")
     assert feature_row.description == "Original description"
     mock_deps["embedding_svc"].embed.assert_not_awaited()
-    # Only the candidate search ran — no UPDATE.
-    assert mock_deps["session"].execute.await_count == 1
+    # Only the advisory lock and candidate search ran — no UPDATE.
+    assert mock_deps["session"].execute.await_count == 2
 
 
 _EVERY_SIGNAL_TYPE = [*sorted(CREATING_SIGNALS), "learning"]
@@ -324,7 +495,7 @@ async def test_resolve_creates_when_cosine_below_grey(mock_deps):
     insert_result = MagicMock()
     insert_result.fetchone.return_value = new_feature_row
 
-    mock_deps["session"].execute = AsyncMock(side_effect=[result_set, insert_result])
+    mock_deps["session"].execute = AsyncMock(side_effect=[MagicMock(), result_set, insert_result])
 
     guard = _build_guard(mock_deps)
     feature, action = await guard.resolve(
@@ -341,8 +512,12 @@ async def test_resolve_creates_when_cosine_below_grey(mock_deps):
 
 
 def _bound_name_from_insert(execute_mock) -> str:
-    """Extract the `name` bound param from the second execute call (INSERT)."""
-    insert_stmt = execute_mock.call_args_list[1].args[0]
+    """Extract the INSERT name without depending on preceding lock statements."""
+    insert_stmt = next(
+        call.args[0]
+        for call in execute_mock.call_args_list
+        if isinstance(call.args[0], sa.sql.dml.Insert)
+    )
     return insert_stmt.compile().params["name"]
 
 
@@ -364,7 +539,7 @@ async def test_create_feature_uses_first_line_when_text_is_multiline(mock_deps):
     new_row = _make_feature_row()
     insert_result = MagicMock()
     insert_result.fetchone.return_value = new_row
-    mock_deps["session"].execute = AsyncMock(side_effect=[result_set, insert_result])
+    mock_deps["session"].execute = AsyncMock(side_effect=[MagicMock(), result_set, insert_result])
 
     guard = _build_guard(mock_deps)
     await guard.resolve(
@@ -387,7 +562,7 @@ async def test_create_feature_skips_leading_blank_lines(mock_deps):
     result_set.fetchall.return_value = []
     insert_result = MagicMock()
     insert_result.fetchone.return_value = _make_feature_row()
-    mock_deps["session"].execute = AsyncMock(side_effect=[result_set, insert_result])
+    mock_deps["session"].execute = AsyncMock(side_effect=[MagicMock(), result_set, insert_result])
 
     guard = _build_guard(mock_deps)
     await guard.resolve(
@@ -408,7 +583,7 @@ async def test_create_feature_truncates_long_single_line(mock_deps):
     result_set.fetchall.return_value = []
     insert_result = MagicMock()
     insert_result.fetchone.return_value = _make_feature_row()
-    mock_deps["session"].execute = AsyncMock(side_effect=[result_set, insert_result])
+    mock_deps["session"].execute = AsyncMock(side_effect=[MagicMock(), result_set, insert_result])
 
     guard = _build_guard(mock_deps)
     await guard.resolve(
@@ -431,7 +606,7 @@ async def test_create_feature_uses_untitled_fallback_for_whitespace_only_text(mo
     result_set.fetchall.return_value = []
     insert_result = MagicMock()
     insert_result.fetchone.return_value = _make_feature_row()
-    mock_deps["session"].execute = AsyncMock(side_effect=[result_set, insert_result])
+    mock_deps["session"].execute = AsyncMock(side_effect=[MagicMock(), result_set, insert_result])
 
     guard = _build_guard(mock_deps)
     await guard.resolve(
@@ -467,8 +642,8 @@ async def test_find_candidates_excludes_archived_and_merged(mock_deps):
         signal_type="learning",
     )
 
-    # The first execute call is _find_candidates; inspect the compiled statement.
-    first_stmt = mock_deps["session"].execute.call_args_list[0].args[0]
+    # The candidate query follows the advisory lock.
+    first_stmt = mock_deps["session"].execute.call_args_list[1].args[0]
     # Compile with literal_binds=True so param values (like 'archived') appear in SQL.
     compiled_sql = str(first_stmt.compile(compile_kwargs={"literal_binds": True}))
     assert "archived" in compiled_sql
@@ -497,8 +672,10 @@ async def test_resolve_stops_after_ownership_loss_during_candidate_query(mock_de
     results = iter((no_candidates, inserted))
     execute_count = 0
 
-    async def execute_and_lose_during_candidates(_statement):
+    async def execute_and_lose_during_candidates(_statement, *args):
         nonlocal execute_count
+        if isinstance(_statement, sa.sql.elements.TextClause):
+            return MagicMock()
         execute_count += 1
         result = next(results)
         if execute_count == 1:
@@ -532,8 +709,10 @@ async def test_resolve_does_not_commit_when_ownership_is_lost_during_insert(mock
     results = iter((no_candidates, inserted))
     execute_count = 0
 
-    async def execute_and_lose_during_insert(_statement):
+    async def execute_and_lose_during_insert(_statement, *args):
         nonlocal execute_count
+        if isinstance(_statement, sa.sql.elements.TextClause):
+            return MagicMock()
         execute_count += 1
         result = next(results)
         if execute_count == 2:

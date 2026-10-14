@@ -26,7 +26,7 @@ def mock_deps():
 
     cluster_guard = AsyncMock()
     mock_feature = MagicMock(id=uuid.uuid4(), name="Test Feature")
-    cluster_guard.resolve = AsyncMock(return_value=(mock_feature, "linked"))
+    cluster_guard.resolve_and_link = AsyncMock(return_value=(mock_feature, "linked", True))
 
     return {
         "session_factory": factory,
@@ -120,7 +120,7 @@ def _mock_duplicate_check_no_existing(mock_deps):
 async def test_process_mr_open_event(mock_deps):
     """MR opened: should embed, call cluster_guard, return processed."""
     event_uuid = str(uuid.uuid4())
-    _mock_duplicate_check_no_existing(mock_deps)
+    event_id = _mock_duplicate_check_no_existing(mock_deps)
 
     ingestor = _build_ingestor(mock_deps)
     result = await ingestor.process_event(
@@ -132,7 +132,27 @@ async def test_process_mr_open_event(mock_deps):
     assert result["status"] == "processed"
     assert result["signal_type"] == "mr_opened"
     mock_deps["embedding_svc"].embed.assert_awaited_once()
-    mock_deps["cluster_guard"].resolve.assert_awaited_once()
+    mock_deps["cluster_guard"].resolve_and_link.assert_awaited_once()
+    args = mock_deps["cluster_guard"].resolve_and_link.await_args.kwargs
+    assert args["artifact_type"] == "gitlab_event"
+    assert args["artifact_id"] == event_id
+    assert args["signal_type"] == "mr_opened"
+    update = mock_deps["session"].execute.await_args_list[-1].args[0]
+    assert update.compile().params["feature_id"] == mock_deps["mock_feature"].id
+
+
+@pytest.mark.asyncio
+async def test_event_keeps_null_feature_when_shared_helper_loses_target(mock_deps):
+    """An unlinked event must not retain a stale feature identifier."""
+    _mock_duplicate_check_no_existing(mock_deps)
+    mock_deps["cluster_guard"].resolve_and_link.return_value = (None, "lost", False)
+    result = await _build_ingestor(mock_deps).process_event(
+        _mr_open_payload(), str(uuid.uuid4()), "brain-v42"
+    )
+    assert result["action"] == "lost"
+    insert = mock_deps["session"].execute.await_args_list[1].args[0]
+    assert insert.compile().params["feature_id"] is None
+    assert mock_deps["session"].execute.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -216,7 +236,7 @@ async def test_skips_duplicate_event(mock_deps):
     assert result["status"] == "skipped_duplicate"
     # Should NOT embed or call cluster_guard
     mock_deps["embedding_svc"].embed.assert_not_awaited()
-    mock_deps["cluster_guard"].resolve.assert_not_awaited()
+    mock_deps["cluster_guard"].resolve_and_link.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -293,7 +313,7 @@ async def test_process_pipeline_failure_returns_immediately(mock_deps):
 
     assert result["status"] == "skipped_pipeline_failure"
     mock_deps["embedding_svc"].embed.assert_not_awaited()
-    mock_deps["cluster_guard"].resolve.assert_not_awaited()
+    mock_deps["cluster_guard"].resolve_and_link.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -342,7 +362,7 @@ async def test_process_event_returns_skipped_when_embed_fails(mock_deps):
 
     assert result["status"] == "skipped_embed_failed"
     # ClusterGuard should NOT be called
-    mock_deps["cluster_guard"].resolve.assert_not_called()
+    mock_deps["cluster_guard"].resolve_and_link.assert_not_called()
 
 
 class _MutableMutationGate:
@@ -381,7 +401,7 @@ async def test_process_event_stops_after_ownership_loss_during_embedding(mock_de
             project_key="brain_v42",
         )
 
-    mock_deps["cluster_guard"].resolve.assert_not_awaited()
+    mock_deps["cluster_guard"].resolve_and_link.assert_not_awaited()
     mock_deps["session"].commit.assert_not_awaited()
 
 
@@ -429,12 +449,11 @@ async def test_process_event_fails_closed_when_ownership_is_lost_after_final_lin
     ingestor._is_duplicate = AsyncMock(return_value=False)  # type: ignore[method-assign]
     ingestor._store_event = AsyncMock(return_value=uuid.uuid4())  # type: ignore[method-assign]
 
-    async def link_then_lose_ownership(*_args, **_kwargs) -> None:
+    async def link_then_lose_ownership(*_args, **_kwargs) -> tuple:
         gate.owned = False
+        return mock_deps["mock_feature"], "linked", True
 
-    ingestor._link_to_feature = AsyncMock(  # type: ignore[method-assign]
-        side_effect=link_then_lose_ownership
-    )
+    mock_deps["cluster_guard"].resolve_and_link.side_effect = link_then_lose_ownership
 
     with pytest.raises(OwnershipLostError, match="during webhook processing"):
         await ingestor.process_event(

@@ -33,8 +33,9 @@ from typing import TYPE_CHECKING, Literal
 
 import sqlalchemy as sa
 import structlog
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from brain_v42.db.tables import features
+from brain_v42.db.tables import feature_artifacts, features
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -52,6 +53,8 @@ FALLBACK_LINK = 0.65
 
 _TOP_K = 5
 _NAME_MAX = 200
+# Keep resolution locks separate from the ADR numbering key space.
+_RESOLVE_LOCK_PREFIX = "brain_v42_cluster_guard_resolve"
 
 # ── link-only allowlist ─────────────────────────────────────────────────
 #
@@ -111,7 +114,7 @@ class ClusterGuard:
         embedding: list[float],
         project_key: str,
         signal_type: str,
-    ) -> tuple[object | None, Literal["linked", "created", "skipped"]]:
+    ) -> tuple[object | None, Literal["linked", "created", "skipped", "lost"]]:
         """Resolve a signal to a feature.
 
         Returns:
@@ -120,9 +123,18 @@ class ClusterGuard:
             - "created": inserted a new feature row (CREATING_SIGNALS only)
             - "skipped": link-only signal with no confident candidate;
               feature_row is None
+            - "lost": candidate was merged, archived or deleted;
+              feature_row is None, and callers may retry resolution
         """
         self._ensure_mutation_allowed()
         async with self._sf() as session:
+            # Serialize the candidate read and creation across files of one
+            # project. Closing this session rolls back skipped/lost returns,
+            # releasing the transaction lock even when nothing is committed.
+            await session.execute(
+                sa.text("SELECT pg_advisory_xact_lock(hashtext(:key))"),
+                {"key": f"{_RESOLVE_LOCK_PREFIX}:{project_key}"},
+            )
             candidates = await self._find_candidates(session, embedding, project_key)
             self._ensure_mutation_allowed()
 
@@ -136,7 +148,8 @@ class ClusterGuard:
 
             # ── high cosine → link directly ────────────────────────────
             if best_score >= COSINE_LINK:
-                await self._maybe_update_status(session, best, signal_type)
+                if not await self._maybe_update_status(session, best, signal_type):
+                    return None, "lost"
                 await self._commit(session)
                 return best, "linked"
 
@@ -150,6 +163,68 @@ class ClusterGuard:
             return await self._create_or_skip(
                 session, text, embedding, project_key, signal_type, best_score=best_score
             )
+
+    async def resolve_and_link(
+        self,
+        text: str,
+        embedding: list[float],
+        project_key: str,
+        signal_type: str,
+        artifact_type: str,
+        artifact_id: object,
+        similarity_score_for: Callable[[str], float],
+    ) -> tuple[object | None, Literal["linked", "created", "skipped", "lost"], bool]:
+        """Resolve and lock a live link target, retrying a lost target once.
+
+        An existing link is success too. The locked CTE distinguishes that
+        case from a lost target, which ON CONFLICT alone cannot do.
+        """
+        self._ensure_mutation_allowed()
+        for _attempt in range(2):
+            feature, action = await self.resolve(text, embedding, project_key, signal_type)
+            self._ensure_mutation_allowed()
+            if action == "skipped":
+                return None, "skipped", False
+            if feature is None:
+                continue
+
+            async with self._sf() as session:
+                live_target = (
+                    sa.select(features.c.id)
+                    .where(
+                        features.c.id == feature.id,  # type: ignore[attr-defined]
+                        features.c.project_key == project_key,
+                        features.c.merged_into.is_(None),
+                        features.c.status != "archived",
+                    )
+                    .with_for_update(read=True)
+                    .cte("live_target")
+                )
+                insert_link = (
+                    pg_insert(feature_artifacts)
+                    .from_select(
+                        ["feature_id", "artifact_type", "artifact_id", "similarity_score"],
+                        sa.select(
+                            live_target.c.id,
+                            sa.literal(artifact_type),
+                            sa.literal(artifact_id, type_=feature_artifacts.c.artifact_id.type),
+                            sa.literal(similarity_score_for(action)),
+                        ).where(sa.true()),
+                    )
+                    .on_conflict_do_nothing()
+                    .returning(feature_artifacts.c.feature_id)
+                    .cte("inserted_link")
+                )
+                stmt = sa.select(sa.exists(sa.select(live_target.c.id))).add_cte(insert_link)
+                self._ensure_mutation_allowed()
+                result = await session.execute(stmt)
+                self._ensure_mutation_allowed()
+                target_live = bool(result.scalar_one())
+                await self._commit(session)
+                if target_live:
+                    return feature, action, True
+
+        return None, "lost", False
 
     # ── internal helpers ────────────────────────────────────────────────
 
@@ -199,7 +274,7 @@ class ClusterGuard:
         project_key: str,
         signal_type: str,
         candidates: list,
-    ) -> tuple[object | None, Literal["linked", "created", "skipped"]]:
+    ) -> tuple[object | None, Literal["linked", "created", "skipped", "lost"]]:
         """Decide a grey-zone candidate (0.50 <= cosine < 0.70) on cosine alone.
 
         >= FALLBACK_LINK (0.65) → link, else create (if allowed). No merge zone.
@@ -208,7 +283,8 @@ class ClusterGuard:
         best_score = float(best.similarity)
 
         if best_score >= FALLBACK_LINK:
-            await self._maybe_update_status(session, best, signal_type)
+            if not await self._maybe_update_status(session, best, signal_type):
+                return None, "lost"
             await self._commit(session)
             return best, "linked"
 
@@ -287,18 +363,25 @@ class ClusterGuard:
         session: AsyncSession,
         feature: object,
         signal_type: str,
-    ) -> None:
-        """Compute new status and update if it progresses."""
+    ) -> bool:
+        """Recompute a lost status CAS once; only a dead candidate loses its link."""
         self._ensure_mutation_allowed()
         current = feature.status  # type: ignore[attr-defined]
         pinned = feature.pinned  # type: ignore[attr-defined]
         new_status = self._status_engine.compute_status(current, signal_type, pinned)
 
-        if new_status != current:
+        for attempt in range(2):
+            if new_status == current:
+                return True
             self._ensure_mutation_allowed()
-            await session.execute(
+            result = await session.execute(
                 sa.update(features)
-                .where(features.c.id == feature.id)  # type: ignore[attr-defined]
+                .where(
+                    features.c.id == feature.id,  # type: ignore[attr-defined]
+                    features.c.merged_into.is_(None),
+                    features.c.status != "archived",
+                    features.c.status == current,
+                )
                 .values(
                     status=new_status,
                     status_updated_at=sa.text("NOW()"),
@@ -306,6 +389,24 @@ class ClusterGuard:
                 )
             )
             self._ensure_mutation_allowed()
+            if result.rowcount == 0:  # type: ignore[attr-defined]
+                if attempt == 0:
+                    fresh_result = await session.execute(
+                        sa.select(features).where(features.c.id == feature.id)  # type: ignore[attr-defined]
+                    )
+                    self._ensure_mutation_allowed()
+                    fresh = fresh_result.fetchone()
+                    if fresh is None or fresh.merged_into is not None or fresh.status == "archived":
+                        return False
+                    current, pinned = fresh.status, fresh.pinned
+                    new_status = self._status_engine.compute_status(current, signal_type, pinned)
+                    continue
+                logger.info(
+                    "cluster_guard.status_update_skipped",
+                    feature_id=str(feature.id),  # type: ignore[attr-defined]
+                    reason="candidate_changed",
+                )
+                return True
             logger.info(
                 "cluster_guard.status_updated",
                 feature_id=str(feature.id),  # type: ignore[attr-defined]
@@ -313,3 +414,5 @@ class ClusterGuard:
                 new_status=new_status,
                 signal_type=signal_type,
             )
+            return True
+        return True

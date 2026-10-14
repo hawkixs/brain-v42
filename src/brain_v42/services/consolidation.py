@@ -26,6 +26,7 @@ _ENTITY_TABLES: dict[str, sa.Table] = {
     "adr": adrs,
 }
 MERGEABLE_ENTITY_TYPES = frozenset(_ENTITY_TABLES)
+_MAX_LOCK_PASSES = 3
 
 logger = structlog.get_logger(__name__)
 
@@ -36,6 +37,14 @@ class ConsolidationEntityNotFoundError(LookupError):
 
 class ConsolidationEndpointMergedError(ValueError):
     """Reject absorbed endpoints so a merge cannot point readers at a dead row."""
+
+
+class ConsolidationChildrenUnstableError(RuntimeError):
+    """Refuse without writes when new children prevent a stable ordered lock set."""
+
+
+class _ChildAppeared(Exception):
+    """Restart the savepoint to release locks before taking a late child's lock in order."""
 
 
 class ConsolidationJob:
@@ -161,7 +170,15 @@ class ConsolidationJob:
         *,
         project_key: str | None,
     ) -> tuple[Any, Any, list[UUID]]:
-        """Lock endpoints and incoming merges in one UUID order to avoid lock inversion."""
+        """Lock endpoints and incoming merges in one UUID order to avoid lock inversion.
+
+        A child committed while the lock SELECT waits is absent from its snapshot.
+        merged_into has a foreign key, so once the source is locked no further
+        child can commit (its writer needs FOR KEY SHARE on the source): ONE
+        re-read after locking settles it. If a child was missed, roll back the
+        savepoint, releasing the locks, so the next pass takes the whole set in
+        UUID order. Bounded passes refuse without writes if the set keeps changing.
+        """
         locked_ids = sorted((source_id, target_id), key=lambda entity_id: entity_id.int)
         statement = (
             sa.select(table)
@@ -172,22 +189,46 @@ class ConsolidationJob:
         if project_key is not None:
             statement = statement.where(table.c.project_key == project_key)
 
-        result = await session.execute(statement)
-        rows = {row["id"]: row for row in result.mappings().all()}
-        source_row = rows.get(source_id)
-        if source_row is None:
-            raise ConsolidationEntityNotFoundError(f"Source {entity_type} {source_id} not found")
-        target_row = rows.get(target_id)
-        if target_row is None:
-            raise ConsolidationEntityNotFoundError(f"Target {entity_type} {target_id} not found")
-        for endpoint, row in (("Source", source_row), ("Target", target_row)):
-            if row["merged_into"] is not None:
-                survivor = f" into {row['merged_into']}" if project_key is None else ""
-                raise ConsolidationEndpointMergedError(
-                    f"{endpoint} {entity_type} {row['id']} already merged{survivor}"
-                )
-        child_ids = [entity_id for entity_id in rows if entity_id not in (source_id, target_id)]
-        return source_row, target_row, child_ids
+        for _ in range(_MAX_LOCK_PASSES):
+            try:
+                async with session.begin_nested():
+                    result = await session.execute(statement)
+                    rows = {row["id"]: row for row in result.mappings().all()}
+                    source_row = rows.get(source_id)
+                    if source_row is None:
+                        raise ConsolidationEntityNotFoundError(
+                            f"Source {entity_type} {source_id} not found"
+                        )
+                    target_row = rows.get(target_id)
+                    if target_row is None:
+                        raise ConsolidationEntityNotFoundError(
+                            f"Target {entity_type} {target_id} not found"
+                        )
+                    for endpoint, row in (("Source", source_row), ("Target", target_row)):
+                        if row["merged_into"] is not None:
+                            survivor = f" into {row['merged_into']}" if project_key is None else ""
+                            raise ConsolidationEndpointMergedError(
+                                f"{endpoint} {entity_type} {row['id']} already merged{survivor}"
+                            )
+                    reread = (
+                        sa.select(table.c.id)
+                        .where(table.c.merged_into == source_id, table.c.id.not_in(list(rows)))
+                        .limit(1)
+                    )
+                    if project_key is not None:
+                        reread = reread.where(table.c.project_key == project_key)
+                    straggler = await session.execute(reread)
+                    if straggler.scalar_one_or_none() is not None:
+                        raise _ChildAppeared
+                    child_ids = [
+                        entity_id for entity_id in rows if entity_id not in (source_id, target_id)
+                    ]
+                    return source_row, target_row, child_ids
+            except _ChildAppeared:
+                continue
+        raise ConsolidationChildrenUnstableError(
+            f"Source {entity_type} {source_id} kept gaining children while its locks were taken; retry"
+        )
 
     async def _update_merge_pair(
         self,
