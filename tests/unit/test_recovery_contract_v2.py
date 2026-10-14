@@ -41,7 +41,7 @@ def _expected_checks() -> list[dict[str, Any]]:
             # tables with 060, `brain_session_connections` with 061 and the
             # four `brain_client_credentials` / `brain_admin_elevations` /
             # `brain_schema_compat` / `brain_credential_audit` tables with 063 and
-            # `programmes` / `programme_gates` with 065 — all long after the 035
+            # `programmes` / `programme_gates` with 065, and lifecycle tables with 066 — all long after the 035
             # this asset describes. See the revision-by-revision review in
             # test_recovery_contract.py.
             if name
@@ -62,6 +62,13 @@ def _expected_checks() -> list[dict[str, Any]]:
                 "delivery_events",
                 "knowledge_claim_verdicts",
                 "knowledge_claims",
+                "knowledge_extractions",
+                "knowledge_evaluations",
+                "knowledge_justifications",
+                "knowledge_lifecycle_events",
+                "knowledge_lifecycle_runs",
+                "knowledge_lifecycle_requests",
+                "knowledge_lifecycle_state",
                 "knowledge_fact_definitions",
                 "delivery_receipts",
                 "delivery_snapshots",

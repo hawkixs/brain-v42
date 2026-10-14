@@ -358,6 +358,35 @@ def test_guidance_caps_large_required_signature_with_one_final_period() -> None:
     assert not message.endswith("..")
 
 
+@pytest.mark.parametrize(
+    ("tool_name", "missing", "required_guidance"),
+    [
+        (
+            "brain_update_project_focus",
+            "expected_focus_revision",
+            "brain_session_resume current_focus_revision",
+        ),
+        (
+            "brain_session_end",
+            "next_focus",
+            "brain_session_resume current_focus",
+        ),
+    ],
+)
+def test_lifecycle_missing_argument_guidance_names_correction(
+    tool_name: str, missing: str, required_guidance: str
+) -> None:
+    from pydantic import ValidationError
+
+    from brain_v42.mcp.argument_guidance import _guidance
+
+    error = ValidationError.from_exception_data(
+        "Synthetic", [{"type": "missing_argument", "loc": (missing,)}]
+    )
+    message = _guidance(tool_name, error, {"properties": {missing: {"type": "string"}}}, {})
+    assert required_guidance in message
+
+
 def test_guidance_omits_signature_when_unknown_keys_leave_no_room() -> None:
     from pydantic import ValidationError
 

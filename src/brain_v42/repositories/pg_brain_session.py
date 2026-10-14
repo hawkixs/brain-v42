@@ -2059,8 +2059,11 @@ class PgBrainSessionRepo(BasePgRepository):
             rejected = sorted(str(item) for item in invalid | ambiguous)
             raise BrainSessionInputError(
                 "Captured knowledge must exist in the same project and have been "
-                "created during the session with an unambiguous type; invalid ids: "
-                + ", ".join(rejected)
+                "created during the session with an unambiguous type; each id must belong "
+                "to the same project and be created after the session start. Find eligible "
+                "ids by calling brain_search "
+                "for your own recent entries, then pass only ids created after the session "
+                "start; invalid ids: " + ", ".join(rejected)
             )
         return found
 
