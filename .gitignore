@@ -78,3 +78,6 @@ bench/embedding_v2/*.npy
 # Private working material (plans, specs, receipts, design notes, handoffs), cloned from
 # git@github.com:hawkixs/brain-v42-internal.git — see CLAUDE.md and AGENTS.md.
 /internal/
+
+# Tool caches created inside a checkout (uv lock files)
+/.cache/
