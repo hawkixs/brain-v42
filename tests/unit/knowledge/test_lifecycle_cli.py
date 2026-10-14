@@ -9,7 +9,7 @@ from uuid import UUID
 import pytest
 
 from brain_v42.config import Settings
-from brain_v42.lifecycle_cli.command import execute, parse_args
+from brain_v42.lifecycle_cli.command import ArgumentRefusal, execute, parse_args
 from brain_v42.services.knowledge_lifecycle_pipeline import PipelineRefusal, RunReport
 
 
@@ -364,3 +364,223 @@ async def test_lifecycle_invalid_arguments_print_report(ceiling: str) -> None:
     )
     assert json.loads(output.getvalue())["failure_reason"] == "invalid_arguments"
     assert not pipeline.mock_calls
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["run", "--mode", "dry-run", "--scope", "all", "--ceiling-usd", "1"],
+        ["resume", "--run", "r"],
+    ],
+)
+def test_lifecycle_max_wait_argument(command: list[str]) -> None:
+    assert parse_args(command).max_wait_seconds == 7200
+    assert parse_args(command + ["--max-wait-seconds", "45"]).max_wait_seconds == 45
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "1.5", "bad"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["run", "--mode", "dry-run", "--scope", "all", "--ceiling-usd", "1"],
+        ["resume", "--run", "r"],
+    ],
+)
+async def test_lifecycle_invalid_max_wait_refuses_before_orchestration(
+    command: list[str], value: str
+) -> None:
+    # Each case proves the flag exists and enforces positivity, even for non-integers.
+    assert parse_args(command + ["--max-wait-seconds", "1"]).max_wait_seconds == 1
+    with pytest.raises(ArgumentRefusal, match="invalid_arguments"):
+        parse_args(command + ["--max-wait-seconds", "0"])
+    pipeline, reader, output = AsyncMock(), AsyncMock(), io.StringIO()
+    code = await execute(
+        command + ["--max-wait-seconds", value, "--json"],
+        settings(brain_knowledge_lifecycle_enabled=True),
+        pipeline,
+        reader,
+        stdout=output,
+    )
+    assert code == 2 and json.loads(output.getvalue())["failure_reason"] == "invalid_arguments"
+    assert not pipeline.mock_calls and not reader.mock_calls
+
+
+@pytest.mark.parametrize("command", ["run", "resume"])
+@pytest.mark.parametrize("as_json", [False, True])
+async def test_lifecycle_batch_still_processing_prints_durable_report(
+    command: str, as_json: bool
+) -> None:
+    from brain_v42.lifecycle_cli.adapters import BatchStillProcessing
+
+    pipeline, output = AsyncMock(), io.StringIO()
+    durable: dict[str, RunReport] = {}
+
+    async def unfinished(run_id: str) -> RunReport:
+        durable[run_id] = RunReport(
+            run_id, "dry_run", "submitted", request_statuses={"request": "pending"}
+        )
+        raise BatchStillProcessing("batch", 60)
+
+    async def start(*args: object, run_id: str = "unassigned") -> RunReport:
+        return await unfinished(run_id)
+
+    async def resume(run_id: str, proof: object) -> RunReport:
+        return await unfinished(run_id)
+
+    async def report(run_id: str) -> RunReport:
+        return durable[run_id]
+
+    pipeline.start.side_effect = start
+    pipeline.resume.side_effect = resume
+    pipeline.report.side_effect = report
+    argv = (
+        ["run", "--mode", "dry-run", "--scope", "all", "--ceiling-usd", "1"]
+        if command == "run"
+        else ["resume", "--run", "r"]
+    )
+    code = await execute(
+        argv + (["--json"] if as_json else []),
+        settings(brain_knowledge_lifecycle_enabled=True),
+        pipeline,
+        AsyncMock(return_value="dry_run"),
+        stdout=output,
+    )
+    run_id = next(iter(durable))
+    assert code == 5 and run_id != "unassigned"
+    pipeline.report.assert_awaited_once_with(run_id)
+    if as_json:
+        assert json.loads(output.getvalue()) == json.loads(durable[run_id].to_json())
+    else:
+        assert f"Run {run_id}: submitted" in output.getvalue()
+        assert "Reason:" not in output.getvalue()
+
+
+@pytest.mark.parametrize("command", ["run", "resume"])
+@pytest.mark.parametrize("as_json", [False, True])
+async def test_lifecycle_batch_still_processing_logs_retrieve_cause(
+    command: str, as_json: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import Mock
+
+    import brain_v42.lifecycle_cli.command as module
+    from brain_v42.lifecycle_cli.adapters import BatchStillProcessing
+
+    pipeline, output, logger = AsyncMock(), io.StringIO(), Mock()
+    monkeypatch.setattr(module, "log", logger)
+    durable = RunReport(
+        "r", "dry_run", "submitted", request_statuses={"request": "pending"}, real_cost_usd=0.25
+    )
+    pipeline.report.return_value = durable
+
+    async def unfinished(*args: object, **kwargs: object) -> RunReport:
+        raise BatchStillProcessing("batch", 60) from RuntimeError("SDK temporarily unavailable")
+
+    getattr(pipeline, "start" if command == "run" else "resume").side_effect = unfinished
+    argv = (
+        ["run", "--mode", "dry-run", "--scope", "all", "--ceiling-usd", "1"]
+        if command == "run"
+        else ["resume", "--run", "r"]
+    )
+    code = await execute(
+        argv + (["--json"] if as_json else []),
+        settings(brain_knowledge_lifecycle_enabled=True),
+        pipeline,
+        AsyncMock(return_value="dry_run"),
+        stdout=output,
+    )
+    assert code == 5
+    logger.error.assert_called_once_with(
+        "lifecycle.batch_retrieve_failed",
+        error_type="RuntimeError",
+        error_message="SDK temporarily unavailable",
+    )
+    assert durable.failure_reason is None
+    if as_json:
+        result = json.loads(output.getvalue())
+        assert result["failure_reason"] == "batch_retrieve_failed"
+        assert result["status"] == "submitted" and result["request_statuses"] == {
+            "request": "pending"
+        }
+        assert result["real_cost_usd"] == 0.25
+    else:
+        assert "Reason: batch_retrieve_failed" in output.getvalue()
+    assert "SDK temporarily unavailable" not in output.getvalue()
+    assert [call[0] for call in pipeline.mock_calls] == [
+        "start" if command == "run" else "resume",
+        "report",
+    ]
+
+
+@pytest.mark.parametrize("command", ["run", "resume"])
+@pytest.mark.parametrize("with_cause", [False, True])
+async def test_lifecycle_batch_still_processing_report_read_failure_keeps_exit_five(
+    command: str, with_cause: bool
+) -> None:
+    from brain_v42.lifecycle_cli.adapters import BatchStillProcessing
+
+    pipeline, output = AsyncMock(), io.StringIO()
+
+    async def unfinished(*args: object, **kwargs: object) -> RunReport:
+        cause = RuntimeError("SDK temporarily unavailable") if with_cause else None
+        raise BatchStillProcessing("batch", 60) from cause
+
+    getattr(pipeline, "start" if command == "run" else "resume").side_effect = unfinished
+    pipeline.report.side_effect = RuntimeError("private database details")
+    argv = (
+        ["run", "--mode", "dry-run", "--scope", "all", "--ceiling-usd", "1"]
+        if command == "run"
+        else ["resume", "--run", "r"]
+    )
+    code = await execute(
+        argv + ["--json"],
+        settings(brain_knowledge_lifecycle_enabled=True),
+        pipeline,
+        AsyncMock(return_value="dry_run"),
+        stdout=output,
+    )
+    result = json.loads(output.getvalue())
+    run_id = pipeline.start.call_args.kwargs["run_id"] if command == "run" else "r"
+    assert code == 5 and result["run_id"] == run_id
+    assert result["mode"] == "dry_run" and result["status"] == "submitted"
+    assert result["failure_reason"] == (
+        "batch_retrieve_failed" if with_cause else "batch_still_processing"
+    )
+    pipeline.report.assert_awaited_once_with(run_id)
+    assert "private database details" not in output.getvalue()
+
+
+@pytest.mark.parametrize("command", [None, "run", "resume"])
+def test_lifecycle_help_documents_batch_wait_exit(
+    command: str | None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exc:
+        parse_args(([command] if command else []) + ["--help"])
+    assert exc.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "5" in help_text and "batch still processing; resume later" in help_text
+    if command:
+        assert "--max-wait-seconds" in help_text and "7200" in help_text
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["run", "--mode", "dry-run", "--scope", "all", "--ceiling-usd", "1"],
+        ["resume", "--run", "r"],
+    ],
+)
+@pytest.mark.parametrize("budget", [None, 45])
+async def test_lifecycle_main_passes_max_wait_to_sdk(
+    command: list[str], budget: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import Mock
+
+    import brain_v42.lifecycle_cli.__main__ as module
+
+    factory = Mock(return_value=AsyncMock())
+    monkeypatch.setattr(module, "SDKExtraction", factory)
+    # Stop setup after composition; no database or external client is needed.
+    monkeypatch.setattr(module, "get_settings", Mock(side_effect=RuntimeError("stop setup")))
+    argv = command + (["--max-wait-seconds", str(budget)] if budget is not None else [])
+    assert await module.main_async(argv, stdout=io.StringIO()) == 2
+    factory.assert_called_once_with(max_wait_seconds=7200 if budget is None else budget)

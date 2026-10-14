@@ -22,7 +22,7 @@ from brain_v42.services.knowledge_lifecycle_evidence import (
     RunReport,
 )
 
-from .adapters import SystemClock, switch_refusal
+from .adapters import BatchStillProcessing, SystemClock, switch_refusal
 
 log = structlog.get_logger(__name__)
 
@@ -68,10 +68,25 @@ def _ceiling(value: str) -> float:
     return number
 
 
+def _positive_seconds(value: str) -> int:
+    try:
+        number = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Wait must be a positive integer in seconds") from exc
+    if number <= 0:
+        raise argparse.ArgumentTypeError("Wait must be a positive integer in seconds")
+    return number
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    exit_codes = (
+        "Exit codes: 0 completion, 2 refusal, 3 failed execution, 4 occupied run lock, "
+        "5 batch still processing; resume later."
+    )
     parser = Parser(
         prog="python -m brain_v42.lifecycle_cli",
         description="Evaluate knowledge lifecycle evidence without displaying entry text.",
+        epilog=exit_codes,
     )
     commands = parser.add_subparsers(dest="command", required=True)
     for command in ("run", "resume", "invalidate", "report"):
@@ -83,8 +98,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
                 "invalidate": "Invalidate a run and compensate applied states",
                 "report": "Read a durable run report",
             }[command],
+            epilog=exit_codes,
         )
         sub.add_argument("--json", action="store_true", help="Render the report as JSON")
+        if command in {"run", "resume"}:
+            sub.add_argument(
+                "--max-wait-seconds",
+                type=_positive_seconds,
+                default=7200,
+                help="Maximum batch wait in seconds (positive integer, default: 7200)",
+            )
         if command == "run":
             sub.add_argument("--mode", required=True, choices=("dry-run", "apply"))
             sub.add_argument("--scope", required=True, help="all or a project key")
@@ -194,6 +217,25 @@ async def execute(
             else:
                 report = await pipeline.invalidate(run_id, args.reason, proof)
         code = 3 if report.status == "failed" or report.failure_reason else 0
+    except BatchStillProcessing as exc:
+        cause = exc.__cause__
+        reason = "batch_retrieve_failed" if cause is not None else "batch_still_processing"
+        if cause is not None:
+            # SDK retrieval errors are diagnostic; never log the request body.
+            log.error(
+                "lifecycle.batch_retrieve_failed",
+                error_type=type(cause).__name__,
+                error_message=str(cause),
+            )
+        report = RunReport(run_id, mode, "submitted", failure_reason=reason)
+        if run_id:
+            try:
+                report = await pipeline.report(run_id)
+                if cause is not None:
+                    report = replace(report, failure_reason=reason)
+            except Exception:
+                pass
+        code = 5
     except (ArgumentRefusal, PipelineRefusal, RunNotFound) as exc:
         reason = (
             "invalid_arguments"
