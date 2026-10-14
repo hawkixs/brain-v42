@@ -2106,6 +2106,13 @@ __all__ = [
     "focus_slots",
     "focus_slot_anchors",
     "focus_slot_history",
+    "knowledge_lifecycle_runs",
+    "knowledge_lifecycle_requests",
+    "knowledge_extractions",
+    "knowledge_evaluations",
+    "knowledge_justifications",
+    "knowledge_lifecycle_events",
+    "knowledge_lifecycle_state",
 ]
 
 _claim_tables = register_claim_tables(METADATA)
@@ -2470,4 +2477,296 @@ programme_gates = Table(
     sa.CheckConstraint(
         f"COALESCE(updated_by ~ '{_PROJECT_RE}', false)", name="programme_gates_updated_by_valid"
     ),
+)
+
+# Lifecycle evidence (066): history and the mutable projection have separate ACLs.
+_LIFECYCLE_ENTITY_TYPES = "('decisions', 'learnings', 'snippets', 'runbooks', 'adrs')"
+_LIFECYCLE_STATES = "('valid', 'contested', 'obsolete', 'refuted', 'unverifiable')"
+_LIFECYCLE_PRECISIONS = "('exact', 'first_observed', 'unknown')"
+RANKS_VERSION = "v1"
+_LIFECYCLE_RANK = (
+    "CASE source_kind WHEN 'structure' THEN 7 WHEN 'measured' THEN 6 "
+    "WHEN 'config' THEN 5 WHEN 'code' THEN 4 WHEN 'pr' THEN 3 "
+    "WHEN 'ticket' THEN 3 WHEN 'decision' THEN 3 WHEN 'propagation' THEN 2 "
+    "WHEN 'decay' THEN 1 END"
+)
+
+
+def _lifecycle_check(name: str, predicate: str) -> sa.CheckConstraint:
+    """Keep lifecycle CHECKs fail-closed when a predicate evaluates to NULL."""
+    return sa.CheckConstraint(f"COALESCE({predicate}, false)", name=name)
+
+
+knowledge_lifecycle_runs = Table(
+    "knowledge_lifecycle_runs",
+    METADATA,
+    Column("run_id", Text, primary_key=True),
+    Column("mode", Text, nullable=False),
+    Column("scope", JSONB, nullable=False),
+    Column("status", Text, nullable=False),
+    Column("manifest_digest", Text, nullable=False),
+    Column("batch_ids", JSONB, nullable=False, server_default=sa.text("'[]'")),
+    Column("usage", JSONB, nullable=False, server_default=sa.text("'{}'")),
+    Column("real_cost", sa.Numeric, nullable=True),
+    Column("counts", JSONB, nullable=False, server_default=sa.text("'{}'")),
+    Column("started_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    Column("ended_at", DateTime(timezone=True), nullable=True),
+    Column("invalidated_at", DateTime(timezone=True), nullable=True),
+    Column("invalidation_reason", Text, nullable=True),
+    _lifecycle_check("knowledge_lifecycle_runs_mode_valid", "mode IN ('dry_run', 'apply')"),
+    _lifecycle_check(
+        "knowledge_lifecycle_runs_batch_ids_valid", "jsonb_typeof(batch_ids) = 'array'"
+    ),
+    _lifecycle_check(
+        "knowledge_lifecycle_runs_invalidation_valid",
+        "(invalidated_at IS NULL AND invalidation_reason IS NULL) "
+        "OR (invalidated_at IS NOT NULL AND invalidation_reason IS NOT NULL)",
+    ),
+)
+
+knowledge_lifecycle_requests = Table(
+    "knowledge_lifecycle_requests",
+    METADATA,
+    Column("run_id", Text, sa.ForeignKey("knowledge_lifecycle_runs.run_id"), primary_key=True),
+    Column("custom_id", Text, primary_key=True),
+    Column("manifest_entry", JSONB, nullable=False),
+    Column("status", Text, nullable=False, server_default=sa.text("'pending'")),
+    Column("result_stored_at", DateTime(timezone=True), nullable=True),
+    _lifecycle_check(
+        "knowledge_lifecycle_requests_manifest_valid", "jsonb_typeof(manifest_entry) = 'object'"
+    ),
+    _lifecycle_check(
+        "knowledge_lifecycle_requests_status_valid",
+        "status IN ('pending', 'succeeded', 'errored', 'expired', 'canceled', 'missing', 'invalid')",
+    ),
+)
+
+knowledge_extractions = Table(
+    "knowledge_extractions",
+    METADATA,
+    Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    Column("run_id", Text, sa.ForeignKey("knowledge_lifecycle_runs.run_id"), nullable=False),
+    Column("entity_type", Text, nullable=False),
+    Column("entity_id", UUID(as_uuid=True), nullable=False),
+    Column("entry_digest", Text, nullable=False),
+    Column("model", Text, nullable=False),
+    Column("prompt_version", Text, nullable=False),
+    Column("assertions", JSONB, nullable=False),
+    UniqueConstraint(
+        "entity_type",
+        "entity_id",
+        "entry_digest",
+        "model",
+        "prompt_version",
+        name="knowledge_extractions_revision_key",
+    ),
+    UniqueConstraint(
+        "id", "entity_type", "entity_id", "entry_digest", name="knowledge_extractions_id_entry_key"
+    ),
+    _lifecycle_check(
+        "knowledge_extractions_entity_type_valid", f"entity_type IN {_LIFECYCLE_ENTITY_TYPES}"
+    ),
+    _lifecycle_check(
+        "knowledge_extractions_assertions_valid", "jsonb_typeof(assertions) = 'array'"
+    ),
+)
+
+knowledge_evaluations = Table(
+    "knowledge_evaluations",
+    METADATA,
+    Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    Column("run_id", Text, sa.ForeignKey("knowledge_lifecycle_runs.run_id"), nullable=False),
+    Column("entity_type", Text, nullable=False),
+    Column("entity_id", UUID(as_uuid=True), nullable=False),
+    Column("entry_digest", Text, nullable=False),
+    Column("extraction_id", sa.BigInteger, nullable=True),
+    Column("expected_cache_revision", sa.BigInteger, nullable=False),
+    Column("rules_version", Text, nullable=False),
+    Column("ranks_version", Text, nullable=False),
+    Column("registry_version", Text, nullable=False),
+    Column("origin_main_sha", Text, nullable=False),
+    Column("observed_day", Date, nullable=False),
+    Column("complete", Boolean, nullable=False),
+    Column("state", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("fingerprint", Text, nullable=False),
+    UniqueConstraint(
+        "run_id", "entity_type", "entity_id", name="knowledge_evaluations_run_entry_key"
+    ),
+    UniqueConstraint("id", "entity_type", "entity_id", name="knowledge_evaluations_id_entry_key"),
+    sa.ForeignKeyConstraint(
+        ["extraction_id", "entity_type", "entity_id", "entry_digest"],
+        [
+            "knowledge_extractions.id",
+            "knowledge_extractions.entity_type",
+            "knowledge_extractions.entity_id",
+            "knowledge_extractions.entry_digest",
+        ],
+        name="knowledge_evaluations_extraction_entry_fkey",
+    ),
+    _lifecycle_check(
+        "knowledge_evaluations_entity_type_valid", f"entity_type IN {_LIFECYCLE_ENTITY_TYPES}"
+    ),
+    _lifecycle_check("knowledge_evaluations_state_valid", f"state IN {_LIFECYCLE_STATES}"),
+    _lifecycle_check("knowledge_evaluations_revision_valid", "expected_cache_revision >= 0"),
+    Index(
+        "knowledge_evaluations_agreement_idx",
+        "entity_type",
+        "entity_id",
+        "observed_day",
+        "fingerprint",
+    ),
+)
+
+knowledge_justifications = Table(
+    "knowledge_justifications",
+    METADATA,
+    Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    Column("evaluation_id", sa.BigInteger, nullable=False),
+    Column("entity_type", Text, nullable=False),
+    Column("entity_id", UUID(as_uuid=True), nullable=False),
+    Column("assertion_key", Text, nullable=True),
+    Column("polarity", Text, nullable=False),
+    Column("source_kind", Text, nullable=False),
+    Column("source_rank", Integer, nullable=False),
+    Column("source_ref", Text, nullable=False),
+    Column("observed_value", JSONB, nullable=False),
+    Column("valid_from", Date, nullable=True),
+    Column("valid_from_precision", Text, nullable=False),
+    sa.ForeignKeyConstraint(
+        ["evaluation_id", "entity_type", "entity_id"],
+        [
+            "knowledge_evaluations.id",
+            "knowledge_evaluations.entity_type",
+            "knowledge_evaluations.entity_id",
+        ],
+        name="knowledge_justifications_evaluation_entry_fkey",
+    ),
+    UniqueConstraint(
+        "evaluation_id",
+        "assertion_key",
+        "source_kind",
+        "source_ref",
+        name="knowledge_justifications_observation_key",
+        postgresql_nulls_not_distinct=True,
+    ),
+    _lifecycle_check(
+        "knowledge_justifications_entity_type_valid", f"entity_type IN {_LIFECYCLE_ENTITY_TYPES}"
+    ),
+    _lifecycle_check(
+        "knowledge_justifications_polarity_valid",
+        "polarity IN ('supports', 'contradicts', 'ends', 'none')",
+    ),
+    _lifecycle_check("knowledge_justifications_rank_valid", f"source_rank = {_LIFECYCLE_RANK}"),
+    _lifecycle_check(
+        "knowledge_justifications_precision_valid",
+        f"valid_from_precision IN {_LIFECYCLE_PRECISIONS}",
+    ),
+)
+
+knowledge_lifecycle_events = Table(
+    "knowledge_lifecycle_events",
+    METADATA,
+    Column("id", sa.BigInteger, primary_key=True, autoincrement=True),
+    Column("evaluation_id", sa.BigInteger, nullable=False),
+    Column("entity_type", Text, nullable=False),
+    Column("entity_id", UUID(as_uuid=True), nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("from_state", Text, nullable=True),
+    Column("to_state", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("valid_from", Date, nullable=True),
+    Column("valid_from_precision", Text, nullable=False),
+    Column("compensates_event_id", sa.BigInteger, nullable=True),
+    Column(
+        "invalidated_run_id", Text, sa.ForeignKey("knowledge_lifecycle_runs.run_id"), nullable=True
+    ),
+    Column("recorded_at", DateTime(timezone=True), nullable=False, server_default=sa.text("now()")),
+    UniqueConstraint(
+        "id", "entity_type", "entity_id", name="knowledge_lifecycle_events_id_entry_key"
+    ),
+    UniqueConstraint(
+        "invalidated_run_id",
+        "entity_type",
+        "entity_id",
+        name="knowledge_lifecycle_events_invalidation_entry_key",
+    ),
+    sa.ForeignKeyConstraint(
+        ["evaluation_id", "entity_type", "entity_id"],
+        [
+            "knowledge_evaluations.id",
+            "knowledge_evaluations.entity_type",
+            "knowledge_evaluations.entity_id",
+        ],
+        name="knowledge_lifecycle_events_evaluation_entry_fkey",
+    ),
+    sa.ForeignKeyConstraint(
+        ["compensates_event_id", "entity_type", "entity_id"],
+        [
+            "knowledge_lifecycle_events.id",
+            "knowledge_lifecycle_events.entity_type",
+            "knowledge_lifecycle_events.entity_id",
+        ],
+        name="knowledge_lifecycle_events_compensated_entry_fkey",
+    ),
+    _lifecycle_check(
+        "knowledge_lifecycle_events_entity_type_valid", f"entity_type IN {_LIFECYCLE_ENTITY_TYPES}"
+    ),
+    _lifecycle_check(
+        "knowledge_lifecycle_events_kind_valid", "kind IN ('transition', 'compensation')"
+    ),
+    _lifecycle_check(
+        "knowledge_lifecycle_events_from_state_valid",
+        f"from_state IS NULL OR from_state IN {_LIFECYCLE_STATES}",
+    ),
+    _lifecycle_check(
+        "knowledge_lifecycle_events_to_state_valid", f"to_state IN {_LIFECYCLE_STATES}"
+    ),
+    _lifecycle_check(
+        "knowledge_lifecycle_events_precision_valid",
+        f"valid_from_precision IN {_LIFECYCLE_PRECISIONS}",
+    ),
+    _lifecycle_check(
+        "knowledge_lifecycle_events_obsolete_date_valid",
+        "to_state <> 'obsolete' OR valid_from IS NOT NULL",
+    ),
+    _lifecycle_check(
+        "knowledge_lifecycle_events_compensation_valid",
+        "(kind = 'transition' AND compensates_event_id IS NULL AND invalidated_run_id IS NULL) "
+        "OR (kind = 'compensation' AND compensates_event_id IS NOT NULL AND invalidated_run_id IS NOT NULL)",
+    ),
+    Index(
+        "knowledge_lifecycle_events_transition_key",
+        "evaluation_id",
+        "kind",
+        unique=True,
+        postgresql_where=sa.text("kind = 'transition'"),
+    ),
+)
+
+knowledge_lifecycle_state = Table(
+    "knowledge_lifecycle_state",
+    METADATA,
+    Column("entity_type", Text, primary_key=True),
+    Column("entity_id", UUID(as_uuid=True), primary_key=True),
+    Column("state", Text, nullable=False),
+    Column("reason", Text, nullable=False),
+    Column("since", DateTime(timezone=True), nullable=False),
+    Column("entry_content_updated_at", DateTime(timezone=True), nullable=False),
+    Column("event_id", sa.BigInteger, nullable=False),
+    Column("revision", sa.BigInteger, nullable=False, server_default=sa.text("0")),
+    sa.ForeignKeyConstraint(
+        ["event_id", "entity_type", "entity_id"],
+        [
+            "knowledge_lifecycle_events.id",
+            "knowledge_lifecycle_events.entity_type",
+            "knowledge_lifecycle_events.entity_id",
+        ],
+        name="knowledge_lifecycle_state_event_entry_fkey",
+    ),
+    _lifecycle_check(
+        "knowledge_lifecycle_state_entity_type_valid", f"entity_type IN {_LIFECYCLE_ENTITY_TYPES}"
+    ),
+    _lifecycle_check("knowledge_lifecycle_state_state_valid", f"state IN {_LIFECYCLE_STATES}"),
+    _lifecycle_check("knowledge_lifecycle_state_revision_valid", "revision >= 0"),
 )

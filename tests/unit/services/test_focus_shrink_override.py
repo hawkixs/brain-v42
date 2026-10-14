@@ -93,6 +93,86 @@ async def test_elevated_end_passes_the_override(caller: AsyncMock) -> None:
     assert now.tzinfo is UTC and now <= datetime.now(UTC)
 
 
+async def test_relay_override_requires_elevation_before_repository_call(caller: AsyncMock) -> None:
+    repo = MagicMock()
+    repo.relay = AsyncMock()
+    repo.absorb_derived_capture_outcome = AsyncMock()
+    with pytest.raises(FocusSlotError, match="^focus_shrink_override_refused: "):
+        await BrainSessionService(repo).relay(
+            uuid4(),
+            "operator",
+            summary="summary",
+            handover="short",
+            expected_focus_revision=0,
+            allow_focus_shrink=True,
+            new_client_key="successor",
+            initiator="operator",
+        )
+    repo.relay.assert_not_awaited()
+    repo.absorb_derived_capture_outcome.assert_not_awaited()
+
+
+async def test_elevated_operator_relay_passes_override(caller: AsyncMock) -> None:
+    set_current_principal("workstation-claude")
+    caller.return_value = True
+    repo = MagicMock()
+    repo.relay = AsyncMock()
+    repo.absorb_derived_capture_outcome = AsyncMock(return_value=None)
+    await BrainSessionService(repo).relay(
+        uuid4(),
+        "operator",
+        summary="summary",
+        handover="short",
+        expected_focus_revision=0,
+        allow_focus_shrink=True,
+        new_client_key="successor",
+        initiator="operator",
+    )
+    assert repo.relay.await_args.kwargs["allow_focus_shrink"] is True
+
+
+async def test_guard_mod_relay_override_refused_even_when_elevated(
+    caller: AsyncMock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "brain_v42.services.brain_session_service._guard_mod_relay_enabled", lambda: True
+    )
+    set_current_principal("workstation-claude")
+    caller.return_value = True
+    repo = MagicMock()
+    repo.relay = AsyncMock()
+    with pytest.raises(FocusSlotError, match="^relay_shrink_override_operator_only: "):
+        await BrainSessionService(repo).relay(
+            uuid4(),
+            "operator",
+            summary="summary",
+            handover="short",
+            expected_focus_revision=0,
+            allow_focus_shrink=True,
+            new_client_key="successor",
+            initiator="guard_mod",
+        )
+    repo.relay.assert_not_awaited()
+    caller.assert_not_awaited()
+
+
+async def test_relay_without_shrink_override_needs_no_elevation(caller: AsyncMock) -> None:
+    repo = MagicMock()
+    repo.relay = AsyncMock()
+    await BrainSessionService(repo).relay(
+        uuid4(),
+        "operator",
+        summary="summary",
+        handover="handover",
+        expected_focus_revision=0,
+        allow_focus_shrink=False,
+        new_client_key="successor",
+        initiator="operator",
+    )
+    assert repo.relay.await_args.kwargs["allow_focus_shrink"] is False
+    caller.assert_not_awaited()
+
+
 async def test_elevated_update_tool_passes_the_override(caller: AsyncMock) -> None:
     from brain_v42.mcp.tools.project_context_tools import register_project_context_tools
 

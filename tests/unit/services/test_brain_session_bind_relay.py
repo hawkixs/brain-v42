@@ -200,10 +200,16 @@ async def test_the_shrink_override_is_the_operators_alone(monkeypatch) -> None:
             **_NO_SLOT_REVISION,
         )
     repo.relay.assert_not_awaited()
+    # The operator's override also needs an active elevation (d5303dc1), stood in for here.
+    elevation = AsyncMock()
+    monkeypatch.setattr(
+        "brain_v42.services.brain_session_service.require_focus_shrink_override", elevation
+    )
     await _relay(
         BrainSessionService(repo),
         allow_focus_shrink=True,
         expected_focus_revision=5,
         **_NO_SLOT_REVISION,
     )
+    elevation.assert_awaited_once()
     assert repo.relay.await_args.kwargs["allow_focus_shrink"] is True

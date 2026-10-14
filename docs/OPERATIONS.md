@@ -32,7 +32,7 @@ identities, Dream arming state, or projection lag into this document.
 
 ## Session lifecycle (full v4 contract)
 
-Only an explicit user command may start, capture, heartbeat, list, resume, bind, relay, end, or abandon a session on the agent and client side. Hooks and agents never infer a boundary or close a stale session. **Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly enabled counts as a standing user command for one gesture only: `brain_session_relay` of an open operator session, onto its focus slot when it is bound to one and onto the project base when it is not — capture, end and start of its successor under a new `client_key`, in one transaction. The model makes the call and chooses its captures, summary and handover; the mod only triggers the turn and replays the result at compaction. The base form writes the handover as the project's whole base focus under a compare-and-swap on its revision, and refuses a handover under 70% of the current base (`base_focus_shrink`): only an operator relay may override that guard, never the mod. The standing command covers nothing else: not `brain_session_abandon`, not `brain_session_end` of any session, not the relay of a server-opened trace, not any write of the project base outside that relay, not opening, closing or changing a slot, and not `start`, `resume` or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Hooks still never capture, close or commit on their own. Cross-cutting work without a ticket needs no anchor: left unbound, it is relayed onto the project base, under the same guards. The only server-side exception is the Dream `sweep` phase, shipped disabled and dry, which abandons an open session with no heartbeat for seven days (`abandonment_reason = 'auto_stale_7d'`) without touching project focus. It ships behind `BRAIN_DREAM_SWEEP_ENABLED=false` and `BRAIN_DREAM_SWEEP_DRY_RUN=true`. Staleness is a list filter over open rows; it never changes the persisted `status` and never auto-closes a session. Do not confuse this 24-hour display flag with the separate seven-day server-side sweep, which is the only mechanism that moves an open session to `abandoned` without an explicit command (`abandonment_reason = 'auto_stale_7d'`).
+Only an explicit user command may start, capture, heartbeat, list, resume, bind, relay, end, or abandon a session on the agent and client side. Hooks and agents never infer a boundary or close a stale session. **Amendment — slot relay (ADR #34).** A guard mod that the operator has explicitly enabled counts as a standing user command for one gesture only: `brain_session_relay` of an open operator session, onto its focus slot when it is bound to one and onto the project base when it is not — capture, end and start of its successor under a new `client_key`, in one transaction. The model makes the call and chooses its captures, summary and handover; the mod only triggers the turn and replays the result at compaction. The base form writes the handover as the project's whole base focus under a compare-and-swap on its revision, and refuses a handover under 70% of the current base (`base_focus_shrink`): only an operator relay with an active /brain-admin elevation may override that guard, never the mod. The standing command covers nothing else: not `brain_session_abandon`, not `brain_session_end` of any session, not the relay of a server-opened trace, not any write of the project base outside that relay, not opening, closing or changing a slot, and not `start`, `resume` or `bind` outside the relay. It is void while `BRAIN_SESSION_RELAY_GUARD_MOD_ENABLED` is false. Hooks still never capture, close or commit on their own. Cross-cutting work without a ticket needs no anchor: left unbound, it is relayed onto the project base, under the same guards. The only server-side exception is the Dream `sweep` phase, shipped disabled and dry, which abandons an open session with no heartbeat for seven days (`abandonment_reason = 'auto_stale_7d'`) without touching project focus. It ships behind `BRAIN_DREAM_SWEEP_ENABLED=false` and `BRAIN_DREAM_SWEEP_DRY_RUN=true`. Staleness is a list filter over open rows; it never changes the persisted `status` and never auto-closes a session. Do not confuse this 24-hour display flag with the separate seven-day server-side sweep, which is the only mechanism that moves an open session to `abandoned` without an explicit command (`abandonment_reason = 'auto_stale_7d'`).
 
 **Two natures.** Since migration 046, `brain_sessions.nature` separates two kinds of
 row. An *operator* session is the one a user opens with `brain_session_start` and
@@ -1404,18 +1404,30 @@ Deleted successes remain recoverable from the preceding backup dump.
 
 `python scripts/repair_merge_chains.py` (or
 `python -m brain_v42.scripts.repair_merge_chains`) inventories merge chains in
-learnings, decisions, snippets, runbooks and ADRs. The default is a dry run in a
+learnings, decisions, snippets, runbooks, ADRs and features. The default is a dry run in a
 read-only transaction and emits one JSON report. After reviewing that report,
-an explicit operator go is required to run `--execute --expect N`, where `N`
-must equal the measured `in_project_chained_count` across all five tables.
-Execution flattens those pointers to their roots, writes a `repointed` audit
-row per change and stages `MERGED_INTO` relations in the PostgreSQL ledger/outbox
-in the same transaction; it never writes Neo4j directly. Cycles, dangling roots,
-depths beyond 64, a changed count or failed final verification refuse the repair.
-The repair takes a share-row-exclusive lock on the five knowledge tables for its
+an explicit operator go is required to run `--execute` with repeated
+`--expect TABLE=N` approvals, for example
+`--execute --expect learnings=3 --expect features=1`. Each `N` must equal that
+table's measured `in_project_chained_count`. A table with zero eligible chains may
+be omitted and is then expected to have zero; execution without any `--expect`
+is refused. All six counts are checked before any write, and
+`expected_count_mismatch` identifies the table in the refusal's `table` field.
+The report retains the total `in_project_chained_count` alongside per-table counts.
+Execution flattens those pointers to their roots, writes a `repointed`
+consolidation_log row per knowledge change and stages `MERGED_INTO` relations in
+the PostgreSQL ledger/outbox in the same transaction; it never writes Neo4j
+directly. Features write no consolidation_log rows: their audit is the JSON receipt
+plus the graph ledger tombstones written by the registry trigger, as indicated in
+the report's `audit` field. Save the execution JSON as the receipt. The features
+self-reference has no ON DELETE action; repair only updates pointers and deletes
+no feature rows. Cycles, dangling roots, depths beyond 64, a changed per-table
+count or failed final verification refuse the repair.
+The repair takes a SHARE ROW EXCLUSIVE lock on all six tables for its
 duration and refuses after 5 s if it cannot acquire it. Reads proceed, but every
 write to these tables waits, including the access-count flush (which updates
-freshness counters) and new knowledge writes, to keep the approved inventory stable.
+freshness counters), new knowledge writes and feature writes, to keep the approved
+inventory stable.
 Chains rooted in another project are reported, not changed; `transits_other_project`
 counts rows whose path visits another project, including chains returning to their
 own project, which remain eligible for repair. All changes commit together or
