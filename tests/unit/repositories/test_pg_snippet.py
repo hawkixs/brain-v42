@@ -562,6 +562,7 @@ class TestSearch:
             session=None,
             language="english",
             skip_count=False,
+            extra_clauses=None,
         ):
             captured["skip_count"] = skip_count
             captured["filters"] = filters
@@ -595,6 +596,7 @@ class TestSearch:
             session=None,
             language="english",
             skip_count=False,
+            extra_clauses=None,
         ):
             captured["skip_count"] = skip_count
             captured["filters"] = filters
@@ -684,7 +686,7 @@ class TestVectorSearch:
         captured: dict[str, Any] = {}
 
         async def fake_search_vector(
-            self_inner, embedding, *, filters=None, limit=10, session=None
+            self_inner, embedding, *, filters=None, limit=10, session=None, extra_clauses=None
         ):
             captured["filters"] = filters
             return []

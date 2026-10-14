@@ -1,6 +1,9 @@
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db import focus_slots
 from brain_v42.db.focus_slots import AnchorState, anchor_states_statement, slot_satisfied
@@ -13,6 +16,26 @@ def _state(kind: str, done: bool) -> AnchorState:
 
 def test_the_observer_identity_has_one_value() -> None:
     assert focus_slots.OBSERVER_IDENTITY == OBSERVER_IDENTITY
+
+
+@pytest.mark.parametrize("shared", [False, True], ids=["exclusive", "shared"])
+async def test_the_project_fence_uses_its_own_two_key_advisory_lock_class(shared: bool) -> None:
+    session = AsyncMock(spec=AsyncSession)
+    lock = (
+        focus_slots.lock_anchor_project_shared
+        if shared
+        else focus_slots.lock_anchor_project_exclusive
+    )
+    await lock(session, project_key="brain-v42")
+
+    session.execute.assert_awaited_once()
+    statement = session.execute.await_args.args[0]
+    sql = str(
+        statement.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True})
+    )
+    function = "pg_advisory_xact_lock_shared" if shared else "pg_advisory_xact_lock"
+    assert f"{function}({0x534C4F54}, hashtext('brain-v42'))" in sql
+    assert focus_slots.FOCUS_SLOT_FENCE_CLASS == 0x534C4F54
 
 
 def test_without_a_lot_every_ticket_and_pr_anchor_must_be_integrated() -> None:

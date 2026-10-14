@@ -303,7 +303,14 @@ def test_json_structlog_includes_logger_and_sidecar_recent_log(
         collector.push_recent_log.assert_called_once_with("info", "structured.event count=42")
 
 
-def test_console_mcp_keeps_plain_stdlib_logging(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_console_mcp_renders_stdlib_lines_through_the_console_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Console stdlib lines share the structlog console renderer (ticket ced45fe1).
+
+    They used to keep the stdlib default format, whose formatException prints the
+    exception message; one line per record, on stderr, with the logger name.
+    """
     output = io.StringIO()
     monkeypatch.setenv("BRAIN_LOG_FORMAT", "console")
     monkeypatch.setattr(sys, "stderr", output)
@@ -313,7 +320,11 @@ def test_console_mcp_keeps_plain_stdlib_logging(monkeypatch: pytest.MonkeyPatch)
 
     logging.getLogger("test.console").info("plain message")
 
-    assert output.getvalue() == "INFO:test.console:plain message\n"
+    lines = output.getvalue().splitlines()
+    assert len(lines) == 1
+    assert "plain message" in lines[0]
+    assert "[test.console]" in lines[0]
+    assert not lines[0].startswith("INFO:")
 
 
 def test_mcp_entrypoint_selects_transport_before_logging_loads_settings() -> None:

@@ -83,4 +83,4 @@ async def test_sidecar_aggregation_keeps_presence_when_database_is_unavailable()
     collector = MetricsCollector(
         engine=MagicMock(), session_factory=MagicMock(side_effect=OSError("unavailable"))
     )
-    assert (await collector.collect_process_metrics())["mcp_auth_refused"] == {}
+    assert (await collector.collect_process_metrics())["mcp_auth_refused"] is None

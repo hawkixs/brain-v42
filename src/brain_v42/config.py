@@ -346,6 +346,16 @@ class Settings(BaseSettings):
         default=30.0, gt=0, validation_alias=_brain_alias("EMBEDDING_TIMEOUT")
     )
 
+    embedding_retry_budget_seconds: float = Field(
+        default=60.0, gt=0, validation_alias=_brain_alias("EMBEDDING_RETRY_BUDGET_SECONDS")
+    )
+    """Bound attempts and backoffs together so writes can persist without an embedding."""
+
+    embedding_query_deadline_seconds: float = Field(
+        default=8.0, gt=0, validation_alias=_brain_alias("EMBEDDING_QUERY_DEADLINE_SECONDS")
+    )
+    """Let searches fall back to full-text search before the longer write budget expires."""
+
     embedding_query_prefix: _UnstrippedStr = Field(
         default="", validation_alias=_brain_alias("EMBEDDING_QUERY_PREFIX")
     )
@@ -361,12 +371,27 @@ class Settings(BaseSettings):
     # --- Reranker backend (pluggable wire shape) ---
     # "shim"   — the private POST /rerank contract (raw cross-encoder logits).
     # "cohere" — POST /v1/rerank, implemented by TEI, Jina and vLLM.
+    # "voyage" — direct Voyage API, with a one-document POST availability probe.
     # "none"   — intentional rollback to RRF ordering, without a client or probe.
-    rerank_backend: Literal["shim", "cohere", "none"] = Field(
+    rerank_backend: Literal["shim", "cohere", "voyage", "none"] = Field(
         default="shim", validation_alias=_brain_alias("RERANK_BACKEND")
     )
     rerank_model: str = Field(default="", validation_alias=_brain_alias("RERANK_MODEL"))
-    """Model name sent by the cohere backend. Required by hosted providers."""
+    """Model name sent by hosted backends; Voyage uses a name without an author."""
+
+    rerank_fallback_model: str = Field(
+        default="", validation_alias=_brain_alias("RERANK_FALLBACK_MODEL")
+    )
+    rerank_fallback_provider: RerankProviderRouting | None = Field(
+        default=None, validation_alias=_brain_alias("RERANK_FALLBACK_PROVIDER")
+    )
+    rerank_fallback_url: str = Field(
+        default="", validation_alias=_brain_alias("RERANK_FALLBACK_URL")
+    )
+    rerank_fallback_api_key_file: Path | None = Field(
+        default=None, validation_alias=_brain_alias("RERANK_FALLBACK_API_KEY_FILE")
+    )
+    """Separate fallback transport; required for a direct Voyage primary."""
 
     rerank_api_key: SecretStr = Field(
         default=SecretStr(""), repr=False, validation_alias=_brain_alias("RERANK_API_KEY")
@@ -403,6 +428,11 @@ class Settings(BaseSettings):
     )
     """Elapsed-time budget across all hosted rerank attempts and backoff sleeps."""
 
+    rerank_primary_budget_seconds: float = Field(
+        default=1.0, gt=0, validation_alias=_brain_alias("RERANK_PRIMARY_BUDGET_SECONDS")
+    )
+    """Reserve the rest of the overall budget for the fallback link."""
+
     @field_validator("rerank_health_path")
     @classmethod
     def _rerank_health_path_stays_on_the_base_url(cls, value: str) -> str:
@@ -420,6 +450,14 @@ class Settings(BaseSettings):
                     ("rerank_api_key", bool(self.rerank_api_key.get_secret_value())),
                     ("rerank_api_key_file", self.rerank_api_key_file is not None),
                     ("rerank_provider", self.rerank_provider is not None),
+                    ("rerank_fallback_model", bool(self.rerank_fallback_model)),
+                    ("rerank_fallback_provider", self.rerank_fallback_provider is not None),
+                    ("rerank_fallback_url", bool(self.rerank_fallback_url)),
+                    ("rerank_fallback_api_key_file", self.rerank_fallback_api_key_file is not None),
+                    (
+                        "rerank_primary_budget_seconds",
+                        "rerank_primary_budget_seconds" in self.model_fields_set,
+                    ),
                     ("reranker_url", "reranker_url" in self.model_fields_set),
                     ("rerank_health_path", "rerank_health_path" in self.model_fields_set),
                 )
@@ -428,17 +466,60 @@ class Settings(BaseSettings):
             if conflicts:
                 raise ValueError("rerank_backend='none' refuses: " + ", ".join(conflicts))
             return self
+        if self.rerank_fallback_model:
+            if self.rerank_backend not in {"cohere", "voyage"}:
+                raise ValueError(
+                    "rerank_fallback_model requires rerank_backend='cohere' or 'voyage'"
+                )
+            if self.rerank_fallback_model == self.rerank_model:
+                raise ValueError("rerank_fallback_model must differ from rerank_model")
+            if self.rerank_primary_budget_seconds >= self.rerank_budget_seconds:
+                raise ValueError(
+                    "rerank_primary_budget_seconds must be below rerank_budget_seconds"
+                )
         if self.rerank_api_key.get_secret_value() and self.rerank_api_key_file is not None:
             raise ValueError(
                 "two sources for one rerank key: rerank_api_key and rerank_api_key_file "
                 "are both set; clear one of them"
             )
-        if self.rerank_backend != "cohere":
+        if self.rerank_backend not in {"cohere", "voyage"}:
             if self.rerank_api_key_file is not None:
                 # The shim authenticates with brain_embedding_token_file: a key file
                 # here would be ignored, and the operator would believe it armed.
                 raise ValueError("rerank_api_key_file requires rerank_backend='cohere'")
             return self
+        if self.rerank_backend == "voyage":
+            try:
+                url = httpx.URL(self.reranker_url)
+            except httpx.InvalidURL as exc:
+                raise ValueError("reranker_url is not a valid Voyage URL") from exc
+            if (
+                url.scheme != "https"
+                or url.host != "api.voyageai.com"
+                or url.port not in {None, 443}
+                or url.userinfo
+                or url.path != "/"
+                or url.query
+                or url.fragment
+            ):
+                raise ValueError("reranker_url must be https://api.voyageai.com for voyage")
+            if not self.rerank_model.strip() or "/" in self.rerank_model:
+                raise ValueError(
+                    "rerank_model must be non-empty without an author prefix for voyage"
+                )
+            if self.rerank_api_key.get_secret_value():
+                raise ValueError("rerank_api_key is refused for voyage; set rerank_api_key_file")
+            if self.rerank_api_key_file is None:
+                raise ValueError("rerank_api_key_file is required for voyage")
+            if self.rerank_provider is not None:
+                raise ValueError("rerank_provider is refused for voyage")
+            if "rerank_health_path" in self.model_fields_set:
+                raise ValueError("rerank_health_path must stay unset for voyage")
+            if self.rerank_fallback_model:
+                if not self.rerank_fallback_url:
+                    raise ValueError("rerank_fallback_url is required for voyage")
+                if self.rerank_fallback_api_key_file is None:
+                    raise ValueError("rerank_fallback_api_key_file is required for voyage")
         openrouter = _is_openrouter_host(self.reranker_url)
         if openrouter and self.rerank_api_key.get_secret_value():
             # An inline value can arrive through the shared .env, which many more
@@ -448,27 +529,56 @@ class Settings(BaseSettings):
                 "rerank_api_key is refused when reranker_url targets openrouter.ai; "
                 "set BRAIN_RERANK_API_KEY_FILE to the key file's path"
             )
-        provider = self.rerank_provider
-        if provider is None:
-            if openrouter:
-                raise ValueError(
-                    "rerank_provider is required when reranker_url targets openrouter.ai"
-                )
-            return self
-        author, separator, _ = self.rerank_model.partition("/")
-        if not separator or not author:
-            raise ValueError("rerank_model must be '<author>/<name>' when rerank_provider is set")
-        if provider.only != [author]:
-            raise ValueError(
-                f"rerank_provider.only must be exactly [{author!r}], the author of rerank_model"
+        if self.rerank_backend == "cohere":
+            self._check_rerank_routing(
+                self.rerank_model, self.rerank_provider, "rerank", openrouter
             )
-        if provider.allow_fallbacks:
-            raise ValueError("rerank_provider.allow_fallbacks must be false")
-        if provider.data_collection != "deny" and provider.zdr is not True:
-            raise ValueError(
-                "rerank_provider.data_collection must be 'deny' unless rerank_provider.zdr is true"
+        if self.rerank_fallback_model:
+            fallback_openrouter = _is_openrouter_host(self.rerank_fallback_url or self.reranker_url)
+            if (
+                fallback_openrouter
+                and self.rerank_fallback_api_key_file is None
+                and self.rerank_api_key.get_secret_value()
+            ):
+                raise ValueError(
+                    "rerank_api_key is refused for an OpenRouter fallback; "
+                    "set rerank_fallback_api_key_file"
+                )
+            self._check_rerank_routing(
+                self.rerank_fallback_model,
+                self.rerank_fallback_provider,
+                "rerank_fallback",
+                fallback_openrouter,
             )
         return self
+
+    @staticmethod
+    def _check_rerank_routing(
+        model: str, provider: RerankProviderRouting | None, prefix: str, required: bool
+    ) -> None:
+        """Apply the same privacy and author restriction to either hosted link."""
+        if provider is None:
+            if required:
+                raise ValueError(
+                    f"{prefix}_provider is required when reranker_url targets openrouter.ai"
+                )
+            return
+        author, separator, _ = model.partition("/")
+        if not separator or not author:
+            raise ValueError(
+                f"{prefix}_model must be '<author>/<name>' when {prefix}_provider is set"
+            )
+        if provider.only != [author]:
+            raise ValueError(
+                f"{prefix}_provider.only must contain exactly the author of {prefix}_model"
+            )
+        if provider.allow_fallbacks:
+            raise ValueError(f"{prefix}_provider.allow_fallbacks must be false")
+        if provider.data_collection != "deny" and provider.zdr is not True:
+            raise ValueError(
+                f"{prefix}_provider.data_collection must be 'deny' unless "
+                f"{prefix}_provider.zdr is true"
+            )
 
     # --- Code Mode (experimental) ---
     brain_code_mode: bool = False
@@ -583,6 +693,11 @@ class Settings(BaseSettings):
     # --- Metrics sidecar ---
     metrics_enabled: bool = Field(default=False, validation_alias=_brain_alias("METRICS_ENABLED"))
     metrics_port: int = Field(default=9200, validation_alias=_brain_alias("METRICS_PORT"))
+    metrics_dream_scheduler: Literal["systemd_user", "none"] = Field(
+        default="systemd_user", validation_alias=_brain_alias("METRICS_DREAM_SCHEDULER")
+    )
+    """`none` declares that this host runs no Dream scheduler (a containerised
+    sidecar, or a host where Dream is not installed)."""
     metrics_receiver_auth: Literal["none", "credentials"] = Field(
         default="none", validation_alias=_brain_alias("METRICS_RECEIVER_AUTH")
     )

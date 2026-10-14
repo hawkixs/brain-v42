@@ -311,6 +311,28 @@ Focus slots (ADR #34) carry the topics in flight; the tools are described in
   `receipt_pending=true`. A slot found in that state came from a missed hook call: close it with
   `brain_slot_close`.
 
+## Programme progress (`GET /programmes`)
+
+Programmes and their gates are written by the `brain_programme_*` tools
+([MCP tools](MCP_TOOLS.md#brain_programme_upsert)) and read by the cockpit through red-monitor.
+The contract is `docs/contracts/programmes_v1.md`. Three things to know when operating it:
+
+- **Where it is served.** `GET /programmes` on the metrics sidecar answers
+  `{"programmes": <block>}`, or `{}` when the block's read failed. The failure is memoised
+  for 5 s, and the next request retries. The block is not in `/metrics`. It shares the
+  sidecar's listener and its read boundary: unauthenticated, behind the WireGuard perimeter
+  (decision 94771690). Its exact fields are pinned with the other public reads by
+  `tests/unit/metrics/test_read_exposure_pinned.py`. A release older than 065 answers `404`,
+  which red-monitor reports as `no_publisher`.
+- **How fresh it is.** The block is memoised for 30 s with the other slow blocks.
+  `generated_at` is its computation time, so a block served 25 s after it was computed reads
+  25 s old. That is not a stuck publisher.
+- **Who may write.** Writes need the HTTP transport with a client credential: the writer is the
+  project the credential resolves. A write under the shared token or stdio is refused with
+  `caller_unidentified`. When a coordinating session ends, a programme stays readable and
+  writable by its coordinating project. Mark a finished programme `done`: it stays published
+  for seven days, then leaves the block but remains readable through `brain_programme_list`.
+
 ## Admin elevation hook (`/brain-admin`)
 
 The operator elevates the current Brain session to admin by typing a command in the
@@ -476,6 +498,22 @@ a hosted Cohere-style API (`BRAIN_RERANK_BACKEND=cohere`, for example OpenRouter
 `BRAIN_RERANKER_URL=https://openrouter.ai/api`) uses the settings below. None of
 them changes the shim deployment.
 
+For direct Voyage, set `BRAIN_RERANK_BACKEND=voyage`,
+`BRAIN_RERANKER_URL=https://api.voyageai.com`,
+`BRAIN_RERANK_MODEL=rerank-3-lite` and `BRAIN_RERANK_API_KEY_FILE` to the
+operator's Voyage key file. The HTTPS origin is pinned; other hosts are refused.
+The model must be non-empty and have no author prefix. An inline key,
+`BRAIN_RERANK_PROVIDER` and an explicitly configured `BRAIN_RERANK_HEALTH_PATH`
+are refused. Voyage has no free GET probe: availability sends a one-document
+`POST /v1/rerank` with query and document `ping`, costing about 10 tokens per
+300-second interval (plus the startup probe).
+
+**Direct Voyage data policy:** training exclusion depends on the Voyage account's
+training opt-out (operator decision `d4648d84`, Q4). OpenRouter's
+`data_collection` routing setting does not govern a direct Voyage call; verify
+the account opt-out before switching. The Cohere fallback through OpenRouter
+keeps its enforced routing policy.
+
 `BRAIN_RERANK_BACKEND=none` is the hosted reranker's configuration rollback:
 no reranking, RRF order, `rerank_mode="disabled"`, no reranker client and no
 background probe. This is an intended state, so it adds no degraded banner.
@@ -485,19 +523,41 @@ a caller supplies an explicit threshold. No reranker key file is read.
 For this rollback, clear non-empty `BRAIN_RERANK_MODEL` and `BRAIN_RERANK_API_KEY`,
 unset `BRAIN_RERANK_API_KEY_FILE` and `BRAIN_RERANK_PROVIDER`, and unset explicitly
 configured `BRAIN_RERANKER_URL` / `RERANKER_URL` and `BRAIN_RERANK_HEALTH_PATH`.
+Also clear `BRAIN_RERANK_FALLBACK_MODEL` and `BRAIN_RERANK_FALLBACK_URL`, and
+unset `BRAIN_RERANK_FALLBACK_PROVIDER`, `BRAIN_RERANK_FALLBACK_API_KEY_FILE` and
+any explicitly configured `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS`.
 Startup refuses these fields, even when an explicit URL or health path equals
 its default, and names the offending fields without their values.
 The sidecar reports `reranker.backend="none"`, empty `by_identity` and null
-`last_probe_*` fields. The configured backend (`shim`, `cohere` or `none`) is
+`last_probe_*` fields. The configured backend (`shim`, `cohere`, `voyage` or `none`) is
 persisted even without calls; the latest process report wins across processes.
 
 | Setting | Default | Role |
 |---|---|---|
 | `BRAIN_RERANK_API_KEY_FILE` | unset | **Path** of the API key, read once at startup. Never a value: `systemctl show` and `docker inspect` print an environment verbatim. Mutually exclusive with `BRAIN_RERANK_API_KEY`, and refused with the shim backend. |
-| `BRAIN_RERANK_HEALTH_PATH` | `/health` | GET path of the availability probe. Hosted APIs have no liveness route: for OpenRouter set `/v1/key`, which is free and answers 200 only with a valid key (401 otherwise), so it proves the route and the key. |
+| `BRAIN_RERANK_HEALTH_PATH` | `/health` | GET path of the shim or Cohere availability probe. For OpenRouter set `/v1/key`, which is free and answers 200 only with a valid key (401 otherwise). Must stay unset for Voyage, which uses its POST probe. |
 | `BRAIN_RERANK_PROVIDER` | unset | Provider routing sent with every request, as JSON: `{"only": ["voyageai"]}`. Keys: `only`, `allow_fallbacks` (default `false`), `data_collection` (`deny` by default, or `allow`), `zdr`. Unknown keys are refused. |
 | `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
-| `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole Cohere operation: connection, write, read, parsing and backoff sleeps. |
+| `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole hosted operation: connection, write, read, parsing and backoff sleeps. |
+| `BRAIN_RERANK_FALLBACK_MODEL` | empty | Optional second Cohere model, such as `cohere/rerank-4-fast`; must differ from the primary and have a measured calibration. |
+| `BRAIN_RERANK_FALLBACK_PROVIDER` | unset | JSON routing for the fallback, such as `{"only": ["cohere"]}`; required on OpenRouter and subject to the same author and privacy policy as the primary. |
+| `BRAIN_RERANK_FALLBACK_URL` | empty | Fallback Cohere endpoint, such as `https://openrouter.ai/api`. Required with a Voyage primary and a configured fallback; otherwise defaults to the primary URL. |
+| `BRAIN_RERANK_FALLBACK_API_KEY_FILE` | unset | Fallback key file, with the same format and permissions as the primary key file. Required with a Voyage primary and a configured fallback; otherwise reuses the primary key. |
+| `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS` | `1.0` | Positive primary-link budget; must be strictly below the overall budget when a fallback is configured. |
+
+With a fallback configured, the primary gets one attempt, with no retry sleep,
+bounded by its primary budget. Any HTTP, transport or response parsing failure
+hands over to the fallback, which may retry within the overall budget measured
+from the start of the primary call. Each configured key file is read once at
+startup. A Cohere primary keeps the shared URL, probe path and key unless the
+fallback transport is overridden. A Voyage primary requires a separate fallback
+URL and key file; an OpenRouter fallback probes `/v1/key`, and another Cohere
+fallback probes `/health`. Fallback logits are shifted by the difference between the
+two calibrated floor logits so the primary's search floor also applies to fallback
+scores after sigmoid. Search falls back to RRF only when both links fail; without
+a configured fallback, the single-client behaviour below still applies. The chain
+reports the primary's calibration and probe state, and neither hosted calibration
+enables feature deduplication signalling.
 
 The key file must be mode `0600` or stricter and have one of two shapes: the bare key value (one token: no whitespace, no `=`, at most
 512 characters), or a dotenv-style file with exactly one `BRAIN_RERANK_API_KEY=<value>`
@@ -506,7 +566,7 @@ ignored and never sent anywhere). Anything else is refused, so an env fragment i
 never forwarded;
 anything readable beyond its owner, malformed, empty, or unreadable stops the runtime at construction with a `RerankKeyError` that
 names the path, never the content. Create it the way the shim bearer is created, with
-a redirection under a tight `umask`. The cohere backend never reads
+a redirection under a tight `umask`. The cohere and voyage backends never read
 `BRAIN_EMBEDDING_TOKEN_FILE`: that file is the shim's bearer and must not reach a
 hosted vendor.
 
@@ -526,7 +586,7 @@ or `transport_<ExceptionName>`) when it starts failing and
 rejected or revoked key shows up there as `http_401` rather than as search results
 silently falling back to RRF ordering.
 
-The Cohere backend retries HTTP 429, 500, 502, 503 and 504, and connection errors,
+The Cohere and Voyage backends retry HTTP 429, 500, 502, 503 and 504, and connection errors,
 at most twice. `Retry-After` accepts seconds or an HTTP-date and is never shortened;
 without a usable header, full jitter chooses a delay between zero and
 `0.1 * 2**attempt` seconds (the first attempt is zero). If the delay cannot fit in
@@ -539,7 +599,7 @@ HTTP timeout. It has no elapsed-time budget; a 503 without the header fails at o
 
 With MCP metrics enabled, the sidecar's `/metrics` `reranker.by_identity` reports operations,
 `operations_by_outcome`, attempts, retries, `status_429`, `status_5xx` and
-`budget_exhausted`. Identities are `shim` or `cohere:<model>` and carry `backend` and
+`budget_exhausted`. Identities are `shim`, `cohere:<model>` or `voyage:<model>` and carry `backend` and
 `model` labels. `fallback_rate` is non-ok operations divided by operations (zero
 before any operation), recomputed from counters summed across processes for each
 identity. `operations_by_outcome` is also summed per outcome. `attempt_latency_ms`
@@ -555,6 +615,32 @@ it to zero and rounds to 0.1 seconds. Flush data keeps per-identity probe state 
 `{ok, reason, at, identity}` even without operations, along with `by_identity` when
 present. Existing legacy metrics retain their meanings; observer failures log once
 and never fail a search.
+
+`reranker.chain` counts chain operations separately from link attempts:
+`operations`, `served_by` (counts keyed by the serving identity), `handovers`
+(primary failures that pass to the fallback), and `failed_all`. A successful
+fallback counts as a served operation; it does not count as RRF. Missing chain
+observations appear as `{}` on `/metrics`.
+
+`search_rerank` counts each search once, including grouped output:
+`rerank_searches` counts all searches, `rerank_eligible` counts searches where at
+least one shard actually passed candidates to the reranker, and `rerank_rrf`
+counts eligible searches where at least one invoked shard returned `rrf_fallback`.
+Empty candidate sets, FTS fallback, backend `none` (`disabled`) and `rrf_only`
+are not eligible. Eligibility is measured before result limits and score
+filtering, so an invoked search returning no hits can still be eligible. The
+acceptance ratio is `rerank_rrf / rerank_eligible`; with a zero denominator it is
+undefined, not evidence that reranking succeeded.
+
+The MCP collector snapshot and flush store these search counters under `search`;
+the flusher persists them as the `_search_rerank` pseudo-tool and chain counters
+inside `_reranker`. The sidecar reads both from the single `_process` row:
+`agent_name` is the primary key and each upsert replaces that row, so these
+counters are never summed across agents. `search_rerank.emitter_started_at` is
+the emitter's construction time (`time.time()`), stable for its process lifetime
+and persisted even before its first search. Readers reset their baseline when
+this generation changes, never merely because a counter drops. Missing search
+observations appear as `{}`; the sidecar never substitutes its own generation.
 
 ### Embedding shim static bearer
 
@@ -744,7 +830,7 @@ on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text)
 
 ## Migration history
 
-The repository migration target is 064. No page in this repository proves a live
+The repository migration target is 065. No page in this repository proves a live
 schema head; read `alembic_version` in the target database.
 
 `brain-v42-migrate` uses the owner credentials from `POSTGRES_URL` and the
@@ -1093,6 +1179,26 @@ consecutive failure the observer also writes an `observation_backoff` line on st
 (`subject`, `error_code`, `prior_failures`, `delay_seconds`): that subject now waits on an
 operator fix. Once it is fixed, `brain_delivery_refresh` on the ticket makes its
 contexts and active bindings due at once instead of waiting out the backoff.
+
+## Embedding backlog runner
+
+Every knowledge write commits its row first, with a NULL vector, and embeds it after
+the commit. When the embedding provider fails, the row stays in the durable backlog:
+rows whose vector is NULL or has a near-zero norm. Full-text search still finds such a
+row, semantic search does not, until something re-embeds it. That something is
+`python -m brain_v42.maintenance.embedding_backfill`, and only that: the MCP server
+runs no backlog loop of its own.
+
+**On red-base** the `embedding-backfill` Compose service runs it once at start and then
+every hour, over every project and every entity type. Whether it writes is declared on
+its command line (`--execute` or not) in `deploy/compose.yaml` and changes only through
+a pull request followed by a rail deploy. Dry, a run only counts the backlog and prints
+its JSON report to `docker logs brain-v42-embedding-backfill`; it calls no provider and
+writes nothing. Arming it is not a one-flag change: with `--execute` the command also
+builds the feature and graph linkers, so the service then needs the graph environment
+as well. A failed run is retried the next hour; the healthcheck proves only that the
+loop process exists, not that a run completed. The sidecar's
+`database.embedding_backlog` block is where the backlog's size is measured.
 
 ## Delivery observer: releases and deployments
 

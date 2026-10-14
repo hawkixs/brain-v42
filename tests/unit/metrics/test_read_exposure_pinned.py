@@ -24,6 +24,7 @@ from brain_v42.metrics.brain_graph_server import BrainGraphMetricsServer
 from brain_v42.metrics.client_activity import ClientActivityRegistry
 from brain_v42.metrics.client_observation import ClientObservation
 from brain_v42.metrics.collector import MetricsCollector
+from brain_v42.repositories.pg_programme import VERSION, PgProgrammeRepo, published_programme
 
 # Only these maps use runtime labels rather than structural field names. The
 # wildcard in the literal pins EVERY value, without pinning deployment names.
@@ -33,6 +34,7 @@ DYNAMIC_MAPS = {
     "/metrics.cross_process.by_agent": "declared agent identities in process rows",
     "/metrics.reranker.by_identity": "backend:model identities that served reranks",
     "/metrics.reranker.by_identity.*.operations_by_outcome": "observed operation outcomes",
+    "/metrics.reranker.chain.served_by": "rerank link identities that served chain operations",
     "/metrics.graph.nodes_total": "labels returned by the graph service",
     "/metrics.graph.edges_total": "relationship types returned by the graph service",
     "/metrics.receiver_rejections.codex_logs": "HTTP statuses actually rejected",
@@ -48,6 +50,21 @@ DYNAMIC_MAPS = {
     ),
     "/metrics.dream.last_run.phases": "phase names present in dream_runs",
     "/metrics.dream.promotions.by_type": "target types present in dream_promotions",
+}
+
+# Per-block evaluation health, kept apart from payloads that own status keys.
+BLOCK_HEALTH = {"status": None, "error_type": None, "as_of": None, "last_ok_at": None}
+
+# Per-tool stats in both tool maps; percentiles cover a window, counters do not.
+TOOL_STATS = {
+    "calls": None,
+    "errors": None,
+    "recent_errors": None,
+    "avg_latency_ms": None,
+    "p50": None,
+    "p95": None,
+    "p99": None,
+    "samples": None,
 }
 
 # None denotes a JSON scalar (including null), [shape] a nonempty list whose
@@ -81,7 +98,7 @@ METRICS_SCHEMA = {
         "models_seen": [None],
         "model_source": None,
     },
-    "tools": {"*": {"calls": None, "errors": None, "recent_errors": None, "avg_latency_ms": None}},
+    "tools": {"*": TOOL_STATS},
     "search_quality": {
         "searches_total": None,
         "searches_with_zero_results": None,
@@ -110,9 +127,21 @@ METRICS_SCHEMA = {
                 "operation_latency_ms": {"p50": None, "p95": None, "p99": None},
             }
         },
+        "chain": {
+            "operations": None,
+            "served_by": {"*": None},
+            "handovers": None,
+            "failed_all": None,
+        },
         "last_probe_ok": None,
         "last_probe_reason": None,
         "last_probe_age_s": None,
+    },
+    "search_rerank": {
+        "rerank_searches": None,
+        "rerank_eligible": None,
+        "rerank_rrf": None,
+        "emitter_started_at": None,
     },
     "decay": {"stale_count": None, "archived_count": None, "access_log_size": None},
     "graph": {
@@ -141,6 +170,11 @@ METRICS_SCHEMA = {
     "client_activity_registry": {
         "evictions_total": {"ttl": None, "capacity": None},
         "evictions_bearing_total": None,
+        "conversation_evictions_total": {
+            "codex": {"ttl": None, "capacity": None},
+            "claude": {"ttl": None, "capacity": None},
+        },
+        "conversation_evictions_bearing_total": {"codex": None, "claude": None},
         "occupancy": None,
         "capacity": None,
         "folded_observations_total": None,
@@ -198,12 +232,16 @@ METRICS_SCHEMA = {
     "mcp_auth_agent_unresolved": {"*": None},
     "author_binding_candidates": {"*": None},
     "cross_process": {
+        "counters": {
+            "epoch": None,
+            "since": None,
+            "processes": None,
+            "tool_latency_window_s": None,
+        },
         "active_processes": None,
         "active_agents": None,
         "total_memory_rss_bytes": None,
-        "tools": {
-            "*": {"calls": None, "errors": None, "recent_errors": None, "avg_latency_ms": None}
-        },
+        "tools": {"*": TOOL_STATS},
         "embedding": {
             "total_requests": None,
             "total_errors": None,
@@ -221,9 +259,12 @@ METRICS_SCHEMA = {
         },
     },
     "dream": {
+        "state": None,
         "last_run": {
             "date": None,
             "status": None,
+            "judged": None,
+            "scheduler_state": None,
             "phases_ok": None,
             "phases_fail": None,
             "total_cost_usd": None,
@@ -254,6 +295,15 @@ METRICS_SCHEMA = {
         "generated_at": None,
     },
     "nightly": {
+        "scheduler": {
+            "state": None,
+            "source": None,
+            "timer": {"unit_file_state": None, "active_state": None, "next_elapse": None},
+            "service": {"active_state": None},
+            "error_type": None,
+        },
+        "dream_state": None,
+        "killswitches_source": None,
         "killswitches": {
             "promote": None,
             "reorg": None,
@@ -317,6 +367,19 @@ METRICS_SCHEMA = {
         ],
         "generated_at": None,
     },
+    "block_status": dict.fromkeys(
+        (
+            "database",
+            "search_quality",
+            "cross_process",
+            "dream",
+            "nightly",
+            "tickets",
+            "session_slots",
+            "graph_inventory",
+        ),
+        BLOCK_HEALTH,
+    ),
 }
 
 COCKPIT_SCHEMA = {
@@ -380,6 +443,11 @@ COCKPIT_SCHEMA = {
         "rerankUsed": None,
         "queries24h": None,
     },
+    "block_status": {
+        "memory": BLOCK_HEALTH,
+        "retrieval": BLOCK_HEALTH,
+        "retrieval_log": BLOCK_HEALTH,
+    },
     "latencyBuckets": [{"range": None, "count": None, "tone": None}],
     "cost": {
         "today": None,
@@ -394,6 +462,43 @@ COCKPIT_SCHEMA = {
     "errHistory": [None],
     "costHistory": [None],
     "recent": [{"lvl": None, "msg": None, "t": None}],
+}
+
+
+# GET /programmes, decided with the frozen contract docs/contracts/programmes_v1.md
+# (tickets 8a063256 and 24c1f172): declared one-line texts, gate keys, project keys
+# and timestamps, no secret. Every optional object is filled below so the walk
+# reaches its fields; the contract test and the sidecar integration test pin the
+# semantics.
+PROGRAMMES_SCHEMA = {
+    "programmes": {
+        "version": None,
+        "generated_at": None,
+        "programmes": [
+            {
+                "key": None,
+                "title": None,
+                "coordinator": None,
+                "state": None,
+                "last_change": {"gate": None, "from": None, "to": None, "at": None, "by": None},
+                "gates": [
+                    {
+                        "key": None,
+                        "title": None,
+                        "owner": None,
+                        "state": None,
+                        "depends_on": [None],
+                        "weight": None,
+                        "waiting_on_operator": {"ask": None, "since": None},
+                        "progress": {"done": None, "total": None, "unit": None},
+                        "note": None,
+                        "updated_at": None,
+                        "updated_by": None,
+                    }
+                ],
+            }
+        ],
+    }
 }
 
 
@@ -623,6 +728,9 @@ def populated_server(
     collector.record_rerank_attempt("shim:test-model", "ok", 10.0)
     collector.record_rerank_operation("shim:test-model", "ok", 10.0)
     collector.record_rerank_probe("shim:test-model", True, "ok")
+    collector.on_handover()
+    collector.on_chain("fallback", "shim:test-model")
+    collector.record_search_rerank(eligible=True, rrf=False)
     collector.record_graph_query(10.0)
     collector.record_decay_stats(1, 2, 3)
 
@@ -641,7 +749,9 @@ def populated_server(
             "backend": reranker["backend"],
             "by_identity": reranker["by_identity"],
             "last_probe": reranker["last_probe"]["shim:test-model"],
+            "chain": reranker["chain"],
         },
+        "_search_rerank": process["search"],
         "_graph": {"calls": 1, "errors": 0, "recent_errors": 0, "total_latency": 10.0},
         "_decay": process["decay"],
         "_mcp_auth_refused": {"missing_token": 1},
@@ -674,6 +784,40 @@ def populated_server(
         encoding="utf-8",
     )
     monkeypatch.setattr("brain_v42.metrics.collector_nightly.KILLSWITCHES_PATH", killswitches)
+
+    # The programme rows a database would return, through the real serializer.
+    programme_row = {
+        "key": "brain-move",
+        "title": "Brain to red-base",
+        "coordinator_project": "brain-v42",
+        "state": "active",
+        "last_change_gate": "G7",
+        "last_change_from": "todo",
+        "last_change_to": "in_progress",
+        "last_change_at": NOW,
+        "last_change_by": "red-backup",
+    }
+    gate_row = {
+        "key": "G7",
+        "title": "red-backup deployed on red-base",
+        "owner_project": "red-backup",
+        "state": "in_progress",
+        "depends_on": ["G6"],
+        "weight": 4,
+        "waiting_ask": "validate spec",
+        "waiting_since": NOW,
+        "progress_done": 6,
+        "progress_total": 15,
+        "progress_unit": "tasks",
+        "note": "first deploy",
+        "updated_at": NOW,
+        "updated_by": "red-backup",
+    }
+
+    async def published_block(_repo: PgProgrammeRepo) -> dict[str, Any]:
+        return {"version": VERSION, "programmes": [published_programme(programme_row, [gate_row])]}
+
+    monkeypatch.setattr(PgProgrammeRepo, "published_block", published_block)
 
     # Reuse the actual telemetry fixture and merged-registry setup from
     # test_metrics_cockpit_collector.py, including the legacy conversation row.
@@ -711,6 +855,7 @@ async def test_exact_recursive_read_exposure(populated_server: BrainGraphMetrics
     for path, handler, schema in (
         ("/metrics", "_handle_metrics", METRICS_SCHEMA),
         ("/api/cockpit", "_handle_cockpit", COCKPIT_SCHEMA),
+        ("/programmes", "_handle_programmes", PROGRAMMES_SCHEMA),
     ):
         response = await getattr(populated_server, handler)(make_mocked_request("GET", path))
         assert response.status == 200
@@ -722,7 +867,7 @@ async def test_exact_recursive_read_exposure(populated_server: BrainGraphMetrics
 async def test_only_decided_read_routes_are_credential_free(
     populated_server: BrainGraphMetricsServer, aiohttp_client: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Pin the three public reads while credentialed POST receivers stay closed.
+    """Pin the four public reads while credentialed POST receivers stay closed.
 
     Graph rejection before loading data is pinned separately by
     test_brain_graph_server.py::test_graph_route_rejects_non_loopback_peer_before_loading_data.
@@ -735,16 +880,17 @@ async def test_only_decided_read_routes_are_credential_free(
     assert {route.resource.canonical for route in app.router.routes() if route.method == "GET"} == {
         "/metrics",
         "/api/cockpit",
+        "/programmes",
         "/healthz",
         "/api/brain-graph/v1",
     }
     client = await aiohttp_client(app)
     allowed = set()
-    for path in ("/metrics", "/api/cockpit", "/healthz", "/api/brain-graph/v1"):
+    for path in ("/metrics", "/api/cockpit", "/programmes", "/healthz", "/api/brain-graph/v1"):
         response = await client.get(path)
         if response.status == 200:
             allowed.add(path)
-    assert allowed == {"/metrics", "/api/cockpit", "/healthz"}
+    assert allowed == {"/metrics", "/api/cockpit", "/programmes", "/healthz"}
     for path in ("/v1/logs", "/v1/logs/claude", "/v1/client-activity"):
         response = await client.post(path, json={})
         assert response.status == 401

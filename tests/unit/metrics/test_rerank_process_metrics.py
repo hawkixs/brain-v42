@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from brain_v42.metrics.collector import MetricsCollector
 from brain_v42.metrics.collector_db import _DbCollectorsMixin
+from brain_v42.metrics.flusher import MetricsFlusher
 
 
 async def _collect(rerankers: list[dict[str, Any]]) -> dict[str, Any]:
@@ -22,7 +24,9 @@ async def _collect(rerankers: list[dict[str, Any]]) -> dict[str, Any]:
     context.__aexit__ = AsyncMock(return_value=None)
     collector = _DbCollectorsMixin.__new__(_DbCollectorsMixin)
     collector._session_factory = MagicMock(return_value=context)  # type: ignore[attr-defined]
-    return await collector.collect_process_metrics()
+    result = await collector.collect_process_metrics()
+    assert collector._block_health.health("cross_process")["status"] == "ok"
+    return result
 
 
 @pytest.mark.parametrize("reverse", [False, True])
@@ -119,3 +123,35 @@ async def test_collect_process_metrics_handles_attempts_and_probe_without_operat
     assert stats["by_identity"]["shim"]["attempts"] == 1
     assert stats["by_identity"]["shim"]["fallback_rate"] == 0.0
     assert stats["last_probe"] == probe
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("with_samples", [False, True])
+async def test_collect_process_metrics_merges_null_percentiles(
+    reverse: bool, with_samples: bool
+) -> None:
+    empty = {"p50": None, "p95": None, "p99": None}
+    measured = {"p50": 10.0, "p95": 50.0, "p99": 90.0} if with_samples else empty
+    rows = [
+        {"by_identity": {"onnx:m": {"attempt_latency_ms": values, "operation_latency_ms": values}}}
+        for values in (empty, measured)
+    ]
+    result = await _collect(list(reversed(rows)) if reverse else rows)
+    stats = result["tools"]["_reranker"]["by_identity"]["onnx:m"]
+    assert result["active_processes"] == 2
+    assert stats["attempt_latency_ms"] == measured
+    assert stats["operation_latency_ms"] == measured
+
+
+async def test_collect_process_metrics_keeps_operation_without_attempts() -> None:
+    collector = MetricsCollector(MagicMock(), MagicMock())
+    collector.record_rerank_operation("onnx:m", "budget_exhausted", 12.0)
+    snapshot = collector.get_flush_data()["_process"]
+    reranker = MetricsFlusher._process_pseudo_tools(snapshot)["_reranker"]
+    result = await _collect([reranker])
+    stats = result["tools"]["_reranker"]["by_identity"]["onnx:m"]
+    assert result["active_processes"] == 1
+    assert stats["operations_by_outcome"] == {"budget_exhausted": 1}
+    assert stats["attempts"] == 0
+    assert stats["attempt_latency_ms"] == {"p50": None, "p95": None, "p99": None}
+    assert stats["operation_latency_ms"] == {"p50": 12.0, "p95": 12.0, "p99": 12.0}

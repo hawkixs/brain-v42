@@ -16,8 +16,10 @@ separately).
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from datetime import UTC, date, datetime
-from unittest.mock import AsyncMock, MagicMock
+from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -150,6 +152,43 @@ def _db_side_effects(
 
 
 class TestCollectNightlyOps:
+    @pytest.fixture(autouse=True)
+    def _scheduler(self) -> Iterator[AsyncMock]:
+        with patch(
+            "brain_v42.metrics.collector_nightly.read_dream_scheduler_state",
+            new_callable=AsyncMock,
+            return_value={"state": "suspended"},
+        ) as reader:
+            yield reader
+
+    @pytest.mark.asyncio
+    async def test_scheduler_is_independent_of_declared_killswitches(self, tmp_path: Path) -> None:
+        collector = _make_collector(_db_side_effects())
+        result = await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
+        assert result["scheduler"] == {"state": "suspended"}
+        assert result["dream_state"] == "suspended"
+        assert result["killswitches_source"] == "declared"
+        assert result["killswitches"] is None
+
+    @pytest.mark.asyncio
+    async def test_scheduler_survives_database_failure(self, tmp_path: Path) -> None:
+        collector = _make_collector([RuntimeError("db down")])
+        with pytest.raises(CollectorDegraded) as excinfo:
+            await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
+        result = excinfo.value.payload
+        assert result["scheduler"] == {"state": "suspended"}
+        assert result["dream_state"] == "suspended"
+        assert result["killswitches_source"] == "declared"
+        assert result["killswitches"] is None
+
+    @pytest.mark.asyncio
+    async def test_scheduler_mode_is_forwarded(self, tmp_path: Path, _scheduler: AsyncMock) -> None:
+        collector = _make_collector(_db_side_effects())
+        await collector.collect_nightly_ops(
+            killswitches_path=tmp_path / "absent.conf", scheduler_mode="none"
+        )
+        _scheduler.assert_awaited_once_with("none")
+
     @pytest.mark.asyncio
     async def test_full_payload(self, tmp_path) -> None:
         ks_file = tmp_path / "killswitches.conf"
@@ -260,18 +299,19 @@ class TestCollectNightlyOps:
         assert "last_failure" not in result
 
     @pytest.mark.asyncio
-    async def test_everything_down_raises_collector_degraded_with_empty_payload(
-        self, tmp_path
-    ) -> None:
-        """Neither file nor DB → CollectorDegraded({}): the server still omits
-        the nightly section, but the cache now retries it soon instead of for
-        the full TTL."""
+    async def test_everything_down_retains_scheduler_in_degraded_payload(self, tmp_path) -> None:
+        """The independent scheduler measurement survives missing file and DB."""
         collector = _make_collector([RuntimeError("db down")])
 
         with pytest.raises(CollectorDegraded) as excinfo:
             await collector.collect_nightly_ops(killswitches_path=tmp_path / "absent.conf")
 
-        assert excinfo.value.payload == {}
+        assert excinfo.value.payload == {
+            "scheduler": {"state": "suspended"},
+            "dream_state": "suspended",
+            "killswitches_source": "declared",
+            "killswitches": None,
+        }
 
     @pytest.mark.asyncio
     async def test_transient_sql_failure_recovers_after_the_short_error_ttl(self, tmp_path) -> None:
@@ -314,3 +354,11 @@ class TestCollectNightlyOps:
         assert recovered is not None
         assert recovered["extract"] == {"proposed_pending": 3}
         assert collector._session_factory.return_value.execute.call_count == 3
+
+
+def test_compose_declares_no_scheduler_for_containerised_metrics() -> None:
+    import yaml
+
+    compose = Path(__file__).resolve().parents[3] / "deploy" / "compose.yaml"
+    environment = yaml.safe_load(compose.read_text())["services"]["metrics"]["environment"]
+    assert environment["METRICS_DREAM_SCHEDULER"] == "none"

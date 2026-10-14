@@ -97,12 +97,18 @@ class TestConfiguredSendsTheBearer:
                 return httpx.Response(200, json={"scores": [0.5]})
             if request.url.path in ("/healthz", "/health"):
                 return httpx.Response(200, json={"status": "ok"})
+            if request.url.path == "/embed/query":
+                # The shim answers one flat vector for a query, a list of them for a batch.
+                return httpx.Response(200, json=[0.1, 0.2])
             return httpx.Response(200, json=[[0.1, 0.2]])
 
         transport = httpx.MockTransport(_record)
         token_file = _token_file(tmp_path)
 
-        service = build_embedding_service(_settings(brain_embedding_token_file=token_file))
+        # The fake vectors below are 2-dimensional; the client checks the configured size.
+        service = build_embedding_service(
+            _settings(brain_embedding_token_file=token_file, embedding_dimension=2)
+        )
         service._client = httpx.AsyncClient(
             base_url="http://localhost:8003",
             headers=service._get_client().headers,

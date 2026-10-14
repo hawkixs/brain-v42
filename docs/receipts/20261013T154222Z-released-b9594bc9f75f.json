@@ -1,0 +1,27 @@
+{
+  "digest": "sha256:b9594bc9f75f240984ddfe826b23be510e6d88362e6ad4485cf90fe9aea156ef",
+  "idempotency_key": "released:0.6.15",
+  "issuer": "agent:claude-code:9685aeb7-05fa-46fb-a0d1-70eaa93f2263",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "changelog": [
+        "docs(release): state the rerank fallback budget accurately",
+        "chore(release): 0.6.15",
+        "fix(deploy): give the direct Voyage link a 1.6 s share of a 3.0 s rerank budget",
+        "chore(receipts): record the deployment of 0.6.14",
+        "chore(receipts): record the release of 0.6.14"
+      ],
+      "digest": "sha256:50c8c426e2e4eade3663025cbeae98b286c22694915df4c18fdc452a07ac058d",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:50c8c426e2e4eade3663025cbeae98b286c22694915df4c18fdc452a07ac058d",
+      "platform": "linux/amd64",
+      "sha": "e38da9c4cb3b83e2eef2df3553db0058b9eef0ed",
+      "tag": "v0.6.15",
+      "version": "0.6.15"
+    },
+    "kind": "released"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T15:42:22.369099Z",
+  "schema_version": 1
+}

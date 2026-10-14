@@ -140,11 +140,13 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
     - json_response=True
     - uvicorn_config={"timeout_graceful_shutdown": 10, "proxy_headers": False,
       "forwarded_allow_ips": ""} so the peer always comes from the socket
-      (plus log_config=None in JSON mode to preserve the stderr formatter)
+      (plus log_config=None in both modes to preserve sanitized logging)
     - show_banner=False only in JSON mode to keep every line parseable
     - host and port from settings
     Also verifies run_async (stdio) is NOT called.
     """
+    from unittest.mock import AsyncMock
+
     from brain_v42.config import Settings, get_settings
     from brain_v42.mcp import server
 
@@ -159,10 +161,7 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
         brain_log_format=log_format,
     )
 
-    captured: dict[str, Any] = {}
-
-    async def fake_run_http_async(**kwargs: Any) -> None:
-        captured.update(kwargs)
+    run_http = AsyncMock()
 
     stdio_called = False
 
@@ -170,12 +169,15 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
         nonlocal stdio_called
         stdio_called = True
 
-    monkeypatch.setattr(server.mcp, "run_http_async", fake_run_http_async)
+    monkeypatch.setattr(server.mcp, "run_http_async", run_http)
     monkeypatch.setattr(server.mcp, "run_async", fake_run_async)
     server._http_security_configured_servers.discard(server.mcp)
 
     # Call the REAL _run_mcp — no reimplementation
     asyncio.run(server._run_mcp(server.mcp, settings))
+
+    run_http.assert_awaited_once()
+    captured = run_http.call_args.kwargs
 
     assert captured.get("transport") == "http", f"transport not http: {captured}"
     assert captured.get("stateless_http") is False, f"stateless_http not False: {captured}"
@@ -184,7 +186,7 @@ def test_run_server_http_branch_calls_run_http_async_with_kwargs(
         "timeout_graceful_shutdown": 10,
         "proxy_headers": False,
         "forwarded_allow_ips": "",
-        **({"log_config": None} if log_format == "json" else {}),
+        "log_config": None,
     }, f"uvicorn_config mismatch: {captured}"
     assert captured.get("host") == settings.mcp_http_host, f"host mismatch: {captured}"
     assert captured.get("port") == settings.mcp_http_port, f"port mismatch: {captured}"
