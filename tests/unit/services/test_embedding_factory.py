@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
 import httpx
 import pytest
 from pydantic import SecretStr
@@ -10,6 +13,69 @@ from brain_v42.config import Settings
 from brain_v42.services.embedding_factory import build_embedding_service, build_reranker_client
 from brain_v42.services.embedding_wire import OpenAIWire, ShimWire
 from brain_v42.services.rerank_wire import CohereRerankWire, ShimRerankWire
+
+
+def test_factory_builds_fallback_chain_with_one_key_read(monkeypatch, tmp_path) -> None:
+    from pathlib import Path
+    from unittest.mock import MagicMock
+
+    observer = MagicMock()
+    read = MagicMock(return_value="test-key")
+    monkeypatch.setattr(Path, "read_text", read)
+    monkeypatch.setattr(Path, "stat", MagicMock(return_value=MagicMock(st_mode=0o600)))
+    settings = _settings(
+        rerank_backend="cohere",
+        rerank_model="voyageai/rerank-3-lite",
+        rerank_fallback_model="cohere/rerank-4-fast",
+        rerank_fallback_provider={"only": ["cohere"]},
+        rerank_api_key_file=tmp_path / "fake-key",
+        rerank_health_path="/v1/key",
+        rerank_primary_budget_seconds=0.5,
+    )
+    client = build_reranker_client(settings, observer=observer)
+    assert type(client).__name__ == "RerankChain"
+    read.assert_called_once_with(encoding="utf-8")
+    assert client.calibration.identity == "cohere:voyageai/rerank-3-lite"
+    assert client.calibration.search_min_score == 0.50
+    assert client._primary._observer is client._fallback._observer is observer
+    assert client._primary._api_key == client._fallback._api_key == "test-key"
+    assert client._primary._base_url == client._fallback._base_url == settings.reranker_url
+    assert client._primary._wire.health_path == client._fallback._wire.health_path == "/v1/key"
+    assert client._fallback._wire.request("q", ["a"])[1]["provider"] == {
+        "only": ["cohere"],
+        "allow_fallbacks": False,
+        "data_collection": "deny",
+    }
+    assert client._primary_budget == 0.5
+    assert client._overall_budget == 1.5
+
+
+def test_factory_refuses_uncalibrated_fallback() -> None:
+    settings = _settings(
+        rerank_backend="cohere",
+        rerank_model="voyageai/rerank-3-lite",
+        rerank_fallback_model="unknown/model",
+    )
+    with pytest.raises(ValueError, match="rerank_fallback_model.*calibrat"):
+        build_reranker_client(settings)
+
+
+@pytest.mark.asyncio
+async def test_feature_dedup_with_chain_signals_nothing() -> None:
+    from unittest.mock import MagicMock
+
+    from brain_v42.services.feature_dedup_job import FeatureDedupJob
+
+    settings = _settings(
+        rerank_backend="cohere",
+        rerank_model="voyageai/rerank-3-lite",
+        rerank_fallback_model="cohere/rerank-4-fast",
+    )
+    client = build_reranker_client(settings)
+    session_factory = MagicMock()
+    job = FeatureDedupJob(session_factory, client)
+    assert await job.find_candidates("brain-v42") == []
+    session_factory.assert_not_called()
 
 
 def test_reranker_budget_and_observer_are_wired_through() -> None:
@@ -38,6 +104,109 @@ def _settings(**kwargs: object) -> Settings:
     return Settings(postgres_url=DSN, _env_file=None, **kwargs)  # type: ignore[call-arg]
 
 
+@pytest.mark.asyncio
+async def test_voyage_chain_uses_separate_urls_and_keys_once(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    from structlog.testing import capture_logs
+
+    from brain_v42.services.rerank_chain import RerankChain
+
+    primary_key, fallback_key = "voyage-SENTINEL", "openrouter-SENTINEL"
+    primary_file, fallback_file = tmp_path / "voyage-key", tmp_path / "fallback-key"
+    for path, value in [(primary_file, primary_key), (fallback_file, fallback_key)]:
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
+    reads = []
+    original_read = Path.read_text
+
+    def read_once(path: Path, *args: Any, **kwargs: Any) -> str:
+        assert path in {primary_file, fallback_file}, (
+            "hosted reranking must never read the shim bearer"
+        )
+        reads.append(path)
+        return original_read(path, *args, **kwargs)
+
+    settings = _settings(
+        rerank_backend="voyage",
+        reranker_url="https://api.voyageai.com",
+        rerank_model="rerank-3-lite",
+        rerank_api_key_file=primary_file,
+        brain_embedding_token_file=tmp_path / "do-not-read-shim",
+        rerank_fallback_model="cohere/rerank-4-fast",
+        rerank_fallback_url="https://openrouter.ai/api",
+        rerank_fallback_api_key_file=fallback_file,
+        rerank_fallback_provider={"only": ["cohere"]},
+    )
+    monkeypatch.setattr(Path, "read_text", read_once)
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.host == "api.voyageai.com":
+            assert request.headers["Authorization"] == f"Bearer {primary_key}"
+            return httpx.Response(429, headers={"Retry-After": "120"})
+        assert request.url.host == "openrouter.ai"
+        assert request.headers["Authorization"] == f"Bearer {fallback_key}"
+        return httpx.Response(200, json={"results": [{"index": 0, "relevance_score": 0.3}]})
+
+    original_client = httpx.AsyncClient
+
+    def mock_client(*args: Any, **kwargs: Any) -> httpx.AsyncClient:
+        return original_client(*args, **kwargs, transport=httpx.MockTransport(handler))
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+    with capture_logs() as records:
+        chain = build_reranker_client(settings)
+        assert isinstance(chain, RerankChain)
+        try:
+            assert chain._primary._base_url == "https://api.voyageai.com"
+            assert chain._fallback._base_url == "https://openrouter.ai/api"
+            assert chain._fallback._wire.health_path == "/v1/key"
+            assert await chain.rerank("q", ["a"]) == pytest.approx([0.0])
+            assert len(requests) == 2
+            assert reads.count(primary_file) == reads.count(fallback_file) == 1
+        finally:
+            await chain.close()
+    assert primary_key not in repr(records)
+    assert fallback_key not in repr(records)
+
+
+@pytest.mark.parametrize("invalid_link", ["primary", "fallback"])
+def test_voyage_chain_key_errors_never_render_either_key(tmp_path: Path, invalid_link: str) -> None:
+    from structlog.testing import capture_logs
+
+    from brain_v42.services.embedding_factory import RerankKeyError
+
+    primary_key, fallback_key = "voyage-SENTINEL", "openrouter-SENTINEL"
+    primary_file, fallback_file = tmp_path / "voyage-key", tmp_path / "fallback-key"
+    for path, value in [(primary_file, primary_key), (fallback_file, fallback_key)]:
+        path.write_text(value, encoding="utf-8")
+        path.chmod(0o600)
+    invalid_file = primary_file if invalid_link == "primary" else fallback_file
+    invalid_file.write_text(
+        f"BRAIN_RERANK_API_KEY={primary_key}\nBRAIN_RERANK_API_KEY={fallback_key}",
+        encoding="utf-8",
+    )
+    settings = _settings(
+        rerank_backend="voyage",
+        reranker_url="https://api.voyageai.com",
+        rerank_model="rerank-3-lite",
+        rerank_api_key_file=primary_file,
+        rerank_fallback_model="cohere/rerank-4-fast",
+        rerank_fallback_url="https://openrouter.ai/api",
+        rerank_fallback_api_key_file=fallback_file,
+        rerank_fallback_provider={"only": ["cohere"]},
+    )
+    with capture_logs() as records, pytest.raises(RerankKeyError) as excinfo:
+        build_reranker_client(settings)
+    assert str(invalid_file) in str(excinfo.value)
+    assert "exactly once" in str(excinfo.value)
+    for key in (primary_key, fallback_key):
+        assert key not in str(excinfo.value)
+        assert key not in repr(records)
+
+
 class TestBackendSelection:
     def test_default_settings_build_the_shim_wire(self) -> None:
         service = build_embedding_service(_settings())
@@ -52,6 +221,51 @@ class TestBackendSelection:
 
 
 class TestSettingsReachTheClient:
+    def test_budgets_and_dimension_are_wired_through(self) -> None:
+        service = build_embedding_service(
+            _settings(
+                embedding_retry_budget_seconds=45.0,
+                embedding_query_deadline_seconds=4.0,
+                embedding_dimension=768,
+            )
+        )
+        assert service._retry_budget_seconds == 45.0
+        assert service._query_deadline_seconds == 4.0
+        assert service._expected_dimension == 768
+
+    @pytest.mark.parametrize(
+        ("name", "default"),
+        [("embedding_retry_budget_seconds", 60.0), ("embedding_query_deadline_seconds", 8.0)],
+    )
+    def test_budget_defaults(
+        self, name: str, default: float, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(name.upper(), raising=False)
+        monkeypatch.delenv(f"BRAIN_{name.upper()}", raising=False)
+        assert getattr(_settings(), name) == default
+
+    @pytest.mark.parametrize(
+        "name", ["embedding_retry_budget_seconds", "embedding_query_deadline_seconds"]
+    )
+    @pytest.mark.parametrize("prefix", ["", "BRAIN_"])
+    def test_budget_environment_aliases(
+        self, name: str, prefix: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(name.upper(), raising=False)
+        monkeypatch.delenv(f"BRAIN_{name.upper()}", raising=False)
+        monkeypatch.setenv(f"{prefix}{name.upper()}", "2.5")
+        assert getattr(_settings(), name) == 2.5
+
+    @pytest.mark.parametrize(
+        "name", ["embedding_retry_budget_seconds", "embedding_query_deadline_seconds"]
+    )
+    @pytest.mark.parametrize("value", [0.0, -1.0])
+    def test_budgets_must_be_positive(self, name: str, value: float) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            _settings(**{name: value})
+
     def test_prefixes_are_wired_through(self) -> None:
         service = build_embedding_service(
             _settings(embedding_query_prefix="query: ", embedding_document_prefix="passage: ")
@@ -129,7 +343,9 @@ class TestTheBuiltClientActuallySpeaksToAnOpenAIEndpoint:
             )
 
         service = build_embedding_service(
-            _settings(embedding_backend="openai", embedding_query_prefix="query: ")
+            _settings(
+                embedding_backend="openai", embedding_query_prefix="query: ", embedding_dimension=2
+            )
         )
         service._client = httpx.AsyncClient(
             base_url="http://any.test", transport=httpx.MockTransport(handler)

@@ -40,6 +40,9 @@ def _search_service() -> tuple[IndexedPlanSearchService, AsyncMock]:
     ]
     session = AsyncMock()
     session.execute = AsyncMock(return_value=result)
+    session.begin_nested = MagicMock()
+    session.begin_nested.return_value.__aenter__ = AsyncMock(return_value=None)
+    session.begin_nested.return_value.__aexit__ = AsyncMock(return_value=False)
     context = AsyncMock()
     context.__aenter__ = AsyncMock(return_value=session)
     context.__aexit__ = AsyncMock(return_value=False)
@@ -107,3 +110,55 @@ async def test_parent_archive_filter_is_applied_before_limit(
     else:
         assert archive_clause in rendered_sql
         assert rendered_sql.index(archive_clause) < rendered_sql.index("LIMIT")
+
+
+@pytest.mark.asyncio
+async def test_vector_search_sets_hnsw_scan_params_before_the_select() -> None:
+    """Plan chunks go through the same HNSW settings as the knowledge tables."""
+    service, session = _search_service()
+    session.execute.return_value.scalar.return_value = "0.8.1"
+
+    await service.semantic_search("usage", embedding=[0.1] * 1536, limit=50)
+
+    calls = session.execute.await_args_list
+    texts = [str(c.args[0]) for c in calls]
+    select_at = next(i for i, t in enumerate(texts) if "ORDER BY" in t)
+    assert any("hnsw.ef_search" in t for t in texts[:select_at])
+    assert any("hnsw.iterative_scan" in t for t in texts[:select_at])
+    ef_call = next(c for c in calls if "ef_search" in str(c.args[0]))
+    assert ef_call.args[1] == {"v": "50"}
+
+
+@pytest.mark.asyncio
+async def test_failing_tuning_does_not_fail_the_vector_search() -> None:
+    """A set_config error is isolated in its SAVEPOINT; the SELECT still returns rows."""
+    from sqlalchemy.exc import OperationalError
+    from structlog.testing import capture_logs
+
+    service, session = _search_service()
+    rows = session.execute.return_value
+    failing_once = {"armed": True}
+
+    async def execute(stmt: Any, params: Any = None) -> Any:
+        if "hnsw.ef_search" in str(stmt) and failing_once["armed"]:
+            failing_once["armed"] = False
+            raise OperationalError(str(stmt), params, Exception("boom"))
+        return rows
+
+    session.execute = execute
+
+    with capture_logs() as logs:
+        pairs = await service.semantic_search("usage", embedding=[0.1] * 1536)
+
+    assert len(pairs) == 1
+    warning = next(e for e in logs if e["event"] == "pg_base.vector_scan_tuning_failed")
+    assert warning["setting"] == "hnsw.ef_search"
+
+
+@pytest.mark.asyncio
+async def test_fts_search_leaves_hnsw_settings_alone() -> None:
+    service, session = _search_service()
+
+    await service.search("usage", limit=50)
+
+    assert not any("set_config" in str(c.args[0]) for c in session.execute.await_args_list)

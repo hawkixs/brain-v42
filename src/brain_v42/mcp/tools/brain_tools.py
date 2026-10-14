@@ -31,10 +31,12 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 from uuid import UUID
 
 import structlog
-from pydantic import Field
+from fastmcp.exceptions import ToolError
+from pydantic import BeforeValidator, Field
 from sqlalchemy.exc import IntegrityError
 
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
+from brain_v42.mcp.tools.capture_rule import CAPTURE_RULE
 from brain_v42.mcp.tools.claim_rendering import claim_suffix_map
 from brain_v42.mcp.tools.claim_writes import (
     claim_write_log_fields,
@@ -61,11 +63,13 @@ from brain_v42.models.input_bounds import (
     ShortText,
     ShortTextList,
     TagList,
+    _single_text_as_list,
 )
 from brain_v42.models.learning import Confidence, LearningCreate, SourceType
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.relation import RelationInput
 from brain_v42.provenance import get_current_actor
+from brain_v42.repositories.pg_decision import DecisionNotSupersedableError
 from brain_v42.repositories.promotion import SourceLearningNotFound
 from brain_v42.services.brain_service import _TYPE_TO_PLURAL
 from brain_v42.services.embedding_text import adr_embedding_text
@@ -218,7 +222,18 @@ def register_tools(
 
     # ── Feature #629: Decision tools ─────────────────────────────────────────
 
-    @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    # Published description: the `description=` below, not this docstring.
+    @mcp.tool(
+        version="1.0",
+        annotations=_HEARTBEAT_ANNOTATIONS,
+        description=(
+            "Capture a choice between options (A vs B, lib X vs Y) with its reasons: the WHY, not just the WHAT.\n\n"
+            f"{CAPTURE_RULE}\n\n"
+            "Use when picking between alternatives (lib X vs Y, refactor vs rewrite).\n\n"
+            'related_to items: {"id": UUID, "type": one of MOTIVATED_BY,\n'
+            "IMPLEMENTS, DOCUMENTS, USES, RELATED_TO}."
+        ),
+    )
     async def brain_log_decision(
         title: str,
         context: KnowledgeText,
@@ -231,15 +246,7 @@ def register_tools(
         related_to: RelationList | None = None,
         claims: list[dict] | None = None,
     ) -> str:
-        """Log a technical/architectural decision (the WHY, not just the WHAT).
-
-        Use when picking between alternatives (lib X vs Y, refactor vs rewrite).
-        For pure insights/gotchas use brain_learn; for code patterns use
-        brain_save_snippet; for durable architecture use brain_propose_adr.
-
-        related_to items: {"id": UUID, "type": one of MOTIVATED_BY,
-        IMPLEMENTS, DOCUMENTS, USES, RELATED_TO}.
-        """
+        """Capture a choice between options (A vs B, lib X vs Y) with its reasons: the WHY, not just the WHAT."""
         data = DecisionCreate(
             title=title,
             description=f"Context: {context}\n\nDecision: {decision_made}",
@@ -350,33 +357,36 @@ def register_tools(
         old_uid = parse_uuid(old_decision_id)
         if old_uid is None:
             return format_error(f"Invalid UUID: {old_decision_id}")
-        if not extraction_available:
-            new_decision = await decision_svc.supersede(old_uid, data)
-        else:
-            registry, claim_session_factory = claim_write_dependencies()
-            candidates = plan_extracted_claims(
-                entity="decision",
-                project_key=project_key,
-                fields={"description": data.description, "reasoning": data.reasoning},
-            )
-            # Embed BEFORE the transaction opens: the GPU call must not hold it.
-            new_embedding = await decision_svc.embed_supersession(data)
-            async with gated_claim_session(
-                claim_session_factory, claim_verification_svc, []
-            ) as session:
-                new_decision = await decision_svc.supersede(
-                    old_uid, data, session=session, new_embedding=new_embedding
+        try:
+            if not extraction_available:
+                new_decision = await decision_svc.supersede(old_uid, data)
+            else:
+                registry, claim_session_factory = claim_write_dependencies()
+                candidates = plan_extracted_claims(
+                    entity="decision",
+                    project_key=project_key,
+                    fields={"description": data.description, "reasoning": data.reasoning},
                 )
-                if candidates:
-                    await persist_extracted_claims(
-                        session,
-                        registry,
-                        entry_id=new_decision.id,
-                        entity_type="decision",
-                        project_key=project_key,
-                        candidates=candidates,
+                # Embed BEFORE the transaction opens: the GPU call must not hold it.
+                new_embedding = await decision_svc.embed_supersession(data)
+                async with gated_claim_session(
+                    claim_session_factory, claim_verification_svc, []
+                ) as session:
+                    new_decision = await decision_svc.supersede(
+                        old_uid, data, session=session, new_embedding=new_embedding
                     )
-            await decision_svc.enrich_superseded(old_uid, new_decision, data)
+                    if candidates:
+                        await persist_extracted_claims(
+                            session,
+                            registry,
+                            entry_id=new_decision.id,
+                            entity_type="decision",
+                            project_key=project_key,
+                            candidates=candidates,
+                        )
+                await decision_svc.enrich_superseded(old_uid, new_decision, data)
+        except DecisionNotSupersedableError as exc:
+            return format_error(str(exc))
         logger.info(
             "mcp.brain_supersede_decision",
             old_id=old_decision_id,
@@ -532,7 +542,22 @@ def register_tools(
 
     # ── Feature #630: Learning tools ─────────────────────────────────────────
 
-    @mcp.tool(version="1.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    # Published description: the `description=` below, not this docstring.
+    @mcp.tool(
+        version="1.0",
+        annotations=_HEARTBEAT_ANNOTATIONS,
+        description=(
+            "Capture a pure insight or gotcha: last resort when no other capture tool fits.\n\n"
+            f"{CAPTURE_RULE}\n\n"
+            "Use ONLY for pure insights with no code and no choice between\n"
+            "options.\n\n"
+            "source_type: experience | documentation | code_review | bug |\n"
+            "external | article | video | book | conversation | research.\n"
+            "confidence: low | medium | high.\n"
+            'related_to items: {"id": UUID, "type": MOTIVATED_BY | IMPLEMENTS\n'
+            "| DOCUMENTS | USES | RELATED_TO}."
+        ),
+    )
     async def brain_learn(
         topic: str,
         insight: KnowledgeText,
@@ -544,19 +569,7 @@ def register_tools(
         related_to: RelationList | None = None,
         claims: list[dict] | None = None,
     ) -> str:
-        """Record an insight, gotcha, or discovery (last-resort tool).
-
-        Use ONLY for pure insights with no code and no choice between
-        options. Otherwise prefer brain_log_decision (choices),
-        brain_save_snippet (code), brain_create_runbook (procedures),
-        brain_propose_adr (durable architecture).
-
-        source_type: experience | documentation | code_review | bug |
-        external | article | video | book | conversation | research.
-        confidence: low | medium | high.
-        related_to items: {"id": UUID, "type": MOTIVATED_BY | IMPLEMENTS
-        | DOCUMENTS | USES | RELATED_TO}.
-        """
+        """Record an insight, gotcha, or discovery (last-resort tool)."""
         data = LearningCreate(
             topic=topic,
             insight=insight,
@@ -698,7 +711,19 @@ def register_tools(
             tags=tags or [],
         )
 
-    @mcp.tool(version="2.0", annotations=_HEARTBEAT_ANNOTATIONS)
+    # Promotion uses brain_promote_adr (ticket af3b58dd item 2). Until
+    # 2026-09-03 this signature also published source_learning_id, auto_accept
+    # and dream_run_id.
+    # Published description: the `description=` below, not this docstring.
+    @mcp.tool(
+        version="2.0",
+        annotations=_HEARTBEAT_ANNOTATIONS,
+        description=(
+            "Capture a durable architecture decision as an ADR (status 'proposed').\n\n"
+            f"{CAPTURE_RULE}\n\n"
+            "Propose an Architecture Decision Record (ADR) in status='proposed'."
+        ),
+    )
     async def brain_propose_adr(
         title: str,
         context: KnowledgeText,
@@ -711,14 +736,9 @@ def register_tools(
         | None = None,
         tags: TagList | None = None,
         claims: list[dict] | None = None,
+        alternatives: ShortTextList | None = None,
     ) -> str:
         """Propose an Architecture Decision Record (ADR) in status='proposed'.
-
-        The Dream promotion path lives in its own tool, `brain_promote_adr`
-        (ticket af3b58dd item 2). Until 2026-09-03 this signature also published
-        `source_learning_id`, `auto_accept` and `dream_run_id` to every caller,
-        and refused their meaningless combinations at runtime. Two paths now
-        publish two schemas, so the invalid request can no longer be built.
 
         Args:
             title: Short title of the decision.
@@ -726,12 +746,21 @@ def register_tools(
             decision: The decision taken.
             consequences: What becomes easier and what becomes harder.
             project_key: Owning project.
+            alternatives: Option titles; each is also used as its description.
             alternatives_considered: Options weighed and set aside.
             tags: Free-form tags.
 
         Returns:
             Confirmation string naming the ADR number.
         """
+        if alternatives is not None and alternatives_considered is not None:
+            raise ToolError(
+                "Pass either alternatives or alternatives_considered, not both; the shapes are ambiguous."
+            )
+        if alternatives is not None:
+            alternatives_considered = [
+                AlternativeConsidered(title=text, description=text) for text in alternatives
+            ]
         data = _adr_create(
             title,
             context,
@@ -1015,7 +1044,14 @@ def register_tools(
     @mcp.tool(version="1.0", annotations=_READ_ANNOTATIONS)
     async def brain_search(
         query: SearchQuery,
-        types: list[KnowledgeType] | None = None,
+        types: Annotated[
+            list[KnowledgeType],
+            BeforeValidator(_single_text_as_list),
+            Field(
+                description="Knowledge types; a single string is accepted as a one-element list."
+            ),
+        ]
+        | None = None,
         project_key: str | None = None,
         project_group: str | None = None,
         limit: int = 20,
@@ -1115,6 +1151,8 @@ def register_tools(
                 rerank_mode=diag.rerank_mode,
                 rerank_identity=diag.rerank_identity,
                 degraded=diag.degraded,
+                failed_types=diag.failed_types,
+                graph_degraded=diag.graph_degraded,
                 min_score_effective=diag.min_score_effective,
                 project_key_effective=diag.project_key_effective,
             )
@@ -1198,6 +1236,8 @@ def register_tools(
             rerank_mode=diag.rerank_mode,
             rerank_identity=diag.rerank_identity,
             degraded=diag.degraded,
+            failed_types=diag.failed_types,
+            graph_degraded=diag.graph_degraded,
             min_score_effective=diag.min_score_effective,
             project_key_effective=diag.project_key_effective,
         )

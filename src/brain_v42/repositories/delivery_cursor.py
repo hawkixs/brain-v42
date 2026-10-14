@@ -12,11 +12,18 @@ from brain_v42.models.delivery_hashes import canonical_digest
 
 
 def list_scope(actor_project: str, filters: DeliveryListFilters) -> str:
+    filter_payload = {
+        "work": filters.work,
+        "blocker": filters.blocker,
+        "stage": filters.stage,
+    }
+    if filters.ticket_id is not None:
+        filter_payload["ticket_id"] = str(filters.ticket_id)
     return canonical_digest(
         {
             "operation": "delivery_list_cursor",
             "project": actor_project,
-            "filters": filters.model_dump(),
+            "filters": filter_payload,
         },
         domain="request",
     )

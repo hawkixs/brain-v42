@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -13,6 +14,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
+from structlog.testing import capture_logs
 
 from brain_v42.services import proposal_service as proposal_service_module
 from brain_v42.services.proposal_service import (
@@ -29,6 +31,32 @@ def _result_row(row: dict[str, Any] | None) -> MagicMock:
     result.mappings.return_value.one_or_none.return_value = row
     result.mappings.return_value.one.return_value = row
     return result
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "apply_ticket_extraction",
+        "reject_ticket_extraction",
+        "apply_roadmap_curation",
+        "reject_roadmap_curation",
+    ],
+)
+async def test_proposal_database_failures_never_surface_sql(method: str) -> None:
+    exc = RuntimeError("SELECT secret FROM private_table")
+    factory, _ = _factory_with([exc])
+    service = ProposalService(factory, AsyncMock(), AsyncMock())
+    with capture_logs() as logs, pytest.raises(ProposalApplyError) as caught:
+        await getattr(service, method)(7)
+    message = str(caught.value)
+    assert "SELECT" not in message and "secret" not in message
+    match = re.search(r"internal error RuntimeError \(ref ([0-9a-f]{12})\)", message)
+    assert match is not None
+    assert caught.value.__cause__ is exc
+    assert len(logs) == 1
+    assert logs[0]["correlation_id"] == match[1]
+    assert logs[0]["exc_info"] is exc
+    assert logs[0]["log_level"] == "error"
 
 
 def _scalar(value: Any) -> MagicMock:
@@ -293,7 +321,9 @@ async def test_apply_ticket_extraction_wraps_entity_failure() -> None:
     factory, session = _factory_with([_result_row(row)])
     service = ProposalService(factory, learning, AsyncMock())
 
-    with pytest.raises(ProposalApplyError, match="write failed") as caught:
+    with pytest.raises(
+        ProposalApplyError, match=r"internal error RuntimeError \(ref [0-9a-f]{12}\)"
+    ) as caught:
         await service.apply_ticket_extraction(row["id"])
 
     assert isinstance(caught.value.__cause__, RuntimeError)

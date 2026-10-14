@@ -32,6 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.models.decision import Decision, DecisionCreate, DecisionUpdate
 from brain_v42.models.project_context import ProjectContext
+from brain_v42.repositories import pg_decision
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.services.decision_service import DecisionService
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable
@@ -82,6 +83,25 @@ def _make_service() -> tuple[DecisionService, MagicMock, MagicMock]:
 # ---------------------------------------------------------------------------
 # Tests: create
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_supersede_rejection_propagates_without_graph_enrichment() -> None:
+    svc, repo, _embedding_svc = _make_service()
+    graph = MagicMock()
+    graph.upsert_node = AsyncMock()
+    graph.create_relation = AsyncMock()
+    svc._graph = graph
+    error = pg_decision.DecisionNotSupersedableError("Old decision cannot be superseded")
+    repo.supersede = AsyncMock(side_effect=error)
+    data = DecisionCreate(title="Replacement", description="Context", reasoning="Reason")
+
+    with pytest.raises(pg_decision.DecisionNotSupersedableError) as raised:
+        await svc.supersede(OLD_UUID, data)
+
+    assert raised.value is error
+    graph.upsert_node.assert_not_awaited()
+    graph.create_relation.assert_not_awaited()
 
 
 class TestCreate:

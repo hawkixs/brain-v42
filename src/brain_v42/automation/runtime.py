@@ -36,6 +36,7 @@ from brain_v42.services.embedding_factory import (
 )
 from brain_v42.services.feature_dedup_job import FeatureDedupJob
 from brain_v42.services.gitlab_ingestor import GitLabIngestor
+from brain_v42.services.reranker_client import RerankClientLike
 from brain_v42.services.status_engine import StatusEngine
 
 logger = structlog.get_logger(__name__)
@@ -66,7 +67,7 @@ class AutomationResources:
     session_factory: async_sessionmaker[AsyncSession]
     lease: AutomationOwnershipLease
     embedding_svc: AsyncCloser
-    reranker: AsyncCloser | None
+    reranker: RerankClientLike | None
     dedup_job: FeatureDedupJobProtocol
     server: AutomationServer
 

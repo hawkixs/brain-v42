@@ -10,10 +10,11 @@ from collections import defaultdict
 from collections.abc import Mapping
 from datetime import datetime
 from typing import Any, Never, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
+import structlog
 from fastmcp.exceptions import ToolError
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from brain_v42.models.adr import ADR
 from brain_v42.models.brain import KnowledgeByType, SearchDiagnostics, SearchResult
@@ -23,6 +24,8 @@ from brain_v42.models.learning import Learning
 from brain_v42.models.project_context import ProjectContext
 from brain_v42.models.runbook import Runbook
 from brain_v42.models.snippet import Snippet
+
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -84,6 +87,41 @@ def format_confirmation(
 def format_error(message: str) -> Never:
     """Surface an unprefixed expected business failure through the MCP error channel."""
     raise ToolError(message)
+
+
+def build_internal_error(operation: str, exc: BaseException) -> str:
+    """Give callers a log reference without disclosing driver payloads or secrets."""
+    correlation_id = uuid4().hex[:12]
+    error_class = type(exc).__name__
+    logger.error(
+        "mcp.tool_internal_error",
+        operation=operation,
+        error_class=error_class,
+        correlation_id=correlation_id,
+        exc_info=exc,
+    )
+    return f"{operation} failed: internal error {error_class} (ref {correlation_id})"
+
+
+def format_internal_error(operation: str, exc: BaseException) -> Never:
+    """Raise the same sanitized message used by batch responses, with one log reference."""
+    raise ToolError(build_internal_error(operation, exc)) from None
+
+
+def format_validation_errors(exc: ValidationError) -> str:
+    """Render field locations and messages without input or validator context values."""
+    details: list[str] = []
+    for error in exc.errors(include_input=False, include_context=False, include_url=False):
+        message = error["msg"]
+        # A value_error carries the text of a ValueError raised by one of this
+        # package's own validators: those messages are written for the caller
+        # (e.g. "statement rule requires 1 to 500 characters"), as before this
+        # change. Assertion text is not, so it stays server-side.
+        if error["type"] == "assertion_error":
+            message = "Assertion failed"
+        location = ".".join(str(part) for part in error["loc"])
+        details.append(f"{location}: {message}")
+    return "; ".join(details)
 
 
 # ---------------------------------------------------------------------------
@@ -656,6 +694,8 @@ def _format_empty_search_reason(
     diagnostics: SearchDiagnostics,
     tags: list[str] | None,
     banner_present: bool = False,
+    *,
+    failed_types: list[str] | None = None,
 ) -> str:
     """Explain WHY a search returned 0 results — never silently.
 
@@ -706,8 +746,19 @@ def _format_empty_search_reason(
     )
     scope_desc = "; ".join(scope_bits)
 
+    # A failed type is said FIRST, then the usual reason for the types that
+    # answered: the incomplete-search sentence must not hide, for example, the
+    # min_score hint that tells the caller to lower the floor.
+    incomplete_types = failed_types or diagnostics.failed_types
+    preamble: list[str] = []
+    if incomplete_types:
+        preamble.append(
+            f"Search incomplete; failed types: {', '.join(incomplete_types)}. "
+            "Missing knowledge cannot be inferred from this response"
+        )
     if diagnostics.candidates_before_threshold == 0:
-        reason = f"0 candidates in scope ({scope_desc})"
+        where = "the types that answered" if incomplete_types else "scope"
+        reason = f"0 candidates in {where} ({scope_desc})"
     elif diagnostics.tags_filtered_out > 0 and tags:
         tag_list = ", ".join(tags)
         n = diagnostics.tags_filtered_out
@@ -740,7 +791,7 @@ def _format_empty_search_reason(
             f"{diagnostics.min_score_effective:g}, but 0 remained after filtering ({scope_desc})"
         )
 
-    lines = [reason]
+    lines = [*preamble, reason]
     if not banner_present and diagnostics.rerank_mode not in (None, "reranked"):
         lines.append(f"rerank mode: {diagnostics.rerank_mode}")
     return "\n".join(lines)
@@ -828,20 +879,25 @@ def format_search_results(
     """
     # Build degraded banner (Fix 1 + Fix 2 + MINOR 2: rrf_only)
     banner_lines: list[str] = []
+    failed_types: list[str] = (degraded or {}).get("failed_types", [])
     if degraded:
         rerank_mode = degraded.get("rerank_mode")
         search_mode = degraded.get("search_mode")
         if search_mode == "fts_fallback":
             banner_lines.append(
-                "degraded: embedding service indisponible — résultats FTS uniquement (ordre textuel)"
+                "degraded: embedding service unavailable — FTS results only (text order)"
             )
         elif rerank_mode == "rrf_fallback":
             banner_lines.append(
-                "degraded: reranker indisponible — ordre RRF (pas de re-scoring cross-encoder)"
+                "degraded: reranker unavailable — RRF order (no cross-encoder re-scoring)"
             )
         elif rerank_mode == "rrf_only":
             banner_lines.append(
-                "note: reranker non configuré — ordre RRF (pas de re-scoring cross-encoder)"
+                "note: reranker not configured — RRF order (no cross-encoder re-scoring)"
+            )
+        if failed_types:
+            banner_lines.append(
+                f"degraded: incomplete search — failed types: {', '.join(failed_types)}"
             )
 
     n = len(results)
@@ -849,9 +905,12 @@ def format_search_results(
 
     if not results:
         empty_body = header
-        if diagnostics is not None:
+        if diagnostics is not None or failed_types:
             empty_body += "\n" + _format_empty_search_reason(
-                diagnostics, tags, banner_present=bool(banner_lines)
+                diagnostics or SearchDiagnostics(),
+                tags,
+                banner_present=bool(banner_lines),
+                failed_types=failed_types,
             )
         if banner_lines:
             return "\n".join(banner_lines) + "\n" + empty_body
@@ -931,20 +990,25 @@ def format_knowledge_by_type(
     """
     # Build degraded banner — mirrors format_search_results
     banner_lines: list[str] = []
+    failed_types: list[str] = (degraded or {}).get("failed_types", [])
     if degraded:
         rerank_mode = degraded.get("rerank_mode")
         search_mode = degraded.get("search_mode")
         if search_mode == "fts_fallback":
             banner_lines.append(
-                "degraded: embedding service indisponible — résultats FTS uniquement (ordre textuel)"
+                "degraded: embedding service unavailable — FTS results only (text order)"
             )
         elif rerank_mode == "rrf_fallback":
             banner_lines.append(
-                "degraded: reranker indisponible — ordre RRF (pas de re-scoring cross-encoder)"
+                "degraded: reranker unavailable — RRF order (no cross-encoder re-scoring)"
             )
         elif rerank_mode == "rrf_only":
             banner_lines.append(
-                "note: reranker non configuré — ordre RRF (pas de re-scoring cross-encoder)"
+                "note: reranker not configured — RRF order (no cross-encoder re-scoring)"
+            )
+        if failed_types:
+            banner_lines.append(
+                f"degraded: incomplete search — failed types: {', '.join(failed_types)}"
             )
 
     total = sum(
@@ -954,9 +1018,12 @@ def format_knowledge_by_type(
     header = f'## Everything known about "{topic}" ({total} items)'
     if total == 0:
         empty_body = header
-        if diagnostics is not None:
+        if diagnostics is not None or failed_types:
             empty_body += "\n" + _format_empty_search_reason(
-                diagnostics, tags=None, banner_present=bool(banner_lines)
+                diagnostics or SearchDiagnostics(),
+                tags=None,
+                banner_present=bool(banner_lines),
+                failed_types=failed_types,
             )
         ignored_notice = _format_grouped_ignored_params_notice(tags, include_related)
         if ignored_notice:
@@ -1090,10 +1157,10 @@ def clamp_list_limit(limit: int, maximum: int = LIST_LIMIT_MAX) -> tuple[int, st
     """
     if limit > maximum:
         return maximum, (
-            f"\n… (limit {limit} demandé, plafonné à {maximum} — utiliser offset pour la suite)"
+            f"\n… (limit {limit} requested, capped at {maximum} — use offset for the rest)"
         )
     if limit < 1:
-        return 1, f"\n… (limit {limit} demandé, remonté à 1 — une page vide ne dit rien)"
+        return 1, f"\n… (limit {limit} requested, raised to 1 — an empty page says nothing)"
     return limit, ""
 
 

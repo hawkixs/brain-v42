@@ -32,9 +32,10 @@ import re
 import secrets
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 from datetime import datetime
+from typing import Literal
 
 from brain_v42.metrics.claude_telemetry import ClaudeRecord, decode_claude_logs
 from brain_v42.metrics.client_observation import ClientObservation
@@ -137,6 +138,10 @@ class ClientActivityRegistry:
         # same registry.
         self._evictions: dict[str, int] = {"ttl": 0, "capacity": 0}
         self._evictions_bearing = 0
+        self._conversation_evictions: dict[str, dict[str, int]] = {
+            agent: {"ttl": 0, "capacity": 0} for agent in ("codex", "claude")
+        }
+        self._conversation_evictions_bearing = {"codex": 0, "claude": 0}
         self._folded = 0
         self._fingerprints: dict[bytes, float] = {}
         self._receipt_order = 0
@@ -263,15 +268,31 @@ class ClientActivityRegistry:
         )
         return hmac.new(self._secret, message, hashlib.sha256).digest()
 
-    @staticmethod
     def _prune_conversations(
-        conversations: dict[str, _Conversation], now: float
+        self, conversations: dict[str, _Conversation], now: float
     ) -> dict[str, _Conversation]:
-        return {
+        kept = {
             key: value
             for key, value in conversations.items()
             if now - value.last_seen < ACTIVITY_TTL_SECONDS
         }
+        self._count_conversation_evictions(
+            (value for key, value in conversations.items() if key not in kept), "ttl"
+        )
+        return kept
+
+    def _count_conversation_evictions(
+        self,
+        dropped: Iterable[_Conversation],
+        reason: Literal["ttl", "capacity"],
+    ) -> None:
+        """Count discarded rows while the caller holds the registry lock."""
+        for conversation in dropped:
+            self._conversation_evictions[conversation.agent][reason] += 1
+            if (conversation.tokens is not None and conversation.tokens > 0) or (
+                conversation.cost is not None and conversation.cost > 0
+            ):
+                self._conversation_evictions_bearing[conversation.agent] += 1
 
     def _prune_brain(
         self, brain: dict[str, _BrainActivity], now: float
@@ -296,9 +317,8 @@ class ClientActivityRegistry:
         insertion_ordered = list(fresh.items())
         return dict(insertion_ordered[-MAX_FINGERPRINTS:])
 
-    @staticmethod
     def _trim_conversations(
-        conversations: dict[str, _Conversation],
+        self, conversations: dict[str, _Conversation]
     ) -> dict[str, _Conversation]:
         """Cap each agent on its own budget, never across agents.
 
@@ -330,6 +350,9 @@ class ClientActivityRegistry:
                     reverse=True,
                 )[:MAX_ACTIVE_CONVERSATIONS]
             kept.update(entries)
+        self._count_conversation_evictions(
+            (value for key, value in conversations.items() if key not in kept), "capacity"
+        )
         return kept
 
     def _trim_brain(
@@ -618,6 +641,10 @@ class ClientActivityRegistry:
     def eviction_counters(self) -> dict[str, object]:
         """What this registry threw away, by cause, and how full it is.
 
+        Conversation totals count OTLP rows dropped by TTL and capacity, and
+        conversation bearing totals count dropped rows carrying tokens or cost.
+        Both conversation counters are monotonic from process start.
+
         Ticket `863ff2ca` point 3 asked whether measurement is being lost to the
         64-row cap. `_trim_brain` cut a sorted list and counted nothing, so the
         question was unanswerable in EITHER direction — and both candidate fixes
@@ -658,6 +685,10 @@ class ClientActivityRegistry:
             return {
                 "evictions_total": dict(self._evictions),
                 "evictions_bearing_total": self._evictions_bearing,
+                "conversation_evictions_total": {
+                    agent: dict(counts) for agent, counts in self._conversation_evictions.items()
+                },
+                "conversation_evictions_bearing_total": dict(self._conversation_evictions_bearing),
                 "occupancy": len(self._brain),
                 "capacity": MAX_ACTIVE_CONVERSATIONS,
                 "folded_observations_total": self._folded,

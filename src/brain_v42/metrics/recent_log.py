@@ -24,6 +24,20 @@ _LEVEL_ORDER = {
 }
 
 
+def _safe_extra(key: str, value: Any) -> Any:
+    """Name an exception by its type: this buffer runs before the redacting renderers."""
+    if key == "exc_info":
+        if isinstance(value, BaseException):
+            return type(value).__name__
+        if isinstance(value, tuple):
+            # A malformed tuple must not fall through to str(), which shows the message.
+            for item in value:
+                if isinstance(item, BaseException):
+                    return type(item).__name__
+            return next((item.__name__ for item in value if isinstance(item, type)), None)
+    return value
+
+
 class RecentLogProcessor:
     """Structlog processor that forwards events to the collector's buffer."""
 
@@ -47,7 +61,7 @@ class RecentLogProcessor:
             for k, v in event_dict.items()
             if k not in ("event", "level", "timestamp", "logger")
         )
-        parts = [event, *(f"{k}={v}" for k, v in extras)]
+        parts = [event, *(f"{k}={_safe_extra(k, v)}" for k, v in extras)]
         msg = " ".join(p for p in parts if p)
         if len(msg) > self._max_len:
             msg = msg[: self._max_len - 1] + "…"
