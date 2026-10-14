@@ -344,12 +344,31 @@ def test_github_aggregators_gate_their_shard_matrices(
         ("test-coverage", "unit-shard"),
     ):
         job = ci_workflow["jobs"][aggregator]
-        assert job["needs"] == shard, f"{aggregator} must need {shard}"
+        needs = job["needs"] if isinstance(job["needs"], list) else [job["needs"]]
+        assert shard in needs, f"{aggregator} must need {shard}"
         assert job["if"] == "always()", f"{aggregator} must run even when {shard} fails"
         runs = [str(step.get("run", "")) for step in job.get("steps", [])]
         assert any(f"needs.{shard}.result" in run for run in runs), (
             f"{aggregator} must fail unless {shard}.result is success"
         )
+
+
+def test_github_test_unit_carries_the_static_repository_checks(
+    ci_workflow: dict[Any, Any],
+) -> None:
+    """`repo-checks` is not a required status check of the protected branch; `test-unit` is.
+
+    The module layering and image pin gates used to run inside `test-unit`. They now
+    run in `repo-checks` (in parallel with the shards), so the `test-unit` aggregator
+    must fail unless `repo-checks` passed too: otherwise those two gates would lose their
+    merge-blocking force without any branch protection change.
+    """
+    job = ci_workflow["jobs"]["test-unit"]
+    assert "repo-checks" in job["needs"]
+    assert job["if"] == "always()"
+    runs = " ".join(str(step.get("run", "")) for step in job.get("steps", []))
+    assert "needs.repo-checks.result" in runs, "test-unit must fail unless repo-checks passed"
+    assert "needs.unit-shard.result" in runs
 
 
 def test_github_shard_reports_are_pinned_by_sha(

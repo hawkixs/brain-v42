@@ -257,14 +257,19 @@ jobs:
   # matrices: a green check named `test-unit` still means "the whole suite
   # passed". They checkout nothing and run no tests; their one step fails unless
   # every shard of the matrix succeeded.
+  # `test-unit` also waits for `repo-checks`: the module layering and image pin gates
+  # used to run inside it, and it is a required status check of the protected branch
+  # while `repo-checks` is not. Carrying that result here keeps both gates blocking.
   test-unit:
-    needs: unit-shard
+    needs: [unit-shard, repo-checks]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
       - name: Require every unit shard to pass
         run: test "${{ needs.unit-shard.result }}" = "success"
+      - name: Require the static repository checks to pass
+        run: test "${{ needs.repo-checks.result }}" = "success"
 
   test-integration:
     needs: integration-shard
