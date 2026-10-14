@@ -441,6 +441,7 @@ def build_metrics_runtime(
             collector=collector,
             embedding_svc=embedding_svc,
             port=effective_settings.metrics_port,
+            dream_scheduler=effective_settings.metrics_dream_scheduler,
             host=effective_settings.metrics_host,
             gitlab_ingestor=gitlab_ingestor,
             project_key_resolver=project_key_resolver,

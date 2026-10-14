@@ -73,6 +73,12 @@ _GRAPH_BACKED_TYPES: frozenset[KnowledgeType] = frozenset(
 )
 
 
+def _score_scale_degraded(degraded: dict[str, Any] | None) -> bool:
+    """Only score-mode fallbacks make the calibrated min_score floor inapplicable."""
+    marker = degraded or {}
+    return "search_mode" in marker or "rerank_mode" in marker
+
+
 @dataclass
 class ThresholdDiagnostics:
     """Counters already known once ``_build_search_results`` has scanned candidates.
@@ -164,6 +170,7 @@ class BrainService:
         dict[str, Any] | None,
         str | None,
         dict[KnowledgeType, str],
+        list[str],
     ]:
         """Run search concurrently across all requested service types.
 
@@ -186,10 +193,11 @@ class BrainService:
             rerank_mode == "rrf_fallback", the caller receives degraded info.
 
         Returns:
-            4-tuple (results_by_type, degraded, rerank_mode_observed,
-            score_kind_by_type).
+            5-tuple (results_by_type, degraded, rerank_mode_observed,
+            score_kind_by_type, failed_types).
             degraded is None (healthy) or a dict with mode keys
-            ("rerank_mode", "search_mode"). rerank_mode_observed is the raw
+            ("rerank_mode", "search_mode") and/or "failed_types" (type names
+            only, never exception messages). rerank_mode_observed is the raw
             single-value summary ("reranked" / "rrf_fallback" / "rrf_only")
             surfaced for diagnostics even when NOT degraded — None when no
             hybrid searcher ran (vector-only path, or the FTS-only fallback,
@@ -266,7 +274,9 @@ class BrainService:
                 logger.debug("brain_service.fan_out.no_service", type=t)
                 continue
 
-            plan_archive_kwargs = {"include_archived": include_archived} if t == "plan" else {}
+            # Every type filters archived/merged rows in its SQL, before the LIMIT.
+            # The Python post-filter in _build_search_results stays as a second line.
+            archive_kwargs = {"include_archived": include_archived}
             if fts_only_fallback:
                 # FTS-only: call svc.search (not semantic_search, which would re-embed)
                 coro = svc.search(
@@ -274,24 +284,13 @@ class BrainService:
                     limit=limit,
                     **({"project_key": project_key} if project_key is not None else {}),
                     **({"project_keys": project_keys} if project_keys is not None else {}),
-                    **plan_archive_kwargs,
+                    **archive_kwargs,
                 )
             elif self._hybrid_searcher:
-                fts_search_fn = svc.search
-                vector_search_fn = svc.semantic_search
-                if t == "plan":
-                    fts_search_fn = partial(
-                        fts_search_fn,
-                        include_archived=include_archived,
-                    )
-                    vector_search_fn = partial(
-                        vector_search_fn,
-                        include_archived=include_archived,
-                    )
                 coro = self._hybrid_searcher.search(
                     query=query,
-                    fts_search_fn=fts_search_fn,
-                    vector_search_fn=vector_search_fn,
+                    fts_search_fn=partial(svc.search, **archive_kwargs),
+                    vector_search_fn=partial(svc.semantic_search, **archive_kwargs),
                     text_extractor=_TEXT_EXTRACTORS[t],
                     limit=limit,
                     project_key=project_key,
@@ -306,7 +305,7 @@ class BrainService:
                     project_keys=project_keys,
                     limit=limit,
                     embedding=shared_embedding,
-                    **plan_archive_kwargs,
+                    **archive_kwargs,
                 )
             tasks.append(asyncio.create_task(coro))
             task_types.append(t)
@@ -321,9 +320,11 @@ class BrainService:
         dict[str, Any] | None,
         str | None,
         dict[KnowledgeType, str],
+        list[str],
     ]:
-        """Turn the shards' raw outcomes into _fan_out's 4-tuple."""
+        """Preserve failed type names so partial searches cannot masquerade as complete."""
         results: dict[KnowledgeType, list[tuple[Any, float]]] = {}
+        failed_types: list[str] = []
         # W33 "a rank is not a score": per-type provenance of the scores in
         # `results[t]`, consumed by _build_search_results/what_do_i_know_about
         # to set SearchResult.score_kind. Homogeneous per type — each branch
@@ -342,6 +343,7 @@ class BrainService:
                     exception_type=type(result).__name__,
                 )
                 results[t] = []
+                failed_types.append(t)
             elif fts_only_fallback:
                 # result is list[entity]; assign rank-based scores
                 entities: list[Any] = result
@@ -411,10 +413,13 @@ class BrainService:
                 if rerank_mode_observed not in (None, "reranked", "disabled"):
                     degraded = {"rerank_mode": rerank_mode_observed}
 
+        if failed_types:
+            degraded = {**(degraded or {}), "failed_types": failed_types}
+
         self._record_search_rerank(
             eligible=bool(invoked_rerank_modes), rrf="rrf_fallback" in invoked_rerank_modes
         )
-        return results, degraded, rerank_mode_observed, score_kind_by_type
+        return results, degraded, rerank_mode_observed, score_kind_by_type, failed_types
 
     def _record_search_rerank(self, *, eligible: bool, rrf: bool) -> None:
         """One fan-out is one search in both the flat and grouped MCP paths."""
@@ -712,6 +717,7 @@ class BrainService:
             fan_out_degraded,
             rerank_mode_observed,
             score_kind_by_type,
+            failed_types,
         ) = await self._fan_out(
             types=types_to_search,
             query=query,
@@ -726,7 +732,9 @@ class BrainService:
         # and applying min_score=0.2 would silently discard all results (incident d3cf29e9).
         # The intentional no-reranker state uses that same uncalibrated RRF scale.
         effective_min_score: float | None = (
-            0.0 if fan_out_degraded is not None or self._rerank_identity == "none" else min_score
+            0.0
+            if _score_scale_degraded(fan_out_degraded) or self._rerank_identity == "none"
+            else min_score
         )
 
         search_results, threshold_diagnostics = self._build_search_results(
@@ -762,6 +770,7 @@ class BrainService:
             include_archived=include_archived,
             rerank_mode=rerank_mode_observed,
             degraded=fan_out_degraded is not None,
+            failed_types=failed_types,
             # Review round 3 (major): a RESOLVED project_group must be named
             # here too, not only on the unresolved early-return above — both
             # values were already in hand, this is a zero-extra-query fix.
@@ -839,8 +848,9 @@ class BrainService:
                                 scoped_related.extend(neighbors)
                         related.extend(scoped_related)
             except DreamProjectAuthorizationError:
-                pass
+                diagnostics.graph_degraded = True
             except Exception:
+                diagnostics.graph_degraded = True
                 logger.error("brain_service.graph_enrichment_failed", exc_info=True)
 
         # Wire in-memory search quality counters
@@ -931,6 +941,7 @@ class BrainService:
             _wdika_degraded,
             rerank_mode_observed,
             score_kind_by_type,
+            failed_types,
         ) = await self._fan_out(
             types=types_to_search,
             query=topic,
@@ -939,8 +950,8 @@ class BrainService:
             project_keys=project_keys,
             include_archived=include_archived,
         )
-        # In degraded mode, use threshold=0 so rank-based scores are not filtered out.
-        if _wdika_degraded is not None or self._rerank_identity == "none":
+        # Only scale degradation lifts the floor; missing shards keep healthy scores calibrated.
+        if _score_scale_degraded(_wdika_degraded) or self._rerank_identity == "none":
             threshold = 0.0
 
         by_type = KnowledgeByType()
@@ -1035,6 +1046,7 @@ class BrainService:
             include_archived=include_archived,
             rerank_mode=rerank_mode_observed,
             degraded=_wdika_degraded is not None,
+            failed_types=failed_types,
             # Review round 3 (major): mirrors search() — a RESOLVED
             # project_group must be named here too, not only on the
             # unresolved early-return above.

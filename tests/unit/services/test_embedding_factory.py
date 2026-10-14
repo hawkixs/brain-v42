@@ -221,6 +221,51 @@ class TestBackendSelection:
 
 
 class TestSettingsReachTheClient:
+    def test_budgets_and_dimension_are_wired_through(self) -> None:
+        service = build_embedding_service(
+            _settings(
+                embedding_retry_budget_seconds=45.0,
+                embedding_query_deadline_seconds=4.0,
+                embedding_dimension=768,
+            )
+        )
+        assert service._retry_budget_seconds == 45.0
+        assert service._query_deadline_seconds == 4.0
+        assert service._expected_dimension == 768
+
+    @pytest.mark.parametrize(
+        ("name", "default"),
+        [("embedding_retry_budget_seconds", 60.0), ("embedding_query_deadline_seconds", 8.0)],
+    )
+    def test_budget_defaults(
+        self, name: str, default: float, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(name.upper(), raising=False)
+        monkeypatch.delenv(f"BRAIN_{name.upper()}", raising=False)
+        assert getattr(_settings(), name) == default
+
+    @pytest.mark.parametrize(
+        "name", ["embedding_retry_budget_seconds", "embedding_query_deadline_seconds"]
+    )
+    @pytest.mark.parametrize("prefix", ["", "BRAIN_"])
+    def test_budget_environment_aliases(
+        self, name: str, prefix: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(name.upper(), raising=False)
+        monkeypatch.delenv(f"BRAIN_{name.upper()}", raising=False)
+        monkeypatch.setenv(f"{prefix}{name.upper()}", "2.5")
+        assert getattr(_settings(), name) == 2.5
+
+    @pytest.mark.parametrize(
+        "name", ["embedding_retry_budget_seconds", "embedding_query_deadline_seconds"]
+    )
+    @pytest.mark.parametrize("value", [0.0, -1.0])
+    def test_budgets_must_be_positive(self, name: str, value: float) -> None:
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            _settings(**{name: value})
+
     def test_prefixes_are_wired_through(self) -> None:
         service = build_embedding_service(
             _settings(embedding_query_prefix="query: ", embedding_document_prefix="passage: ")
@@ -298,7 +343,9 @@ class TestTheBuiltClientActuallySpeaksToAnOpenAIEndpoint:
             )
 
         service = build_embedding_service(
-            _settings(embedding_backend="openai", embedding_query_prefix="query: ")
+            _settings(
+                embedding_backend="openai", embedding_query_prefix="query: ", embedding_dimension=2
+            )
         )
         service._client = httpx.AsyncClient(
             base_url="http://any.test", transport=httpx.MockTransport(handler)

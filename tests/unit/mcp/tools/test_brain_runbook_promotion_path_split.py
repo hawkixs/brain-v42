@@ -35,7 +35,7 @@ from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
-from fastmcp import FastMCP
+from fastmcp import Client, FastMCP
 
 from brain_v42.mcp.tools.runbook_tools import register_runbook_tools
 from brain_v42.models.runbook import Runbook, RunbookStep
@@ -129,6 +129,25 @@ async def test_promote_runbook_still_accepts_an_optional_dream_run_id() -> None:
     published = await _parameters(mcp, "brain_promote_runbook")
 
     assert published["dream_run_id"].default is None
+
+
+@pytest.mark.asyncio
+async def test_create_runbook_accepts_string_step_items_through_mcp() -> None:
+    mcp, svc = _make_mcp()
+    async with Client(mcp) as client:
+        result = await client.call_tool(
+            "brain_create_runbook",
+            {
+                "title": "T",
+                "description": "d",
+                "project_key": "brain-v42",
+                "trigger": "t",
+                "steps": ["build", "deploy"],
+            },
+        )
+    assert not result.is_error
+    created = svc.create.call_args.args[0]
+    assert [(step.order, step.title) for step in created.steps] == [(1, "build"), (2, "deploy")]
 
 
 @pytest.mark.asyncio

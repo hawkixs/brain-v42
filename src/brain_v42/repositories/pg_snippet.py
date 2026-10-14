@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from brain_v42.db.tables import snippets
 from brain_v42.models.snippet import Snippet, SnippetCreate, SnippetUpdate
 from brain_v42.repositories.capture_guard import lock_unless_captured
-from brain_v42.repositories.pg_base import BasePgRepository, Row
+from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, Row
 
 logger = structlog.get_logger(__name__)
 
@@ -209,6 +209,7 @@ class PgSnippetRepo(BasePgRepository):
         limit: int = 20,
         offset: int = 0,
         *,
+        extra_clauses: ExtraClauses = None,
         session: AsyncSession | None = None,
     ) -> list[Snippet]:
         """FTS search over snippets using the DB-generated search_vector column."""
@@ -227,6 +228,7 @@ class PgSnippetRepo(BasePgRepository):
             limit=limit,
             session=session,
             skip_count=True,
+            extra_clauses=extra_clauses,
         )
         return [self._row_to_model(r) for r in rows]
 
@@ -242,6 +244,7 @@ class PgSnippetRepo(BasePgRepository):
         project_keys: list[str] | None = None,
         language: str | None = None,
         *,
+        extra_clauses: ExtraClauses = None,
         session: AsyncSession | None = None,
     ) -> list[tuple[Snippet, float]]:
         """Semantic search using pgvector cosine similarity.
@@ -259,6 +262,7 @@ class PgSnippetRepo(BasePgRepository):
             query_embedding,
             filters=filters,
             limit=limit,
+            extra_clauses=extra_clauses,
             session=session,
         )
         result: list[tuple[Snippet, float]] = []
