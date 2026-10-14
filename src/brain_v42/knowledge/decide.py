@@ -31,6 +31,7 @@ class Observation:
     valid_from_precision: ValidFromPrecision = ValidFromPrecision.UNKNOWN
     rule: StructuralRule | None = None
     propagated_from: str | None = None
+    observed_value: str | int | None = None
 
 
 @dataclass(frozen=True)
