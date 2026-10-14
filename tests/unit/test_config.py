@@ -4,6 +4,64 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 
+@pytest.mark.parametrize("value", [None, "", "red-monitor,red-cockpit", "a", "a" * 64])
+def test_metrics_read_clients_parse_environment(
+    monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    from brain_v42.config import Settings
+
+    monkeypatch.delenv("METRICS_READ_CLIENTS", raising=False)
+    monkeypatch.delenv("BRAIN_METRICS_READ_CLIENTS", raising=False)
+    if value is not None:
+        monkeypatch.setenv("METRICS_READ_CLIENTS", value)
+    settings = Settings(
+        postgres_url="postgresql+asyncpg://test:test@localhost/test", _env_file=None
+    )
+    assert settings.metrics_read_clients == (value.split(",") if value else [])
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "red-monitor, red-cockpit",
+        "bad_name",
+        "Upper",
+        "a,",
+        ",a",
+        " ",
+        "a,,b",
+        "a" * 65,
+        "-client",
+        '["red-monitor"]',
+    ],
+)
+def test_metrics_read_clients_refuse_invalid_environment(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    from brain_v42.config import Settings
+
+    monkeypatch.delenv("BRAIN_METRICS_READ_CLIENTS", raising=False)
+    monkeypatch.setenv("METRICS_READ_CLIENTS", value)
+    with pytest.raises(ValidationError, match="METRICS_READ_CLIENTS|metrics_read_clients"):
+        Settings(postgres_url="postgresql+asyncpg://test:test@localhost/test", _env_file=None)
+
+
+def test_metrics_read_clients_validate_direct_list() -> None:
+    from brain_v42.config import Settings
+
+    assert Settings(
+        postgres_url="postgresql+asyncpg://test:test@localhost/test",
+        metrics_read_clients=["red-monitor"],
+        _env_file=None,
+    ).metrics_read_clients == ["red-monitor"]
+    with pytest.raises(ValidationError, match="METRICS_READ_CLIENTS|metrics_read_clients"):
+        Settings(
+            postgres_url="postgresql+asyncpg://test:test@localhost/test",
+            metrics_read_clients=["bad_name"],
+            _env_file=None,
+        )
+
+
 def test_metrics_dream_scheduler_defaults_to_systemd_user(monkeypatch: pytest.MonkeyPatch) -> None:
     from brain_v42.config import Settings
 

@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:d1c24e83010eaa8545082a50f9e9af63eea928275995c63f51407f21c41f4103",
+  "idempotency_key": "review_verdict:b9ee0cb3b367293d7f5741d224199bc49b243933:115479782402",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115479782402,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The new orphan check (line 459) and the rerank_fallback_url syntax check (line 484) are placed after the rerank_backend=='none' branch returns at line 458, so for backend 'none' refusal of these three fallback fields depends on the pre-existing 'conflicts' list whose contents are not in the diff; th",
+          "file": "src/brain_v42/config.py",
+          "id": "F-414-1",
+          "line": 459,
+          "severity": "minor",
+          "status": "new",
+          "title": "Orphan and URL checks sit after the 'none' early return; coverage there rests on unseen code"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 414,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "b9ee0cb3b367293d7f5741d224199bc49b243933",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T18:57:22.794242Z",
+  "schema_version": 1
+}

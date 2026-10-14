@@ -1,0 +1,55 @@
+{
+  "digest": "sha256:b87b47fe4842c39b314d9d995ba35f82ce2d3cc37e825f4d7c9339c20b38bd78",
+  "idempotency_key": "review_verdict:37a102711245c6132ac2cc136b3d0beaaaaa6deb:115321319118",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115321319118,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Previously the fallback reused the primary URL and key (both OpenRouter); with the primary retargeted to api.voyageai.com, the Cohere fallback works only if the reranker client reads BRAIN_RERANK_FALLBACK_URL and BRAIN_RERANK_FALLBACK_API_KEY_FILE rather than deriving from BRAIN_RERANKER_URL/BRAIN_R",
+          "file": "deploy/compose.yaml",
+          "id": "F-405-1",
+          "line": 90,
+          "severity": "important",
+          "status": "new",
+          "title": "Fallback correctness depends on runtime consuming the new fallback vars"
+        },
+        {
+          "class": "note",
+          "evidence": "The fallback keeps per-request data_collection deny, but the voyage primary carries no equivalent in config; compliance with ruling d4648d84 Q4 rests on the training opt-out enabled on the operator's Voyage account (decision 7d36a08c), which the diff cannot verify. Confirm the account setting is act",
+          "file": "deploy/compose.yaml",
+          "id": "F-405-2",
+          "line": 19,
+          "severity": "minor",
+          "status": "new",
+          "title": "Primary data policy is account-level, not config-enforced"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "pr": 405,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "37a102711245c6132ac2cc136b3d0beaaaaa6deb",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T13:26:19.728457Z",
+  "schema_version": 1
+}

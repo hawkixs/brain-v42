@@ -25,8 +25,13 @@ class BrainGraphMetricsServer(MetricsServer):
         return app
 
     async def _handle_brain_graph(self, request: web.Request) -> web.Response:
-        if not _has_loopback_tcp_peer(request):
-            return web.json_response({"error": "loopback peer required"}, status=403)
+        refusal = await self._admit_read(
+            request,
+            route="/api/brain-graph/v1",
+            loopback_peer=_has_loopback_tcp_peer(request),
+        )
+        if refusal is not None:
+            return refusal
         try:
             payload = await self._graph_projection_svc.snapshot()
         except Exception as exc:

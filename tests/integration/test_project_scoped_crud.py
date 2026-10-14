@@ -8,6 +8,7 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from brain_v42.db.tables import decisions
 from brain_v42.models.decision import DecisionCreate, DecisionUpdate
 from brain_v42.models.indexed_plan import IndexedPlanCreate
 from brain_v42.models.indexed_plan_chunk import IndexedPlanChunkCreate
@@ -75,15 +76,22 @@ async def test_decision_crud_rechecks_project_at_each_sql_operation(
                 project_key=foreign_project,
             )
         )
-        foreign_target = await repo.supersede(
-            foreign_reference.id,
+        foreign_target = await repo.create(
             DecisionCreate(
                 title="SEC1b owned target",
                 description="owned target row",
                 reasoning="cross-project supersession guard",
                 project_key=owned_project,
-            ),
+            )
         )
+        # Recreate a historical cross-project link without permitting new supersessions.
+        async with session_factory() as session:
+            await session.execute(
+                sa.update(decisions)
+                .where(decisions.c.id == foreign_reference.id)
+                .values(status="superseded", superseded_by=foreign_target.id)
+            )
+            await session.commit()
 
         assert await repo.delete(foreign_target.id, project_key=owned_project) is False
         assert await repo.get_by_id(foreign_target.id) is not None

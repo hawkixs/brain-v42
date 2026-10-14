@@ -31,7 +31,7 @@ def mock_deps():
 
     cluster_guard = AsyncMock()
     mock_feature = MagicMock(id=uuid.uuid4(), name="Test Feature")
-    cluster_guard.resolve = AsyncMock(return_value=(mock_feature, "linked"))
+    cluster_guard.resolve_and_link = AsyncMock(return_value=(mock_feature, "linked", True))
 
     return {
         "session_factory": factory,
@@ -197,6 +197,41 @@ def test_parse_plan_frontmatter_title_takes_priority_over_h1(mock_deps):
 # ── index_path tests ────────────────────────────────────────────────────
 
 
+@pytest.mark.asyncio
+async def test_index_path_uses_shared_link_helper(mock_deps, tmp_path):
+    """The caller delegates target selection and preserves action-based scores."""
+    (tmp_path / "auth-plan.md").write_text("# Auth\n\nPrivate plan body")
+    plan_id = _mock_execute_for_new_file(mock_deps)
+    with _patch_repo_upsert(mock_deps):
+        stats = await _build_indexer(mock_deps).index_path(str(tmp_path), "brain-v42")
+    assert stats["linked"] == 1
+    args = mock_deps["cluster_guard"].resolve_and_link.await_args.kwargs
+    assert args["artifact_type"] == args["signal_type"] == "plan"
+    assert args["artifact_id"] == plan_id
+    assert args["similarity_score_for"]("created") == 1.0
+    assert args["similarity_score_for"]("linked") == 0.85
+
+
+@pytest.mark.asyncio
+async def test_index_path_logs_target_loss_without_an_error(mock_deps, tmp_path):
+    """An exhausted helper retry preserves the caller's no-link accounting."""
+    plan_file = tmp_path / "auth-plan.md"
+    plan_file.write_text("# Auth\n\nPrivate plan body")
+    _mock_execute_for_new_file(mock_deps)
+    mock_deps["cluster_guard"].resolve_and_link.return_value = (None, "lost", False)
+    with _patch_repo_upsert(mock_deps), capture_logs() as logs:
+        stats = await _build_indexer(mock_deps).index_path(str(tmp_path), "brain-v42")
+    assert stats["indexed"] == 1
+    assert stats["linked"] == 0
+    assert stats["errors"] == 0
+    assert stats["failures"] == []
+    mock_deps["cluster_guard"].resolve_and_link.assert_awaited_once()
+    event = next(log for log in logs if log["event"] == "plan_indexer.link_target_lost")
+    assert event["file_path"] == str(plan_file)
+    assert "Private plan body" not in str(logs)
+    assert not any(log["event"] == "plan_indexer.link_failed" for log in logs)
+
+
 def _mock_execute_for_new_file(mock_deps):
     """Set up mock session.execute to handle the full index flow for new files.
 
@@ -225,8 +260,9 @@ def _mock_execute_for_new_file(mock_deps):
     no_dup_result = MagicMock()
     no_dup_result.fetchone.return_value = None
 
-    # Result for _link_plan_to_feature (no return value needed)
+    # Result for _link_plan_to_feature: the locked target is still live.
     link_result = MagicMock()
+    link_result.scalar_one.return_value = True
 
     mock_deps["session"].execute = AsyncMock(
         side_effect=[unchanged_result, no_owner_result, no_dup_result, link_result]
@@ -600,7 +636,7 @@ async def test_index_path_calls_cluster_guard(mock_deps, tmp_path):
     with _patch_repo_upsert(mock_deps):
         stats = await indexer.index_path(str(tmp_path), "brain_v42")
 
-    mock_deps["cluster_guard"].resolve.assert_awaited()
+    mock_deps["cluster_guard"].resolve_and_link.assert_awaited()
     assert stats["linked"] >= 1
 
 
@@ -1111,7 +1147,7 @@ async def test_index_path_continues_when_embed_fails(mock_deps, tmp_path):
     assert stats["indexed"] == 0
     assert stats.get("errors", 0) == 2
     # ClusterGuard should NOT be called
-    mock_deps["cluster_guard"].resolve.assert_not_called()
+    mock_deps["cluster_guard"].resolve_and_link.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -1207,7 +1243,7 @@ async def test_a_stale_plan_with_identical_content_is_re_embedded_without_resolv
 
     assert stats["indexed"] >= 1, "a stale row must still be re-embedded"
     mock_deps["embedding_svc"].embed_texts.assert_awaited()
-    mock_deps["cluster_guard"].resolve.assert_not_awaited()
+    mock_deps["cluster_guard"].resolve_and_link.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1234,7 +1270,7 @@ async def test_a_plan_whose_content_changed_still_resolves(mock_deps, tmp_path):
         stats = await indexer.index_path(str(tmp_path), "brain_v42")
 
     assert stats["indexed"] >= 1
-    mock_deps["cluster_guard"].resolve.assert_awaited()
+    mock_deps["cluster_guard"].resolve_and_link.assert_awaited()
 
 
 # ── two names for one directory ─────────────────────────────────────────
@@ -1560,4 +1596,4 @@ async def test_recovery_mode_indexes_without_roadmap_side_effects(mock_deps, tmp
     assert stats["indexed"] == 1
     assert stats["linked"] == 0
     upsert.assert_awaited_once()
-    mock_deps["cluster_guard"].resolve.assert_not_awaited()
+    mock_deps["cluster_guard"].resolve_and_link.assert_not_awaited()

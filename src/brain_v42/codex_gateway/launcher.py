@@ -11,6 +11,7 @@ from pydantic import SecretStr
 
 from brain_v42.codex_gateway.app import create_production_app
 from brain_v42.codex_gateway.auth import require_non_empty_token
+from brain_v42.codex_gateway.log_setup import configure_gateway_logging
 from brain_v42.config import get_settings
 from brain_v42.db.engine import use_engine_profile
 
@@ -68,6 +69,7 @@ def run() -> None:
     get_settings.cache_clear()
     try:
         settings = get_settings()
+        configure_gateway_logging(settings.brain_log_format)
         app = create_production_app(settings)
     finally:
         os.environ.pop(_TOKEN_KEY, None)
@@ -76,6 +78,7 @@ def run() -> None:
         app,
         host=settings.brain_codex_gateway_host,
         port=settings.brain_codex_gateway_port,
+        log_config=None,
     )
 
 

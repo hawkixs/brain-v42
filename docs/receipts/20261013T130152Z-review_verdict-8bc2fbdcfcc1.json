@@ -1,0 +1,65 @@
+{
+  "digest": "sha256:8bc2fbdcfcc1e297b3d8f7456a03a5a3fe7c5f6ed47704adb38fc9c993ee18d1",
+  "idempotency_key": "review_verdict:4e18b3430998f0bee90c6772617c7b8f198388c6:115309757398",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115309757398,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The description claims uv.lock changes version only, but the uv.lock hunk may fall outside the visible first part of the diff; confirm it contains only the 0.6.12 -> 0.6.13 version bump and nothing else.",
+          "file": "uv.lock",
+          "id": "F-402-1",
+          "line": null,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "uv.lock version bump not visible in reviewed diff portion"
+        },
+        {
+          "class": "note",
+          "evidence": "The new sentence adds 'adds a hosted rerank fallback (Voyage first, then Cohere through OpenRouter, reciprocal rank fusion only when both fail)', but the PR description's 'Ships since v0.6.12' list (#376, #377, #397, #395, #382, #392) names no rerank work; whether the feature actually ships in 0.6.1",
+          "file": "README.md",
+          "id": "F-402-2",
+          "line": 5,
+          "severity": "important",
+          "status": "new",
+          "title": "Release sentence claims a hosted rerank fallback absent from the shipped list"
+        },
+        {
+          "class": "note",
+          "evidence": "The diff updates only the release sentence (line 5) and the versioning bullet (line 347); other README spots that may pin the shipped version (install commands, badges, changelog-style notes) are not shown - check them, though the claimed passing test_documentation_contract.py run likely enforces ve",
+          "file": "README.md",
+          "id": "F-402-3",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Other stale 0.6.12 references may remain outside the two hunks"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "pr": 402,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "4e18b3430998f0bee90c6772617c7b8f198388c6",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T13:01:52.614880Z",
+  "schema_version": 1
+}

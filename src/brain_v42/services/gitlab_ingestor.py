@@ -22,7 +22,7 @@ import sqlalchemy as sa
 import structlog
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from brain_v42.db.tables import feature_artifacts, gitlab_events
+from brain_v42.db.tables import gitlab_events
 from brain_v42.services.embedding_text import (
     GITLAB_EVENT_EMBED_MAX_CHARS,
     GITLAB_EVENT_TITLE_MAX_CHARS,
@@ -100,21 +100,8 @@ class GitLabIngestor:
         if embedding is None:
             return {"status": "skipped_embed_failed"}
 
-        # 5. ClusterGuard resolve
-        feature, action = await self._cluster_guard.resolve(
-            text=text,
-            embedding=embedding,
-            project_key=project_key,
-            signal_type=signal_type,
-        )
-        self._ensure_mutation_allowed()
-
-        # Link-only mode: signal_type outside CREATING_SIGNALS (e.g.
-        # mr_closed) can come back skipped with no confident candidate.
-        # feature is then None — store the event without a feature link.
-        feature_id = feature.id if feature is not None else None  # type: ignore[attr-defined]
-
-        # 6. Store event
+        # 5. Persist the artifact before resolving so the shared helper can link it.
+        # Its feature stays NULL until a live-target insertion succeeds.
         event_row_id = await self._store_event(
             gitlab_event_id=event_uuid,
             event_type=event_type,
@@ -126,16 +113,26 @@ class GitLabIngestor:
             # live together in `embedding_text` so the gap stays visible.
             title=text[:GITLAB_EVENT_TITLE_MAX_CHARS],
             embedding=embedding,
-            feature_id=feature_id,
+            feature_id=None,
         )
         self._ensure_mutation_allowed()
 
-        # 7. Link to feature via feature_artifacts
-        if event_row_id is not None and feature is not None:
-            await self._link_to_feature(
-                feature_id=feature.id,  # type: ignore[attr-defined]
-                artifact_id=event_row_id,
-            )
+        if event_row_id is None:
+            return {"status": "skipped_duplicate"}
+
+        # 6. Resolve and link through the same live-target guard as plans/knowledge.
+        feature, action, linked = await self._cluster_guard.resolve_and_link(
+            text=text,
+            embedding=embedding,
+            project_key=project_key,
+            signal_type=signal_type,
+            artifact_type="gitlab_event",
+            artifact_id=event_row_id,
+            similarity_score_for=lambda _: 1.0,
+        )
+        self._ensure_mutation_allowed()
+        if linked and feature is not None:
+            await self._assign_feature(event_row_id, feature.id)  # type: ignore[attr-defined]
             self._ensure_mutation_allowed()
 
         logger.info(
@@ -327,23 +324,18 @@ class GitLabIngestor:
             event_id: object = row.id
             return event_id
 
-    async def _link_to_feature(
+    async def _assign_feature(
         self,
-        feature_id: object,
         artifact_id: object,
+        feature_id: object,
     ) -> None:
-        """Insert feature_artifact link (gitlab_event -> feature)."""
+        """Record the target returned by the successful shared link helper."""
         self._ensure_mutation_allowed()
         async with self._sf() as session:
             stmt = (
-                pg_insert(feature_artifacts)
-                .values(
-                    feature_id=feature_id,
-                    artifact_type="gitlab_event",
-                    artifact_id=artifact_id,
-                    similarity_score=1.0,
-                )
-                .on_conflict_do_nothing()
+                sa.update(gitlab_events)
+                .where(gitlab_events.c.id == artifact_id)
+                .values(feature_id=feature_id)
             )
             self._ensure_mutation_allowed()
             await session.execute(stmt)

@@ -43,6 +43,7 @@ from brain_v42.models.brain_session import (
     BrainSessionStatus,
     BrainSessionSweepResult,
 )
+from brain_v42.safe_logging import configure_cli_logging
 
 _MAX_ERROR_CHARS = 2000
 
@@ -185,7 +186,9 @@ async def record_dream_run(
                     },
                 )
     except Exception as exc:  # noqa: BLE001 — the trace must never kill the phase
-        print(f"! warning: could not record dream_run: {exc}", file=sys.stderr)
+        # Type only: a database error message can carry connection details
+        # (ticket 45d99407).
+        print(f"! warning: could not record dream_run: {type(exc).__name__}", file=sys.stderr)
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -200,6 +203,7 @@ async def _run(args: argparse.Namespace) -> int:
     except ValidationError as exc:
         print(f"Config invalide: {exc}", file=sys.stderr)
         return 2
+    configure_cli_logging(settings.brain_log_format)
 
     # `None` closes the 4 h rule AND says so in the report. The flag is read
     # HERE, once, and never in the repository: the repository receives a
@@ -209,9 +213,15 @@ async def _run(args: argparse.Namespace) -> int:
         AGENT_INACTIVE_AFTER if settings.brain_session_inactive_sweep_enabled else None
     )
 
-    session_factory = get_session_factory()
     dry = not args.wet
     started = time.monotonic()
+    try:
+        session_factory = get_session_factory()
+    except Exception as exc:  # noqa: BLE001 — no factory exists to record the failure
+        detail = type(exc).__name__[:_MAX_ERROR_CHARS]
+        print(f"sweep: FAIL — {detail}", file=sys.stderr)
+        return 1
+
     try:
         result = await PgBrainSessionRepo(session_factory).sweep_open_sessions(
             older_than=timedelta(days=args.older_than_days),
@@ -227,7 +237,10 @@ async def _run(args: argparse.Namespace) -> int:
             dry_run=dry,
         )
     except Exception as exc:  # noqa: BLE001 — traduit en row dream_runs + rc=1
-        detail = f"{type(exc).__name__}: {exc}"[:_MAX_ERROR_CHARS]
+        # Type only, on stderr and in dream_runs.error_message alike: the
+        # message of a database error can carry connection details (ticket
+        # 45d99407), and the briefing renders this column.
+        detail = type(exc).__name__[:_MAX_ERROR_CHARS]
         await record_dream_run(
             session_factory, "fail", dry=dry, duration_s=time.monotonic() - started, error=detail
         )
@@ -261,7 +274,13 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    return asyncio.run(_run(build_parser().parse_args()))
+    args = build_parser().parse_args()
+    try:
+        return asyncio.run(_run(args))
+    except Exception as exc:  # noqa: BLE001 — keep unexpected errors out of the CLI output
+        detail = type(exc).__name__[:_MAX_ERROR_CHARS]
+        print(f"sweep: FAIL — {detail}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

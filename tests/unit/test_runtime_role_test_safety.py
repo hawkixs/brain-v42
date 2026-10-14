@@ -42,8 +42,17 @@ def test_role_benches_require_exact_disposable_cluster_opt_in(monkeypatch, name,
 
 def test_only_throwaway_integration_ci_opts_into_cluster_role_mutations():
     workflow = yaml.safe_load((ROOT / ".github/workflows/continuous-integration.yml").read_text())
-    assert workflow["jobs"]["test-integration"]["env"]["BRAIN_V42_TEST_DISPOSABLE_CLUSTER"] == "1"
+    # The integration suite runs as shards, each on its own throwaway PostgreSQL service
+    # container; the `test-integration` check is only the aggregator and holds no database.
+    shard_env = workflow["jobs"]["integration-shard"]["env"]
+    assert shard_env["BRAIN_V42_TEST_DISPOSABLE_CLUSTER"] == "1"
     assert "BRAIN_V42_TEST_DISPOSABLE_CLUSTER" not in workflow["env"]
+    opted_in = {
+        name
+        for name, job in workflow["jobs"].items()
+        if "BRAIN_V42_TEST_DISPOSABLE_CLUSTER" in (job.get("env") or {})
+    }
+    assert opted_in == {"integration-shard"}
 
 
 def test_cli_bench_reads_role_settings_from_the_roles_catalog(monkeypatch, tmp_path):
