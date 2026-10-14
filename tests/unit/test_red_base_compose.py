@@ -15,14 +15,23 @@ import yaml
 
 from brain_v42.config import Settings
 from brain_v42.delivery_observer.config import load_observer_settings
+from brain_v42.maintenance.embedding_backfill import parse_args as embedding_backfill_args
 from brain_v42.maintenance.session_sweep import build_parser as session_sweep_parser
 from brain_v42.maintenance.trace_retention import build_parser as trace_retention_parser
 from brain_v42.mcp.server import version_check
+from brain_v42.services.embedding_backfill import ALL_EMBEDDING_ENTITY_TYPES
 
 ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = ROOT / "deploy" / "compose.yaml"
 ONE_SHOTS = {"restore", "migrate", "graph-bootstrap"}
-SERVERS = {"mcp", "metrics", "delivery-observer", "graph-recon", "session-sweep"}
+SERVERS = {
+    "mcp",
+    "metrics",
+    "delivery-observer",
+    "graph-recon",
+    "session-sweep",
+    "embedding-backfill",
+}
 BRAIN_SERVICES = ONE_SHOTS | SERVERS
 SERVICES = BRAIN_SERVICES | {"postgres", "neo4j"}
 RAIL_VARIABLES = {
@@ -192,6 +201,7 @@ def test_memory_budgets_have_headroom(compose: dict[str, Any]) -> None:
         "delivery-observer": "256m",
         "graph-recon": "256m",
         "session-sweep": "256m",
+        "embedding-backfill": "256m",
     }
     assert {name: service["mem_limit"] for name, service in compose["services"].items()} == limits
     neo4j = compose["services"]["neo4j"]["environment"]
@@ -556,6 +566,48 @@ def test_session_sweep_healthcheck_reads_both_heartbeats(
         )
     result = subprocess.run([sys.executable, "-c", probe], capture_output=True, timeout=30)
     assert (result.returncode == 0) is healthy
+
+
+def test_embedding_backfill_drains_the_backlog_hourly_and_dry(
+    compose: dict[str, Any], clean_settings_env: pytest.MonkeyPatch
+) -> None:
+    """Ticket c0d510e3: red-base had no runner for the durable embedding backlog.
+
+    Every write persists its row with a NULL vector first and leaves it to the
+    backlog when the provider fails; without a runner such a row stays out of
+    semantic search for good. The loop covers every project and every entity
+    type, and ships dry: arming it (--execute, which also needs the graph stack
+    for linking) is a separate pull request, after a dry run's journal was read.
+    """
+    service = compose["services"]["embedding-backfill"]
+    assert service["container_name"] == "brain-v42-embedding-backfill"
+    command = service["command"]
+    assert command[:2] == ["/bin/sh", "-c"]
+    match = re.fullmatch(
+        r"while :; do\s+python -m brain_v42\.maintenance\.embedding_backfill(?P<args>[^|]*)"
+        r"\|\| echo \"embedding-backfill: run failed[^\"]*\" >&2;\s+sleep 3600;\s*done\s*",
+        command[2],
+    )
+    assert match, command[2]
+    arguments = embedding_backfill_args(match["args"].split())
+    assert arguments.execute is False
+    assert arguments.project_key is None
+    assert arguments.entity_types is None or set(arguments.entity_types) == set(
+        ALL_EMBEDDING_ENTITY_TYPES
+    )
+    assert service["env_file"] == ["/etc/brain-v42/postgres-app.env"]
+    assert service["environment"] == {**compose["x-brain-env"], **compose["x-embedding-env"]}
+    # The client resolves its token file at construction, even for a dry run.
+    assert service["secrets"] == ["embedding_token"]
+    probe = service["healthcheck"]["test"]
+    assert probe[:3] == ["CMD", "python", "-c"]
+    assert "brain_v42.maintenance.embedding_backfill" in probe[3]
+    assert "/proc/1/cmdline" in probe[3]
+    for key, value in service["environment"].items():
+        clean_settings_env.setenv(key, value)
+    settings = Settings(_env_file=None)
+    assert settings.embedding_backend == "openai"
+    assert settings.embedding_dimension == 1536
 
 
 def test_projector_is_private_to_the_graph_processes(compose: dict[str, Any]) -> None:

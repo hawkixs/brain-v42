@@ -49,7 +49,8 @@
 # approval, then replay the verified restore -> migrate -> graph-bootstrap chain.
 # Memory headroom above measured RSS: postgres 238 MiB -> 512m, MCP 224 MiB -> 512m,
 # metrics 191 MiB -> 384m, delivery-observer 124 MiB -> 256m. One-shots get 512m;
-# weekly graph inventory and the daily session sweep get 256m each. Neo4j has 1G heap + 1G page cache within 2.5g.
+# weekly graph inventory, the daily session sweep and the hourly embedding backfill get
+# 256m each. Neo4j has 1G heap + 1G page cache within 2.5g.
 
 name: brain-v42
 
@@ -357,6 +358,41 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15m
+
+  embedding-backfill:
+    <<: [*brain-service, *server]
+    container_name: brain-v42-embedding-backfill
+    mem_limit: 256m
+    # Drains the durable embedding backlog (ticket c0d510e3): every write persists its
+    # row with a NULL vector first and leaves it to this backlog when the embedding
+    # provider fails, and red-base had no runner, so such a row would stay out of
+    # semantic search for good. Every project and every entity type, once at start
+    # and then hourly. DRY: without --execute it only counts the backlog and prints
+    # the report; arming it (which also needs the graph stack for linking) is a
+    # separate pull request, after a dry run's journal was read. A failed run is
+    # retried the next hour instead of crash-looping the container.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        while :; do
+          python -m brain_v42.maintenance.embedding_backfill --batch-size 20 --limit 200 || echo "embedding-backfill: run failed, next attempt in 1 h" >&2;
+          sleep 3600;
+        done
+    env_file:
+      - /etc/brain-v42/postgres-app.env
+    environment:
+      <<: [*brain-env, *embedding-env]
+    secrets:
+      # The embedding client resolves its token file at construction, even dry.
+      - embedding_token
+    healthcheck:
+      # Liveness of the hourly loop only, not run progress: reports go to the container log.
+      test: [CMD, python, -c, "from pathlib import Path; assert b'brain_v42.maintenance.embedding_backfill' in Path('/proc/1/cmdline').read_bytes()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 secrets:
   postgres_password:
