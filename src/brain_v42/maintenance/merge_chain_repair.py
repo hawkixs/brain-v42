@@ -10,6 +10,7 @@ from uuid import UUID
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_v42.db.merge_chain_errors import merge_chain_errors
 from brain_v42.db.tables import (
     adrs,
     consolidation_log,
@@ -35,10 +36,15 @@ TABLE_NAMES = frozenset(table.name for table, _ in _TABLES)
 class MergeChainRepairError(RuntimeError):
     """Expose a content-safe reason when the approved repair cannot proceed."""
 
-    def __init__(self, reason: str, *, table: str | None = None) -> None:
+    def __init__(
+        self, reason: str, *, table: str | None = None, count_kind: str | None = None
+    ) -> None:
         self.reason = reason
         self.table = table
-        super().__init__(reason if table is None else f"{reason}: {table}")
+        self.count_kind = count_kind
+        super().__init__(
+            ": ".join(value for value in (reason, table, count_kind) if value is not None)
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +75,10 @@ class TableReport:
     def in_project_chained_count(self) -> int:
         return len(self.in_project_chains)
 
+    @property
+    def cross_project_chained_count(self) -> int:
+        return len(self.cross_project_chains)
+
 
 @dataclass(frozen=True, slots=True)
 class InventoryReport:
@@ -79,6 +89,10 @@ class InventoryReport:
     @property
     def in_project_chained_count(self) -> int:
         return sum(table.in_project_chained_count for table in self.tables)
+
+    @property
+    def cross_project_chained_count(self) -> int:
+        return sum(table.cross_project_chained_count for table in self.tables)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +111,7 @@ async def inventory(session: AsyncSession) -> InventoryReport:
     identify starting rows whose walk reaches a cycle; dangling roots identify
     absent UUIDs. Neither is eligible for repair. Foreign-project transits count
     starting rows whose path visits another project, regardless of the root;
-    eligibility still depends only on the starting and root projects. Table
+    approval classification depends only on the starting and root projects. Table
     names are a fixed local allowlist, never supplied by the operator.
     """
     reports: list[TableReport] = []
@@ -190,13 +204,19 @@ def _refuse_corrupt(report: InventoryReport) -> None:
 
 
 async def repair(
-    session: AsyncSession, expected: Mapping[str, int], *, lock_timeout_ms: int = 5000
+    session: AsyncSession,
+    expected: Mapping[str, int],
+    *,
+    expected_cross: Mapping[str, int] | None = None,
+    lock_timeout_ms: int = 5000,
 ) -> RepairReport:
     """Repair only approved per-table counts, leaving commit ownership with the caller.
 
-    Omitted tables are expected to have zero in-project chains. All six table
-    counts are checked before any pointer changes, so redistributing a total
-    cannot authorize changes to another table.
+    Omitted tables are expected to have zero chains in each approval category.
+    Both in-project and cross-project counts are checked for all six tables
+    before any pointer changes, so redistributing a total cannot authorize
+    changes to another table or category. Cross-project pointers already reach
+    the foreign root indirectly; flattening them adds no new reachability.
     The table locks stabilize roots and membership, including concurrent merges
     or inserts that row locks on the candidates alone cannot protect against.
     Acquisition refuses after five seconds by default to bound writer queueing.
@@ -210,9 +230,14 @@ async def repair(
     """
     if not session.in_transaction():
         raise MergeChainRepairError("transaction_required")
-    if any(table not in TABLE_NAMES or count < 0 for table, count in expected.items()):
+    expected_cross = {} if expected_cross is None else expected_cross
+    if any(
+        table not in TABLE_NAMES or count < 0
+        for counts in (expected, expected_cross)
+        for table, count in counts.items()
+    ):
         raise MergeChainRepairError("invalid_expected_count")
-    async with session.begin_nested():
+    async with session.begin_nested(), merge_chain_errors(MergeChainRepairError):
         await session.execute(sa.text(f"SET LOCAL lock_timeout = '{lock_timeout_ms / 1000:g}s'"))
         try:
             await session.execute(
@@ -230,11 +255,17 @@ async def repair(
         before = await inventory(session)
         _refuse_corrupt(before)
         for report in before.tables:
-            if report.in_project_chained_count != expected.get(report.table, 0):
-                raise MergeChainRepairError("expected_count_mismatch", table=report.table)
+            for count_kind, measured, approved in (
+                ("in_project", report.in_project_chained_count, expected),
+                ("cross_project", report.cross_project_chained_count, expected_cross),
+            ):
+                if measured != approved.get(report.table, 0):
+                    raise MergeChainRepairError(
+                        "expected_count_mismatch", table=report.table, count_kind=count_kind
+                    )
 
         for (table, entity_type), report in zip(_TABLES, before.tables, strict=True):
-            pointers = report.in_project_chains
+            pointers = report.in_project_chains + report.cross_project_chains
             if not pointers:
                 continue
             for pointer in pointers:
@@ -253,6 +284,17 @@ async def repair(
                     )
         after = await inventory(session)
         _refuse_corrupt(after)
-        if after.in_project_chained_count:
+        if any(report.chained_count for report in after.tables):
             raise MergeChainRepairError("chains_remain")
-        return RepairReport(before, after, before.in_project_chained_count)
+        changed_count = before.in_project_chained_count + before.cross_project_chained_count
+        # The repair also runs BEFORE 068 is installed. Once the guard exists,
+        # surface its deferred errors while the savepoint can still undo writes.
+        if changed_count and await session.scalar(
+            sa.text("SELECT to_regprocedure('public.refuse_merge_chain()')")
+        ):
+            constraints = ", ".join(
+                f"public.{table.name}_merge_chain_guard" for table, _ in _TABLES
+            )
+            await session.execute(sa.text(f"SET CONSTRAINTS {constraints} IMMEDIATE"))
+            await session.execute(sa.text(f"SET CONSTRAINTS {constraints} DEFERRED"))
+        return RepairReport(before, after, changed_count)

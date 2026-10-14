@@ -1,17 +1,17 @@
 {
   "attestation_sql": {
-    "path": "ops/recovery/brain-v42-v25.sql",
-    "sha256": "19dc0f3cce37110a98d64c16b0e6525f19bf5dcf8c0f03d9d40de5db480b9675"
+    "path": "ops/recovery/brain-v42-v26.sql",
+    "sha256": "028055e0c9cc034bc7aeac11cb04b82500c32866e673d7a70acdc99b6def8e2a"
   },
-  "contract_id": "brain-v42/postgresql-recovery/v25",
-  "contract_version": 25,
+  "contract_id": "brain-v42/postgresql-recovery/v26",
+  "contract_version": 26,
   "manifest": {
-    "path": "ops/recovery/brain-v42-v25.json",
-    "sha256": "75a8f080db824511098adc42a15c6498325c34208bd3311fb56a7b883d786bd7"
+    "path": "ops/recovery/brain-v42-v26.json",
+    "sha256": "a60d6ab4c8e254d4df64c9dc0b5401448bb54639d5b25e7f2a6912521cf5a128"
   },
   "restored_attestation_sql": {
-    "path": "ops/recovery/brain-v42-v25-pgrestore.sql",
-    "sha256": "8b6f5852fd33193c85c92eb4b9920ad4d44c94b155ce048fa80f7f9b15802859"
+    "path": "ops/recovery/brain-v42-v26-pgrestore.sql",
+    "sha256": "3247a5de2ea05629276e4dc1619094290d353c36cdd528619506c9072528f334"
   },
-  "schema_head": "067"
+  "schema_head": "068"
 }

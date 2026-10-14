@@ -33,6 +33,7 @@ from brain_v42.facts.probes.dream_killswitches_declared import DreamKillswitches
 from brain_v42.facts.probes.dream_last_night import DreamLastNightProbe
 from brain_v42.facts.probes.graph_projection_lag import GraphProjectionLagProbe
 from brain_v42.facts.probes.live_release_sha import LiveReleaseShaProbe
+from brain_v42.facts.probes.merge_chains import MergeChainsProbe
 from brain_v42.facts.registry import FactRegistry, UnverifiableTargetError
 from brain_v42.facts.sources import HostSourceFactory, PostgresSourceFactory, ReleaseSourceFactory
 
@@ -46,11 +47,12 @@ logger = structlog.get_logger(__name__)
 
 def _catalogue() -> tuple[Probe, ...]:
     """The closed catalogue, in the order the briefing renders it."""
-    # Revision 8 order: graph_projection_lag, alembic_head, live_release_sha,
+    # Revision 9 order: graph_projection_lag, merge_chains, alembic_head, live_release_sha,
     # alembic_head_shipped, dream_killswitches_declared, dream_last_night,
     # claims_verification_last_night, delivery_observer_liveness.
     return (
         GraphProjectionLagProbe(),
+        MergeChainsProbe(),
         AlembicHeadProbe(),
         LiveReleaseShaProbe(),
         AlembicHeadShippedProbe(),

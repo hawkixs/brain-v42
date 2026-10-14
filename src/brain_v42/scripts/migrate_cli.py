@@ -8,6 +8,8 @@ import hashlib
 import json
 import math
 import os
+import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -42,10 +44,82 @@ _ROLE_OPTIONS = "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPAS
 class MigrationRefused(RuntimeError):
     """A safe reason code, never driver text that could carry credentials."""
 
-    def __init__(self, reason: str, **details: str) -> None:
+    def __init__(
+        self,
+        reason: str,
+        *,
+        tables: tuple[str, ...] = (),
+        remedy: str | None = None,
+        **details: str,
+    ) -> None:
         super().__init__(reason)
         self.reason = reason
+        self.tables = tables
+        self.remedy = remedy
         self.details = details
+
+
+_CONTRACT_TOKEN = re.compile(r"[a-z0-9_]+")
+
+
+def refusal_line(reason: str, *, tables: tuple[str, ...] = (), remedy: str | None = None) -> str:
+    """Render the refusal in the deploy rail's contract (red-rail ticket c14acfea).
+
+    `rail deploy` parses this exact shape and shows it as a preflight failure:
+    `migration_refused reason=<code> [tables=<a,b>] [remedy="<text>"]`. The console
+    log renderer adds colours and timestamps, so the contract is a plain line of
+    its own. Values that would break the shape are refused, never escaped.
+    """
+    if not _CONTRACT_TOKEN.fullmatch(reason) or not all(
+        _CONTRACT_TOKEN.fullmatch(table) for table in tables
+    ):
+        raise ValueError("refusal reason and tables must be lowercase identifiers")
+    if remedy is not None and ('"' in remedy or "\n" in remedy):
+        raise ValueError("refusal remedy must not contain a double quote or a newline")
+    line = f"migration_refused reason={reason}"
+    if tables:
+        line += " tables=" + ",".join(tables)
+    if remedy:
+        line += f' remedy="{remedy}"'
+    return line
+
+
+# Recognised by its file name, never by its number: the revision is renumbered
+# at merge time to stay contiguous with the other open migrations.
+_MERGE_CHAIN_GUARD_FILE = "_merge_chain_guard.py"
+_MERGE_CHAIN_TABLES = ("adrs", "decisions", "features", "learnings", "runbooks", "snippets")
+_MERGE_CHAIN_PREFLIGHT_SQL = (
+    "SELECT string_agg(table_name, ',' ORDER BY table_name) /* merge_chain_preflight */ "  # noqa: S608  # nosec B608 - fragment = `table`, iterated from the module tuple `_MERGE_CHAIN_TABLES` (six literal table names); no caller input reaches it
+    "FROM ("
+    + " UNION ALL ".join(
+        f"SELECT '{table}' AS table_name FROM public.{table} s "  # noqa: S608  # nosec B608 - fragment = `table`, iterated from the module tuple `_MERGE_CHAIN_TABLES` (six literal table names); no caller input reaches it
+        f"JOIN public.{table} t ON t.id = s.merged_into "
+        "WHERE t.merged_into IS NOT NULL GROUP BY 1"
+        for table in _MERGE_CHAIN_TABLES
+    )
+    + ") AS chained"
+)
+
+
+def _crosses_merge_chain_guard(
+    scripts: ScriptDirectory, database_head: str, code_head: str
+) -> bool:
+    """True when the upgrade about to run applies the merge-chain guard migration."""
+    return any(
+        str(revision.path).endswith(_MERGE_CHAIN_GUARD_FILE)
+        for revision in scripts.iterate_revisions(code_head, database_head)
+    )
+
+
+async def _merge_chain_residue(settings: Settings) -> tuple[str, ...]:
+    """Tables still holding a merge chain; the guard migration refuses while any remain."""
+    engine = _new_engine(settings)
+    try:
+        async with engine.connect() as connection:
+            residue = await connection.scalar(text(_MERGE_CHAIN_PREFLIGHT_SQL))
+    finally:
+        await engine.dispose()
+    return tuple(str(residue).split(",")) if residue else ()
 
 
 @dataclass(frozen=True)
@@ -353,6 +427,16 @@ def main(argv: list[str] | None = None) -> int:
                 code_head=code_head,
             )
         upgraded = database_heads != (code_head,)
+        if upgraded and _crosses_merge_chain_guard(scripts, database_heads[0], code_head):
+            # Preflight BEFORE any write: the guard migration would refuse too,
+            # but as driver text the rail cannot render (repair first, then 068).
+            residue = asyncio.run(_merge_chain_residue(settings))
+            if residue:
+                raise MigrationRefused(
+                    "merge_chains_present",
+                    tables=residue,
+                    remedy="run scripts/repair_merge_chains.py",
+                )
         if upgraded:
             logger.info("migration_upgrade", database_head=database_heads[0], code_head=code_head)
             # env.py connects with POSTGRES_URL and overrides role-level timeouts.
@@ -361,6 +445,7 @@ def main(argv: list[str] | None = None) -> int:
         asyncio.run(_finish(settings, verifier, code_head, contract, upgraded=upgraded))
     except MigrationRefused as exc:
         logger.error("migration_refused", reason=exc.reason, **exc.details)
+        print(refusal_line(exc.reason, tables=exc.tables, remedy=exc.remedy), file=sys.stderr)
         return 1
     except Exception as exc:  # noqa: BLE001 - SQL/URL/validation errors can contain secrets
         logger.error("migration_failed", error_type=type(exc).__name__)

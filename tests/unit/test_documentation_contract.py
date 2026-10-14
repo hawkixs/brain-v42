@@ -1707,7 +1707,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_067_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_068_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1717,8 +1717,10 @@ def test_repository_head_067_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 067 for exact credential scopes, with no deployment claim
-    and the recovery contract update reserved for a separate operator delivery.
+    silently. Bumped to 068 on 2026-10-14 — deferred merge-chain guards on six
+    tables, recovery contract v26. Previously bumped to 067 for exact credential
+    scopes, with no deployment claim and the recovery contract update reserved for
+    a separate operator delivery.
     Previously bumped to 065 on 2026-10-13 — `programmes` and `programme_gates`, the
     programme progress of contract `docs/contracts/programmes_v1.md`: two tables, no
     trigger, recovery contract v23 minted on disposable databases; not applied to
@@ -1796,7 +1798,7 @@ def test_repository_head_067_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     head = _repository_head()
-    assert head == "067"
+    assert head == "068"
 
     # Everything below is DERIVED from that measured head. It used to be COPIED,
     # and that is precisely how `SCHEMA.md` came to announce 049 while the chain

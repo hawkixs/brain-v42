@@ -176,11 +176,12 @@ class TestApplyMerge:
                 MagicMock(),  # UPDATE features loser
                 _mappings_one({"merged_into": into, "status": "archived"}),
                 _scalar_one(0),  # 0 artifacts left on the loser
+                _scalar_one(0),  # 0 features still merged into the loser
                 MagicMock(),  # UPDATE proposal → applied + apply_log
             ]
         )
         assert await apply_proposals(factory, [1]) == 1
-        assert session.execute.call_count == 8
+        assert session.execute.call_count == 9
 
     @pytest.mark.asyncio
     async def test_merge_leftover_artifacts_fails_postcondition(self):
@@ -265,7 +266,8 @@ class TestApplyLogProvenance:
                 self._rows_result([("snippet", a3)]),  # deleted duplicates
                 MagicMock(),  # UPDATE features loser
                 _mappings_one({"merged_into": into, "status": "archived"}),
-                _scalar_one(0),
+                _scalar_one(0),  # 0 artifacts left on the loser
+                _scalar_one(0),  # 0 features still merged into the loser
                 MagicMock(),  # UPDATE proposal → applied + apply_log
             ]
         )
@@ -280,6 +282,7 @@ class TestApplyLogProvenance:
         assert log["duplicate_links_deleted"] == [
             {"artifact_type": "snippet", "artifact_id": str(a3)}
         ]
+        assert log["repointed_children"] == []
 
     @pytest.mark.asyncio
     async def test_archive_apply_log_captures_prior_status(self):

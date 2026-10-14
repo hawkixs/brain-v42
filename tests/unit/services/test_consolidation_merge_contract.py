@@ -7,7 +7,9 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import UUID, uuid4
 
+import asyncpg
 import pytest
+import sqlalchemy as sa
 import structlog
 
 from brain_v42.mcp.dream_project_authorization import (
@@ -87,7 +89,14 @@ def _job_fixture(
                 return _result(scalar=foreign_children_count)
             pair_rows = [source, target] if rows is None else rows
             if " OR " in str(statement):
-                return _result(rows=[*pair_rows, *(children or [])])
+                locked_children = children or []
+                if "project_key =" in str(statement):
+                    locked_children = [
+                        child
+                        for child in locked_children
+                        if child.get("project_key", "owned") == "owned"
+                    ]
+                return _result(rows=[*pair_rows, *locked_children])
             if "merged_into =" in str(statement):
                 return _result(rows=children)
             return _result(rows=pair_rows)
@@ -135,6 +144,32 @@ def test_merge_signature_includes_entity_type_and_keyword_only_authorization() -
 
 def test_repository_exposes_same_transaction_audit_seam() -> None:
     assert hasattr(PgConsolidationLogRepo, "log_action_in_session")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["write", "commit"])
+async def test_database_guard_refusal_is_typed_before_any_graph_write(stage: str) -> None:
+    from brain_v42.db.merge_chain_errors import MergeChainRefusedError
+
+    source_id, target_id = uuid4(), uuid4()
+    job, session, _log_repo, graph, _statements, events = _job_fixture(source_id, target_id)
+    error = sa.exc.DBAPIError(
+        "UPDATE",
+        None,
+        asyncpg.CheckViolationError("merge_chain_refused: decisions foreign-child foreign-root"),
+    )
+    if stage == "write":
+        session.execute.side_effect = error
+    else:
+        transaction = AsyncMock()
+        transaction.__aexit__.side_effect = error
+        session.begin.return_value = transaction
+    with pytest.raises(MergeChainRefusedError, match="^merge_chain_refused$"):
+        await job.merge(
+            "decision", source_id, target_id, authorization=MagicMock(project_key="owned")
+        )
+    graph.create_relation.assert_not_awaited()
+    assert "graph" not in events
 
 
 @pytest.mark.asyncio
@@ -501,29 +536,37 @@ async def test_job_scopes_lock_updates_and_graph_to_explicit_authorization() -> 
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("foreign_count", [0, 2])
-async def test_scoped_merge_warns_only_with_foreign_children_count(foreign_count: int) -> None:
+@pytest.mark.parametrize("foreign_count", [1, 2])
+async def test_scoped_merge_refuses_foreign_children_before_any_write(foreign_count: int) -> None:
     source_id, target_id = uuid4(), uuid4()
-    job, _session, _log_repo, _graph, statements, _events = _job_fixture(
-        source_id, target_id, foreign_children_count=foreign_count
+    foreign_key = "foreign-private-project"
+    foreign_ids = [uuid4() for _ in range(foreign_count)]
+    job, _session, log_repo, graph, statements, events = _job_fixture(
+        source_id,
+        target_id,
+        children=[
+            {"id": child_id, "project_key": foreign_key, "merged_into": source_id}
+            for child_id in foreign_ids
+        ],
+        foreign_children_count=foreign_count,
     )
     authorization = MagicMock(project_key="owned")
     authorization.revalidate_ids = AsyncMock()
 
     with structlog.testing.capture_logs() as logs:
-        await job.merge("decision", source_id, target_id, authorization=authorization)
+        with pytest.raises(consolidation.ConsolidationForeignChildrenError) as raised:
+            await job.merge("decision", source_id, target_id, authorization=authorization)
 
-    assert logs == (
-        [
-            {
-                "event": "consolidation.merge.foreign_children_left",
-                "count": foreign_count,
-                "log_level": "warning",
-            }
-        ]
-        if foreign_count
-        else []
-    )
+    message = str(raised.value)
+    assert f"{foreign_count} foreign children" in message
+    assert foreign_key not in message
+    assert all(str(child_id) not in message for child_id in foreign_ids)
+    assert logs == []
+    assert all(str(statement).startswith("SELECT") for statement in statements)
+    assert events == ["transaction_enter", "transaction_rollback"]
+    log_repo.log_action_in_session.assert_not_awaited()
+    graph.create_relation.assert_not_awaited()
+    authorization.revalidate_ids.assert_not_awaited()
     count_statements = [statement for statement in statements if "count(" in str(statement)]
     assert len(count_statements) == 1
     count_statement = count_statements[0]
@@ -532,6 +575,41 @@ async def test_scoped_merge_warns_only_with_foreign_children_count(foreign_count
     assert source_id in count_statement.compile().params.values()
     assert "owned" in count_statement.compile().params.values()
     assert "FOR UPDATE" not in str(count_statement)
+
+
+@pytest.mark.asyncio
+async def test_unscoped_merge_repoints_foreign_child() -> None:
+    source_id, target_id, child_id = uuid4(), uuid4(), uuid4()
+    job, session, log_repo, graph, statements, events = _job_fixture(
+        source_id,
+        target_id,
+        children=[
+            {"id": child_id, "project_key": "foreign-private-project", "merged_into": source_id}
+        ],
+        foreign_children_count=1,
+    )
+
+    await job.merge("decision", source_id, target_id)
+
+    child_update = next(
+        statement
+        for statement in statements
+        if str(statement).startswith("UPDATE") and "id IN" in str(statement)
+    )
+    assert child_update.compile().params["id_1"] == [child_id]
+    assert child_update.compile().params["merged_into"] == target_id
+    assert "project_key" not in str(child_update)
+    assert not any("count(" in str(statement) for statement in statements)
+    log_repo.log_action_in_session.assert_any_await(
+        session,
+        source_id=child_id,
+        target_id=target_id,
+        entity_type="decision",
+        similarity=1.0,
+        action="repointed",
+    )
+    graph.create_relation.assert_any_await(child_id, target_id, "MERGED_INTO", secret_safe=True)
+    assert events.index("transaction_commit") > events.index("audit")
 
 
 @pytest.mark.asyncio

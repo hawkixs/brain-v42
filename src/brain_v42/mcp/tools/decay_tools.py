@@ -10,6 +10,7 @@ from uuid import UUID
 import sqlalchemy as sa
 import structlog
 
+from brain_v42.db.merge_chain_errors import MergeChainRefusedError
 from brain_v42.db.tables import adrs, decisions, indexed_plans, learnings, runbooks, snippets
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.formatters import (
@@ -30,6 +31,7 @@ from brain_v42.services.consolidation import (
     ConsolidationChildrenUnstableError,
     ConsolidationEndpointMergedError,
     ConsolidationEntityNotFoundError,
+    ConsolidationForeignChildrenError,
 )
 
 if TYPE_CHECKING:
@@ -259,10 +261,13 @@ def register_decay_tools(
                 tgt_uid,
                 authorization=scope,
             )
+        except MergeChainRefusedError:
+            return format_error("merge_chain_refused")
         except (
             ConsolidationEntityNotFoundError,
             ConsolidationEndpointMergedError,
             ConsolidationChildrenUnstableError,
+            ConsolidationForeignChildrenError,
         ) as exc:
             # The consolidation guards name only the endpoint, entity type and UUID.
             return format_error(str(exc))
