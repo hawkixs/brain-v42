@@ -17,7 +17,7 @@ _TABLES = ("learnings", "decisions", "snippets", "runbooks", "adrs", "features")
 # counts on the same snapshot without locking rows or changing merge pointers.
 _MERGE_CHAINS_SQL = sa.text(
     " UNION ALL ".join(
-        f"SELECT '{table}' AS table_name, count(*) AS chain_count "
+        f"SELECT '{table}' AS table_name, count(*) AS chain_count "  # noqa: S608  # nosec B608 - fragment = `table`, iterated from the module tuple `_TABLES` (six literal table names); no caller input reaches it
         f"FROM {table} AS child JOIN {table} AS target ON child.merged_into = target.id "
         "WHERE target.merged_into IS NOT NULL"
         for table in _TABLES

@@ -89,10 +89,10 @@ def refusal_line(reason: str, *, tables: tuple[str, ...] = (), remedy: str | Non
 _MERGE_CHAIN_GUARD_FILE = "_merge_chain_guard.py"
 _MERGE_CHAIN_TABLES = ("adrs", "decisions", "features", "learnings", "runbooks", "snippets")
 _MERGE_CHAIN_PREFLIGHT_SQL = (
-    "SELECT string_agg(table_name, ',' ORDER BY table_name) /* merge_chain_preflight */ "
+    "SELECT string_agg(table_name, ',' ORDER BY table_name) /* merge_chain_preflight */ "  # noqa: S608  # nosec B608 - fragment = `table`, iterated from the module tuple `_MERGE_CHAIN_TABLES` (six literal table names); no caller input reaches it
     "FROM ("
     + " UNION ALL ".join(
-        f"SELECT '{table}' AS table_name FROM public.{table} s "
+        f"SELECT '{table}' AS table_name FROM public.{table} s "  # noqa: S608  # nosec B608 - fragment = `table`, iterated from the module tuple `_MERGE_CHAIN_TABLES` (six literal table names); no caller input reaches it
         f"JOIN public.{table} t ON t.id = s.merged_into "
         "WHERE t.merged_into IS NOT NULL GROUP BY 1"
         for table in _MERGE_CHAIN_TABLES
