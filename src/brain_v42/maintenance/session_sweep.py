@@ -213,9 +213,15 @@ async def _run(args: argparse.Namespace) -> int:
         AGENT_INACTIVE_AFTER if settings.brain_session_inactive_sweep_enabled else None
     )
 
-    session_factory = get_session_factory()
     dry = not args.wet
     started = time.monotonic()
+    try:
+        session_factory = get_session_factory()
+    except Exception as exc:  # noqa: BLE001 — no factory exists to record the failure
+        detail = type(exc).__name__[:_MAX_ERROR_CHARS]
+        print(f"sweep: FAIL — {detail}", file=sys.stderr)
+        return 1
+
     try:
         result = await PgBrainSessionRepo(session_factory).sweep_open_sessions(
             older_than=timedelta(days=args.older_than_days),
@@ -268,7 +274,13 @@ async def _run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    return asyncio.run(_run(build_parser().parse_args()))
+    args = build_parser().parse_args()
+    try:
+        return asyncio.run(_run(args))
+    except Exception as exc:  # noqa: BLE001 — keep unexpected errors out of the CLI output
+        detail = type(exc).__name__[:_MAX_ERROR_CHARS]
+        print(f"sweep: FAIL — {detail}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":

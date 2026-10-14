@@ -50,37 +50,35 @@ def db_skipped_tests(report: Path) -> list[str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
-        print(f"usage: {argv[0]} <junit-xml>", file=sys.stderr)
+    if len(argv) < 2:
+        print(f"usage: {argv[0]} <junit-xml> [<junit-xml> ...]", file=sys.stderr)
         return 2
-    report = Path(argv[1])
-    if not report.is_file():
-        # Fail-closed: an absent report means we do NOT KNOW whether the tests
-        # ran. Passing here would make this check hollow in exactly the case
-        # where pytest collapsed before writing its report.
+    failed = False
+    for name in argv[1:]:
+        report = Path(name)
+        if not report.is_file():
+            print(
+                f"missing JUnit report {report} — cannot prove the DB-backed tests ran",
+                file=sys.stderr,
+            )
+            failed = True
+            continue
+        skipped = db_skipped_tests(report)
+        if not skipped:
+            continue
+        failed = True
         print(
-            f"missing JUnit report {report} — cannot prove the DB-backed tests ran", file=sys.stderr
+            f"{report}: {len(skipped)} DB-backed test(s) were SKIPPED, so this coverage describes a subset.",
+            file=sys.stderr,
         )
+        for test_name in skipped[:_MAX_NAMED]:
+            print(f"  - {test_name}", file=sys.stderr)
+        if len(skipped) > _MAX_NAMED:
+            print(f"  ... and {len(skipped) - _MAX_NAMED} more", file=sys.stderr)
+    if failed:
         return 1
-
-    skipped = db_skipped_tests(report)
-    if not skipped:
-        print("No DB-backed test was skipped: coverage covers the same world as test-unit.")
-        return 0
-
-    print(
-        f"{len(skipped)} DB-backed test(s) were SKIPPED, so this coverage describes "
-        "a subset of the tested code. Give this job the test-unit recipe: the "
-        "postgres service, BRAIN_V42_TEST_DB_URL, and `alembic upgrade head`.",
-        file=sys.stderr,
-    )
-    for name in skipped[:_MAX_NAMED]:
-        print(f"  - {name}", file=sys.stderr)
-    if len(skipped) > _MAX_NAMED:
-        # No silent truncation: a list cut without its remainder reads as
-        # "there were only ten".
-        print(f"  ... and {len(skipped) - _MAX_NAMED} more", file=sys.stderr)
-    return 1
+    print("No DB-backed test was skipped: coverage covers the same world as test-unit.")
+    return 0
 
 
 if __name__ == "__main__":

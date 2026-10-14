@@ -316,7 +316,7 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # Re-read at 065: two new tables (`programmes`, `programme_gates`) whose only
     # links to the 031 schema are child foreign keys to `project_contexts`; no
     # column, CHECK or index of an existing table moves. The SET moves, below.
-    assert script.get_heads() == ["065"]
+    assert script.get_heads() == ["066"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim
@@ -375,6 +375,14 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
         # 065's two tables (programme progress), for the same reason as 063's.
         "programmes",
         "programme_gates",
+        # 066 adds lifecycle evidence without changing any 031 object.
+        "knowledge_extractions",
+        "knowledge_evaluations",
+        "knowledge_justifications",
+        "knowledge_lifecycle_events",
+        "knowledge_lifecycle_runs",
+        "knowledge_lifecycle_requests",
+        "knowledge_lifecycle_state",
         "brain_session_artifacts",
         "brain_sessions",
         "projects",
