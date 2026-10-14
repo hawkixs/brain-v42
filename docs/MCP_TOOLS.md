@@ -609,9 +609,9 @@ Session lifecycle actions remain under exclusive user control on the agent and c
 
 | `degraded` dict | Banner |
 |-----------------|--------|
-| `{"search_mode": "fts_fallback"}` | `degraded: embedding service indisponible — résultats FTS uniquement (ordre textuel)` |
-| `{"rerank_mode": "rrf_fallback"}` | `degraded: reranker indisponible — ordre RRF (pas de re-scoring cross-encoder)` |
-| `{"rerank_mode": "rrf_only"}` | `note: reranker non configuré — ordre RRF (pas de re-scoring cross-encoder)` |
+| `{"search_mode": "fts_fallback"}` | `degraded: embedding service unavailable — FTS results only (text order)` |
+| `{"rerank_mode": "rrf_fallback"}` | `degraded: reranker unavailable — RRF order (no cross-encoder re-scoring)` |
+| `{"rerank_mode": "rrf_only"}` | `note: reranker not configured — RRF order (no cross-encoder re-scoring)` |
 
 `min_score` filtering is disabled in degraded mode to avoid silently returning zero results.
 
