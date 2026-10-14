@@ -881,8 +881,14 @@ on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text)
 
 ## Migration history
 
-The repository migration target is 067. No page in this repository proves a live
+The repository migration target is 068. No page in this repository proves a live
 schema head; read `alembic_version` in the target database.
+
+Migration 068 adds six partial `merged_into` indexes and six deferred constraint
+triggers on `learnings`, `decisions`, `snippets`, `runbooks`, `adrs` and
+`features`, sharing `public.refuse_merge_chain()`. The upgrade refuses existing
+merge chains: run `scripts/repair_merge_chains.py` before migrating. Trigger
+invocation requires no new runtime EXECUTE grant.
 
 Migration 067 adds nullable `brain_client_credentials.allowed_projects` without a
 default or backfill. `NULL` preserves unrestricted scope. Change exact project keys
@@ -901,8 +907,11 @@ their existing family authorization. Downgrade refuses while any credential is
 scoped unless `-x allow_credential_scope_downgrade=yes` explicitly accepts widening
 authority. The scope audit vocabulary and rows survive downgrade; an older drainer
 that cannot render these events requires an operator upgrade before draining them.
-Recovery contract v25 (`ops/recovery/current.json`) describes 067; replay it against
-the target before deploying this schema.
+Recovery contract v26 is the candidate for 068. Mint both SQL variants on disposable
+databases, advance the manifest and ACL identity, then bind final assets through
+`ops/recovery/current.json`. The restored twin starts from a custom-format dump at
+067, restored with `pg_restore --no-owner --no-acl` and migrated to 068. Replay the
+contract against the target before deploying this schema.
 
 `brain-v42-migrate` uses the owner credentials from `POSTGRES_URL` and the
 wheel's Alembic chain. It refuses an uninitialized database and any head newer

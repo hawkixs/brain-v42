@@ -297,7 +297,12 @@ if TYPE_CHECKING:
 # nullable `allowed_projects` column and an inline CHECK to brain_client_credentials
 # and widens the brain_credential_audit event CHECK. No trigger, column, constraint,
 # index or grant on indexed_plans, indexed_plan_chunks or project_contexts changes.
-_REQUIRED_ALEMBIC_HEAD = "067"
+# Bumped to 068 after reviewing the complete migration, inert by TABLE: six
+# partial merged_into indexes and six deferred constraint triggers on learnings,
+# decisions, snippets, runbooks, adrs and features share refuse_merge_chain().
+# No trigger, column, constraint, index or grant changes on indexed_plans,
+# indexed_plan_chunks or project_contexts; the repair's statements are unaffected.
+_REQUIRED_ALEMBIC_HEAD = "068"
 
 
 class RepairStore:
