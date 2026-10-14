@@ -69,6 +69,7 @@ from brain_v42.models.learning import Confidence, LearningCreate, SourceType
 from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.relation import RelationInput
 from brain_v42.provenance import get_current_actor
+from brain_v42.repositories.pg_decision import DecisionNotSupersedableError
 from brain_v42.repositories.promotion import SourceLearningNotFound
 from brain_v42.services.brain_service import _TYPE_TO_PLURAL
 from brain_v42.services.embedding_text import adr_embedding_text
@@ -356,33 +357,36 @@ def register_tools(
         old_uid = parse_uuid(old_decision_id)
         if old_uid is None:
             return format_error(f"Invalid UUID: {old_decision_id}")
-        if not extraction_available:
-            new_decision = await decision_svc.supersede(old_uid, data)
-        else:
-            registry, claim_session_factory = claim_write_dependencies()
-            candidates = plan_extracted_claims(
-                entity="decision",
-                project_key=project_key,
-                fields={"description": data.description, "reasoning": data.reasoning},
-            )
-            # Embed BEFORE the transaction opens: the GPU call must not hold it.
-            new_embedding = await decision_svc.embed_supersession(data)
-            async with gated_claim_session(
-                claim_session_factory, claim_verification_svc, []
-            ) as session:
-                new_decision = await decision_svc.supersede(
-                    old_uid, data, session=session, new_embedding=new_embedding
+        try:
+            if not extraction_available:
+                new_decision = await decision_svc.supersede(old_uid, data)
+            else:
+                registry, claim_session_factory = claim_write_dependencies()
+                candidates = plan_extracted_claims(
+                    entity="decision",
+                    project_key=project_key,
+                    fields={"description": data.description, "reasoning": data.reasoning},
                 )
-                if candidates:
-                    await persist_extracted_claims(
-                        session,
-                        registry,
-                        entry_id=new_decision.id,
-                        entity_type="decision",
-                        project_key=project_key,
-                        candidates=candidates,
+                # Embed BEFORE the transaction opens: the GPU call must not hold it.
+                new_embedding = await decision_svc.embed_supersession(data)
+                async with gated_claim_session(
+                    claim_session_factory, claim_verification_svc, []
+                ) as session:
+                    new_decision = await decision_svc.supersede(
+                        old_uid, data, session=session, new_embedding=new_embedding
                     )
-            await decision_svc.enrich_superseded(old_uid, new_decision, data)
+                    if candidates:
+                        await persist_extracted_claims(
+                            session,
+                            registry,
+                            entry_id=new_decision.id,
+                            entity_type="decision",
+                            project_key=project_key,
+                            candidates=candidates,
+                        )
+                await decision_svc.enrich_superseded(old_uid, new_decision, data)
+        except DecisionNotSupersedableError as exc:
+            return format_error(str(exc))
         logger.info(
             "mcp.brain_supersede_decision",
             old_id=old_decision_id,
@@ -1147,6 +1151,8 @@ def register_tools(
                 rerank_mode=diag.rerank_mode,
                 rerank_identity=diag.rerank_identity,
                 degraded=diag.degraded,
+                failed_types=diag.failed_types,
+                graph_degraded=diag.graph_degraded,
                 min_score_effective=diag.min_score_effective,
                 project_key_effective=diag.project_key_effective,
             )
@@ -1230,6 +1236,8 @@ def register_tools(
             rerank_mode=diag.rerank_mode,
             rerank_identity=diag.rerank_identity,
             degraded=diag.degraded,
+            failed_types=diag.failed_types,
+            graph_degraded=diag.graph_degraded,
             min_score_effective=diag.min_score_effective,
             project_key_effective=diag.project_key_effective,
         )

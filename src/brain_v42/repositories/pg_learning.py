@@ -30,7 +30,7 @@ from brain_v42.db.project_group_scope import project_key_in_group
 from brain_v42.db.tables import learnings
 from brain_v42.models.learning import Learning, LearningCreate, LearningUpdate
 from brain_v42.repositories.capture_guard import lock_unless_captured
-from brain_v42.repositories.pg_base import BasePgRepository, Row, project_scope
+from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, Row, project_scope
 
 logger = structlog.get_logger(__name__)
 
@@ -268,11 +268,13 @@ class PgLearningRepo(BasePgRepository):
         limit: int = 20,
         offset: int = 0,
         *,
+        extra_clauses: ExtraClauses = None,
         session: AsyncSession | None = None,
     ) -> list[Learning]:
         """Full-text search using PostgreSQL tsvector, ordered by ts_rank DESC.
 
-        NOTE: search paths do NOT filter archived rows (only list_all does).
+        Archived rows are kept unless the caller passes ``live_row_clauses()``
+        as ``extra_clauses``.
         tags filter is absent on FTS — iso-behaviour with pre-vague-3 implementation.
         """
         filters: dict = {"project_key": project_scope(project_key, project_keys)}
@@ -285,6 +287,7 @@ class PgLearningRepo(BasePgRepository):
             offset=offset,
             limit=limit,
             skip_count=True,
+            extra_clauses=extra_clauses,
             session=session,
         )
         return [self._row_to_model(r) for r in rows]
@@ -301,6 +304,7 @@ class PgLearningRepo(BasePgRepository):
         confidence: str | None = None,
         limit: int = 10,
         *,
+        extra_clauses: ExtraClauses = None,
         session: AsyncSession | None = None,
     ) -> list[tuple[Learning, float]]:
         """Semantic search via pgvector cosine distance. Returns (Learning, similarity).
@@ -318,6 +322,7 @@ class PgLearningRepo(BasePgRepository):
             query_embedding,
             filters=filters,
             limit=limit,
+            extra_clauses=extra_clauses,
             session=session,
         )
         out: list[tuple[Learning, float]] = []

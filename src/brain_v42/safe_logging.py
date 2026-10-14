@@ -225,3 +225,15 @@ def configure_json_logging(processors: Sequence[Processor]) -> None:
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=True,
     )
+
+
+def configure_cli_logging(log_format: Literal["console", "json"]) -> None:
+    """Give a one-shot CLI the wire format of the container it runs in.
+
+    The maintenance CLIs never configured structlog, so under BRAIN_LOG_FORMAT=json
+    their engine lines still came out as coloured console text (ticket 8d053014).
+    The console default is left untouched; report lines printed to stdout are not
+    logs and stay plain text.
+    """
+    if log_format == "json":
+        configure_json_logging(build_logging_processors("json"))

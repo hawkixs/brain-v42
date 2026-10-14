@@ -346,6 +346,16 @@ class Settings(BaseSettings):
         default=30.0, gt=0, validation_alias=_brain_alias("EMBEDDING_TIMEOUT")
     )
 
+    embedding_retry_budget_seconds: float = Field(
+        default=60.0, gt=0, validation_alias=_brain_alias("EMBEDDING_RETRY_BUDGET_SECONDS")
+    )
+    """Bound attempts and backoffs together so writes can persist without an embedding."""
+
+    embedding_query_deadline_seconds: float = Field(
+        default=8.0, gt=0, validation_alias=_brain_alias("EMBEDDING_QUERY_DEADLINE_SECONDS")
+    )
+    """Let searches fall back to full-text search before the longer write budget expires."""
+
     embedding_query_prefix: _UnstrippedStr = Field(
         default="", validation_alias=_brain_alias("EMBEDDING_QUERY_PREFIX")
     )
@@ -456,6 +466,20 @@ class Settings(BaseSettings):
             if conflicts:
                 raise ValueError("rerank_backend='none' refuses: " + ", ".join(conflicts))
             return self
+        if not self.rerank_fallback_model:
+            orphans = [
+                name
+                for name, configured in (
+                    ("rerank_fallback_provider", self.rerank_fallback_provider is not None),
+                    ("rerank_fallback_url", bool(self.rerank_fallback_url)),
+                    ("rerank_fallback_api_key_file", self.rerank_fallback_api_key_file is not None),
+                )
+                if configured
+            ]
+            if orphans:
+                raise ValueError(
+                    "rerank_fallback_model is required when these are set: " + ", ".join(orphans)
+                )
         if self.rerank_fallback_model:
             if self.rerank_backend not in {"cohere", "voyage"}:
                 raise ValueError(
@@ -467,6 +491,19 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "rerank_primary_budget_seconds must be below rerank_budget_seconds"
                 )
+        if self.rerank_fallback_url:
+            try:
+                fallback_url = httpx.URL(self.rerank_fallback_url)
+            except httpx.InvalidURL:
+                raise ValueError("rerank_fallback_url is not a valid http(s) base URL") from None
+            if (
+                fallback_url.scheme not in {"http", "https"}
+                or not fallback_url.host
+                or fallback_url.userinfo
+                or fallback_url.query
+                or fallback_url.fragment
+            ):
+                raise ValueError("rerank_fallback_url is not a valid http(s) base URL")
         if self.rerank_api_key.get_secret_value() and self.rerank_api_key_file is not None:
             raise ValueError(
                 "two sources for one rerank key: rerank_api_key and rerank_api_key_file "
@@ -476,7 +513,7 @@ class Settings(BaseSettings):
             if self.rerank_api_key_file is not None:
                 # The shim authenticates with brain_embedding_token_file: a key file
                 # here would be ignored, and the operator would believe it armed.
-                raise ValueError("rerank_api_key_file requires rerank_backend='cohere'")
+                raise ValueError("rerank_api_key_file requires rerank_backend='cohere' or 'voyage'")
             return self
         if self.rerank_backend == "voyage":
             try:

@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from brain_v42.mcp.tools.brain_tools import register_tools
 from brain_v42.models.decision import Decision, DecisionCreate
+from brain_v42.repositories import pg_decision
 from tests.unit.mcp._tool_error_adapter import capture_tool_errors
 
 FIXED_UUID = uuid.UUID("12345678-1234-5678-1234-567812345678")
@@ -64,6 +65,42 @@ def _make_mcp_and_svc() -> tuple[dict[str, Any], MagicMock]:
         brain_svc=MagicMock(),
     )
     return registered, decision_svc
+
+
+@pytest.mark.asyncio
+async def test_supersede_rejection_returns_clean_tool_error() -> None:
+    tools, svc = _make_mcp_and_svc()
+    message = f"Decision {OLD_UUID} cannot be superseded in project brain-v42"
+    svc.supersede = AsyncMock(side_effect=pg_decision.DecisionNotSupersedableError(message))
+
+    result = await tools["brain_supersede_decision"](
+        old_decision_id=str(OLD_UUID),
+        title="Replacement",
+        context="Context",
+        decision_made="Choice",
+        reasoning="Reason",
+        project_key="brain-v42",
+    )
+
+    assert result == message
+
+
+@pytest.mark.asyncio
+async def test_supersede_without_project_reaches_the_service() -> None:
+    """Unscoped supersession is a supported path; the repository guards the rows."""
+    tools, svc = _make_mcp_and_svc()
+    svc.supersede = AsyncMock(return_value=_make_decision())
+
+    result = await tools["brain_supersede_decision"](
+        old_decision_id=str(OLD_UUID),
+        title="Replacement",
+        context="Context",
+        decision_made="Choice",
+        reasoning="Reason",
+    )
+
+    assert result.startswith("ok")
+    svc.supersede.assert_awaited_once()
 
 
 class TestBrainLogDecision:
@@ -226,6 +263,7 @@ class TestBrainSupersedeDecision:
             context="ctx",
             decision_made="new approach",
             reasoning="better",
+            project_key="brain-v42",
         )
 
         assert isinstance(result, str)
@@ -242,6 +280,7 @@ class TestBrainSupersedeDecision:
             context="C",
             decision_made="D",
             reasoning="R",
+            project_key="brain-v42",
         )
 
         old_id_arg = svc.supersede.call_args[0][0]

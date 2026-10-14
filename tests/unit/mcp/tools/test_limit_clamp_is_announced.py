@@ -49,6 +49,15 @@ class TestClampListLimit:
         assert value == 1
         assert notice, f"limit={asked} a été corrigé sans le dire"
 
+    def test_the_notices_are_written_in_english(self) -> None:
+        """LLM-facing search and list output is English (brain decision 5da112d1)."""
+        assert clamp_list_limit(500)[1] == (
+            "\n… (limit 500 requested, capped at 100 — use offset for the rest)"
+        )
+        assert clamp_list_limit(0)[1] == (
+            "\n… (limit 0 requested, raised to 1 — an empty page says nothing)"
+        )
+
     def test_the_cap_is_the_one_the_tools_actually_apply(self) -> None:
         """Positive control: a cap decoupled from the tools would guard nothing."""
         assert LIST_LIMIT_MAX == 100

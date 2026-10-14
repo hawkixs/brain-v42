@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from difflib import SequenceMatcher
-from typing import Annotated, Any, Literal, get_args
+from typing import Annotated, Any, Literal, cast, get_args
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -48,9 +48,103 @@ class _RequestAwareBM25SearchTransform(BM25SearchTransform):
     """Render a native catalog on request while keeping compact as the default."""
 
     def __init__(self, *, mcp: FastMCP, compact_by_default: bool, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
+        super().__init__(search_result_serializer=self._serialize_search_results, **kwargs)
         self._mcp = mcp
         self._compact_by_default = compact_by_default
+
+    @classmethod
+    def _short_type(cls, schema: dict[str, Any], root: dict[str, Any]) -> str:
+        ref = schema.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/$defs/"):
+            target = root.get("$defs", {}).get(ref.removeprefix("#/$defs/"))
+            if isinstance(target, dict):
+                return cls._short_type(target, root)
+        if "enum" in schema:
+            values = [str(value) for value in schema["enum"][:8]]
+            if len(schema["enum"]) > 8:
+                values.append("…")
+            return "|".join(values)
+        branches = schema.get("anyOf") or schema.get("oneOf")
+        if isinstance(branches, list):
+            non_null = [
+                branch
+                for branch in branches
+                if isinstance(branch, dict) and branch.get("type") != "null"
+            ]
+            if len(non_null) == 1:
+                return cls._short_type(non_null[0], root)
+            if not non_null:
+                return "any"
+            return " | ".join(cls._short_type(branch, root) for branch in non_null)
+        types = schema.get("type")
+        if isinstance(types, list):
+            non_null_types = [value for value in types if value != "null"]
+            if len(non_null_types) == 1:
+                types = non_null_types[0]
+            else:
+                return "any"
+        if isinstance(types, str):
+            return types
+        return "object"
+
+    @classmethod
+    def _serialize_search_results(cls, tools: Sequence[Tool]) -> list[dict[str, Any]]:
+        """Keep search results useful while omitting schemas and metadata clients do not need."""
+        summaries = []
+        for tool in tools:
+            schema = tool.parameters
+            required_names = set(schema.get("required", []))
+            properties = schema.get("properties", {})
+            description = next(
+                (line.strip() for line in (tool.description or "").splitlines() if line.strip()),
+                "",
+            )
+            summaries.append(
+                {
+                    "name": tool.name,
+                    "description": description[:160],
+                    "required": {
+                        name: cls._short_type(value, schema)
+                        for name, value in properties.items()
+                        if name in required_names
+                    },
+                    "optional": [name for name in properties if name not in required_names],
+                }
+            )
+        return summaries
+
+    def _make_search_tool(self) -> Tool:
+        """Add an authorized exact-name path without changing the search tool schema."""
+        transform = self
+
+        async def search_tools(
+            query: Annotated[str, "Natural language query to search for tools"],
+            ctx: Context = None,  # type: ignore[assignment]
+        ) -> str | list[dict[str, Any]]:
+            visible = await transform._get_visible_tools(ctx)
+            name = query.strip()
+            raw_names = {tool.name for tool in await transform._mcp._list_tools()}
+            target = name if name in raw_names else TOOL_NAME_ALIASES.get(name)
+            tool = next((item for item in visible if item.name == target), None)
+            if tool is not None:
+                return [
+                    {
+                        "name": tool.name,
+                        "description": tool.description or "",
+                        "input_schema": tool.parameters,
+                    }
+                ]
+            results = await transform._search(visible, query)
+            return cast("str | list[dict[str, Any]]", await transform._render_results(results))
+
+        # This gateway adds compact summaries, so its description differs from the base transform.
+        search_tools.__doc__ = (
+            "Search for tools using natural language.\n\n"
+            "Returns up to 5 matching tools ranked by relevance, each as a summary: name, one-line "
+            "description, required parameters with types, optional parameter names. Pass an exact "
+            "tool name to get that tool's full input schema."
+        )
+        return Tool.from_function(fn=search_tools, name=self._search_tool_name)
 
     def _family_authorizer(self) -> FamilyAuthorizationMiddleware | None:
         # HTTP planning installs this only in credentials mode, after transforms

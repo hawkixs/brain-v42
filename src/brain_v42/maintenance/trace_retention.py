@@ -8,8 +8,10 @@ import sys
 from collections.abc import Callable
 from datetime import timedelta
 
+from brain_v42.config import get_settings
 from brain_v42.db.engine import dispose_engine, get_session_factory
 from brain_v42.repositories.pg_trace_retention import PgTraceRetention, TraceRetentionReport
+from brain_v42.safe_logging import configure_cli_logging
 
 
 def _window(floor: int) -> Callable[[str], int]:
@@ -58,6 +60,7 @@ def _render(label: str, report: TraceRetentionReport) -> str:
 
 
 async def _run(args: argparse.Namespace) -> tuple[TraceRetentionReport, TraceRetentionReport]:
+    configure_cli_logging(get_settings().brain_log_format)
     try:
         retention = PgTraceRetention(get_session_factory())
         options = {

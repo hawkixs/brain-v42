@@ -6,16 +6,278 @@ All tests verify behavior without real HTTP calls.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
 
+from brain_v42.services.embedding_wire import OpenAIWire, ShimWire
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable, GPUEmbeddingService
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def _http_response(status: int, *, retry_after: str | None = None) -> httpx.Response:
+    return httpx.Response(
+        status,
+        request=httpx.Request("POST", "http://embed.test/embed/query"),
+        headers={"Retry-After": retry_after} if retry_after is not None else {},
+        json=[0.01] * 1536,
+    )
+
+
+class TestRateLimits:
+    @pytest.mark.parametrize("retry_after", ["3", "Thu, 01 Jan 1970 00:00:03 GMT"])
+    @pytest.mark.asyncio
+    async def test_retry_after_controls_the_delay(self, retry_after: str) -> None:
+        service = GPUEmbeddingService()
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.side_effect = [
+            _http_response(429, retry_after=retry_after),
+            _http_response(200),
+        ]
+        service._client = client
+        with (
+            patch("asyncio.sleep", new=AsyncMock()) as sleep,
+            patch("time.time", return_value=0.0),
+        ):
+            assert await service.embed("document") == [0.01] * 1536
+        sleep.assert_awaited_once_with(3.0)
+        assert client.post.await_count == 2
+
+    @pytest.mark.parametrize("retry_after", [None, "malformed"])
+    @pytest.mark.asyncio
+    async def test_missing_or_malformed_retry_after_uses_backoff(
+        self, retry_after: str | None
+    ) -> None:
+        service = GPUEmbeddingService()
+        client = AsyncMock(spec=httpx.AsyncClient)
+        limited = _http_response(429, retry_after=retry_after)
+        client.post.side_effect = [limited, limited, _http_response(200)]
+        service._client = client
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep:
+            await service.embed("document")
+        assert [call.args[0] for call in sleep.await_args_list] == [0.5, 1.0]
+
+    @pytest.mark.asyncio
+    async def test_retry_after_cannot_be_shortened_to_fit_the_remaining_budget(self) -> None:
+        service = GPUEmbeddingService(retry_budget_seconds=10.0)
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = _http_response(429, retry_after="3")
+        service._client = client
+        with (
+            patch("asyncio.sleep", new=AsyncMock()) as sleep,
+            patch("brain_v42.services.gpu_embedding_service.monotonic", side_effect=[0.0, 8.0]),
+            pytest.raises(EmbeddingUnavailable) as caught,
+        ):
+            await service.embed("document")
+        assert caught.value.kind == "rate_limited"
+        sleep.assert_not_awaited()
+        assert client.post.await_count == 1
+
+    @pytest.mark.parametrize("retry_after", ["3600", "inf"])
+    @pytest.mark.asyncio
+    async def test_unbudgeted_client_refuses_an_unbounded_cooldown(self, retry_after: str) -> None:
+        """Without a budget, a huge Retry-After must not park the caller indefinitely."""
+        service = GPUEmbeddingService()
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = _http_response(429, retry_after=retry_after)
+        service._client = client
+        with (
+            patch("asyncio.sleep", new=AsyncMock()) as sleep,
+            pytest.raises(EmbeddingUnavailable) as caught,
+        ):
+            await service.embed("document")
+        assert caught.value.kind == "rate_limited"
+        sleep.assert_not_awaited()
+        assert client.post.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_exhausted_rate_limits_keep_their_kind(self) -> None:
+        service = GPUEmbeddingService(max_retries=2)
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = _http_response(429)
+        service._client = client
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep:
+            with pytest.raises(EmbeddingUnavailable) as caught:
+                await service.embed("document")
+        assert caught.value.kind == "rate_limited"
+        assert client.post.await_count == 3
+        assert sleep.await_count == 2
+
+    @pytest.mark.parametrize("status", [400, 401])
+    @pytest.mark.asyncio
+    async def test_other_client_errors_still_fail_without_retry(self, status: int) -> None:
+        service = GPUEmbeddingService()
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = _http_response(status)
+        service._client = client
+        with patch("asyncio.sleep", new=AsyncMock()) as sleep:
+            with pytest.raises(EmbeddingUnavailable) as caught:
+                await service.embed("document")
+        assert caught.value.kind == "other"
+        assert client.post.await_count == 1
+        sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_retry_log_names_status_and_delay_without_headers(self) -> None:
+        from structlog.testing import capture_logs
+
+        service = GPUEmbeddingService()
+        response = _http_response(429, retry_after="3")
+        response.headers["X-Private"] = "private-header-sentinel"
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.side_effect = [response, _http_response(200)]
+        service._client = client
+        with capture_logs() as records, patch("asyncio.sleep", new=AsyncMock()):
+            await service.embed("document")
+        retry = next(r for r in records if r["event"] == "gpu_embedding_service.retry")
+        assert retry["status_code"] == 429
+        assert retry["backoff_seconds"] == 3.0
+        assert "private-header-sentinel" not in repr(records)
+
+
+class TestElapsedBudgets:
+    @pytest.mark.parametrize("method", ["embed", "embed_query", "embed_texts"])
+    @pytest.mark.asyncio
+    async def test_hanging_attempt_degrades_on_deadline(self, method: str) -> None:
+        service = GPUEmbeddingService(retry_budget_seconds=5.0)
+        client = AsyncMock(spec=httpx.AsyncClient)
+
+        async def hang(*args: object, **kwargs: object) -> httpx.Response:
+            await asyncio.get_running_loop().create_future()
+            raise AssertionError("the deadline must cancel the HTTP attempt")
+
+        client.post.side_effect = hang
+        service._client = client
+        real_timeout = asyncio.timeout
+        # Expire on the next loop turn instead of waiting for wall-clock seconds.
+        with patch("asyncio.timeout", side_effect=lambda delay: real_timeout(0)) as timeout:
+            with pytest.raises(EmbeddingUnavailable) as caught:
+                # wait_for is the guard: should the deadline envelope regress, the
+                # hanging attempt fails this test instead of stalling the job. It uses
+                # asyncio.timeouts.timeout internally, which the patch above leaves alone.
+                await asyncio.wait_for(
+                    getattr(service, method)(["document"] if method == "embed_texts" else "text"),
+                    timeout=2.0,
+                )
+        assert caught.value.kind == "deadline"
+        timeout.assert_called_once_with(5.0)
+        assert client.post.await_count == 1
+
+    @pytest.mark.parametrize("failure", ["connect", "timeout", "server", "gpu_busy"])
+    @pytest.mark.asyncio
+    async def test_backoff_cannot_cross_the_remaining_budget(self, failure: str) -> None:
+        service = GPUEmbeddingService(retry_budget_seconds=10.0)
+        client = AsyncMock(spec=httpx.AsyncClient)
+        if failure == "connect":
+            client.post.side_effect = httpx.ConnectError("refused")
+        elif failure == "timeout":
+            client.post.side_effect = httpx.ReadTimeout("read timeout")
+        else:
+            response = _http_response(500)
+            if failure == "gpu_busy":
+                response = httpx.Response(503, request=response.request, json={"error": "gpu_busy"})
+            client.post.return_value = response
+        service._client = client
+        with (
+            patch("asyncio.sleep", new=AsyncMock()) as sleep,
+            patch("brain_v42.services.gpu_embedding_service.monotonic", side_effect=[0.0, 9.8]),
+            pytest.raises(EmbeddingUnavailable) as caught,
+        ):
+            await service.embed("document")
+        assert caught.value.kind == "deadline"
+        sleep.assert_not_awaited()
+        assert client.post.await_count == 1
+
+    @pytest.mark.parametrize("method", ["embed", "embed_query", "embed_texts"])
+    @pytest.mark.asyncio
+    async def test_query_deadline_leaves_writes_the_longer_budget(self, method: str) -> None:
+        service = GPUEmbeddingService(retry_budget_seconds=60.0, query_deadline_seconds=8.0)
+        client = AsyncMock(spec=httpx.AsyncClient)
+        response = _http_response(200)
+        if method == "embed_texts":
+            response = httpx.Response(200, request=response.request, json=[[0.01] * 1536])
+        client.post.side_effect = [httpx.ConnectError("refused"), response]
+        service._client = client
+        with (
+            patch("asyncio.sleep", new=AsyncMock()) as sleep,
+            patch("brain_v42.services.gpu_embedding_service.monotonic", side_effect=[0.0, 7.8]),
+        ):
+            if method == "embed_query":
+                with pytest.raises(EmbeddingUnavailable) as caught:
+                    await service.embed_query("query")
+                assert caught.value.kind == "deadline"
+                sleep.assert_not_awaited()
+            else:
+                await getattr(service, method)(["document"] if method == "embed_texts" else "text")
+                sleep.assert_awaited_once_with(0.5)
+
+    @pytest.mark.parametrize(
+        ("write_budget", "query_deadline", "expected"),
+        [(3.0, 8.0, 3.0), (None, 8.0, 8.0), (3.0, None, 3.0), (None, None, None)],
+    )
+    @pytest.mark.asyncio
+    async def test_query_uses_the_shortest_configured_limit(
+        self, write_budget: float | None, query_deadline: float | None, expected: float | None
+    ) -> None:
+        service = GPUEmbeddingService(
+            retry_budget_seconds=write_budget, query_deadline_seconds=query_deadline
+        )
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = _http_response(200)
+        service._client = client
+        with patch("asyncio.timeout", wraps=asyncio.timeout) as timeout:
+            await service.embed_query("query")
+        timeout.assert_called_once_with(expected)
+
+
+class TestExpectedDimension:
+    @pytest.mark.parametrize("backend", ["shim", "openai"])
+    @pytest.mark.parametrize("method", ["embed", "embed_query", "embed_texts"])
+    @pytest.mark.parametrize("expected_dimension", [1536, None])
+    @pytest.mark.asyncio
+    async def test_wrong_size_vectors_degrade_only_when_dimension_is_configured(
+        self, backend: str, method: str, expected_dimension: int | None
+    ) -> None:
+        service = GPUEmbeddingService(
+            wire=OpenAIWire(model="m") if backend == "openai" else ShimWire(),
+            expected_dimension=expected_dimension,
+        )
+        wrong_vector = [1.0] + [0.0] * 1534
+        vectors = (
+            [[1.0] + [0.0] * 1535, wrong_vector] if method == "embed_texts" else [wrong_vector]
+        )
+        payload: object
+        if backend == "openai":
+            payload = {"data": [{"index": i, "embedding": v} for i, v in enumerate(vectors)]}
+        else:
+            payload = vectors if method == "embed_texts" else wrong_vector
+        client = AsyncMock(spec=httpx.AsyncClient)
+        client.post.return_value = httpx.Response(
+            200, request=httpx.Request("POST", "http://embed.test"), json=payload
+        )
+        service._client = client
+        call = getattr(service, method)
+        argument = ["first", "second"] if method == "embed_texts" else "text"
+        if expected_dimension is not None:
+            with pytest.raises(EmbeddingUnavailable, match="1535.*1536") as caught:
+                await call(argument)
+            assert caught.value.kind == "other"
+        else:
+            assert await call(argument) == (vectors if method == "embed_texts" else wrong_vector)
+        body = client.post.call_args.kwargs["json"]
+        if backend == "openai":
+            assert body == {
+                "model": "m",
+                "input": argument if isinstance(argument, list) else [argument],
+                "encoding_format": "float",
+            }
+        else:
+            assert body == ({"texts": argument} if method == "embed_texts" else {"text": argument})
 
 
 @pytest.fixture

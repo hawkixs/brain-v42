@@ -464,6 +464,35 @@ def test_access_token_parser_accepts_a3_claims_and_all_storable_families() -> No
     assert principal.families == frozenset({"read", "telemetry", "elevate"})
 
 
+def test_argument_guidance_is_outer_to_production_authorization_middleware() -> None:
+    from brain_v42.mcp.argument_guidance import ArgumentGuidanceMiddleware
+    from brain_v42.mcp.dream_capabilities import DreamCapabilityMiddleware
+    from tests.unit.mcp.test_dream_capability_http import (
+        FakeProjectResolver,
+        _registry_json,
+    )
+    from tests.unit.mcp.test_dream_capability_http import (
+        _settings as dream_settings,
+    )
+
+    credentials_server = server.create_mcp_instance()
+    server._configure_http_security(credentials_server, settings(), credential_verifier=MagicMock())
+    credential_kinds = [type(item) for item in credentials_server.middleware]
+    assert credential_kinds.index(ArgumentGuidanceMiddleware) < credential_kinds.index(
+        FamilyAuthorizationMiddleware
+    )
+
+    dream_server = server.create_mcp_instance()
+    dream_config = dream_settings(enforcement=True, registry=_registry_json())
+    server._configure_http_security(
+        dream_server, dream_config, project_resolver=FakeProjectResolver()
+    )
+    dream_kinds = [type(item) for item in dream_server.middleware]
+    assert dream_kinds.index(ArgumentGuidanceMiddleware) < dream_kinds.index(
+        DreamCapabilityMiddleware
+    )
+
+
 @pytest.mark.parametrize("profile", ["native", "compact"])
 async def test_http_family_denial_is_jsonrpc_200_and_token_rotation_uses_current_scopes(
     profile: ToolCatalogProfile,
