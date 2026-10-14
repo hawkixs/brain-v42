@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 import httpx
@@ -20,6 +23,24 @@ def client_over(handler, **kwargs):
         base_url="https://rerank.test", transport=httpx.MockTransport(handler)
     )
     return client
+
+
+@contextmanager
+def gc_paused() -> Iterator[None]:
+    """Keep a full garbage collection out of a wall-clock window.
+
+    A generation-2 collection triggered by earlier tests in the same shard can
+    take several hundred milliseconds on a hosted runner, longer than the
+    bounds measured here; it says nothing about the client's budget.
+    """
+    gc.collect()
+    was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        yield
+    finally:
+        if was_enabled:
+            gc.enable()
 
 
 def success() -> httpx.Response:
@@ -73,13 +94,15 @@ async def test_forever_busy_exhausts_bounded_retries(monkeypatch) -> None:
         return httpx.Response(429, headers={"Retry-After": "0"})
 
     client = client_over(handler, budget_seconds=0.02, max_retries=2, observer=observer)
-    started = time.monotonic()
-    try:
-        with pytest.raises(module.RerankBudgetExhausted):
-            await client.rerank("q", ["a"])
-    finally:
-        await client.close()
-    assert time.monotonic() - started < 0.07
+    with gc_paused():
+        started = time.monotonic()
+        try:
+            with pytest.raises(module.RerankBudgetExhausted):
+                await client.rerank("q", ["a"])
+        finally:
+            await client.close()
+        elapsed = time.monotonic() - started
+    assert elapsed < 0.07
     assert calls == 3
     assert observer.on_retry.call_count == 2
     assert observer.on_operation.call_args.args[:2] == ("cohere:m", "budget_exhausted")
@@ -121,15 +144,17 @@ async def test_stalled_transport_is_cancelled_at_deadline() -> None:
         return success()
 
     client = client_over(handler, budget_seconds=0.02, observer=observer)
-    started = time.monotonic()
-    try:
-        with pytest.raises(module.RerankBudgetExhausted) as caught:
-            await client.rerank("q", ["a"])
-    finally:
-        await client.close()
+    with gc_paused():
+        started = time.monotonic()
+        try:
+            with pytest.raises(module.RerankBudgetExhausted) as caught:
+                await client.rerank("q", ["a"])
+        finally:
+            await client.close()
+        elapsed = time.monotonic() - started
     assert isinstance(caught.value.__cause__, TimeoutError)
     assert cancelled
-    assert time.monotonic() - started < 0.07
+    assert elapsed < 0.07
     assert observer.on_operation.call_args.args[:2] == ("cohere:m", "budget_exhausted")
     assert observer.on_attempt.call_count == 1
 

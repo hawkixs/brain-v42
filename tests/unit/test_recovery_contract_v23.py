@@ -135,15 +135,9 @@ def test_v23_ships_no_acl_asset_because_065_grants_nothing() -> None:
     assert (RECOVERY / "brain-v42-v22-acl.sql").is_file()
 
 
-def test_current_binding_names_v23_and_pins_each_asset() -> None:
+def test_current_binding_has_moved_past_v23() -> None:
+    """v23 stays frozen for 065; the current 066 contract is v24."""
     current = json.loads((RECOVERY / "current.json").read_text())
-    assert current["contract_id"] == "brain-v42/postgresql-recovery/v23"
-    assert current["contract_version"] == 23
-    assert current["schema_head"] == "065"
-    for key, name in (
-        ("attestation_sql", "brain-v42-v23.sql"),
-        ("restored_attestation_sql", "brain-v42-v23-pgrestore.sql"),
-        ("manifest", "brain-v42-v23.json"),
-    ):
-        assert current[key]["path"] == f"ops/recovery/{name}"
-        assert current[key]["sha256"] == _sha256(name)
+    assert current["contract_version"] > 23
+    assert current["schema_head"] != "065"
+    assert "brain-v42-v23" not in json.dumps(current)

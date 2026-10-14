@@ -455,6 +455,8 @@ class BrainSessionService:
                 "allow_focus_shrink is an operator decision: a guard mod relay must carry the "
                 "durable base content over instead of overriding the shrink guard",
             )
+        if allow_focus_shrink:
+            await require_focus_shrink_override()
         if (expected_slot_revision is None) == (expected_focus_revision is None):
             raise FocusSlotError(
                 "relay_expects_one_revision",

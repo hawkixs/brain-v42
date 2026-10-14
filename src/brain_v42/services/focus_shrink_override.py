@@ -27,5 +27,5 @@ async def require_focus_shrink_override() -> None:
     if not await focus_shrink_override_allowed():
         raise FocusSlotError(
             "focus_shrink_override_refused",
-            "allow_focus_shrink requires a /brain-admin elevation or an operator relay",
+            "allow_focus_shrink requires an active /brain-admin elevation, on end or on an operator relay",
         )

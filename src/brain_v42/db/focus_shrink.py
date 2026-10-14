@@ -44,5 +44,5 @@ def focus_shrink_refusal(
         f"{target}, under the {FOCUS_SHRINK_FLOOR_PERCENT}% floor of {floor} characters. "
         f"It would drop {dropped} characters and keep {kept_percent:.1f}% of the current text. "
         f"This write REPLACES the whole {target}: carry the durable content over, or use "
-        "allow_focus_shrink=true with a /brain-admin elevation or an operator relay"
+        "allow_focus_shrink=true with an active /brain-admin elevation (end or operator relay)"
     )
