@@ -162,6 +162,10 @@ _RECOVERY_ASSETS_WITH_PREDICATE = frozenset(
         # tables; the project-key predicate is inherited unchanged.
         "brain-v42-v23.sql",
         "brain-v42-v23-pgrestore.sql",
+        # Added on 2026-10-14 by the v24 mint (066): knowledge lifecycle, seven new
+        # tables; the project-key predicate is inherited unchanged.
+        "brain-v42-v24.sql",
+        "brain-v42-v24-pgrestore.sql",
     }
 )
 
@@ -249,8 +253,9 @@ def test_every_recovery_attestation_asset_checks_the_python_source_of_truth(
 def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     """Non-vacuity guard: count the surfaces, so none escapes in silence.
 
-    FORTY-SIX guardians besides `_KEBAB` (1 metadata + 2 migrations + 43 assets) since
-    the v23 mint of 2026-10-13 — it was forty-four at the v22 mint, forty-two at the v21
+    FORTY-EIGHT guardians besides `_KEBAB` (1 metadata + 2 migrations + 45 assets) since
+    the v24 mint of 2026-10-14 — it was forty-six at the v23 mint of 2026-10-13,
+    forty-four at the v22 mint, forty-two at the v21
     mint of 2026-10-06, forty at the v20
     mint of 2026-10-05, thirty-eight at the v19 mint, thirty-six at the v18 mint of 2026-10-03,
     thirty-four at the v17 mint, thirty-three at the v16 mint of 2026-10-02,
@@ -277,9 +282,9 @@ def test_the_anchor_covers_every_live_enforcement_surface() -> None:
     )
     recovery_sites = sum(len(patterns) for patterns in _recovery_assets().values())
 
-    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 43), (
+    assert (metadata_sites, migration_sites, recovery_sites) == (1, 2, 45), (
         "la ventilation des surfaces d'application a changé "
         f"(métadonnées={metadata_sites}, migrations={migration_sites}, "
-        f"attestation={recovery_sites} ; attendu 1/2/43). Recenser avant de corriger le "
+        f"attestation={recovery_sites} ; attendu 1/2/45). Recenser avant de corriger le "
         "compte : c'est ce recensement qui a été faux trois fois."
     )

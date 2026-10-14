@@ -154,7 +154,7 @@ def test_v21_ships_no_acl_asset_because_063_grants_nothing() -> None:
 
 
 def test_current_binding_has_moved_past_v21() -> None:
-    """v21 is frozen for head 063; the binding moved on (v22 at 064, v23 at 065)."""
+    """v21 is frozen for head 063; the binding moved on (v22 at 064, v23 at 065, v24 at 066)."""
     current = json.loads((RECOVERY / "current.json").read_text())
     assert current["contract_version"] > 21
     assert current["schema_head"] != "063"
