@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+import pytest_asyncio
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,11 +19,235 @@ from brain_v42.mcp.dream_project_authorization import (
     bind_dream_project_scope,
 )
 from brain_v42.models.decision import DecisionCreate
+from brain_v42.repositories import pg_decision
 from brain_v42.repositories.pg_consolidation_log import PgConsolidationLogRepo
 from brain_v42.repositories.pg_decision import PgDecisionRepo
+from brain_v42.services import consolidation
 from brain_v42.services.consolidation import ConsolidationJob
 
 pytestmark = pytest.mark.integration
+
+
+@pytest_asyncio.fixture
+async def merge_project(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> AsyncIterator[str]:
+    """Remove only this test's rows so concurrent shared-database runs stay isolated."""
+    project_key = f"integ-merge-supersede-{uuid4().hex[:12]}"
+    try:
+        yield project_key
+    finally:
+        async with session_factory() as session:
+            ids = list(
+                (
+                    await session.execute(
+                        sa.select(decisions.c.id).where(
+                            decisions.c.project_key.in_([project_key, f"{project_key}-foreign"])
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        await _cleanup_postgres(session_factory, ids)
+
+
+@pytest.mark.asyncio
+async def test_real_merge_flattens_two_children_and_audits_each(
+    session_factory: async_sessionmaker[AsyncSession],
+    merge_project: str,
+) -> None:
+    repo = PgDecisionRepo(session_factory)
+    source, target, first, second = [
+        await _create_decision(repo, project_key=merge_project, title=title, tags=[])
+        for title in ("Source", "Target", "First child", "Second child")
+    ]
+    job = ConsolidationJob(session_factory, PgConsolidationLogRepo(session_factory))
+    await job.merge("decision", first, source)
+    await job.merge("decision", second, source)
+
+    await job.merge("decision", source, target)
+
+    async with session_factory() as observer:
+        rows = (
+            (
+                await observer.execute(
+                    sa.select(decisions).where(decisions.c.project_key == merge_project)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert {row["merged_into"] for row in rows if row["id"] != target} == {target}
+        parent = decisions.alias("parent")
+        chains = (
+            await observer.execute(
+                sa.select(sa.func.count())
+                .select_from(decisions.join(parent, decisions.c.merged_into == parent.c.id))
+                .where(decisions.c.project_key == merge_project, parent.c.merged_into.is_not(None))
+            )
+        ).scalar_one()
+        assert chains == 0
+        audits = (
+            (
+                await observer.execute(
+                    sa.select(consolidation_log).where(
+                        consolidation_log.c.source_id.in_([first, second]),
+                        consolidation_log.c.target_id == target,
+                        consolidation_log.c.action == "repointed",
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert {row["source_id"] for row in audits} == {first, second}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("endpoint", ["source", "target"])
+async def test_real_merged_endpoint_rejection_preserves_rows_and_audit(
+    session_factory: async_sessionmaker[AsyncSession],
+    merge_project: str,
+    endpoint: str,
+) -> None:
+    repo = PgDecisionRepo(session_factory)
+    source, target, survivor = [
+        await _create_decision(repo, project_key=merge_project, title=title, tags=[])
+        for title in ("Source", "Target", "Survivor")
+    ]
+    job = ConsolidationJob(session_factory, PgConsolidationLogRepo(session_factory))
+    await job.merge("decision", source if endpoint == "source" else target, survivor)
+    before = [item.model_dump() for item in await repo.list_all(project_key=merge_project)]
+
+    with pytest.raises(consolidation.ConsolidationEndpointMergedError):
+        await job.merge("decision", source, target)
+
+    after = [item.model_dump() for item in await repo.list_all(project_key=merge_project)]
+    assert after == before
+    async with session_factory() as observer:
+        assert (
+            await observer.execute(
+                sa.select(sa.func.count())
+                .select_from(consolidation_log)
+                .where(consolidation_log.c.source_id.in_([source, target]))
+            )
+        ).scalar_one() == 1
+
+
+@pytest.mark.asyncio
+async def test_real_child_audit_failure_rolls_back_the_entire_merge(
+    session_factory: async_sessionmaker[AsyncSession],
+    merge_project: str,
+) -> None:
+    repo = PgDecisionRepo(session_factory)
+    source, target, child = [
+        await _create_decision(repo, project_key=merge_project, title=title, tags=[])
+        for title in ("Source", "Target", "Child")
+    ]
+    log_repo = PgConsolidationLogRepo(session_factory)
+    await ConsolidationJob(session_factory, log_repo).merge("decision", child, source)
+    before = [item.model_dump() for item in await repo.list_all(project_key=merge_project)]
+
+    class FailChildAudit(PgConsolidationLogRepo):
+        """Fail after the child audit to prove it shares the entity transaction."""
+
+        async def log_action_in_session(
+            self,
+            session: AsyncSession,
+            *,
+            source_id: UUID,
+            target_id: UUID,
+            entity_type: str,
+            similarity: float,
+            action: str,
+        ) -> None:
+            await super().log_action_in_session(
+                session,
+                source_id=source_id,
+                target_id=target_id,
+                entity_type=entity_type,
+                similarity=similarity,
+                action=action,
+            )
+            if action == "repointed":
+                raise RuntimeError("injected child audit failure")
+
+    job = ConsolidationJob(session_factory, FailChildAudit(session_factory))
+    with pytest.raises(RuntimeError, match="injected child audit failure"):
+        await job.merge("decision", source, target)
+
+    assert [item.model_dump() for item in await repo.list_all(project_key=merge_project)] == before
+    async with session_factory() as observer:
+        assert (
+            await observer.execute(
+                sa.select(sa.func.count())
+                .select_from(consolidation_log)
+                .where(
+                    consolidation_log.c.source_id.in_([source, child]),
+                    consolidation_log.c.target_id == target,
+                )
+            )
+        ).scalar_one() == 0
+
+
+@pytest.mark.asyncio
+# No "foreign" case: cross-project supersession exists in production (2 of 56
+# rows on 2026-10-13, both project renames); restricting it is an operator decision.
+@pytest.mark.parametrize("invalid_old", ["missing", "superseded"])
+async def test_real_supersede_rejection_rolls_back_replacement(
+    session_factory: async_sessionmaker[AsyncSession],
+    merge_project: str,
+    invalid_old: str,
+) -> None:
+    repo = PgDecisionRepo(session_factory)
+    old_id = uuid4()
+    old_project = merge_project
+    if invalid_old != "missing":
+        old_id = await _create_decision(repo, project_key=old_project, title="Old", tags=[])
+        if invalid_old == "superseded":
+            async with session_factory() as session:
+                await session.execute(
+                    sa.update(decisions).where(decisions.c.id == old_id).values(status="superseded")
+                )
+                await session.commit()
+    before = await repo.get_by_id(old_id)
+    data = DecisionCreate(
+        title="Replacement", description="Context", reasoning="Reason", project_key=merge_project
+    )
+
+    with pytest.raises(pg_decision.DecisionNotSupersedableError):
+        await repo.supersede(old_id, data)
+
+    assert await repo.get_by_id(old_id) == before
+    async with session_factory() as observer:
+        assert (
+            await observer.execute(
+                sa.select(sa.func.count())
+                .select_from(decisions)
+                .where(decisions.c.project_key == merge_project, decisions.c.title == "Replacement")
+            )
+        ).scalar_one() == 0
+
+
+@pytest.mark.asyncio
+async def test_real_valid_supersede_updates_exactly_one_old_decision(
+    session_factory: async_sessionmaker[AsyncSession],
+    merge_project: str,
+) -> None:
+    repo = PgDecisionRepo(session_factory)
+    old_id = await _create_decision(repo, project_key=merge_project, title="Old", tags=[])
+    data = DecisionCreate(
+        title="Replacement", description="Context", reasoning="Reason", project_key=merge_project
+    )
+
+    replacement = await repo.supersede(old_id, data)
+
+    old = await repo.get_by_id(old_id)
+    assert old is not None
+    assert old.status == "superseded"
+    assert old.superseded_by == replacement.id
+    assert replacement.project_key == merge_project
 
 
 class _MockMCP:

@@ -37,6 +37,7 @@ from uuid import uuid4
 import pytest
 
 from brain_v42.models.decision import Decision, DecisionCreate, DecisionUpdate
+from brain_v42.repositories import pg_decision
 from brain_v42.repositories.pg_decision import PgDecisionRepo
 
 # ---------------------------------------------------------------------------
@@ -106,6 +107,9 @@ def _make_mock_session(
     session.begin = MagicMock()
     session.begin.return_value.__aenter__ = AsyncMock(return_value=None)
     session.begin.return_value.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock()
+    session.begin_nested.return_value.__aenter__ = AsyncMock(return_value=None)
+    session.begin_nested.return_value.__aexit__ = AsyncMock(return_value=False)
 
     return session
 
@@ -688,6 +692,7 @@ class TestSupersede:
         """supersede() creates new decision and marks old as superseded; returns new Decision."""
         new_row = _make_decision_row(id=NEW_UUID, title="New Decision", status="active")
         session = _make_mock_session(row=new_row)
+        session.execute.return_value.scalars.return_value.all.return_value = [OLD_UUID]
         repo = PgDecisionRepo()
 
         with pytest.MonkeyPatch.context() as m:
@@ -706,6 +711,62 @@ class TestSupersede:
         assert session.execute.call_count == 2
         # Write path: transaction() uses begin() context manager — no explicit commit.
         session.begin.return_value.__aexit__.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_supersede_requires_exactly_one_old_decision(self) -> None:
+        session = _make_mock_session(row=_make_decision_row(id=NEW_UUID))
+        session.execute.return_value.scalars.return_value.all.return_value = []
+        repo = PgDecisionRepo()
+        data = DecisionCreate(
+            title="Replacement", description="Context", reasoning="Reason", project_key="test-proj"
+        )
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(repo, "get_session", lambda: _mock_get_session(session))
+            with pytest.raises(pg_decision.DecisionNotSupersedableError):
+                await repo.supersede(OLD_UUID, data)
+
+        exit_args = session.begin.return_value.__aexit__.await_args.args
+        assert exit_args[0] is pg_decision.DecisionNotSupersedableError
+        session.commit.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unscoped_supersede_still_writes(self) -> None:
+        """An unscoped replacement of an unscoped decision is a supported path."""
+        session = _make_mock_session(row=_make_decision_row(id=NEW_UUID))
+        session.execute.return_value.scalars.return_value.all.return_value = [OLD_UUID]
+        repo = PgDecisionRepo()
+        data = DecisionCreate(title="Replacement", description="Context", reasoning="Reason")
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(repo, "get_session", lambda: _mock_get_session(session))
+            result = await repo.supersede(OLD_UUID, data)
+
+        assert result.id == NEW_UUID
+        assert session.execute.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_supersede_filters_old_decision_by_status_only(self) -> None:
+        session = _make_mock_session(row=_make_decision_row(id=NEW_UUID))
+        session.execute.return_value.scalars.return_value.all.return_value = [OLD_UUID]
+        repo = PgDecisionRepo()
+        data = DecisionCreate(
+            title="Replacement", description="Context", reasoning="Reason", project_key="test-proj"
+        )
+
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(repo, "get_session", lambda: _mock_get_session(session))
+            await repo.supersede(OLD_UUID, data)
+
+        statement = session.execute.await_args_list[1].args[0]
+        sql = str(statement)
+        # No project predicate: cross-project supersession exists in production
+        # (2 of 56 rows on 2026-10-13) and restricting it is an operator decision.
+        where = sql.split("WHERE", 1)[1]
+        assert "project_key" not in where
+        assert "decisions.status !=" in sql
+        assert "RETURNING decisions.id" in sql
+        assert "superseded" in statement.compile().params.values()
 
 
 # ---------------------------------------------------------------------------
