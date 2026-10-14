@@ -26,6 +26,208 @@ from brain_v42.mcp.tool_families import (
 from tests.unit.mcp.test_credentials_http_wiring import settings
 
 
+def _scoped_access(*families: str, projects: object = ("red-shrik:agent-a",)) -> AccessToken:
+    access = _access(*families)
+    access.claims["allowed_projects"] = projects
+    return access
+
+
+@pytest.mark.parametrize("projects", [None, ["brain-v42", "red-shrik:agent-a"]])
+def test_project_scope_claim_resolves_without_changing_existing_rights(projects: object) -> None:
+    principal = resolve_client_principal(_scoped_access("read", "write", projects=projects))
+    assert principal is not None
+    assert principal.families == frozenset({"read", "write"})
+    assert principal.allowed_projects == (None if projects is None else tuple(projects))
+
+
+@pytest.mark.parametrize(
+    "projects",
+    [[], ["brain"], ["brain_v42"], ["Bad"], ["a" * 51], ["a", "a"], [None], "a", ["a\n"]],
+)
+def test_malformed_project_scope_claim_grants_nothing(projects: object) -> None:
+    assert resolve_client_principal(_scoped_access("write", projects=projects)) is None
+
+
+@pytest.mark.parametrize("family", ["read", "write", "delivery", "admin"])
+async def test_null_scope_retains_every_existing_tool_family(
+    monkeypatch: pytest.MonkeyPatch, family: str
+) -> None:
+    access = _scoped_access("read", "write", "delivery", projects=None)
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: access)
+    monkeypatch.setattr(tool_families, "get_http_headers", lambda **kw: {"mcp-session-id": "c"})
+    middleware = FamilyAuthorizationMiddleware(elevation_checker=AsyncMock(return_value=True))
+    for name, tool_family in TOOL_FAMILIES.items():
+        if tool_family == family:
+            handler = AsyncMock(return_value="unchanged")
+            assert (
+                await middleware.on_call_tool(
+                    SimpleNamespace(message=SimpleNamespace(name=name, arguments={})), handler
+                )
+                == "unchanged"
+            )
+            handler.assert_awaited_once()
+
+
+@pytest.mark.parametrize("profile", ["native", "compact"])
+@pytest.mark.parametrize("project", ["red-shrik:agent-a", "brain_v42", "brain"])
+async def test_scoped_writer_can_update_only_exact_canonical_focus(
+    monkeypatch: pytest.MonkeyPatch, profile: ToolCatalogProfile, project: str
+) -> None:
+    access = _scoped_access("write", projects=["red-shrik:agent-a", "brain-v42"])
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: access)
+    mcp = _small_server()
+
+    @mcp.tool
+    async def brain_update_project_focus(project_key: str) -> str:
+        """Update own project focus."""
+        return project_key
+
+    apply_tool_catalog_profile(mcp, profile)
+    async with Client(mcp) as client:
+        if profile == "native":
+            assert "brain_update_project_focus" in {t.name for t in await client.list_tools()}
+        else:
+            found = await client.call_tool("brain_find_tool", {"query": "update own project focus"})
+            assert "brain_update_project_focus" in {t["name"] for t in found.data}
+        name = "brain_update_project_focus" if profile == "native" else "brain_call_tool"
+        arguments = {"project_key": project}
+        if profile == "compact":
+            arguments = {"name": "brain_update_project_focus", "arguments": arguments}
+        assert (await client.call_tool(name, arguments)).data == project
+    assert refusal_counts() == {}
+
+
+@pytest.mark.parametrize("profile", ["native", "compact"])
+@pytest.mark.parametrize(
+    "arguments,reason",
+    [
+        ({"project_key": "red-shrik:agent-a:child"}, "family_denied"),
+        ({"project_key": "red-shrik"}, "family_denied"),
+        ({"project_key": "other"}, "family_denied"),
+        ({"project_key": "Bad"}, "family_denied"),
+        ({}, "family_denied"),
+        (
+            {"project_key": "red-shrik:agent-a", "blockers": ["blocked"]},
+            "focus_side_effect_refused",
+        ),
+        ({"project_key": "red-shrik:agent-a", "blockers": []}, "focus_side_effect_refused"),
+        ({"project_key": "red-shrik:agent-a", "feature_status": {}}, "focus_side_effect_refused"),
+        ({"project_key": "red-shrik:agent-a", "unpin": []}, "focus_side_effect_refused"),
+    ],
+)
+async def test_scoped_focus_refusal_precedes_handler_in_both_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    profile: ToolCatalogProfile,
+    arguments: dict[str, object],
+    reason: str,
+) -> None:
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: _scoped_access("write"))
+    calls: list[str] = []
+    mcp = _small_server()
+
+    @mcp.tool
+    async def brain_update_project_focus(
+        project_key: str,
+        blockers: list[str] | None = None,
+        feature_status: dict[str, str] | None = None,
+        unpin: list[str] | None = None,
+    ) -> str:
+        calls.append(project_key)
+        return "written"
+
+    apply_tool_catalog_profile(mcp, profile)
+    async with Client(mcp) as client:
+        name = "brain_update_project_focus" if profile == "native" else "brain_call_tool"
+        if profile == "compact":
+            arguments = {"name": "brain_update_project_focus", "arguments": arguments}
+        result = await client.call_tool(name, arguments, raise_on_error=False)
+        assert result.is_error
+        assert reason in str(result.content)
+    assert calls == []
+    assert refusal_counts() == {reason: 1}
+
+
+@pytest.mark.parametrize("profile", ["native", "compact"])
+@pytest.mark.parametrize("field", ["blockers", "feature_status", "unpin"])
+async def test_scoped_focus_permits_explicit_null_optional_arguments_in_both_paths(
+    monkeypatch: pytest.MonkeyPatch, profile: ToolCatalogProfile, field: str
+) -> None:
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: _scoped_access("write"))
+    calls: list[str] = []
+    mcp = _small_server()
+
+    @mcp.tool
+    async def brain_update_project_focus(
+        project_key: str,
+        blockers: list[str] | None = None,
+        feature_status: dict[str, str] | None = None,
+        unpin: list[str] | None = None,
+    ) -> str:
+        calls.append(project_key)
+        assert blockers is feature_status is unpin is None
+        return "written"
+
+    apply_tool_catalog_profile(mcp, profile)
+    arguments: dict[str, object] = {"project_key": "red-shrik:agent-a", field: None}
+    name = "brain_update_project_focus" if profile == "native" else "brain_call_tool"
+    if profile == "compact":
+        arguments = {"name": "brain_update_project_focus", "arguments": arguments}
+    async with Client(mcp) as client:
+        assert (await client.call_tool(name, arguments)).data == "written"
+    assert calls == ["red-shrik:agent-a"]
+    assert refusal_counts() == {}
+
+
+@pytest.mark.parametrize("families,projects", [("read", ["red-shrik:agent-a"]), ("write", None)])
+async def test_scope_alone_and_unscoped_write_grant_no_focus(
+    monkeypatch: pytest.MonkeyPatch, families: str, projects: object
+) -> None:
+    monkeypatch.setattr(
+        tool_families, "get_access_token", lambda: _scoped_access(families, projects=projects)
+    )
+    middleware = FamilyAuthorizationMiddleware()
+    assert not await middleware.allows_current_tool("brain_update_project_focus")
+    assert not await middleware.allows_current_tool("brain_set_project_context")
+    assert await middleware.allows_current_tool("brain_project_focus_get") == (families == "read")
+
+
+@pytest.mark.parametrize("profile", ["native", "compact"])
+async def test_own_focus_shrink_still_requires_existing_elevation(
+    monkeypatch: pytest.MonkeyPatch, profile: ToolCatalogProfile
+) -> None:
+    from brain_v42.mcp.tools.project_context_tools import register_project_context_tools
+    from brain_v42.services import focus_shrink_override
+
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: _scoped_access("write"))
+    lookup = AsyncMock(return_value=False)
+    monkeypatch.setattr(focus_shrink_override, "get_current_principal", lambda: "reader")
+    monkeypatch.setattr(focus_shrink_override, "get_current_transport", lambda: "c")
+    monkeypatch.setattr(
+        focus_shrink_override,
+        "PgClientCredentialRepo",
+        lambda: SimpleNamespace(has_active_elevation=lookup),
+    )
+    roadmap = MagicMock(update_project_focus=AsyncMock())
+    mcp = _small_server()
+    register_project_context_tools(mcp, MagicMock(), roadmap_svc=roadmap)
+    apply_tool_catalog_profile(mcp, profile)
+    arguments = {
+        "project_key": "red-shrik:agent-a",
+        "current_focus": "focus",
+        "expected_focus_revision": 0,
+        "allow_focus_shrink": True,
+    }
+    name = "brain_update_project_focus" if profile == "native" else "brain_call_tool"
+    if profile == "compact":
+        arguments = {"name": "brain_update_project_focus", "arguments": arguments}
+    async with Client(mcp) as client:
+        result = await client.call_tool(name, arguments, raise_on_error=False)
+        assert "focus_shrink_override_refused" in str(result.content)
+    roadmap.update_project_focus.assert_not_awaited()
+    lookup.assert_awaited_once()
+    assert lookup.await_args.args[:2] == ("c", "reader")
+
+
 def _access(*families: str, client_id: str = "reader") -> AccessToken:
     return AccessToken(
         token="",
@@ -462,6 +664,34 @@ def test_access_token_parser_accepts_a3_claims_and_all_storable_families() -> No
     assert principal is not None
     assert principal.client_id == "reader"
     assert principal.families == frozenset({"read", "telemetry", "elevate"})
+    assert principal.allowed_projects is None
+
+
+@pytest.mark.parametrize("projects", [None, ["red-shrik:agent-a"]])
+async def test_admin_elevation_retains_focus_and_roadmap_rights(
+    monkeypatch: pytest.MonkeyPatch, projects: object
+) -> None:
+    monkeypatch.setattr(
+        tool_families, "get_access_token", lambda: _scoped_access("write", projects=projects)
+    )
+    monkeypatch.setattr(tool_families, "get_http_headers", lambda **kw: {"mcp-session-id": "c"})
+    checker = AsyncMock(return_value=True)
+    middleware = FamilyAuthorizationMiddleware(elevation_checker=checker)
+    handler = AsyncMock(return_value="written")
+    assert (
+        await middleware.on_call_tool(
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    name="brain_update_project_focus",
+                    arguments={"project_key": "other", "blockers": ["blocked"]},
+                )
+            ),
+            handler,
+        )
+        == "written"
+    )
+    handler.assert_awaited_once()
+    checker.assert_awaited_once()
 
 
 def test_argument_guidance_is_outer_to_production_authorization_middleware() -> None:

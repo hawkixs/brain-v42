@@ -143,6 +143,11 @@ class CredentialTokenVerifier(TokenVerifier):
             claims={
                 "credential_id": str(principal.credential_id),
                 "issuers": sorted(principal.issuers),
+                **(
+                    {"allowed_projects": sorted(principal.allowed_projects)}
+                    if principal.allowed_projects is not None
+                    else {}
+                ),
             },
         )
 

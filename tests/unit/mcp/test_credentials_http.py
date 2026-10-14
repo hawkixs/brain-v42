@@ -90,6 +90,31 @@ async def test_adapter_returns_secret_free_verified_claims() -> None:
     assert sha256(TOKEN.encode()).hexdigest() not in access.model_dump_json()
 
 
+async def test_adapter_carries_project_scope_into_the_tool_principal() -> None:
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from brain_v42.mcp.client_principal import resolve_client_principal
+    from brain_v42.mcp.credentials_http import CredentialTokenVerifier
+
+    registry = SimpleNamespace(
+        verify=AsyncMock(
+            return_value=SimpleNamespace(
+                client_id="red-rail",
+                families=frozenset({"write"}),
+                issuers=frozenset(),
+                credential_id=ROW_ID,
+                expires_at=None,
+                allowed_projects=frozenset({"red-shrik:agent-a"}),
+            )
+        )
+    )
+    access = await CredentialTokenVerifier(registry).verify_token("test-token")
+    principal = resolve_client_principal(access)
+    assert principal is not None
+    assert principal.allowed_projects == ("red-shrik:agent-a",)
+
+
 async def test_adapter_refusal_is_none_without_a_second_observation() -> None:
     from brain_v42.mcp.credentials_http import CredentialTokenVerifier
 

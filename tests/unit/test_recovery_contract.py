@@ -316,7 +316,10 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # Re-read at 065: two new tables (`programmes`, `programme_gates`) whose only
     # links to the 031 schema are child foreign keys to `project_contexts`; no
     # column, CHECK or index of an existing table moves. The SET moves, below.
-    assert script.get_heads() == ["066"]
+    # Re-read at 067: credential scope adds only a column and an inline CHECK on the
+    # post-contract credential registry and widens its audit vocabulary; the 031
+    # footprint is unchanged.
+    assert script.get_heads() == ["067"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim
