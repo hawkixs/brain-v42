@@ -633,13 +633,16 @@ class PgKnowledgeLifecycleRepo:
             and entity_type in {"decisions", "adrs"}
             and "successor_exists" not in row
         ):
-            table = _TABLES[entity_type]
+            entry_table = _TABLES[entity_type]
             predicate = (
-                table.c.id == successor
+                entry_table.c.id == successor
                 if entity_type == "decisions"
-                else sa.and_(table.c.number == successor, table.c.project_key == row["project_key"])
+                else sa.and_(
+                    entry_table.c.number == successor,
+                    entry_table.c.project_key == row["project_key"],
+                )
             )
-            query = sa.select(table.c.created_at).where(predicate)
+            query = sa.select(entry_table.c.created_at).where(predicate)
             if lock_successor:
                 query = query.with_for_update(read=True)
             successor_row = (await conn.execute(query)).one_or_none()
@@ -665,7 +668,7 @@ class PgKnowledgeLifecycleRepo:
         Timeout overrides allow bounded waits; ApplyDeferred requires rollback
         of the caller's transaction or enclosing savepoint before continuing.
         """
-        table = _TABLES[entity_type]
+        entry_table = _TABLES[entity_type]
         async with _defer_apply_timeouts():
             if _set_timeouts:
                 await conn.execute(
@@ -678,8 +681,8 @@ class PgKnowledgeLifecycleRepo:
                 )
             row = await _row(
                 conn,
-                sa.select(*(table.c[name] for name in _entry_columns(entity_type)))
-                .where(table.c.id == entity_id)
+                sa.select(*(entry_table.c[name] for name in _entry_columns(entity_type)))
+                .where(entry_table.c.id == entity_id)
                 .with_for_update(),
             )
             if row is None:
