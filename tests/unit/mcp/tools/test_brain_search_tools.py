@@ -69,6 +69,25 @@ async def test_brain_search_logs_resolved_backend_default(grouped: bool) -> None
     assert event["rerank_identity"] == "cohere:voyageai/rerank-3-lite"
 
 
+@pytest.mark.parametrize("grouped", [False, True])
+async def test_brain_search_logs_failed_types_and_graph_degradation(grouped: bool) -> None:
+    """The structured log is the only place a graph enrichment failure is visible."""
+    mcp, mock_svc = _make_mcp_with_brain_svc()
+    diagnostics = _make_diagnostics(degraded=True, failed_types=["learning"], graph_degraded=True)
+    mock_svc.search = AsyncMock(return_value=_make_search_response(diagnostics=diagnostics))
+    mock_svc.what_do_i_know_about = AsyncMock(
+        return_value=_make_what_do_i_know_response(diagnostics=diagnostics)
+    )
+    fn = await _get_tool_fn(mcp, "brain_search")
+    with capture_logs() as logs:
+        await fn(query="test", group_by_type=grouped)
+
+    event_name = "mcp.brain_search.grouped" if grouped else "mcp.brain_search"
+    event = next(log for log in logs if log["event"] == event_name)
+    assert event["failed_types"] == ["learning"]
+    assert event["graph_degraded"] is True
+
+
 _FAKE_ITEMS: dict[str, dict] = {
     "learning": {
         "id": str(uuid4()),

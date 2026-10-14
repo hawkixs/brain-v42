@@ -34,6 +34,8 @@ class RerankChain:
     ) -> None:
         if not is_hosted_wire(primary._wire) or not is_hosted_wire(fallback._wire):
             raise ValueError("RerankChain requires hosted rerank wires for both links")
+        if not is_calibrated(primary.calibration.identity):
+            raise ValueError("RerankChain requires primary identity to be calibrated")
         if not is_calibrated(fallback.calibration.identity):
             raise ValueError("rerank_fallback_model requires a calibrated identity")
         if not 0 < primary_budget < overall_budget:

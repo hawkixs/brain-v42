@@ -1,0 +1,45 @@
+{
+  "digest": "sha256:19660c5195146f3967cd35a26451750a6da1b91ca091093005a76b55d0f64c46",
+  "idempotency_key": "review_verdict:8582583fd3ec3e7a8ec344850d8843ccc95954d2:115134931775",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115134931775,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "test_registered_tool_publishes_read_only_five_field_output_schema is defined as an async coroutine awaiting server.get_tool(), but unlike the other async test functions in this test module, it omits the @pytest.mark.asyncio decorator.",
+          "file": "tests/unit/mcp/tools/test_project_focus_read_tools.py",
+          "id": "F-369-1",
+          "line": 81,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Missing @pytest.mark.asyncio decorator on async test"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 369,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "8582583fd3ec3e7a8ec344850d8843ccc95954d2",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T04:51:52.877870Z",
+  "schema_version": 1
+}

@@ -152,7 +152,7 @@ async def test_vector_binds_the_embedding() -> None:
     svc = _service()
     captured: dict[str, Any] = {}
 
-    async def fake_execute(sql: str, params: dict[str, Any]) -> list[Any]:
+    async def fake_execute(sql: str, params: dict[str, Any], **_kwargs: Any) -> list[Any]:
         captured["sql"] = sql
         captured["params"] = params
         return []

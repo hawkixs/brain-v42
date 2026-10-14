@@ -453,12 +453,13 @@ class DeliveryService:
         work: str | None = None,
         blocker: str | None = None,
         stage: str | None = None,
+        ticket_id: str | None = None,
     ) -> DeliveryPage:
         if type(limit) is not int or not 1 <= limit <= 100:
             raise DeliveryError("invalid_limit", "limit must be between 1 and 100")
         try:
             filters = DeliveryListFilters.model_validate(
-                {"work": work, "blocker": blocker, "stage": stage}
+                {"work": work, "blocker": blocker, "stage": stage, "ticket_id": ticket_id}
             )
         except ValidationError:
             raise DeliveryError("invalid_filter", "delivery filters are invalid") from None

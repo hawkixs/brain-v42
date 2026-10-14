@@ -489,9 +489,9 @@ All are optional via settings (`metrics_enabled`, `decay_enabled`, `graph_enable
 
 | Marker | Condition | Banner text |
 |--------|-----------|-------------|
-| `fts_fallback` | GPU embedding service down — only FTS results | "degraded: embedding service indisponible — résultats FTS uniquement (ordre textuel)" |
-| `rrf_fallback` | Reranker down — RRF rank-based scores instead of cross-encoder | "degraded: reranker indisponible — ordre RRF (pas de re-scoring cross-encoder)" |
-| `rrf_only` | No reranker configured | "note: reranker non configuré — ordre RRF (pas de re-scoring cross-encoder)" |
+| `fts_fallback` | GPU embedding service down — only FTS results | "degraded: embedding service unavailable — FTS results only (text order)" |
+| `rrf_fallback` | Reranker down — RRF rank-based scores instead of cross-encoder | "degraded: reranker unavailable — RRF order (no cross-encoder re-scoring)" |
+| `rrf_only` | No reranker configured | "note: reranker not configured — RRF order (no cross-encoder re-scoring)" |
 
 `min_score` filtering is disabled in degraded mode to avoid silently dropping all results when scores are RRF-based rather than semantic.
 

@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:7ecdb9a1bef29228942cf68fd467874fd037c5b9464920a65405a453feffa525",
+  "idempotency_key": "review_verdict:3a44775a0961bf6f2b8f2f8e4e3871e8a2fb35c0:115439386638",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115439386638,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The diff contains only pyproject.toml and README.md, while the description states 'Changes: pyproject.toml, uv.lock (version only), README.md'. Check whether uv.lock's version field actually reads 0.6.16 (or whether the diff was truncated before it): if it still reads 0.6.15, the uv version parity h",
+          "file": "uv.lock",
+          "id": "F-411-1",
+          "line": null,
+          "severity": "important",
+          "status": "still_open",
+          "title": "uv.lock change claimed in description but absent from the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The reworded sentence asserts the fence sits between slot opening and 'the receipt-triggered automatic slot closure', that redaction covers 'exception messages' in standard-library console logs, and drops the description's 'advisory' qualifier on the fence; the implementations (#396, #394) are outsi",
+          "file": "README.md",
+          "id": "F-411-2",
+          "line": 5,
+          "severity": "minor",
+          "status": "new",
+          "title": "Release-summary glosses more specific than the diff can substantiate"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "not_reviewed": [],
+      "pr": 411,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "3a44775a0961bf6f2b8f2f8e4e3871e8a2fb35c0",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T17:28:35.712057Z",
+  "schema_version": 1
+}

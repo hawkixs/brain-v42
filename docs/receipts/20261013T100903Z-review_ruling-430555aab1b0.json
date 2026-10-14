@@ -1,0 +1,19 @@
+{
+  "digest": "sha256:430555aab1b0fc9537bdc3d02d5cb213647719b541d023a39537405b65d83ced",
+  "idempotency_key": "review_ruling:hawkixs/brain-v42#376:F-376-1:1",
+  "issuer": "operator",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "decision": "Fixed in 6efd960c: the depends_on CHECK also requires the split cardinality to equal the array cardinality; [''], ['a,b'], ['G1,'] are refused, DB regression cases pass.",
+      "finding": "F-376-1",
+      "pr": 376,
+      "repository": "hawkixs/brain-v42",
+      "ruling": "fix"
+    },
+    "kind": "review_ruling"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T10:09:03.601270Z",
+  "schema_version": 1
+}

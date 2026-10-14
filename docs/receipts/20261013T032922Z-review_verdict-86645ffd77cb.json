@@ -1,0 +1,85 @@
+{
+  "digest": "sha256:86645ffd77cb4a989f695339765b88f8c6925d4c8b2b5eef6ff76321d02f4ebb",
+  "idempotency_key": "review_verdict:f0a3a0197a81a40907c3d4098fdbea2beea479f9:115113381403",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": true,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115113381403,
+      "diff_truncated": false,
+      "finding_count": 5,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "In lines 300-310, the while loop pops items from kept to fit the signature. When _signature returns an empty string because the signature exceeds cap, kept is drained until empty and the loop breaks with signature = \"\", leaving message as f\"{prefix} invalid value shape.\" from line 303. The original ",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-1",
+          "line": 300,
+          "severity": "blocking",
+          "status": "new",
+          "title": "Clauses discarded when signature cannot fit"
+        },
+        {
+          "class": "blocker",
+          "evidence": "In line 141, optional_text += f\", \u2026 (+{remaining} more)\" prepends a leading comma and space. When kept is empty, optional_text begins with \", \u2026\". At line 143, when required_text is non-empty, {', ' if required_text and optional_text else ''} inserts another comma, formatting as \"{name}({required_tex",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-2",
+          "line": 141,
+          "severity": "blocking",
+          "status": "new",
+          "title": "Malformed signature with double or leading comma"
+        },
+        {
+          "class": "note",
+          "evidence": "At lines 305 and 312, signature is only appended to message when len(message) + len(marker) + len(signature) <= 600. Consequently, whenever message contains \" Expected: \", len(message) <= 600 is already satisfied and line 313 unconditionally returns, making the subsequent truncation logic at lines 3",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-3",
+          "line": 315,
+          "severity": "important",
+          "status": "new",
+          "title": "Unreachable truncation logic for Expected signature"
+        },
+        {
+          "class": "note",
+          "evidence": "In line 249, _schema_path returns path truncated at the last recognized property name. When an extra forbidden key is present in a nested dictionary, path contains only the enclosing parent parameter. At line 261, clauses.append(f\"'{loc}': unexpected field\") reports the parent parameter as an unexpe",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-4",
+          "line": 260,
+          "severity": "important",
+          "status": "new",
+          "title": "Nested extra_forbidden errors attribute to parent property"
+        },
+        {
+          "class": "note",
+          "evidence": "At line 154, matched is initialized as an empty list and appended to on lines 158, 163, and 171, but matched is never read or returned.",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-5",
+          "line": 154,
+          "severity": "minor",
+          "status": "new",
+          "title": "Unused local variable matched"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 373,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "f0a3a0197a81a40907c3d4098fdbea2beea479f9",
+      "verdict": "request_changes"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T03:29:22.248657Z",
+  "schema_version": 1
+}

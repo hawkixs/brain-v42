@@ -33,3 +33,17 @@ def _capture_ledger_is_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "brain_v42.repositories.pg_decision.refuse_if_captured", AsyncMock(return_value=None)
     )
+
+
+@pytest.fixture(autouse=True)
+def _vector_scan_tuning_is_pinned_elsewhere(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the HNSW tuning statements out of the mock-session vector tests.
+
+    Those fakes hand back one canned result per `execute`, and most have no
+    `begin_nested` (the tuning runs in a SAVEPOINT). The tuning is pinned
+    statement by statement in `test_pg_base_search_scope.py`, which overrides
+    this fixture, and against PostgreSQL in `tests/integration`.
+    """
+    monkeypatch.setattr(
+        "brain_v42.repositories.pg_base.VectorScanSettings.apply", AsyncMock(return_value=None)
+    )

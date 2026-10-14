@@ -19,6 +19,41 @@ Unexpected tool failures return `<operation> failed: internal error <Class> (ref
 
 Invalid arguments produce a concise message naming unexpected or missing parameters and showing the expected signature when available. Shape errors identify the failing field and expected type. Messages never echo argument values; caller-supplied names (parameter names and dictionary keys) are echoed only when they look like identifiers.
 
+### Parameter vocabulary
+
+Tool schemas publish canonical parameter names in these families, for example (the complete set is maintained by `VOCABULARY` in `src/brain_v42/mcp/parameter_vocabulary.py`):
+
+- **Entity references:** `entity_type`, `entity_id`, `source_id`, `target_id`, and the typed entity IDs such as `decision_id`, `learning_id`, `runbook_id`, `snippet_id`, and `claim_id`.
+- **Project and actor:** `project_key`, `author_project`, `from_project`, `to_project`, `actor_project`, and `project_group`.
+- **Free text:** `title`, `topic`, `intention`, `context`, `decision_made`, `insight`, `description`, `body`, `message`, and `reason`.
+- **List filters and paging:** `query`, `types`, `tags`, `status`, `limit`, `offset`, and `cursor`.
+- **Lifecycle (session, slot, and focus revisions):** `session_id`, `slot_id`, `expected_client_key`, `expected_revision`, `expected_slot_revision`, and `expected_focus_revision`.
+- **Delivery:** `ticket_id`, `deliverable_key`, `expected_workflow_version`, `expected_assessment_id`, and `expected_delivery_digest`.
+- **Claims:** `claim_id`, `idempotency_key`, `expected_active_claim_ids`, and `after_seq`.
+- **Other:** `max_age_seconds`, `include_archived`, `dream_run_id`, `payload`, and `contract_revision`.
+
+The following aliases are accepted for the named tool. The canonical name remains published in its schema.
+
+| Tool | Accepted alias | Canonical name |
+| --- | --- | --- |
+| `brain_get` | `id` | `entity_id` |
+| `brain_get` | `type`, `item_type` | `entity_type` |
+| `brain_list` | `type` | `entity_type` |
+| `brain_log_decision` | `decision` | `decision_made` |
+| `brain_log_decision` | `description` | `context` |
+| `brain_learn` | `title` | `topic` |
+| `brain_learn` | `content` | `insight` |
+| `brain_save_snippet` | `description`, `purpose` | `intention` |
+| `brain_fact_get` | `key` | `name` |
+| `brain_ticket_reply` | `message` | `body` |
+| `brain_ticket_reply` | `from_project`, `project_key` | `author_project` |
+| `brain_ticket_transition` | `note`, `comment` | `message` |
+| `brain_ticket_transition` | `actor_project`, `project_key` | `author_project` |
+| `brain_ticket_plan` | `project_key` | `author_project` |
+| `brain_ticket_create` | `author_project`, `target_project` | `from_project`, `to_project` |
+
+Passing an alias together with its canonical name, or passing two aliases for the same canonical name, is ambiguous and returns a safe error. Pass exactly one name for each parameter; argument values are never included in that error.
+
 Lifecycle v4 has run in production since 24 July 2026.
 
 Migration 065 is the repository target: `programmes` and `programme_gates`, the programme progress of contract `docs/contracts/programmes_v1.md`, behind the five `brain_programme_*` tools. Migration 064: runtime role ACLs with no new MCP surface. Migration 063 adds four tables for the client credential registry, admin elevations and the schema compatibility ledger, with no MCP surface yet. Migration 062: two partial error indexes on `delivery_confirmations` and `pg_stat_statements` in schema `monitoring`, no new table and no MCP surface. Migration 061: `brain_session_connections` retains the connections seen by operator lifecycle calls for exact absorption across transport changes. Migration 060: focus slots (ADR #34), three tables and two nullable `brain_sessions` columns, plus the 16314b31 CHECK fix; downgrade refuses to destroy slots without `-x allow_focus_slots_downgrade=yes`. Migration 059: `tickets.target_release`, nullable with no default or backfill, validated as `major.minor.patch` and indexed for planned tickets; downgrade refuses to erase plans without `-x allow_target_release_downgrade=yes`. Migration 058: the `knowledge_claims` provenance CHECK also accepts `extracted` (claims the server derives from knowledge prose, decision f99ca46f); its downgrade refuses while such rows exist. Migration 057 before it: `search_log.embedding_model`, nullable with no default and no backfill (ticket 4fac067a, operator decision 1669d429) — attributed at insert time from the same live identity as the settings, never a tool parameter; no MCP tool reads or writes it. Migration 056 gives `project_contexts` its first lifecycle — `archived_at` and `archived_reason`, nullable with no backfill, so `archived_at IS NULL` IS active — behind `brain_project_archive` and `brain_project_unarchive`, which delete nothing. Migration 055 adds the three claim ledgers of lot B (`knowledge_fact_definitions`, `knowledge_claims`, `knowledge_claim_verdicts`), their SQL-enforced immutability and the deterministic `knowledge_claim_current` view; `brain_claim_verify` writes the verdict ledger, and `brain_claim_list`/`brain_claim_history` (lot B4, "Claim reads" below) read it back, SELECT-only. Migration 054 adds `delivery_attestations`, the append-only ledger of issuer-declared delivery facts behind `brain_delivery_attest`, whose fail-closed downgrade names the rows it would destroy. Migration 053 adds the eight durable delivery tables for workflows, versioned contracts, dependencies, artifact bindings, confirmations, snapshots, events, and immutable receipts. Migration 052 adds `access_log_daily`, the durable access journal that keeps the ACTOR STRING per (entity, day) so an `is_human_actor` requalification stays replayable after the 300 s flush (ticket b93e32be). Migration 051 adds `brain_session_checkpoints` (M-C), the append-only ledger behind `brain_session_checkpoint`, guarded by a trigger and reachable only by INSERT. Migration 050 adds `project_focus_history` (M-D), the append-only audit trail of every focus revision, plus a deferred constraint trigger on `project_contexts` shipped disabled. Migration 049 it adds the sweep's per-night `closed_inactive_count`, the agy rail's `thinking_tokens`, and widens the `freshness_source` vocabulary (`manual_update`, `plan_reindex`). Migration 048 adds `brain_session_artifacts.attribution_mode`,
@@ -429,7 +464,7 @@ The declared `actor_project` is not yet bound to the transport actor's resolved 
 | `brain_delivery_contract_set` | `ticket_id`, `contract`, `expected_revision` (0 for create), `idempotency_key`, required `reason` | `ContractRevision` |
 | `brain_delivery_bind_pr` | `ticket_id`, `deliverable_key`, `repository_id`, `pr_number`, `expected_revision`, `expected_workflow_version`, `idempotency_key` | `ArtifactBinding` |
 | `brain_delivery_get` | `ticket_id`, `history_limit=20`, `history_cursor=None` | `DeliveryView` |
-| `brain_delivery_list` (v2.0) | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None`, `detail="summary"` (`"full"` opt-in) | `DeliveryListPage` |
+| `brain_delivery_list` (v2.0) | `limit=20`, `cursor=None`, `work=None`, `blocker=None`, `stage=None`, `detail="summary"` (`"full"` opt-in), `ticket_id=None` | `DeliveryListPage` |
 | `brain_delivery_refresh` | `ticket_id` | `{status: "queued", view: DeliveryView}` |
 | `brain_delivery_claim` | `ticket_id`, `owner_key`, `work_kind`, `expected_workflow_version`, `expected_assessment_id`, `ttl_seconds=900` | `ClaimResult` |
 | `brain_delivery_claim_renew` | `ticket_id`, `owner_key`, `claim_token`, `epoch`, `ttl_seconds=900` | `ClaimState` |
@@ -439,6 +474,9 @@ The declared `actor_project` is not yet bound to the transport actor's resolved 
 | `brain_delivery_attestation_list` | `ticket_id=None`, `issuer_project=None`, `kind=None`, `since=None`, `until=None`, `limit=20`, `cursor=None` | `DeliveryAttestationPage` |
 
 `brain_delivery_list` summaries omit blocker details, proofs and context snapshots.
+Use `brain_delivery_list(ticket_id=...)` for a compact status check of one delivery;
+`brain_delivery_get` returns the full view. The optional `ticket_id` filter is applied
+before pagination and still returns only tickets visible to the actor project.
 Each summary keeps at most 32 blocker references; `blockers_omitted` counts the
 remaining blockers. With `detail="full"`, the full view is nested under
 `items[i].view`, whose `attestations` is `null`.
@@ -571,9 +609,9 @@ Session lifecycle actions remain under exclusive user control on the agent and c
 
 | `degraded` dict | Banner |
 |-----------------|--------|
-| `{"search_mode": "fts_fallback"}` | `degraded: embedding service indisponible — résultats FTS uniquement (ordre textuel)` |
-| `{"rerank_mode": "rrf_fallback"}` | `degraded: reranker indisponible — ordre RRF (pas de re-scoring cross-encoder)` |
-| `{"rerank_mode": "rrf_only"}` | `note: reranker non configuré — ordre RRF (pas de re-scoring cross-encoder)` |
+| `{"search_mode": "fts_fallback"}` | `degraded: embedding service unavailable — FTS results only (text order)` |
+| `{"rerank_mode": "rrf_fallback"}` | `degraded: reranker unavailable — RRF order (no cross-encoder re-scoring)` |
+| `{"rerank_mode": "rrf_only"}` | `note: reranker not configured — RRF order (no cross-encoder re-scoring)` |
 
 `min_score` filtering is disabled in degraded mode to avoid silently returning zero results.
 
@@ -671,7 +709,7 @@ brain_supersede_decision(old_decision_id, title, context, decision_made,
                          reasoning, alternatives=None, consequences=None,
                          project_key=None, tags=None)
 ```
-Create a new decision and mark the old one `status=superseded`, `superseded_by=new_id`. Atomic (one transaction).
+Create a new decision and mark the old one `status=superseded`, `superseded_by=new_id`. Atomic (one transaction). The old decision must exist and must not already be superseded. Otherwise the call is refused and no replacement is created.
 
 ### brain_get_supersession_chain
 ```
@@ -1068,7 +1106,7 @@ brain_slot_list(project_key, status='open'|'closed'|'all', limit=20, offset=0)
 ```
 Read only. Each slot carries its anchors, `bound_session_id`, `is_stale` and `receipt_pending`. `receipt_pending` is true on an open slot whose receipts have all arrived but which a writer has not closed yet (a missed hook call; `brain_slot_close` closes it); it is derived, never stored. Refusals: `project_not_found`, `invalid_limit`.
 
-A slot also closes by itself, with no tool call and no distillation into the base: when the receipt of its anchors is written, the writer closes it in the same transaction (`close_reason = 'receipt:<id>'`, `close_note` null, revision + 1, a `slot_close` history row). Only two writers do: the integration receipt (ticket and PR anchors) and the delivery observer's `released` attestation (lot anchors). A caller-declared `brain_delivery_attest` is not a measurement and closes nothing; neither does a `released` attestation by another issuer, for another project, or on a ticket of another project. A slot with a lot anchor is decided by its lot; otherwise every ticket and PR anchor must be integrated, at the workflow's current contract revision and attempt (a receipt of an older revision does not count). A closed slot never reopens. A session bound to a slot closed this way ends with `slot_closed` at the post-close revision and records `conflict` at the pre-close revision; it can always be abandoned.
+A slot also closes by itself, with no tool call and no distillation into the base: when the receipt of its anchors is written, the writer closes it in the same transaction (`close_reason = 'receipt:<id>'`, `close_note` null, revision + 1, a `slot_close` history row). Only two writers do: the integration receipt (ticket and PR anchors) and the delivery observer's `released` attestation (lot anchors). A caller-declared `brain_delivery_attest` is not a measurement and closes nothing; neither does a `released` attestation by another issuer, for another project, or on a ticket of another project. A slot with a lot anchor is decided by its lot; otherwise every ticket and PR anchor must be integrated, at the workflow's current contract revision and attempt (a receipt of an older revision does not count). A PR anchor counts only a receipt whose own artifact proofs observed that PR's current binding: binding an already integrated ticket to another PR does not satisfy that PR. A closed slot never reopens. A session bound to a slot closed this way ends with `slot_closed` at the post-close revision and records `conflict` at the pre-close revision; it can always be abandoned.
 
 ### brain_slot_close
 ```

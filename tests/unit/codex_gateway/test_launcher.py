@@ -104,6 +104,7 @@ def test_run_selects_interactive_engine_profile_before_composing_the_app(
     )
     monkeypatch.setattr(launcher.uvicorn, "run", lambda *a, **k: order.append("serve"))
     monkeypatch.setattr(launcher, "get_settings", MagicMock())
+    monkeypatch.setattr(launcher, "configure_gateway_logging", lambda _: None)
 
     launcher.run()
 

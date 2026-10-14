@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:85638f02bbada540538e9b5b30e7b76ea878ed2a04430dba35e4ca05fb5ed14d",
+  "idempotency_key": "review_verdict:aede61fedf4e71a75bc58e441a5cbfa05912dc1a:115376429870",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115376429870,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The description lists 'uv.lock (version only)' among changed files, but the visible diff contains only pyproject.toml and README.md; since the diff may continue beyond what is shown, check that uv.lock pins brain_v42 0.6.15 - a lock still at 0.6.14 would fail a lock-check/CI on a release PR.",
+          "file": "uv.lock",
+          "id": "F-409-1",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "uv.lock version change claimed but not visible in diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 409,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "aede61fedf4e71a75bc58e441a5cbfa05912dc1a",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T15:16:32.012522Z",
+  "schema_version": 1
+}

@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:0338b24744b301337e2bceb6eb1d65948d06f53278c135ff9ecff12353f62468",
+  "idempotency_key": "review_verdict:c357d4cc2c9bdaadae9244e22d2a0c86a64f5533:115357438680",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115357438680,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The new assertion requires rerank_budget_seconds - rerank_primary_budget_seconds >= 1.4, and 3.0 - 1.6 meets it with zero margin; the PR's own measurement records one Cohere call at 1.85 s, which would exceed the 1.4 s fallback share and fall through to RRF order. This matches the tradeoff stated in",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-408-1",
+          "line": 444,
+          "severity": "minor",
+          "status": "new",
+          "title": "Fallback reserve sits exactly at the boundary and below an observed Cohere latency"
+        },
+        {
+          "class": "note",
+          "evidence": "The visible test changes set the fixture strings to \"3.0\"/\"1.6\" and assert primary < budget plus the >= 1.4 reserve, but no visible assertion compares the parsed values for equality against 3.0/1.6; the description's claim that 'the contract test pins the exact values' depends on code outside this d",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-408-2",
+          "line": 393,
+          "severity": "minor",
+          "status": "new",
+          "title": "Exact-value pinning claimed in the description is not visible in this diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 408,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "c357d4cc2c9bdaadae9244e22d2a0c86a64f5533",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T14:41:32.385308Z",
+  "schema_version": 1
+}

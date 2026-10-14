@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:6f96732c93bd31359301e85bfb3bc38a0866497bf7694ff1bc0b2041cf38a385",
+  "idempotency_key": "review_verdict:e39e8428946f3a9ef78e690032fcc0fd713642c3:115438061234",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115438061234,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The diff contains only pyproject.toml and README.md, while the description states 'Changes: pyproject.toml, uv.lock (version only), README.md'. Check whether uv.lock's version field actually reads 0.6.16 (or whether the diff was truncated before it): if it still reads 0.6.15, the uv version parity h",
+          "file": "uv.lock",
+          "id": "F-411-1",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "uv.lock change claimed in description but absent from the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 411,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "e39e8428946f3a9ef78e690032fcc0fd713642c3",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T17:24:44.497524Z",
+  "schema_version": 1
+}

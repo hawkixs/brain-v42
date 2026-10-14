@@ -1,0 +1,56 @@
+{
+  "digest": "sha256:d97c5e69ac707ce7e320ee26c83d14123cb5ded13f9c82a9d9db125f6ec521ea",
+  "idempotency_key": "review_verdict:dc62052539bfee66527c804b538b06baaf5f4e7c:115311271240",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115311271240,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The early 'return self' for non-hosted backends (and the hosted paths when no rerank_fallback_model is set) accept rerank_fallback_url/rerank_fallback_api_key_file without a fallback model, while the 'none' branch refuses both and the adjacent shim refusal argues a key file 'would be ignored, and th",
+          "file": "src/brain_v42/config.py",
+          "id": "F-403-1",
+          "line": 481,
+          "severity": "minor",
+          "status": "new",
+          "title": "Stray fallback transport settings are silently ignored outside the none backend"
+        },
+        {
+          "class": "note",
+          "evidence": "The voyage branch pins reranker_url via httpx.URL (scheme/host/port/userinfo/path/query checks), but rerank_fallback_url is stored as an unchecked string for every backend; a malformed value first surfaces as an httpx error at RerankerClient construction rather than a settings error naming the field",
+          "file": "src/brain_v42/config.py",
+          "id": "F-403-2",
+          "line": 378,
+          "severity": "minor",
+          "status": "new",
+          "title": "rerank_fallback_url is never syntax-validated"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 403,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "dc62052539bfee66527c804b538b06baaf5f4e7c",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T13:15:47.418459Z",
+  "schema_version": 1
+}

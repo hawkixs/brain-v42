@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:2016b36dc608d81dbddcef096a6e8768c3a548a3ffc44b30fa4644cf5c3e4b1d",
+  "idempotency_key": "review_verdict:58766d2aaec188645e961f035c92d37b550c1f7d:115453644310",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115453644310,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "detail = type(exc).__name__[:_MAX_ERROR_CHARS] and the record_dream_run handler keep only the type; the exception object is otherwise discarded with no sanitized traceback, so a nightly sweep failure leaves no clue beyond e.g. 'OSError' in stderr and dream_runs.error_message. This is the explicit ti",
+          "file": "src/brain_v42/maintenance/session_sweep.py",
+          "id": "F-383-1",
+          "line": 235,
+          "severity": "minor",
+          "status": "new",
+          "title": "Failure diagnostics reduced to the exception type"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 383,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "58766d2aaec188645e961f035c92d37b550c1f7d",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T17:58:39.893934Z",
+  "schema_version": 1
+}

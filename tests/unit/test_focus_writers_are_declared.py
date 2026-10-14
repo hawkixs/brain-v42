@@ -101,6 +101,11 @@ FOCUS_WRITERS: dict[str, tuple[str, bool | None, str]] = {
     ),
     "src/brain_v42/mcp/tools/session_tools.py": ("reader", None, "briefing"),
     "src/brain_v42/mcp/tools/formatters.py": ("reader", None, "rendering"),
+    "src/brain_v42/mcp/parameter_vocabulary.py": (
+        "vocabulary",
+        None,
+        "names `current_focus` as a parameter name in VOCABULARY only: never reads or writes the column, never stamps",
+    ),
     "src/brain_v42/maintenance/plan_index_repair_store.py": (
         "reader",
         None,
