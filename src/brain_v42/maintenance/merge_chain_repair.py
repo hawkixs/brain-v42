@@ -120,7 +120,7 @@ async def inventory(session: AsyncSession) -> InventoryReport:
             SELECT * FROM walk
             WHERE next_id IS NULL OR cycle OR dangling OR depth = :max_depth
             ORDER BY id
-            """
+            """  # noqa: S608  # nosec B608 - fragment = `table.name`, iterated from the module tuple `_TABLES` (five literal tables); no caller or operator input reaches it, and max_depth goes out as the :max_depth bind
         )
         rows = (await session.execute(statement, {"max_depth": MAX_DEPTH})).mappings().all()
         cycles: list[UUID] = []
