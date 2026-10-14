@@ -40,6 +40,8 @@ def structural_observations(table: str, row: Mapping[str, object]) -> list[Obser
         )
 
     merged = row.get("merged_into")
+    if isinstance(merged, str) and not merged.strip():
+        merged = None
     if merged is not None:
         emit("merged", merged, row.get("freshness_status_updated_at"))
     if (

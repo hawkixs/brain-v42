@@ -12,6 +12,18 @@ AT = datetime(2026, 10, 1, 12, tzinfo=UTC)
 
 
 class StructuralTests(unittest.TestCase):
+    def test_blank_merge_is_absent(self) -> None:
+        for merged in (None, "", " \t\n"):
+            for table in ("decisions", "learnings", "snippets", "runbooks", "adrs"):
+                with self.subTest(merged=merged, table=table):
+                    self.assertEqual(structural_observations(table, {"merged_into": merged}), [])
+
+    def test_blank_merge_does_not_suppress_archival(self) -> None:
+        observations = structural_observations(
+            "learnings", {"merged_into": "  ", "freshness_status": "archived"}
+        )
+        self.assertEqual([observation.rule for observation in observations], ["decay_archived"])
+
     def test_merge_ends_any_table(self) -> None:
         for table in ("learnings", "decisions", "snippets", "runbooks", "adrs"):
             with self.subTest(table=table):
