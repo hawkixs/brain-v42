@@ -403,6 +403,49 @@ def proof(clock: Clock) -> BackupProof:
     return BackupProof("declared-backup", clock.now())
 
 
+async def test_lifecycle_start_preserves_supplied_run_id(harness: Any) -> None:
+    pipeline, repo, _, _, _, _ = harness
+    report = await pipeline.start("dry_run", {}, 1, run_id="operator-run")
+    assert report.run_id == "operator-run"
+    assert set(repo.runs) == {"operator-run"}
+    assert (await pipeline.report("operator-run")).status == report.status
+
+
+async def test_lifecycle_start_generates_run_id_by_default(harness: Any) -> None:
+    pipeline, repo, _, _, _, _ = harness
+    report = await pipeline.start("dry_run", {}, 1)
+    assert report.run_id.startswith("lifecycle-") and report.run_id in repo.runs
+
+
+async def test_lifecycle_cli_reports_checkpoint_when_start_raises(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import json
+    from unittest.mock import AsyncMock
+
+    from brain_v42.config import Settings
+    from brain_v42.lifecycle_cli.command import execute
+
+    pipeline, repo, _, _, _, _ = harness
+    monkeypatch.setattr(pipeline, "_drive", AsyncMock(side_effect=RuntimeError("interrupted")))
+    output = io.StringIO()
+    code = await execute(
+        ["run", "--mode", "dry-run", "--scope", "all", "--ceiling-usd", "1", "--json"],
+        Settings(
+            postgres_url="postgresql+asyncpg://unused/unused",
+            _env_file=None,
+            brain_knowledge_lifecycle_enabled=True,
+        ),
+        pipeline,
+        stdout=output,
+    )
+    result = json.loads(output.getvalue())
+    assert code == 3 and result["failure_reason"] == "command_failed"
+    assert result["run_id"] in repo.runs and result["status"] == "created"
+    assert (await pipeline.report(result["run_id"])).run_id == result["run_id"]
+
+
 @pytest.mark.parametrize("discard", [False, True], ids=["collect", "discard"])
 async def test_lifecycle_request_status_updates_only_one_key(
     harness: Any, monkeypatch: pytest.MonkeyPatch, discard: bool
