@@ -1082,7 +1082,20 @@ brain_client_credentials = Table(
     Column("revoked_at", DateTime(timezone=True), nullable=True),
     Column("revoked_reason", Text, nullable=True),
     Column("last_used_at", DateTime(timezone=True), nullable=True),
+    Column("allowed_projects", ARRAY(Text), nullable=True),
     UniqueConstraint("token_sha256", name="brain_client_credentials_token_sha256_key"),
+    sa.CheckConstraint(
+        "allowed_projects IS NULL OR COALESCE("
+        "cardinality(allowed_projects) >= 1 AND "
+        "CASE WHEN array_ndims(allowed_projects) = 1 THEN "
+        "array_position(allowed_projects, NULL) IS NULL "
+        "AND cardinality(string_to_array(array_to_string(allowed_projects, ','), ',')) "
+        "= cardinality(allowed_projects) "
+        "AND array_to_string(allowed_projects, ',') "
+        "~ '^([a-z0-9]+([:-][a-z0-9]+)*)(,[a-z0-9]+([:-][a-z0-9]+)*)*$' "
+        "ELSE false END, false)",
+        name="brain_client_credentials_allowed_projects_valid",
+    ),
     sa.CheckConstraint(
         "client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
         name="brain_client_credentials_client_id_format",
@@ -1195,7 +1208,7 @@ brain_credential_audit = Table(
     Column("emitted_at", DateTime(timezone=True), nullable=True),
     sa.CheckConstraint(
         "event IN ('credentials.issued', 'credentials.revoked', 'credentials.elevated', "
-        "'credentials.unelevated', 'credentials.elevation_expired')",
+        "'credentials.unelevated', 'credentials.elevation_expired', 'credentials.scope_changed')",
         name="brain_credential_audit_event_valid",
     ),
     sa.CheckConstraint(

@@ -16,6 +16,7 @@ from fastmcp.tools.base import Tool, ToolResult
 from brain_v42.credentials.families import ELEVATION_FAMILY
 from brain_v42.credentials.reasons import emit_refusal
 from brain_v42.mcp.client_principal import ClientPrincipal, resolve_client_principal
+from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.provenance import get_current_actor, get_current_peer
 
 NEUTRAL_TOOLS = frozenset({"brain_find_tool", "brain_call_tool"})
@@ -136,12 +137,22 @@ class FamilyAuthorizationMiddleware(Middleware):
             "brain_v42_catalog_elevations", default=None
         )
 
+    @staticmethod
+    def _has_own_focus_grant(principal: ClientPrincipal | None, name: str) -> bool:
+        return (
+            principal is not None
+            and principal.allowed_projects is not None
+            and "write" in principal.families
+            and name == "brain_update_project_focus"
+        )
+
     async def allows_tool(
         self,
         principal: ClientPrincipal | None,
         name: str,
         *,
         elevations: dict[tuple[str, str], bool] | None = None,
+        own_focus: bool = True,
     ) -> bool:
         """Calls check afresh; a catalogue's filter passes share one request snapshot."""
         if principal is None:
@@ -152,6 +163,9 @@ class FamilyAuthorizationMiddleware(Middleware):
         if name in NEUTRAL_TOOLS:
             return True
         family = family_of(name)
+        # Discovery can expose a conditional grant; only on_call_tool has arguments.
+        if own_focus and self._has_own_focus_grant(principal, name):
+            return True
         if family != ELEVATION_FAMILY:
             return family in principal.families
         if self._elevation_checker is None:
@@ -202,10 +216,12 @@ class FamilyAuthorizationMiddleware(Middleware):
         finally:
             self._catalog_elevations.reset(token)
 
-    def _refuse(self, *, tool: str | None = None, path: str | None = None) -> None:
+    def _refuse(
+        self, *, tool: str | None = None, path: str | None = None, reason: str = "family_denied"
+    ) -> None:
         principal = resolve_client_principal(get_access_token())
         emit_refusal(
-            "family_denied",
+            reason,
             status=403,
             client_id=None if principal is None else principal.client_id,
             declared_agent=get_current_actor(),
@@ -220,6 +236,27 @@ class FamilyAuthorizationMiddleware(Middleware):
         call_next: CallNext[mt.CallToolRequestParams, ToolResult],
     ) -> ToolResult:
         name = context.message.name
+        principal = resolve_client_principal(get_access_token())
+        if self._has_own_focus_grant(principal, name):
+            # The compact gateway dispatches its inner call through this same middleware.
+            # Keep an existing elevation's admin rights, including roadmap updates.
+            if not await self.allows_tool(principal, name, own_focus=False):
+                arguments = context.message.arguments or {}
+                project = arguments.get("project_key")
+                try:
+                    key = canonicalize_project_key(project) if isinstance(project, str) else None
+                except ValueError:
+                    key = None
+                assert principal is not None and principal.allowed_projects is not None
+                if key not in principal.allowed_projects:
+                    self._refuse(tool=name)
+                    raise AuthorizationError("family_denied")
+                if any(
+                    arguments.get(field) is not None
+                    for field in ("blockers", "feature_status", "unpin")
+                ):
+                    self._refuse(tool=name, reason="focus_side_effect_refused")
+                    raise AuthorizationError("focus_side_effect_refused")
         if not await self.allows_current_tool(name):
             self._refuse(tool=name)
             raise AuthorizationError("family_denied")
