@@ -1157,10 +1157,10 @@ def clamp_list_limit(limit: int, maximum: int = LIST_LIMIT_MAX) -> tuple[int, st
     """
     if limit > maximum:
         return maximum, (
-            f"\n… (limit {limit} demandé, plafonné à {maximum} — utiliser offset pour la suite)"
+            f"\n… (limit {limit} requested, capped at {maximum} — use offset for the rest)"
         )
     if limit < 1:
-        return 1, f"\n… (limit {limit} demandé, remonté à 1 — une page vide ne dit rien)"
+        return 1, f"\n… (limit {limit} requested, raised to 1 — an empty page says nothing)"
     return limit, ""
 
 
