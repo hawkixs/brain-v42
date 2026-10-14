@@ -316,6 +316,122 @@ async def test_lifecycle_resume_mid_sweep_preserves_committed_events_on_postgres
         assert await repo.cache_mismatches(conn) == []
 
 
+async def test_lifecycle_resume_replays_propagation_evaluation_without_event_on_postgres(
+    private_head_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project, parent, children = await seed_dependents(private_head_engine)
+    other_project, other_parent, _ = await seed_dependents(private_head_engine, count=0)
+    dependent = children[0]
+    async with private_head_engine.begin() as conn:
+        graph_ids = dict(
+            (
+                await conn.execute(
+                    sa.select(t.brain_entities.c.source_uuid, t.brain_entities.c.id).where(
+                        t.brain_entities.c.entity_type == "decision",
+                        t.brain_entities.c.source_uuid.in_([dependent, other_parent]),
+                    )
+                )
+            ).all()
+        )
+        await conn.execute(
+            t.entity_relations.insert().values(
+                source_entity_id=graph_ids[dependent],
+                target_entity_id=graph_ids[other_parent],
+                relation_type="DEPENDS_ON",
+                origin="test",
+            )
+        )
+    # The lowest parent UUID supplies the reason, so the second sweep keeps it unchanged.
+    (project, parent), (other_project, other_parent) = sorted(
+        [(project, parent), (other_project, other_parent)], key=lambda pair: str(pair[1])
+    )
+    clock = Clock()
+    pipeline = LifecyclePipeline(
+        private_head_engine,
+        Client(),
+        SourceProvider(),
+        clock,
+        Gates(),
+        commit_gate=fake_commit_gate(clock),
+    )
+    first = await pipeline.start(
+        "apply", {"project_key": project}, 1, BackupProof("first", clock.now())
+    )
+    assert first.status == "applied"
+    repo = PgKnowledgeLifecycleRepo()
+    async with private_head_engine.connect() as conn:
+        cache_before = await repo.read_cache(conn, "decisions", dependent)
+        assert cache_before is not None
+        assert cache_before["state"] == "contested"
+        assert cache_before["reason"] == f"propagated_from_{parent}"
+        events_before = await repo.events_for_entry(conn, "decisions", dependent)
+        assert len(events_before) == 1
+
+    original = pipeline._propagation_entry
+    calls = 0
+
+    async def crash_after_commit(*args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        await original(*args, **kwargs)
+        if calls == 1:
+            raise RuntimeError("interrupted after evaluation without event")
+
+    monkeypatch.setattr(pipeline, "_propagation_entry", crash_after_commit)
+    with pytest.raises(RuntimeError, match="interrupted after evaluation without event"):
+        await pipeline.start(
+            "apply", {"project_key": other_project}, 1, BackupProof("second", clock.now())
+        )
+    async with private_head_engine.connect() as conn:
+        run_id = await conn.scalar(
+            sa.select(t.knowledge_lifecycle_runs.c.run_id).where(
+                t.knowledge_lifecycle_runs.c.scope == {"project_key": other_project}
+            )
+        )
+        run = await repo.read_run(conn, run_id)
+        child_run_id = run["counts"]["propagation_run_id"]
+        assert run["status"] == "applying"
+        assert not run["counts"].get("propagation_done")
+        assert (await repo.read_run(conn, child_run_id))["status"] == "applying"
+        evaluation_query = sa.select(t.knowledge_evaluations).where(
+            t.knowledge_evaluations.c.run_id == child_run_id,
+            t.knowledge_evaluations.c.entity_type == "decisions",
+            t.knowledge_evaluations.c.entity_id == dependent,
+        )
+        evaluation_before = dict((await conn.execute(evaluation_query)).mappings().one())
+        assert evaluation_before["state"] == cache_before["state"]
+        assert evaluation_before["reason"] == cache_before["reason"]
+        justifications_before = await repo.read_justifications(conn, evaluation_before["id"])
+        assert len(justifications_before) == 2
+        event_count_query = (
+            sa.select(sa.func.count())
+            .select_from(t.knowledge_lifecycle_events)
+            .where(t.knowledge_lifecycle_events.c.evaluation_id == evaluation_before["id"])
+        )
+        assert await conn.scalar(event_count_query) == 0
+        assert await repo.read_cache(conn, "decisions", dependent) == cache_before
+
+    result = await pipeline.resume(run_id, BackupProof("resume", clock.now()))
+    assert result.status == "applied" and result.failure_reason is None
+    assert calls == 2
+    async with private_head_engine.connect() as conn:
+        run = await repo.read_run(conn, run_id)
+        assert run["counts"]["propagation_run_id"] == child_run_id
+        assert f"decisions:{dependent}" not in run["counts"].get("deferred", {})
+        assert (await repo.read_run(conn, child_run_id))["status"] == "applied"
+        evaluations_after = (await conn.execute(evaluation_query)).mappings().all()
+        assert len(evaluations_after) == 1
+        assert dict(evaluations_after[0]) == evaluation_before
+        justifications_after = await repo.read_justifications(conn, evaluation_before["id"])
+        assert len(justifications_after) == len(justifications_before)
+        assert justifications_after == justifications_before
+        assert await conn.scalar(event_count_query) == 0
+        assert await repo.events_for_entry(conn, "decisions", dependent) == events_before
+        assert await repo.read_cache(conn, "decisions", dependent) == cache_before
+        assert len(await repo.events_for_entry(conn, "decisions", other_parent)) == 1
+        assert await repo.cache_mismatches(conn) == []
+
+
 async def test_lifecycle_dry_run_has_no_event_or_cache(private_head_engine: AsyncEngine) -> None:
     project, entity_id = await seed(private_head_engine)
     clock = Clock()

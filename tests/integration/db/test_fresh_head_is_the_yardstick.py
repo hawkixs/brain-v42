@@ -20,13 +20,15 @@ value and their ticket — never tolerated as a band: a drift that grows (049 ad
 an index) breaks the pin, a drift that heals (the asset brought up to date) breaks
 it too, and the exception is removed instead of surviving.
 
-**The current candidate is v24 for head 066.** Its declared delta of v23 adds
-seven lifecycle tables, nine foreign keys, sixteen indexes, four owned sequences
-and narrowed runtime ACLs. Assets must be minted on a disposable chain-built 066
-database and a real --no-owner --no-acl restore of a 065 source migrated to 066.
-The integration twin also checks a source dumped at 066. No PostgreSQL replay is
-claimed by the offline preparation. PINNED_ASSET_DRIFT remains exact: any new
-unexplained difference fails this yardstick.
+**The current candidate is v25 for head 067.** Its declared delta of v24
+rewrites two fingerprints (the `brain_client_credentials` column set and
+`brain_credential_audit_event_valid`) and adds one constraint
+(`brain_client_credentials_allowed_projects_valid`); no table, index, foreign key,
+sequence, trigger, function or grant. Its two SQL variants were minted from a
+fresh 067 head and a real --no-owner --no-privileges restore of a chain-built 066
+source migrated to 067. The integration twin also checks a source dumped at 067.
+PINNED_ASSET_DRIFT remains exact: any new unexplained difference fails this
+yardstick.
 
 The disposable databases live in the SAME server as `BRAIN_V42_TEST_DB_URL`, like
 `brain_test` itself; they are created and destroyed by the module. They never
@@ -74,9 +76,9 @@ from tests.integration.disposable_db import (
 pytestmark = pytest.mark.integration
 
 PROJECT_ROOT = Path(__file__).parents[3]
-V24_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v24.sql"
-V24_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v24.json"
-V24_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v24-pgrestore.sql"
+V25_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v25.sql"
+V25_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v25.json"
+V25_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v25-pgrestore.sql"
 
 #: The contract checks that attest the DATA carried by a restoration. A fresh
 #: database is empty by construction: they cannot pass here and that is not a
@@ -333,7 +335,7 @@ async def test_a_create_all_bench_accepts_what_production_accepts(
 async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     fresh_head_db_url: str,
 ) -> None:
-    """Replays `brain-v42-v24.sql` against the head-066 yardstick.
+    """Replays `brain-v42-v25.sql` against the head-067 yardstick.
 
     Every check of the receipt must pass, except:
     * the DATA checks (`DATA_CHECK_KINDS`) — a fresh database is empty;
@@ -341,7 +343,7 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     * `extension_versions`, whose observed value is the build of the server hosting
       the disposable database, not a property of the alembic chain.
 
-    v24 carries the measured 066 footprint. This yardstick requires
+    v25 carries the measured 067 footprint. This yardstick requires
     every other structural check to match the chain.
 
     A migration that adds an index without bringing the asset up to date makes an
@@ -351,11 +353,11 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     appears on a live replay, a manual gesture" — is closed by this automatic
     replay.
     """
-    failures = await _replay(fresh_head_db_url, V24_SQL)
+    failures = await _replay(fresh_head_db_url, V25_SQL)
 
     # The receipt does not carry `kind`; each check's nature lives in the JSON
     # contract, the same source as red-backup's DSL engine.
-    contract = json.loads(V24_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V25_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -365,7 +367,7 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
         and check_id != "extension_versions"
     }
     assert not unexplained, (
-        "the v24 candidate and the alembic chain disagree beyond the pinned drift:\n"
+        "the v25 candidate and the alembic chain disagree beyond the pinned drift:\n"
         + json.dumps(unexplained, indent=2, default=str)
     )
 
@@ -400,15 +402,15 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
 async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_index(
     fresh_head_db_url: str,
 ) -> None:
-    """The v24 `-pgrestore` twin against the fresh-head yardstick.
+    """The v25 `-pgrestore` twin against the fresh-head yardstick.
 
-    The v24 twin must be measured on a real custom-format restore of a chain-built
-    065 database migrated to 066. This fresh-head replay remains a distinct check:
-    it proves that the restored-target fingerprints describe the head-066
-    schema, canonicalisation included. Migration 066 adds seven tables and four
-    sequences, and no trigger; any new twin divergence must fail this test.
+    The v25 twin was measured on a real custom-format restore of a chain-built
+    066 database migrated to 067. This fresh-head replay remains a distinct check:
+    it proves that the restored-target fingerprints describe the head-067
+    schema, canonicalisation included. Migration 067 adds one column and one
+    CHECK, and no trigger; any new twin divergence must fail this test.
 
-    The v24 fingerprints must land exactly, the seven 066 tables included.
+    The v25 fingerprints must land exactly, the 067 credential scope included.
     The existing pin describes ONE pre-existing
     index, `idx_dream_promotions_source_materialized`, and ONE view,
     `knowledge_claim_current`, both inherited unchanged from v13: the twin
@@ -420,9 +422,9 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
     What this test still does not prove: the `pg_dump`/`pg_restore` round-trip
     itself. That needs a bench.
     """
-    failures = await _replay(fresh_head_db_url, V24_PGRESTORE)
+    failures = await _replay(fresh_head_db_url, V25_PGRESTORE)
 
-    contract = json.loads(V24_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V25_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -431,13 +433,13 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
         and check_id not in {"table_shape", "brain_runtime_032_036_037"}
     }
     assert not unexplained, (
-        "the v24 -pgrestore twin disagrees with the alembic chain somewhere other "
+        "the v25 -pgrestore twin disagrees with the alembic chain somewhere other "
         "than its one re-serialized index:\n" + json.dumps(unexplained, indent=2, default=str)
     )
 
     # The twin only requires the extension NAMES: unlike the base asset, it MUST
     # pass this check on a fresh database. If it fails, the v6 mint's names-only
-    # rule has been lost by the v24 candidate.
+    # rule has been lost by the v25 candidate.
     assert "extension_versions" not in failures, (
         "the twin now judges extension VERSIONS — the names-only rule was lost"
     )

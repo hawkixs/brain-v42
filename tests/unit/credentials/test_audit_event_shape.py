@@ -76,6 +76,27 @@ def test_elevation_events_have_exactly_the_frozen_keys(event: str) -> None:
     }
 
 
+def test_scope_event_exposes_before_and_after_without_secret_metadata() -> None:
+    from brain_v42.credentials.audit import render_event
+
+    payload = {
+        "credential_id": str(uuid4()),
+        "client_id": "worker",
+        "author": "operator",
+        "reason": "restrict\nprojects",
+        "previous_allowed_projects": None,
+        "allowed_projects": ["red-shrik:agent-a"],
+        "token_sha256": "private",
+    }
+    event = render_event(AuditRow(1, "credentials.scope_changed", None, payload, NOW, None))
+    assert event == {
+        "event": "credentials.scope_changed",
+        "audit_id": 1,
+        **{key: value for key, value in payload.items() if key != "token_sha256"},
+        "reason": "restrict projects",
+    }
+
+
 @pytest.mark.parametrize("excluded", [[], ["red-rail", "auto-discord", "red-rail"]])
 def test_excluded_clients_are_sorted_and_deduplicated(excluded: list[str]) -> None:
     from brain_v42.credentials.audit import render_event

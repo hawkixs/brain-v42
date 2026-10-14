@@ -854,8 +854,14 @@ class TestEnd:
             )
         )
 
-        with pytest.raises(BrainSessionInputError):
+        with pytest.raises(BrainSessionInputError) as caught:
             await PgBrainSessionRepo(factory).capture(opened["id"], "client-a", [capture_id])
+
+        assert "brain_search" in str(caught.value)
+        assert "created after the session start" in str(caught.value)
+        assert "same project" in str(caught.value)
+        assert "unambiguous type" in str(caught.value)
+        assert "not already be captured by another session" not in str(caught.value)
 
         validation_sql = " ".join(
             _sql(stmt)

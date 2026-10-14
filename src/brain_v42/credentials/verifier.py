@@ -61,6 +61,7 @@ class VerifiedPrincipal:
     issuers: frozenset[str]
     credential_id: UUID
     expires_at: datetime | None
+    allowed_projects: frozenset[str] | None = None
 
 
 class CredentialRefused(Exception):
@@ -126,6 +127,9 @@ class CredentialVerifier:
                             frozenset(row.issuers),
                             row.id,
                             row.expires_at,
+                            None
+                            if row.allowed_projects is None
+                            else frozenset(row.allowed_projects),
                         ),
                     )
                     for row in rows

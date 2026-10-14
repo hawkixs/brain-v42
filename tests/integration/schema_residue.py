@@ -72,6 +72,7 @@ DOWNGRADING_TEST_FILES: tuple[str, ...] = (
     "tests/integration/db/test_migration_063_client_credentials.py",
     "tests/integration/db/test_migration_065_programmes.py",
     "tests/integration/db/test_migration_066_knowledge_lifecycle.py",
+    "tests/integration/db/test_migration_067_credential_scope.py",
 )
 
 # Files that contain the word downgrade but only ever run it on a PRIVATE database: slot
