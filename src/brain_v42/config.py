@@ -346,6 +346,16 @@ class Settings(BaseSettings):
         default=30.0, gt=0, validation_alias=_brain_alias("EMBEDDING_TIMEOUT")
     )
 
+    embedding_retry_budget_seconds: float = Field(
+        default=60.0, gt=0, validation_alias=_brain_alias("EMBEDDING_RETRY_BUDGET_SECONDS")
+    )
+    """Bound attempts and backoffs together so writes can persist without an embedding."""
+
+    embedding_query_deadline_seconds: float = Field(
+        default=8.0, gt=0, validation_alias=_brain_alias("EMBEDDING_QUERY_DEADLINE_SECONDS")
+    )
+    """Let searches fall back to full-text search before the longer write budget expires."""
+
     embedding_query_prefix: _UnstrippedStr = Field(
         default="", validation_alias=_brain_alias("EMBEDDING_QUERY_PREFIX")
     )
