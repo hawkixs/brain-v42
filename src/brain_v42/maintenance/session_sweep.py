@@ -43,6 +43,7 @@ from brain_v42.models.brain_session import (
     BrainSessionStatus,
     BrainSessionSweepResult,
 )
+from brain_v42.safe_logging import configure_cli_logging
 
 _MAX_ERROR_CHARS = 2000
 
@@ -202,6 +203,7 @@ async def _run(args: argparse.Namespace) -> int:
     except ValidationError as exc:
         print(f"Config invalide: {exc}", file=sys.stderr)
         return 2
+    configure_cli_logging(settings.brain_log_format)
 
     # `None` closes the 4 h rule AND says so in the report. The flag is read
     # HERE, once, and never in the repository: the repository receives a
