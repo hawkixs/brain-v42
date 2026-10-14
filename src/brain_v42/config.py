@@ -220,6 +220,10 @@ class Settings(BaseSettings):
         populate_by_name=True,
     )
 
+    # --- Knowledge lifecycle (operator-armed, disabled and dry by default) ---
+    brain_knowledge_lifecycle_enabled: bool = False
+    brain_knowledge_lifecycle_dry_run: bool = True
+
     # --- Database ---
     postgres_url: str = Field(validation_alias=_brain_alias("POSTGRES_URL"))
     """PostgreSQL connection URL. Must use postgresql+asyncpg:// scheme."""
