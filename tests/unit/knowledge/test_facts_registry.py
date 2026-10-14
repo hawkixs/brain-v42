@@ -177,6 +177,18 @@ class FactsRegistryTests(unittest.TestCase):
         text = 'x-graph-env: &graph-env\n  GRAPH_PROJECTOR_ENABLED: "true"\nservices:\n  mcp:\n    environment:\n      <<: *graph-env\n      GRAPH_PROJECTOR_ENABLED: "false"\n'
         self.assertEqual(self.measure("graph.neo4j", text), "disabled")
 
+    def test_mcp_present_no_environment_shared_block_present_is_none(self) -> None:
+        text = (
+            "x-graph-env: &graph-env\n"
+            '  GRAPH_PROJECTOR_ENABLED: "true"\n'
+            "services:\n"
+            "  mcp:\n"
+            "    image: brain-v42\n"
+            "  metrics:\n"
+            "    environment: *graph-env\n"
+        )
+        self.assertIsNone(self.measure("graph.neo4j", text))
+
     def test_measured_values_are_passed_through(self) -> None:
         inputs = FactInputs(
             {}, frozenset(), {"live_release_sha": "revision-123", "alembic_head": "071"}, {}
@@ -248,6 +260,13 @@ class FactsRegistryTests(unittest.TestCase):
     def test_competing_literal_and_dynamic_values_are_unknown(self) -> None:
         text = "EMBEDDING_BACKEND: local-gpu-shim\nEMBEDDING_BACKEND: ${BACKEND}\n"
         self.assertIsNone(self.measure("embedding.provider", text))
+
+    def test_dynamic_compose_value_is_unmeasurable(self) -> None:
+        self.assertIsNone(
+            self.measure(
+                "embedding.provider", "EMBEDDING_SERVICE_URL: https://api.mistral.ai/${SITE}\n"
+            )
+        )
 
     def test_shim_reranker_maps_to_local_onnx(self) -> None:
         self.assertEqual(
