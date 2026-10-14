@@ -335,14 +335,15 @@ services:
     # operator on 2026-10-13 after the dry run of the 0.6.12 deploy: --wet abandons the
     # stale sessions, --execute deletes. Disarming is removing the flag, through a pull
     # request and a rail deploy. A failed run is retried the next day instead of
-    # crash-looping the container.
+    # crash-looping the container; a heartbeat that cannot be written after a
+    # successful run is reported as such, not as a failed run.
     command:
       - /bin/sh
       - -c
       - |
         while :; do
-          python -m brain_v42.maintenance.session_sweep --wet && touch /tmp/brain-v42-session-sweep.heartbeat || echo "session-sweep: run failed, next attempt in 24 h" >&2;
-          python -m brain_v42.maintenance.trace_retention --execute && touch /tmp/brain-v42-trace-retention.heartbeat || echo "trace-retention: run failed, next attempt in 24 h" >&2;
+          if python -m brain_v42.maintenance.session_sweep --wet; then touch /tmp/brain-v42-session-sweep.heartbeat || echo "session-sweep: run succeeded, heartbeat not written" >&2; else echo "session-sweep: run failed, next attempt in 24 h" >&2; fi;
+          if python -m brain_v42.maintenance.trace_retention --execute; then touch /tmp/brain-v42-trace-retention.heartbeat || echo "trace-retention: run succeeded, heartbeat not written" >&2; else echo "trace-retention: run failed, next attempt in 24 h" >&2; fi;
           sleep 86400;
         done
     env_file:

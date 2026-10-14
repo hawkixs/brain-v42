@@ -1,0 +1,46 @@
+{
+  "digest": "sha256:2d2bad450d37ca8b97bdbc33688174e03280d198a1db09b8b094fe7fee788256",
+  "idempotency_key": "review_verdict:c345f37107ef258c8f85ac424483ae239af21eb6:115069936042",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115069936042,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "All test cases in test_session_lifecycle_refuses_agent_trace.py use the agent_trace fixture which creates open traces; none verify that closed or abandoned agent traces raise session_is_agent_trace instead of entering replay branches.",
+          "file": "tests/integration/db/test_session_lifecycle_refuses_agent_trace.py",
+          "id": "F-350-1",
+          "line": 71,
+          "severity": "minor",
+          "status": "new",
+          "title": "Missing test coverage for closed agent trace refusal"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 350,
+      "providers": [
+        "agy",
+        "codex"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "c345f37107ef258c8f85ac424483ae239af21eb6",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T00:35:01.857829Z",
+  "schema_version": 1
+}

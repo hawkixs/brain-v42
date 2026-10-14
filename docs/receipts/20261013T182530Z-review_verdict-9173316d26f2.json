@@ -1,0 +1,99 @@
+{
+  "digest": "sha256:9173316d26f23b33accd3d29c6dff4bd561058d108e740866caf54a022b1d67d",
+  "idempotency_key": "review_verdict:08cd4a5da1b623d51142cdf905a3a8c91bc9e9ae:115459861388",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115459861388,
+      "diff_truncated": false,
+      "finding_count": 6,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "if ctx.fastmcp.call_tool does not apply FamilyAuthorizationMiddleware, a registered-but-family-hidden name sent through brain_call_tool would execute: the new code forwards every name from _mcp._list_tools() before any visibility check and the diff contains no test covering that dispatch for a hidde",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-370-1",
+          "line": 89,
+          "severity": "important",
+          "status": "new",
+          "title": "Forwarded registered names rely on authorization inside ctx.fastmcp.call_tool"
+        },
+        {
+          "class": "note",
+          "evidence": "target = TOOL_NAME_ALIASES.get(name) already implies name in TOOL_NAME_ALIASES, so the 'name in TOOL_NAME_ALIASES and' half of the condition is dead; clarity nit only",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-370-2",
+          "line": 96,
+          "severity": "minor",
+          "status": "new",
+          "title": "Redundant alias-membership clause"
+        },
+        {
+          "class": "note",
+          "evidence": "if 'project' in name adds the project-focus hint to any unknown name containing 'project' anywhere (e.g. brain_projectile_add), so unrelated unknown names get project guidance; message noise only",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-370-3",
+          "line": 163,
+          "severity": "minor",
+          "status": "new",
+          "title": "Project hint triggers on bare substring"
+        },
+        {
+          "class": "note",
+          "evidence": "stripping a trailing 's' turns 'status' into 'statu' and 'address' into 'addres', which can skew token-overlap suggestions; affects message quality only, never authorization",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-370-4",
+          "line": 117,
+          "severity": "minor",
+          "status": "new",
+          "title": "Naive plural folding distorts some tokens"
+        },
+        {
+          "class": "note",
+          "evidence": "_unknown_tool_message hardcodes 'brain_find_tool(query=...)' and the project-hint tool names while the transform accepts configurable search/call tool names, so a renamed gateway would produce guidance pointing at a nonexistent tool; names are currently fixed in this repo",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-370-5",
+          "line": 162,
+          "severity": "minor",
+          "status": "new",
+          "title": "Guidance hardcodes gateway names"
+        },
+        {
+          "class": "note",
+          "evidence": "TOOL_NAME_ALIASES is built from get_args(KnowledgeType) at import while docs/MCP_TOOLS.md lists brain_get_decision/learning/snippet/runbook/adr/plan individually, so adding a KnowledgeType value changes behaviour without touching the docs list; the dict is also a public mutable module global",
+          "file": "src/brain_v42/mcp/tool_catalog.py",
+          "id": "F-370-6",
+          "line": 44,
+          "severity": "minor",
+          "status": "new",
+          "title": "Alias table derived from KnowledgeType but docs enumerated by hand"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 370,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "08cd4a5da1b623d51142cdf905a3a8c91bc9e9ae",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T18:25:30.516727Z",
+  "schema_version": 1
+}

@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:9866a06b175ade88e37a543117fe60e2c4f8f7503233415e06ab2897e41b00bd",
+  "idempotency_key": "review_verdict:9287c93ab3a4a5d80b47d98e4bd176476ea2f69b:115541414597",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115541414597,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "collect_process_metrics publishes \"tool_latency_window_s\": 300.0 as a hardcoded literal while the actual window is TOOL_LATENCY_WINDOW_SECONDS = 300.0 in metrics/collector.py; if that constant is ever changed, the published metadata silently disagrees with the real window and consumers computing rat",
+          "file": "src/brain_v42/metrics/collector_db.py",
+          "id": "F-419-1",
+          "line": 544,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Published window duplicates the collector constant as a literal"
+        },
+        {
+          "class": "note",
+          "evidence": "The samples count sums ts >= cutoff over deque(maxlen=2000), so a tool with more than 2000 calls inside the 300 s window reports samples=2000 and the percentiles cover only the newest 2000 samples; docs say 'samples sums window samples', which understates high-volume tools (pinned as intended behavi",
+          "file": "src/brain_v42/metrics/collector.py",
+          "id": "F-419-2",
+          "line": 251,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "samples is clamped at the 2000-sample deque bound"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 419,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "9287c93ab3a4a5d80b47d98e4bd176476ea2f69b",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T21:23:23.733198Z",
+  "schema_version": 1
+}

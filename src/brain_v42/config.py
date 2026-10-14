@@ -466,6 +466,20 @@ class Settings(BaseSettings):
             if conflicts:
                 raise ValueError("rerank_backend='none' refuses: " + ", ".join(conflicts))
             return self
+        if not self.rerank_fallback_model:
+            orphans = [
+                name
+                for name, configured in (
+                    ("rerank_fallback_provider", self.rerank_fallback_provider is not None),
+                    ("rerank_fallback_url", bool(self.rerank_fallback_url)),
+                    ("rerank_fallback_api_key_file", self.rerank_fallback_api_key_file is not None),
+                )
+                if configured
+            ]
+            if orphans:
+                raise ValueError(
+                    "rerank_fallback_model is required when these are set: " + ", ".join(orphans)
+                )
         if self.rerank_fallback_model:
             if self.rerank_backend not in {"cohere", "voyage"}:
                 raise ValueError(
@@ -477,6 +491,19 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "rerank_primary_budget_seconds must be below rerank_budget_seconds"
                 )
+        if self.rerank_fallback_url:
+            try:
+                fallback_url = httpx.URL(self.rerank_fallback_url)
+            except httpx.InvalidURL:
+                raise ValueError("rerank_fallback_url is not a valid http(s) base URL") from None
+            if (
+                fallback_url.scheme not in {"http", "https"}
+                or not fallback_url.host
+                or fallback_url.userinfo
+                or fallback_url.query
+                or fallback_url.fragment
+            ):
+                raise ValueError("rerank_fallback_url is not a valid http(s) base URL")
         if self.rerank_api_key.get_secret_value() and self.rerank_api_key_file is not None:
             raise ValueError(
                 "two sources for one rerank key: rerank_api_key and rerank_api_key_file "
@@ -486,7 +513,7 @@ class Settings(BaseSettings):
             if self.rerank_api_key_file is not None:
                 # The shim authenticates with brain_embedding_token_file: a key file
                 # here would be ignored, and the operator would believe it armed.
-                raise ValueError("rerank_api_key_file requires rerank_backend='cohere'")
+                raise ValueError("rerank_api_key_file requires rerank_backend='cohere' or 'voyage'")
             return self
         if self.rerank_backend == "voyage":
             try:
@@ -701,6 +728,23 @@ class Settings(BaseSettings):
     metrics_receiver_auth: Literal["none", "credentials"] = Field(
         default="none", validation_alias=_brain_alias("METRICS_RECEIVER_AUTH")
     )
+    metrics_read_clients: Annotated[list[str], NoDecode] = Field(
+        default_factory=list, validation_alias=_brain_alias("METRICS_READ_CLIENTS")
+    )
+    """Limit credentialed sidecar reads to operator-named telemetry clients."""
+
+    @field_validator("metrics_read_clients", mode="before")
+    @classmethod
+    def validate_metrics_read_clients(cls, value: object) -> list[str]:
+        """Reject malformed allowlists at startup rather than broaden read access."""
+        entries = ([] if value == "" else value.split(",")) if isinstance(value, str) else value
+        if not isinstance(entries, list) or any(
+            not isinstance(entry, str) or re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,63}", entry) is None
+            for entry in entries
+        ):
+            raise ValueError("METRICS_READ_CLIENTS must be comma-separated valid client ids")
+        return entries
+
     # Loopback by default (2026-07-04, supersedes the 0.0.0.0 of b68356c2): the
     # real consumers (red-monitor) are local; the GitLab webhook that justified
     # the LAN bind is off. Overridable through METRICS_HOST on revival (docker

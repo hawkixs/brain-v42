@@ -1,0 +1,45 @@
+{
+  "digest": "sha256:a7c7e6cb73add7f59c373f75c1ec446a10c3c6cf71ad6d48ee1ced1b08d7d892",
+  "idempotency_key": "review_verdict:c7a430c93e3f2259af61a359afac53f7cc968d69:115290646166",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115290646166,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The description claims uv.lock changes version only, but the uv.lock hunk may fall outside the visible first part of the diff; confirm it contains only the 0.6.12 -> 0.6.13 version bump and nothing else.",
+          "file": "uv.lock",
+          "id": "F-402-1",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "uv.lock version bump not visible in reviewed diff portion"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "pr": 402,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "c7a430c93e3f2259af61a359afac53f7cc968d69",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T12:14:47.752698Z",
+  "schema_version": 1
+}

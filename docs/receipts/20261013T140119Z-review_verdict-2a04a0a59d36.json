@@ -1,0 +1,65 @@
+{
+  "digest": "sha256:2a04a0a59d36ae408f6851aa361a1d04943443c5cf8d2acade6431acb469265f",
+  "idempotency_key": "review_verdict:6a8d9c49bdace175a50afc788c0f208f24adaf5f:115337582386",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115337582386,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Previously the fallback reused the primary URL and key (both OpenRouter); with the primary retargeted to api.voyageai.com, the Cohere fallback works only if the reranker client reads BRAIN_RERANK_FALLBACK_URL and BRAIN_RERANK_FALLBACK_API_KEY_FILE rather than deriving from BRAIN_RERANKER_URL/BRAIN_R",
+          "file": "deploy/compose.yaml",
+          "id": "F-405-1",
+          "line": 90,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Fallback correctness depends on runtime consuming the new fallback vars"
+        },
+        {
+          "class": "note",
+          "evidence": "The fallback keeps per-request data_collection deny, but the voyage primary carries no equivalent in config; compliance with ruling d4648d84 Q4 rests on the training opt-out enabled on the operator's Voyage account (decision 7d36a08c), which the diff cannot verify. Confirm the account setting is act",
+          "file": "deploy/compose.yaml",
+          "id": "F-405-2",
+          "line": 19,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Primary data policy is account-level, not config-enforced"
+        },
+        {
+          "class": "note",
+          "evidence": "The diff removes BRAIN_RERANK_HEALTH_PATH (/v1/key, the OpenRouter key check) and no test asserts a probe path or rerank_health_path, so if the voyage backend's probe still resolves a path-based default instead of the described one-document POST, the post-deploy probe would fail against api.voyageai",
+          "file": "deploy/compose.yaml",
+          "id": "F-405-3",
+          "line": 86,
+          "severity": "minor",
+          "status": "new",
+          "title": "Dropped BRAIN_RERANK_HEALTH_PATH leaves the voyage probe unasserted"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "pr": 405,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "6a8d9c49bdace175a50afc788c0f208f24adaf5f",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T14:01:19.949695Z",
+  "schema_version": 1
+}

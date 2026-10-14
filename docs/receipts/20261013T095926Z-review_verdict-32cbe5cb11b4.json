@@ -1,0 +1,49 @@
+{
+  "digest": "sha256:32cbe5cb11b4781e6ea46df8b192d28f3ec5341f3d96683ce42449c18a9b7670",
+  "idempotency_key": "review_verdict:663de5ab8a31ae9fa4e4a1c37dafe16369fd01a0:115238571949",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": true,
+      "check_run_id": 115238571949,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "array_to_string(depends_on, ',') makes ARRAY['a,b'] indistinguishable from ARRAY['a','b'], so an element containing a comma passes the regex. ARRAY[''] also passes because the regex permits an empty string. Both satisfy the other predicates for a gate keyed 'other', despite containing invalid gate k",
+          "file": "alembic/versions/065_programmes.py",
+          "id": "F-376-1",
+          "line": 109,
+          "severity": "blocking",
+          "status": "still_open",
+          "title": "Validate each dependency key without losing array boundaries"
+        },
+        {
+          "class": "blocker",
+          "evidence": "programme_gates_depends_on_valid validates array_to_string(depends_on, ',') rather than individual elements. For a gate keyed G1, ARRAY['G2,G3'] passes despite containing an invalid key, and ARRAY[''] passes because the regex permits an empty string. ARRAY['G1,'] also passes both the regex and the s",
+          "file": "src/brain_v42/db/tables.py",
+          "id": "F-376-2",
+          "line": null,
+          "severity": "blocking",
+          "status": "fixed",
+          "title": "Validate dependency keys individually before joining"
+        }
+      ],
+      "independent": true,
+      "mode": "awaiting_ruling",
+      "pr": 376,
+      "providers": [],
+      "repository": "hawkixs/brain-v42",
+      "round": "awaiting_ruling",
+      "sha": "663de5ab8a31ae9fa4e4a1c37dafe16369fd01a0",
+      "verdict": "request_changes"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T09:59:26.770011Z",
+  "schema_version": 1
+}

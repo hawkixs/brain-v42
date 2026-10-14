@@ -1,0 +1,69 @@
+{
+  "digest": "sha256:79a311db3d78f4c4df539c1cf1a6a3368ca73e9601991f4004a94442c91c0cfb",
+  "idempotency_key": "review_verdict:c1b22d3a9af349dea39200fe67d50177ac6dc402:115266220081",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115266220081,
+      "diff_truncated": true,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "array_to_string(depends_on, ',') makes ARRAY['a,b'] indistinguishable from ARRAY['a','b'], so an element containing a comma passes the regex. ARRAY[''] also passes because the regex permits an empty string. Both satisfy the other predicates for a gate keyed 'other', despite containing invalid gate k",
+          "file": "alembic/versions/065_programmes.py",
+          "id": "F-376-1",
+          "line": 109,
+          "severity": "blocking",
+          "status": "fixed",
+          "title": "Validate each dependency key without losing array boundaries"
+        },
+        {
+          "class": "blocker",
+          "evidence": "programme_gates_depends_on_valid validates array_to_string(depends_on, ',') rather than individual elements. For a gate keyed G1, ARRAY['G2,G3'] passes despite containing an invalid key, and ARRAY[''] passes because the regex permits an empty string. ARRAY['G1,'] also passes both the regex and the s",
+          "file": "src/brain_v42/db/tables.py",
+          "id": "F-376-2",
+          "line": null,
+          "severity": "blocking",
+          "status": "fixed",
+          "title": "Validate dependency keys individually before joining"
+        },
+        {
+          "class": "note",
+          "evidence": "The PR description says the two tables' shape rows are '2 tables, 21 constraints, 4 indexes'; the new docstrings say '23 constraints' (tests/unit/test_recovery_contract_v23.py:3 and tests/integration/db/test_fresh_head_is_the_yardstick.py). Both are author prose about the same manifest rows; the man",
+          "file": "tests/unit/test_recovery_contract_v23.py",
+          "id": "F-376-3",
+          "line": 3,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Constraint count differs between the description and the test docstrings"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 376,
+      "providers": [
+        "glm",
+        "glm",
+        "glm",
+        "glm",
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "c1b22d3a9af349dea39200fe67d50177ac6dc402",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T11:22:09.047514Z",
+  "schema_version": 1
+}

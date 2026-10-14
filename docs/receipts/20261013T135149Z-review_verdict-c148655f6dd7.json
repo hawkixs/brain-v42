@@ -1,0 +1,65 @@
+{
+  "digest": "sha256:c148655f6dd75e1944612f3a251d58d81a88daef75445f53cb7aae7fb1f63473",
+  "idempotency_key": "review_verdict:7a08534931b635c79cc63716ae3fa1db7f0b15ee:115327711715",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115327711715,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The early 'return self' for non-hosted backends (and the hosted paths when no rerank_fallback_model is set) accept rerank_fallback_url/rerank_fallback_api_key_file without a fallback model, while the 'none' branch refuses both and the adjacent shim refusal argues a key file 'would be ignored, and th",
+          "file": "src/brain_v42/config.py",
+          "id": "F-403-1",
+          "line": 481,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Stray fallback transport settings are silently ignored outside the none backend"
+        },
+        {
+          "class": "note",
+          "evidence": "The voyage branch pins reranker_url via httpx.URL (scheme/host/port/userinfo/path/query checks), but rerank_fallback_url is stored as an unchecked string for every backend; a malformed value first surfaces as an httpx error at RerankerClient construction rather than a settings error naming the field",
+          "file": "src/brain_v42/config.py",
+          "id": "F-403-2",
+          "line": 378,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "rerank_fallback_url is never syntax-validated"
+        },
+        {
+          "class": "note",
+          "evidence": "Line 479 raises ValueError(\"rerank_api_key_file requires rerank_backend='cohere'\") when rerank_backend is not in {'cohere', 'voyage'}, omitting 'voyage' which also requires rerank_api_key_file.",
+          "file": "src/brain_v42/config.py",
+          "id": "F-403-3",
+          "line": 479,
+          "severity": "minor",
+          "status": "new",
+          "title": "Error message for invalid rerank_api_key_file omits voyage backend"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 403,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "7a08534931b635c79cc63716ae3fa1db7f0b15ee",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T13:51:49.411932Z",
+  "schema_version": 1
+}

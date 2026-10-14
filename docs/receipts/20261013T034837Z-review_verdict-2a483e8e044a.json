@@ -1,0 +1,56 @@
+{
+  "digest": "sha256:2a483e8e044a73eecd25129ebde87f1f7a22f3051c10379621687d57bc7349bd",
+  "idempotency_key": "review_verdict:4ad3fe9e1f84100fa000037f490559e04d4336a1:115118438072",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115118438072,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "In _probe_database(), task.exception() is called directly once task is in done without checking task.cancelled(). If a probe callable or internal timeout cancels the probe task, calling task.exception() raises asyncio.CancelledError, escaping _probe_database and _handle_healthz unhandled instead of ",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-368-1",
+          "line": 460,
+          "severity": "minor",
+          "status": "new",
+          "title": "Unchecked task cancellation before task.exception()"
+        },
+        {
+          "class": "note",
+          "evidence": "tests/unit/metrics/test_healthz_database.py covers reachable, failing, stalling, and slow cancellation probes, but lacks a test asserting that a server initialized with database_probe=None preserves the baseline response contract (returning status 200 without the 'database' key).",
+          "file": "tests/unit/metrics/test_healthz_database.py",
+          "id": "F-368-2",
+          "line": 41,
+          "severity": "minor",
+          "status": "new",
+          "title": "Missing unit test for default database_probe=None response contract"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 368,
+      "providers": [
+        "agy",
+        "codex"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "4ad3fe9e1f84100fa000037f490559e04d4336a1",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T03:48:37.639892Z",
+  "schema_version": 1
+}

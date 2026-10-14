@@ -1,0 +1,49 @@
+{
+  "digest": "sha256:7d757efff1f04d1f345a2f98f9facd92f91621577739af21df8e9ad3b189d660",
+  "idempotency_key": "review_verdict:9a2191e4230b672b4a3faaed793e3110a94b79e1:115428177681",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115428177681,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The rewritten lock_anchor_tickets docstring states 'The caller must take the shared project fence AFTER these locks and BEFORE reading received_anchor'. The only caller visible in the diff, pg_focus_slot.open, complies (lock_anchor_tickets then lock_anchor_project_shared), and the blast radius notes",
+          "file": "src/brain_v42/db/focus_slots.py",
+          "id": "F-396-1",
+          "line": 351,
+          "severity": "minor",
+          "status": "new",
+          "title": "Shared fence is a docstring-enforced caller obligation"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 396,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "9a2191e4230b672b4a3faaed793e3110a94b79e1",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T17:07:56.806524Z",
+  "schema_version": 1
+}
