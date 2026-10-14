@@ -1180,6 +1180,26 @@ consecutive failure the observer also writes an `observation_backoff` line on st
 operator fix. Once it is fixed, `brain_delivery_refresh` on the ticket makes its
 contexts and active bindings due at once instead of waiting out the backoff.
 
+## Embedding backlog runner
+
+Every knowledge write commits its row first, with a NULL vector, and embeds it after
+the commit. When the embedding provider fails, the row stays in the durable backlog:
+rows whose vector is NULL or has a near-zero norm. Full-text search still finds such a
+row, semantic search does not, until something re-embeds it. That something is
+`python -m brain_v42.maintenance.embedding_backfill`, and only that: the MCP server
+runs no backlog loop of its own.
+
+**On red-base** the `embedding-backfill` Compose service runs it once at start and then
+every hour, over every project and every entity type. Whether it writes is declared on
+its command line (`--execute` or not) in `deploy/compose.yaml` and changes only through
+a pull request followed by a rail deploy. Dry, a run only counts the backlog and prints
+its JSON report to `docker logs brain-v42-embedding-backfill`; it calls no provider and
+writes nothing. Arming it is not a one-flag change: with `--execute` the command also
+builds the feature and graph linkers, so the service then needs the graph environment
+as well. A failed run is retried the next hour; the healthcheck proves only that the
+loop process exists, not that a run completed. The sidecar's
+`database.embedding_backlog` block is where the backlog's size is measured.
+
 ## Delivery observer: releases and deployments
 
 Besides confirming pull requests, the delivery observer

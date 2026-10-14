@@ -1220,8 +1220,10 @@ class DeliveryListFilters(_StrictModel):
     work: Literal["implement", "repair", "review", "integrate", "accept"] | None = None
     blocker: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,99}$")
     stage: Literal["awaiting_artifact", "proposed", "verified", "integrated"] | None = None
+    ticket_id: UUIDValue | None = None
 
     def matches(self, assessment: DeliveryAssessment) -> bool:
+        """Match the computed filters; ``ticket_id`` is a column, applied in SQL."""
         return (
             (self.work is None or any(item.kind == self.work for item in assessment.eligible_work))
             and (

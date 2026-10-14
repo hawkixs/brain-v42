@@ -346,6 +346,16 @@ class Settings(BaseSettings):
         default=30.0, gt=0, validation_alias=_brain_alias("EMBEDDING_TIMEOUT")
     )
 
+    embedding_retry_budget_seconds: float = Field(
+        default=60.0, gt=0, validation_alias=_brain_alias("EMBEDDING_RETRY_BUDGET_SECONDS")
+    )
+    """Bound attempts and backoffs together so writes can persist without an embedding."""
+
+    embedding_query_deadline_seconds: float = Field(
+        default=8.0, gt=0, validation_alias=_brain_alias("EMBEDDING_QUERY_DEADLINE_SECONDS")
+    )
+    """Let searches fall back to full-text search before the longer write budget expires."""
+
     embedding_query_prefix: _UnstrippedStr = Field(
         default="", validation_alias=_brain_alias("EMBEDDING_QUERY_PREFIX")
     )
@@ -710,6 +720,11 @@ class Settings(BaseSettings):
     # --- Metrics sidecar ---
     metrics_enabled: bool = Field(default=False, validation_alias=_brain_alias("METRICS_ENABLED"))
     metrics_port: int = Field(default=9200, validation_alias=_brain_alias("METRICS_PORT"))
+    metrics_dream_scheduler: Literal["systemd_user", "none"] = Field(
+        default="systemd_user", validation_alias=_brain_alias("METRICS_DREAM_SCHEDULER")
+    )
+    """`none` declares that this host runs no Dream scheduler (a containerised
+    sidecar, or a host where Dream is not installed)."""
     metrics_receiver_auth: Literal["none", "credentials"] = Field(
         default="none", validation_alias=_brain_alias("METRICS_RECEIVER_AUTH")
     )

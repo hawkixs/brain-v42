@@ -52,6 +52,21 @@ DYNAMIC_MAPS = {
     "/metrics.dream.promotions.by_type": "target types present in dream_promotions",
 }
 
+# Per-block evaluation health, kept apart from payloads that own status keys.
+BLOCK_HEALTH = {"status": None, "error_type": None, "as_of": None, "last_ok_at": None}
+
+# Per-tool stats in both tool maps; percentiles cover a window, counters do not.
+TOOL_STATS = {
+    "calls": None,
+    "errors": None,
+    "recent_errors": None,
+    "avg_latency_ms": None,
+    "p50": None,
+    "p95": None,
+    "p99": None,
+    "samples": None,
+}
+
 # None denotes a JSON scalar (including null), [shape] a nonempty list whose
 # EVERY item must match, and [] an intentionally empty, unimplemented section.
 # Fixed vocabularies (tables, entity types, intents, receivers, killswitches,
@@ -83,7 +98,7 @@ METRICS_SCHEMA = {
         "models_seen": [None],
         "model_source": None,
     },
-    "tools": {"*": {"calls": None, "errors": None, "recent_errors": None, "avg_latency_ms": None}},
+    "tools": {"*": TOOL_STATS},
     "search_quality": {
         "searches_total": None,
         "searches_with_zero_results": None,
@@ -155,6 +170,11 @@ METRICS_SCHEMA = {
     "client_activity_registry": {
         "evictions_total": {"ttl": None, "capacity": None},
         "evictions_bearing_total": None,
+        "conversation_evictions_total": {
+            "codex": {"ttl": None, "capacity": None},
+            "claude": {"ttl": None, "capacity": None},
+        },
+        "conversation_evictions_bearing_total": {"codex": None, "claude": None},
         "occupancy": None,
         "capacity": None,
         "folded_observations_total": None,
@@ -212,12 +232,16 @@ METRICS_SCHEMA = {
     "mcp_auth_agent_unresolved": {"*": None},
     "author_binding_candidates": {"*": None},
     "cross_process": {
+        "counters": {
+            "epoch": None,
+            "since": None,
+            "processes": None,
+            "tool_latency_window_s": None,
+        },
         "active_processes": None,
         "active_agents": None,
         "total_memory_rss_bytes": None,
-        "tools": {
-            "*": {"calls": None, "errors": None, "recent_errors": None, "avg_latency_ms": None}
-        },
+        "tools": {"*": TOOL_STATS},
         "embedding": {
             "total_requests": None,
             "total_errors": None,
@@ -235,9 +259,12 @@ METRICS_SCHEMA = {
         },
     },
     "dream": {
+        "state": None,
         "last_run": {
             "date": None,
             "status": None,
+            "judged": None,
+            "scheduler_state": None,
             "phases_ok": None,
             "phases_fail": None,
             "total_cost_usd": None,
@@ -268,6 +295,15 @@ METRICS_SCHEMA = {
         "generated_at": None,
     },
     "nightly": {
+        "scheduler": {
+            "state": None,
+            "source": None,
+            "timer": {"unit_file_state": None, "active_state": None, "next_elapse": None},
+            "service": {"active_state": None},
+            "error_type": None,
+        },
+        "dream_state": None,
+        "killswitches_source": None,
         "killswitches": {
             "promote": None,
             "reorg": None,
@@ -331,6 +367,19 @@ METRICS_SCHEMA = {
         ],
         "generated_at": None,
     },
+    "block_status": dict.fromkeys(
+        (
+            "database",
+            "search_quality",
+            "cross_process",
+            "dream",
+            "nightly",
+            "tickets",
+            "session_slots",
+            "graph_inventory",
+        ),
+        BLOCK_HEALTH,
+    ),
 }
 
 COCKPIT_SCHEMA = {
@@ -393,6 +442,11 @@ COCKPIT_SCHEMA = {
         "hitRate": None,
         "rerankUsed": None,
         "queries24h": None,
+    },
+    "block_status": {
+        "memory": BLOCK_HEALTH,
+        "retrieval": BLOCK_HEALTH,
+        "retrieval_log": BLOCK_HEALTH,
     },
     "latencyBuckets": [{"range": None, "count": None, "tone": None}],
     "cost": {

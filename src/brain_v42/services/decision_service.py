@@ -284,11 +284,17 @@ class DecisionService:
         tags: list[str] | None = None,
         limit: int = 20,
         offset: int = 0,
+        include_archived: bool = True,
     ) -> list[Decision]:
         """Full-text search. Wraps repo.search_fts() and strips scores.
 
         The MCP tool `brain_search_decisions` calls this method directly.
+        ``include_archived=False`` excludes merged and archived rows in the SQL
+        WHERE, before the LIMIT; the default keeps them.
         """
+        live: dict[str, Any] = (
+            {} if include_archived else {"extra_clauses": self._repo.live_row_clauses()}
+        )
         results = await self._repo.search_fts(
             query,
             project_key=project_key,
@@ -297,6 +303,7 @@ class DecisionService:
             tags=tags,
             limit=limit,
             offset=offset,
+            **live,
         )
         return [decision for decision, _score in results]
 
@@ -308,17 +315,23 @@ class DecisionService:
         project_keys: list[str] | None = None,
         limit: int = 20,
         embedding: list[float] | None = None,
+        include_archived: bool = True,
     ) -> list[tuple[Decision, float]]:
         """Semantic search via pgvector cosine similarity.
 
         Embeds the query string, then delegates to repo.search_vector().
         When a pre-computed ``embedding`` is provided, skips the embed() call.
+        ``include_archived=False`` excludes merged and archived rows in the SQL
+        WHERE, before the LIMIT; the default keeps them.
         Returns list of (Decision, similarity_score) tuples.
         """
         if embedding is None:
             embedding = await self._embedding_svc.embed_query(query)
+        live: dict[str, Any] = (
+            {} if include_archived else {"extra_clauses": self._repo.live_row_clauses()}
+        )
         return await self._repo.search_vector(
-            embedding, project_key=project_key, project_keys=project_keys, limit=limit
+            embedding, project_key=project_key, project_keys=project_keys, limit=limit, **live
         )
 
     # ── Supersession ─────────────────────────────────────────────────────────

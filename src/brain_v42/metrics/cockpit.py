@@ -21,6 +21,7 @@ from brain_v42.config import get_settings
 from brain_v42.metrics.client_activity import ClientActivityRegistry
 from brain_v42.metrics.collector import MetricsCollector, _get_rss_bytes
 from brain_v42.metrics.memory_stats import collect_memory_stats
+from brain_v42.metrics.slow_block_cache import BlockHealth
 
 logger = structlog.get_logger(__name__)
 
@@ -43,6 +44,7 @@ class CockpitCollector:
         self._cache: dict[str, Any] | None = None
         self._cache_ts: float = 0.0
         self._cache_lock = asyncio.Lock()
+        self._block_health = BlockHealth()
 
     async def snapshot(self) -> dict[str, Any]:
         """Return the full cockpit payload (cached 1s)."""
@@ -65,8 +67,13 @@ class CockpitCollector:
         tool_pct = self._collector.tool_percentiles(window_s=300.0)
         rates = self._collector.compute_rates(window_s=60.0)
         retrieval_pct = self._collector.retrieval_percentiles(window_s=86400.0)
+        self._block_health.record(
+            "retrieval",
+            "not_measured" if retrieval_pct["p95"] is None else "ok",
+            "no_samples" if retrieval_pct["p95"] is None else None,
+        )
 
-        memory = await collect_memory_stats(self._session_factory)
+        memory = await collect_memory_stats(self._session_factory, health=self._block_health)
         retrieval = await self._retrieval_stats(retrieval_pct)
         tools_block = self._tools_block()
 
@@ -141,12 +148,17 @@ class CockpitCollector:
             "skills": [],
             "memory": memory,
             "retrieval": retrieval,
+            "block_status": {
+                "memory": self._block_health.health("memory"),
+                "retrieval": self._block_health.health("retrieval"),
+                "retrieval_log": self._block_health.health("retrieval_log"),
+            },
             "latencyBuckets": buckets,
             "cost": {
                 # None when no record_cost caller exists — honest 'no data source'.
                 # Becomes a float once record_cost is wired in the MCP lifecycle.
                 "today": round(total_cost, 2) if has_cost_data else None,
-                "yesterday": 0.0,  # deferred: 7-day rollup
+                "yesterday": None,  # not measured: no 7-day rollup exists
                 "week": 0.0,
                 "month": 0.0,
                 "byModel": by_model,
@@ -218,7 +230,7 @@ class CockpitCollector:
         """
         return None
 
-    async def _retrieval_stats(self, pct: dict[str, float]) -> dict[str, Any]:
+    async def _retrieval_stats(self, pct: dict[str, float | None]) -> dict[str, Any]:
         try:
             async with self._session_factory() as session:
                 row = (
@@ -232,17 +244,22 @@ class CockpitCollector:
                     )
                 ).one()
                 total, zero = int(row[0] or 0), int(row[1] or 0)
-        except Exception:
+        except Exception as exc:
             logger.warning("metrics.cockpit.retrieval_stats.failed", exc_info=True)
-            total, zero = 0, 0
+            total, zero = None, None
+            self._block_health.record("retrieval_log", "degraded", type(exc).__name__)
+        else:
+            self._block_health.record("retrieval_log", "ok")
 
         rer_total = self._collector._reranker_stats["total_calls"]
-        rer_ratio = rer_total / total if total else 0.0
+        rer_ratio = rer_total / total if total else (None if total is None else 0.0)
 
         return {
             "p50": pct["p50"],
             "p95": pct["p95"],
-            "hitRate": round(1 - (zero / total), 2) if total else 0.0,
-            "rerankUsed": round(rer_ratio, 2),
+            "hitRate": (
+                None if total is None else (round(1 - ((zero or 0) / total), 2) if total else 0.0)
+            ),
+            "rerankUsed": round(rer_ratio, 2) if rer_ratio is not None else None,
             "queries24h": total,
         }

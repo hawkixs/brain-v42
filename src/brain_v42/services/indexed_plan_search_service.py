@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from brain_v42.models.indexed_plan_chunk import IndexedPlanChunk
+from brain_v42.repositories.pg_base import VectorScanSettings
 
 
 class IndexedPlanSearchService:
@@ -29,6 +30,7 @@ class IndexedPlanSearchService:
         session_factory: async_sessionmaker[AsyncSession],
     ) -> None:
         self._sf = session_factory
+        self._vector_scan = VectorScanSettings()
 
     async def search(
         self,
@@ -208,14 +210,19 @@ class IndexedPlanSearchService:
             LIMIT :limit
         """  # nosec B608 - fragment = `where`, a join of the only literals returned by _build_where (no call value enters it); the embedding goes through the :emb bind, project_key/:pks/:tags likewise; exception reviewed on 2026-08-16, to be re-examined before 2026-09-30
 
-        return await self._execute_query(sql, params)
+        return await self._execute_query(sql, params, vector_limit=limit)
 
     async def _execute_query(
         self,
         sql: str,
         params: dict[str, Any],
+        *,
+        vector_limit: int | None = None,
     ) -> list[tuple[IndexedPlanChunk, float]]:
+        """Run ``sql``; a vector query (``vector_limit`` set) first sets the HNSW scan params."""
         async with self._sf() as session:
+            if vector_limit is not None:
+                await self._vector_scan.apply(session, vector_limit)
             result = await session.execute(text(sql), params)
             rows = result.mappings().all()
 

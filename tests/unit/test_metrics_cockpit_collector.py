@@ -266,8 +266,8 @@ async def test_phase2_deferred_cost_fields_remain_zero(
         new=AsyncMock(return_value=dict(_NULL_MEMORY)),
     ):
         snap = await cockpit.snapshot()
-    # yesterday / week / month require 7-day rollup — deferred.
-    assert snap["cost"]["yesterday"] == 0.0
+    # Yesterday has no rollup source; week and month keep their existing contract.
+    assert snap["cost"]["yesterday"] is None
     assert snap["cost"]["week"] == 0.0
     assert snap["cost"]["month"] == 0.0
 
