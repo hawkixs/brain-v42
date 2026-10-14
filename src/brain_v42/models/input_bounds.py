@@ -16,9 +16,10 @@ has at least 2.8x headroom; lists at least 2.9x and relations 5.5x. These
 bounds refuse writes without truncating, and deliberately leave reads unbounded.
 """
 
+import json
 from typing import Annotated
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
 KNOWLEDGE_TEXT_MAX_LENGTH = 50_000
 SHORT_TEXT_MAX_LENGTH = 2_000
@@ -30,8 +31,41 @@ SEARCH_QUERY_MAX_LENGTH = 10_000
 KnowledgeText = Annotated[str, Field(max_length=KNOWLEDGE_TEXT_MAX_LENGTH)]
 ShortText = Annotated[str, Field(max_length=SHORT_TEXT_MAX_LENGTH)]
 Tag = Annotated[str, Field(max_length=TAG_MAX_LENGTH)]
-TagList = Annotated[list[Tag], Field(max_length=LIST_MAX_ITEMS)]
-ShortTextList = Annotated[list[ShortText], Field(max_length=LIST_MAX_ITEMS)]
-StepList = Annotated[list[dict], Field(max_length=LIST_MAX_ITEMS)]
+
+
+def _single_text_as_list(value: object) -> object:
+    """Accept scalar text and JSON-encoded lists without hiding malformed input."""
+    if not isinstance(value, str):
+        return value
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("must not be an empty string")
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError as exc:
+            raise ValueError("looks like a JSON list but is not valid JSON") from exc
+        if isinstance(parsed, list):
+            return parsed
+        raise ValueError("looks like a JSON list but is not valid JSON")
+    return [value]
+
+
+_TEXT_LIST_DESCRIPTION = "A list of text; a single string is accepted as a one-element list."
+TagList = Annotated[
+    list[Tag],
+    BeforeValidator(_single_text_as_list),
+    Field(max_length=LIST_MAX_ITEMS, description=_TEXT_LIST_DESCRIPTION),
+]
+ShortTextList = Annotated[
+    list[ShortText],
+    BeforeValidator(_single_text_as_list),
+    Field(max_length=LIST_MAX_ITEMS, description=_TEXT_LIST_DESCRIPTION),
+]
+StepList = Annotated[
+    list[dict | ShortText],
+    BeforeValidator(_single_text_as_list),
+    Field(max_length=LIST_MAX_ITEMS, description="Each step is an object or a title string."),
+]
 RelationList = Annotated[list[dict], Field(max_length=RELATIONS_MAX_ITEMS)]
 SearchQuery = Annotated[str, Field(max_length=SEARCH_QUERY_MAX_LENGTH)]

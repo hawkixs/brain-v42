@@ -24,12 +24,12 @@ async def test_returns_null_shape_on_exception(session_factory: MagicMock) -> No
     session_factory.return_value.execute.side_effect = Exception("boom")
     stats = await collect_memory_stats(session_factory)
     assert stats == {
-        "episodes": 0,
-        "episodic_mb": 0,
-        "semantic_chunks": 0,
-        "semantic_mb": 0,
+        "episodes": None,
+        "episodic_mb": None,
+        "semantic_chunks": None,
+        "semantic_mb": None,
         "lastCompaction": None,
-        "freedLastCompaction": 0,
+        "freedLastCompaction": None,
         "vectorIndex": None,
     }
 

@@ -313,11 +313,17 @@ class LearningService:
         confidence: str | None = None,
         limit: int = 20,
         offset: int = 0,
+        include_archived: bool = True,
     ) -> list[Learning]:
         """Full-text search. Wraps repo.search_fts() and returns list[Learning].
 
         The MCP tool `brain_recall` calls this method for keyword searches.
+        ``include_archived=False`` excludes merged and archived rows in the SQL
+        WHERE, before the LIMIT; the default keeps them.
         """
+        live: dict[str, Any] = (
+            {} if include_archived else {"extra_clauses": self._repo.live_row_clauses()}
+        )
         return await self._repo.search_fts(
             query,
             project_key=project_key,
@@ -325,6 +331,7 @@ class LearningService:
             confidence=confidence,
             limit=limit,
             offset=offset,
+            **live,
         )
 
     async def semantic_search(
@@ -335,8 +342,12 @@ class LearningService:
         confidence: str | None = None,
         limit: int = 10,
         embedding: list[float] | None = None,
+        include_archived: bool = True,
     ) -> list[tuple[Learning, float]]:
         """Semantic search via pgvector cosine similarity.
+
+        ``include_archived=False`` excludes merged and archived rows in the SQL
+        WHERE, before the LIMIT; the default keeps them.
 
         When a pre-computed ``embedding`` is provided, skips the embed() call.
         When embedding_svc is None and no embedding provided, logs a warning
@@ -354,12 +365,16 @@ class LearningService:
                 return []
             embedding = await self._embedding_svc.embed_query(query)
 
+        live: dict[str, Any] = (
+            {} if include_archived else {"extra_clauses": self._repo.live_row_clauses()}
+        )
         return await self._repo.search_vector(
             embedding,
             project_key=project_key,
             project_keys=project_keys,
             confidence=confidence,
             limit=limit,
+            **live,
         )
 
     # ── Validate ─────────────────────────────────────────────────────────────

@@ -84,7 +84,7 @@ class SearchDiagnostics(BaseModel):
     )
     min_score_effective: float = Field(
         default=0.0,
-        description="The min_score threshold actually applied (0.0 when fan-out is degraded).",
+        description="The min_score threshold actually applied (0.0 when the score scale is degraded).",
     )
     rerank_identity: str | None = Field(
         default=None,
@@ -159,6 +159,14 @@ class SearchDiagnostics(BaseModel):
         default=False,
         description="True when the fan-out ran in ANY degraded mode (mirrors SearchResponse.degraded).",
     )
+    failed_types: list[str] = Field(
+        default_factory=list,
+        description="Knowledge type names whose search shards failed; never exception messages.",
+    )
+    graph_degraded: bool = Field(
+        default=False,
+        description="True when optional graph enrichment raised; search results remain usable.",
+    )
 
 
 class SearchResponse(BaseModel):
@@ -179,6 +187,7 @@ class SearchResponse(BaseModel):
             "Keys: rerank_mode ('rrf_fallback' when reranker is down, "
             "'rrf_only' when no reranker is configured — permanent mode), "
             "search_mode ('fts_fallback' when embedding service is down). "
+            "failed_types lists knowledge type names whose shards failed. "
             "None when search ran fully."
         ),
     )
@@ -210,6 +219,7 @@ class WhatDoIKnowResponse(BaseModel):
             "Keys: rerank_mode ('rrf_fallback' when reranker is down, "
             "'rrf_only' when no reranker is configured), "
             "search_mode ('fts_fallback' when embedding service is down). "
+            "failed_types lists knowledge type names whose shards failed. "
             "None when search ran fully."
         ),
     )

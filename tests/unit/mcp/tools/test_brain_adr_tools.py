@@ -172,6 +172,41 @@ class TestBrainProposeAdr:
         assert call_arg.alternatives_considered[0].reason_rejected == "Too heavy"
 
     @pytest.mark.asyncio
+    async def test_propose_adr_text_alternatives_fill_title_and_description(self) -> None:
+        mcp, mock_svc = _make_mcp_with_adr_tools()
+        mock_svc.create = AsyncMock(return_value=_make_adr())
+        fn = await _get_tool_fn(mcp, "brain_propose_adr")
+        await fn(
+            title="ADR",
+            context="ctx",
+            decision="dec",
+            consequences="cons",
+            project_key="proj",
+            alternatives=["A", "B"],
+        )
+        alternatives = mock_svc.create.call_args.args[0].alternatives_considered
+        assert [(item.title, item.description) for item in alternatives] == [("A", "A"), ("B", "B")]
+
+    @pytest.mark.asyncio
+    async def test_propose_adr_refuses_both_alternative_parameters(self) -> None:
+        mcp, mock_svc = _make_mcp_with_adr_tools()
+        fn = await _get_tool_fn(mcp, "brain_propose_adr")
+        result = await fn(
+            title="ADR",
+            context="ctx",
+            decision="dec",
+            consequences="cons",
+            project_key="proj",
+            alternatives=["A"],
+            alternatives_considered=[{"title": "B", "description": "B"}],
+        )
+        assert (
+            "Pass either alternatives or alternatives_considered, not both; the shapes are ambiguous."
+            in result
+        )
+        mock_svc.create.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_propose_adr_defaults_alternatives_to_empty(self) -> None:
         """brain_propose_adr passes alternatives_considered=[] when parameter is None."""
         mcp, mock_svc = _make_mcp_with_adr_tools()
