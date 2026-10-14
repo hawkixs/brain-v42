@@ -305,6 +305,7 @@ class SnippetService:
         language: str | None = None,
         limit: int = 20,
         offset: int = 0,
+        include_archived: bool = True,
     ) -> list[Snippet]:
         """Full-text search snippets via ts_rank.
 
@@ -315,11 +316,16 @@ class SnippetService:
             language: Optional programming language filter.
             limit: Maximum number of results.
             offset: Pagination offset.
+            include_archived: False excludes merged and archived rows in the SQL
+                WHERE, before the LIMIT; the default keeps them.
 
         Returns:
             List of matching Snippet instances ordered by FTS rank.
         """
         logger.debug("snippet_service.search", query_length=len(query), limit=limit)
+        live: dict[str, Any] = (
+            {} if include_archived else {"extra_clauses": self._repo.live_row_clauses()}
+        )
         return await self._repo.search(
             query=query,
             project_key=project_key,
@@ -327,6 +333,7 @@ class SnippetService:
             language=language,
             limit=limit,
             offset=offset,
+            **live,
         )
 
     async def semantic_search(
@@ -337,6 +344,7 @@ class SnippetService:
         project_keys: list[str] | None = None,
         language: str | None = None,
         embedding: list[float] | None = None,
+        include_archived: bool = True,
     ) -> list[tuple[Snippet, float]]:
         """Semantic search over snippets by intention similarity.
 
@@ -349,6 +357,8 @@ class SnippetService:
             project_key: Optional project key filter.
             language: Optional programming language filter (SQL-level, not post-filter).
             embedding: Optional pre-computed embedding vector (skips embed() call).
+            include_archived: False excludes merged and archived rows in the SQL
+                WHERE, before the LIMIT; the default keeps them.
 
         Returns:
             List of (Snippet, similarity_score) tuples ordered by similarity DESC.
@@ -363,12 +373,16 @@ class SnippetService:
             if self._embedding_svc is None:
                 raise ValueError("embedding_svc is required for semantic search")
             embedding = await self._embedding_svc.embed_query(query)
+        live: dict[str, Any] = (
+            {} if include_archived else {"extra_clauses": self._repo.live_row_clauses()}
+        )
         return await self._repo.vector_search(
             embedding,
             limit=limit,
             project_key=project_key,
             project_keys=project_keys,
             language=language,
+            **live,
         )
 
     async def increment_use(self, id: uuid.UUID) -> Snippet | None:

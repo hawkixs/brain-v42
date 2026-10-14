@@ -2,7 +2,7 @@
 
 Persistent, typed project memory exposed through the Model Context Protocol (MCP). It stores decisions, learnings, snippets, runbooks, architecture decision records (ADRs), project focus, tickets, claims, and delivery evidence. PostgreSQL is the source of truth; PostgreSQL full-text search and pgvector provide retrieval, with an optional cross-encoder reranker. Neo4j is an optional relationship projection.
 
-brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.6.16 ships the security and integrity follow-ups of lot 0.6.11 (a per-project fence between slot opening and the receipt-triggered automatic slot closure, exception messages redacted from standard-library console logs, a raw-exception test guard extended to raise statements, a hardened uv version parity test) on top of 0.6.15 (rerank budget), 0.6.14 (direct Voyage rerank) and 0.6.13 (programmes/v1, migration 065, recovery contract v23), and migrations 063 to 065. See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
+brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.6.17 ships the metrics M1 lot (collectors report "not measured" as null with a per-block `block_status` instead of fabricated zeros, Dream's measured scheduler state, per-tool latency percentiles with a reset-detectable counter epoch, OTLP conversation eviction counters, and `GET /metrics?exclude=`) and three MCP ergonomics changes of lot 0.7.1 (guidance for invented tool names and nested gateway calls, tolerance for the list and runbook-step shapes models send, which widens the input schemas of 14 knowledge tools and adds an optional `alternatives` to `brain_propose_adr`, capture tool descriptions that open with the routing rule) on top of 0.6.16 (security and integrity follow-ups of lot 0.6.11), 0.6.15 (rerank budget), 0.6.14 (direct Voyage rerank) and 0.6.13 (programmes/v1, migration 065, recovery contract v23), and migrations 063 to 065. See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
 
 ## Architecture
 
@@ -344,7 +344,7 @@ disaster-recovery proof, and metrics. Operators can suspend Dream and re-arm it 
 
 ## Versioning
 
-- The shipped version is **0.6.16**, and it stays `0.x` on purpose: a `1.0.0` would promise
+- The shipped version is **0.6.17**, and it stays `0.x` on purpose: a `1.0.0` would promise
   a stable interface and a way back, and this project has neither yet.
 - **No lossless downgrade is promised, at any version.** Several migrations protect stored
   history: **037** refuses when a session capture would be lost, **039** requires an explicit

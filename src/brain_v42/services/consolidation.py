@@ -34,6 +34,10 @@ class ConsolidationEntityNotFoundError(LookupError):
     """One merge endpoint was absent from the authoritative transaction scope."""
 
 
+class ConsolidationEndpointMergedError(ValueError):
+    """Reject absorbed endpoints so a merge cannot point readers at a dead row."""
+
+
 class ConsolidationJob:
     """Detect near-duplicate entities using pgvector cosine similarity."""
 
@@ -61,6 +65,8 @@ class ConsolidationJob:
 
         PostgreSQL and its consolidation audit are authoritative and share one
         transaction. Neo4j is attempted only after that transaction commits.
+        Absorbed endpoints are refused, and incoming merge pointers move with
+        the source so readers never need a second hop to reach the survivor.
 
         Args:
             entity_type: Type shared by the source and target entities.
@@ -75,9 +81,10 @@ class ConsolidationJob:
             raise ValueError("Source and target must be different entities")
 
         project_key = authorization.project_key if authorization is not None else None
+        foreign_children_count = 0
         async with self._session_factory() as session:
             async with session.begin():
-                source_row, target_row = await self._lock_merge_pair(
+                source_row, target_row, child_ids = await self._lock_merge_pair(
                     session,
                     table,
                     entity_type,
@@ -85,6 +92,16 @@ class ConsolidationJob:
                     target_id,
                     project_key=project_key,
                 )
+                if project_key is not None:
+                    foreign_children = await session.execute(
+                        sa.select(sa.func.count())
+                        .select_from(table)
+                        .where(
+                            table.c.merged_into == source_id,
+                            table.c.project_key.is_distinct_from(project_key),
+                        )
+                    )
+                    foreign_children_count = foreign_children.scalar_one_or_none() or 0
                 merged_tags = list(
                     dict.fromkeys([*(target_row["tags"] or []), *(source_row["tags"] or [])])
                 )
@@ -95,6 +112,7 @@ class ConsolidationJob:
                     source_id,
                     target_id,
                     merged_tags,
+                    child_ids,
                     project_key=project_key,
                 )
                 await self._log_repo.log_action_in_session(
@@ -105,13 +123,33 @@ class ConsolidationJob:
                     similarity=1.0,
                     action="merged",
                 )
+                for child_id in child_ids:
+                    await self._log_repo.log_action_in_session(
+                        session,
+                        source_id=child_id,
+                        target_id=target_id,
+                        entity_type=entity_type,
+                        similarity=1.0,
+                        action="repointed",
+                    )
 
+        if foreign_children_count:
+            logger.warning(
+                "consolidation.merge.foreign_children_left", count=foreign_children_count
+            )
         await self._write_graph_relation(
             entity_type,
             source_id,
             target_id,
             authorization=authorization,
         )
+        for child_id in child_ids:
+            await self._write_graph_relation(
+                entity_type,
+                child_id,
+                target_id,
+                authorization=authorization,
+            )
 
     async def _lock_merge_pair(
         self,
@@ -122,11 +160,12 @@ class ConsolidationJob:
         target_id: UUID,
         *,
         project_key: str | None,
-    ) -> tuple[Any, Any]:
+    ) -> tuple[Any, Any, list[UUID]]:
+        """Lock endpoints and incoming merges in one UUID order to avoid lock inversion."""
         locked_ids = sorted((source_id, target_id), key=lambda entity_id: entity_id.int)
         statement = (
             sa.select(table)
-            .where(table.c.id.in_(locked_ids))
+            .where(sa.or_(table.c.id.in_(locked_ids), table.c.merged_into == source_id))
             .order_by(table.c.id)
             .with_for_update()
         )
@@ -141,7 +180,14 @@ class ConsolidationJob:
         target_row = rows.get(target_id)
         if target_row is None:
             raise ConsolidationEntityNotFoundError(f"Target {entity_type} {target_id} not found")
-        return source_row, target_row
+        for endpoint, row in (("Source", source_row), ("Target", target_row)):
+            if row["merged_into"] is not None:
+                survivor = f" into {row['merged_into']}" if project_key is None else ""
+                raise ConsolidationEndpointMergedError(
+                    f"{endpoint} {entity_type} {row['id']} already merged{survivor}"
+                )
+        child_ids = [entity_id for entity_id in rows if entity_id not in (source_id, target_id)]
+        return source_row, target_row, child_ids
 
     async def _update_merge_pair(
         self,
@@ -151,9 +197,11 @@ class ConsolidationJob:
         source_id: UUID,
         target_id: UUID,
         merged_tags: list[str],
+        child_ids: list[UUID],
         *,
         project_key: str | None,
     ) -> None:
+        """Move already locked incoming merges so readers keep a one-hop pointer."""
         target_update = sa.update(table).where(table.c.id == target_id)
         source_update = sa.update(table).where(table.c.id == source_id)
         if project_key is not None:
@@ -179,6 +227,15 @@ class ConsolidationJob:
         )
         if source_result.scalar_one_or_none() is None:
             raise ConsolidationEntityNotFoundError(f"Source {entity_type} {source_id} not found")
+        if child_ids:
+            child_update = (
+                sa.update(table)
+                .where(table.c.id.in_(child_ids), table.c.merged_into == source_id)
+                .values(merged_into=target_id)
+            )
+            if project_key is not None:
+                child_update = child_update.where(table.c.project_key == project_key)
+            await session.execute(child_update)
 
     async def _write_graph_relation(
         self,

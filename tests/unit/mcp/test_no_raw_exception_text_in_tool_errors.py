@@ -17,6 +17,12 @@ CALLER_SAFE_SITES: dict[tuple[str, str, str, str], str] = {
         "return self._transport_refusal(request, exc.reason, None)",
     ): "CredentialRefused carries a closed reason code, never an underlying error payload.",
     (
+        "mcp/argument_guidance.py",
+        "on_call_tool",
+        "ValidationError",
+        "ToolError(_guidance(name, exc, parameters, context.message.arguments or {}))",
+    ): "Guidance reads errors(include_input=False): field paths and expected types, never values.",
+    (
         "mcp/business_errors.py",
         "surfaced",
         "SURFACED_BUSINESS_ERRORS",
@@ -85,9 +91,15 @@ CALLER_SAFE_SITES: dict[tuple[str, str, str, str], str] = {
     (
         "mcp/tools/decay_tools.py",
         "brain_merge_entities",
-        "ConsolidationEntityNotFoundError",
+        "(ConsolidationEntityNotFoundError, ConsolidationEndpointMergedError)",
         "format_error(str(exc))",
-    ): "Consolidation constructs a missing source/target message from entity type and UUID.",
+    ): "Consolidation constructs a missing or already-merged endpoint message from entity type and UUID.",
+    (
+        "mcp/tools/brain_tools.py",
+        "brain_supersede_decision",
+        "DecisionNotSupersedableError",
+        "format_error(str(exc))",
+    ): "Supersession refuses a missing or already-superseded decision by its UUID only.",
     (
         "mcp/tools/crud_tools.py",
         "brain_update",

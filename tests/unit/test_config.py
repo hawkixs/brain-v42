@@ -4,6 +4,43 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 
+def test_metrics_dream_scheduler_defaults_to_systemd_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    from brain_v42.config import Settings
+
+    monkeypatch.delenv("METRICS_DREAM_SCHEDULER", raising=False)
+    monkeypatch.delenv("BRAIN_METRICS_DREAM_SCHEDULER", raising=False)
+    settings = Settings(
+        postgres_url="postgresql+asyncpg://test:test@localhost/test", _env_file=None
+    )
+    assert settings.metrics_dream_scheduler == "systemd_user"
+
+
+@pytest.mark.parametrize("key", ["METRICS_DREAM_SCHEDULER", "BRAIN_METRICS_DREAM_SCHEDULER"])
+def test_metrics_dream_scheduler_reads_none_from_environment(
+    monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    from brain_v42.config import Settings
+
+    monkeypatch.delenv("METRICS_DREAM_SCHEDULER", raising=False)
+    monkeypatch.delenv("BRAIN_METRICS_DREAM_SCHEDULER", raising=False)
+    monkeypatch.setenv(key, "none")
+    settings = Settings(
+        postgres_url="postgresql+asyncpg://test:test@localhost/test", _env_file=None
+    )
+    assert settings.metrics_dream_scheduler == "none"
+
+
+def test_metrics_dream_scheduler_rejects_unknown_modes() -> None:
+    from brain_v42.config import Settings
+
+    with pytest.raises(ValidationError, match="metrics_dream_scheduler|METRICS_DREAM_SCHEDULER"):
+        Settings(
+            postgres_url="postgresql+asyncpg://test:test@localhost/test",
+            metrics_dream_scheduler="cron",
+            _env_file=None,
+        )
+
+
 def test_settings_default_values(monkeypatch):
     """Settings has sensible defaults for all optional fields.
 

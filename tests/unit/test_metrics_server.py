@@ -141,9 +141,6 @@ def collector() -> MetricsCollector:
     c.collect_dream_promotions = AsyncMock(  # type: ignore[method-assign]
         return_value={}
     )
-    c.collect_dream_promoted_health = AsyncMock(  # type: ignore[method-assign]
-        return_value=[]
-    )
     # Nightly section (ticket de1ad785): an empty stub by default — otherwise the
     # handler would read the test machine's REAL killswitches file.
     c.collect_nightly_ops = AsyncMock(  # type: ignore[method-assign]
@@ -182,6 +179,40 @@ async def test_metrics_endpoint_returns_json(
     assert data["database"]["embedding_backlog"]["total"] == 2
     assert data["database"]["graph_outbox"]["pending"] == 7
     assert data["database"]["graph_outbox"]["projector"]["healthy"] is True
+
+
+@pytest.mark.parametrize("db_failed", [False, True])
+async def test_metrics_omits_dream_without_run_data(
+    collector: MetricsCollector, mock_embedding_svc: MagicMock, db_failed: bool
+) -> None:
+    """Exercise the real Dream collector through response assembly and its cache."""
+    del collector.collect_dream_metrics
+    session = AsyncMock()
+    session.__aenter__.return_value = session
+    result = MagicMock()
+    result.all.return_value = []
+    session.execute = AsyncMock(return_value=result)
+    if db_failed:
+        session.execute.side_effect = RuntimeError("DB unavailable")
+    collector._session_factory.return_value = session
+    collector.collect_nightly_ops.return_value = {
+        "scheduler": {"state": "armed"},
+        "dream_state": "armed",
+    }
+    server = MetricsServer(collector, mock_embedding_svc)
+    with patch(
+        "brain_v42.metrics.collector_dream.read_dream_scheduler_state",
+        new_callable=AsyncMock,
+        return_value={"state": "armed"},
+    ):
+        response = await server._handle_metrics(MagicMock())
+
+    data = json.loads(response.body)
+    assert response.status == 200
+    assert "dream" not in data
+    assert data["nightly"]["scheduler"]["state"] == "armed"
+    assert data["nightly"]["dream_state"] == "armed"
+    assert data["block_status"]["dream"]["status"] == ("degraded" if db_failed else "ok")
 
 
 @pytest.mark.parametrize("backend", ["none", "cohere", "shim"])
@@ -405,22 +436,6 @@ async def test_metrics_payload_does_not_grow_with_the_promotions_of_the_dream(
     collector.collect_dream_metrics = AsyncMock(  # type: ignore[method-assign]
         return_value={"last_run": {"date": "2026-04-27", "status": "success"}, "history": []}
     )
-    collector.collect_dream_promoted_health = AsyncMock(  # type: ignore[method-assign]
-        return_value=[
-            {
-                "target_type": "adr",
-                "target_id": f"00000000-0000-0000-0000-{index:012d}",
-                "title": f"Promoted ADR number {index} with a realistically long title",
-                "status": "accepted",
-                "superseded": False,
-                "access_count": index,
-                "days_since_promotion": 2.5,
-                "days_since_last_access": 1.0,
-                "promoted_at": "2026-04-25T06:14:00+00:00",
-            }
-            for index in range(150)
-        ]
-    )
     server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
     client = await aiohttp_client(server._build_app())
 
@@ -429,7 +444,6 @@ async def test_metrics_payload_does_not_grow_with_the_promotions_of_the_dream(
 
     assert "promoted_health" not in json.loads(body)["dream"]
     assert b"promoted_health" not in body
-    collector.collect_dream_promoted_health.assert_not_awaited()
     assert len(body) < _METRICS_PAYLOAD_BUDGET_BYTES
 
 

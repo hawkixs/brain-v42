@@ -213,7 +213,7 @@ async def test_brain_search_fan_out_makes_one_rerank_call() -> None:
     original = dict(bs._TEXT_EXTRACTORS)
     bs._TEXT_EXTRACTORS.update({k: (lambda e: e.text) for k in original})
     try:
-        results, degraded, mode, _kinds = await brain._fan_out(
+        results, degraded, mode, _kinds, _failed = await brain._fan_out(
             ["decision", "learning", "snippet", "runbook", "adr"], "q", None, 10
         )
     finally:

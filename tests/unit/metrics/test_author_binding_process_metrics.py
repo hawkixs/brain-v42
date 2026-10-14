@@ -97,12 +97,14 @@ async def test_aggregation_sums_processes_and_ignores_agent_copies() -> None:
     assert "_author_binding_candidates" not in result["tools"]
 
 
-async def test_aggregation_keeps_empty_map_before_flush_and_on_database_failure() -> None:
+async def test_aggregation_keeps_empty_map_before_flush_and_nulls_on_database_failure() -> None:
+    # A measured empty source stays empty; an unmeasured one is null, never a
+    # fabricated empty map (d1f43a66).
+    assert (await _collect([]))["author_binding_candidates"] == {}
     failed = MetricsCollector(
         engine=MagicMock(), session_factory=MagicMock(side_effect=OSError("unavailable"))
     )
-    for result in (await _collect([]), await failed.collect_process_metrics()):
-        assert result["author_binding_candidates"] == {}
+    assert (await failed.collect_process_metrics())["author_binding_candidates"] is None
 
 
 @pytest.mark.parametrize("counts", [None, {}, {KEY: 2}])

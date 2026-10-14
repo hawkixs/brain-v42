@@ -145,14 +145,14 @@ async def test_cockpit_endpoint_degraded_on_memory_stats_failure(
     server = MetricsServer(collector, mock_embedding_svc, port=0, host="127.0.0.1")
 
     # collect_memory_stats swallows its own exceptions (null shape) — mirror here.
-    async def _degraded(_sf):
+    async def _degraded(_sf: Any, **_kwargs: Any) -> dict[str, Any]:
         return {
-            "episodes": 0,
-            "episodic_mb": 0,
-            "semantic_chunks": 0,
-            "semantic_mb": 0,
+            "episodes": None,
+            "episodic_mb": None,
+            "semantic_chunks": None,
+            "semantic_mb": None,
             "lastCompaction": None,
-            "freedLastCompaction": 0,
+            "freedLastCompaction": None,
             "vectorIndex": None,
         }
 
@@ -161,7 +161,7 @@ async def test_cockpit_endpoint_degraded_on_memory_stats_failure(
         resp = await client.get("/api/cockpit")
     assert resp.status == 200
     data = await resp.json()
-    assert data["memory"]["episodes"] == 0
+    assert data["memory"]["episodes"] is None
 
 
 async def test_metrics_route_unchanged_no_regression(
