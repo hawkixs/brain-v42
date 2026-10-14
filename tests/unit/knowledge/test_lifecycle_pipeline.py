@@ -796,6 +796,40 @@ async def test_lifecycle_request_checkpoint_skips_usage_and_extraction_on_resume
     assert len(repo.extractions) == 1 and repo.runs[run_id]["real_cost"] == cost
 
 
+async def test_lifecycle_batch_wait_leaves_submitted_without_checkpoint(
+    harness: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from brain_v42.lifecycle_cli.adapters import BatchStillProcessing
+
+    pipeline, repo, client, sources, _, _ = harness
+    repo.add_entry()
+    original = client.collect
+    monkeypatch.setattr(
+        client, "collect", AsyncMock(side_effect=BatchStillProcessing("batch-one", 60))
+    )
+    with pytest.raises(BatchStillProcessing):
+        await pipeline.start("dry_run", {}, 1, run_id="waiting")
+    before = deepcopy(repo.runs["waiting"])
+    assert before["status"] == "submitted" and before["batch_ids"] == ["batch-one"]
+    assert "failure_reason" not in before["counts"]
+    assert before["usage"] == {} and before["real_cost"] is None
+    assert set(before["counts"]["request_statuses"].values()) == {"pending"}
+    assert all(
+        r["result_stored_at"] is None and r["status"] == "pending" for r in repo.requests.values()
+    )
+    assert not repo.extractions and not repo.evaluations and not repo.events and not repo.cache
+    assert not sources.calls and not repo.locked
+    with pytest.raises(BatchStillProcessing):
+        await pipeline.resume("waiting")
+    assert repo.runs["waiting"] == before and client.submissions == 1
+    monkeypatch.setattr(client, "collect", original)
+    report = await pipeline.resume("waiting")
+    assert report.status == "applied" and client.submissions == client.collections == 1
+    assert len(repo.extractions) == len(repo.evaluations) == 1
+
+
 @pytest.mark.parametrize(
     "status", ["created", "manifest_frozen", "submitted", "results_stored", "evaluated", "applying"]
 )

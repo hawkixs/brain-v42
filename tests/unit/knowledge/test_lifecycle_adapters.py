@@ -128,6 +128,126 @@ async def test_lifecycle_sdk_collect_waits_until_batch_ended(
     pause.assert_awaited_once_with(30)
 
 
+class PollClock:
+    def __init__(self) -> None:
+        self.seconds = 0.0
+        self.pauses: list[float] = []
+
+    def now(self) -> float:
+        return self.seconds
+
+    async def sleep(self, seconds: float) -> None:
+        self.pauses.append(seconds)
+        self.seconds += seconds
+
+
+@pytest.mark.parametrize("parameter", ["max_wait_seconds", "poll_interval_seconds"])
+@pytest.mark.parametrize("value", [0, -1, -0.5])
+def test_lifecycle_sdk_rejects_non_positive_wait_parameters(parameter: str, value: float) -> None:
+    factory = Mock(side_effect=AssertionError("SDK must remain lazy"))
+    with pytest.raises(ValueError, match=parameter):
+        SDKExtraction(factory, **{parameter: value})
+    factory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("budget", "interval", "polls", "pauses"),
+    [(60, 30, 2, [30, 30]), (65, 30, 3, [30, 30, 5]), (10, 30, 1, [10])],
+)
+async def test_lifecycle_sdk_collect_exhausts_budget(
+    budget: int, interval: int, polls: int, pauses: list[int]
+) -> None:
+    from brain_v42.lifecycle_cli.adapters import BatchStillProcessing
+
+    clock = PollClock()
+    batches = SimpleNamespace(
+        retrieve=Mock(return_value=SimpleNamespace(processing_status="in_progress")),
+        results=Mock(side_effect=AssertionError("Unfinished results must not be downloaded")),
+    )
+    sdk = SimpleNamespace(messages=SimpleNamespace(batches=batches))
+    adapter = SDKExtraction(
+        Mock(return_value=sdk),
+        max_wait_seconds=budget,
+        poll_interval_seconds=interval,
+        clock=clock.now,
+        sleep=clock.sleep,
+    )
+    with pytest.raises(BatchStillProcessing) as exc:
+        await adapter.collect("batch", extraction.Manifest("r", (), ()))
+    assert exc.value.batch_id == "batch" and exc.value.waited_seconds == budget
+    assert exc.value.__cause__ is None
+    assert batches.retrieve.call_count == polls
+    assert clock.pauses == pauses
+    batches.results.assert_not_called()
+
+
+async def test_lifecycle_sdk_collect_retries_transient_retrieve_failure() -> None:
+    clock = PollClock()
+    batches = SimpleNamespace(
+        retrieve=Mock(
+            side_effect=[
+                RuntimeError("temporary failure"),
+                SimpleNamespace(processing_status="ended"),
+                SimpleNamespace(processing_status="ended"),
+            ]
+        ),
+        results=Mock(return_value=[]),
+    )
+    sdk = SimpleNamespace(messages=SimpleNamespace(batches=batches))
+    adapter = SDKExtraction(
+        Mock(return_value=sdk), max_wait_seconds=60, clock=clock.now, sleep=clock.sleep
+    )
+    results = await adapter.collect("batch", extraction.Manifest("r", (), ()))
+    assert results.results == {}
+    assert clock.pauses == [30]
+    assert batches.retrieve.call_count == 3  # Includes the collector's ended check.
+    batches.results.assert_called_once_with("batch")
+
+
+async def test_lifecycle_sdk_collect_clears_recovered_retrieve_failure() -> None:
+    from brain_v42.lifecycle_cli.adapters import BatchStillProcessing
+
+    clock = PollClock()
+    batches = SimpleNamespace(
+        retrieve=Mock(
+            side_effect=[
+                RuntimeError("temporary failure"),
+                SimpleNamespace(processing_status="in_progress"),
+                SimpleNamespace(processing_status="in_progress"),
+            ]
+        ),
+        results=Mock(side_effect=AssertionError("Unfinished results must not be downloaded")),
+    )
+    sdk = SimpleNamespace(messages=SimpleNamespace(batches=batches))
+    adapter = SDKExtraction(
+        Mock(return_value=sdk), max_wait_seconds=65, clock=clock.now, sleep=clock.sleep
+    )
+    with pytest.raises(BatchStillProcessing) as exc:
+        await adapter.collect("batch", extraction.Manifest("r", (), ()))
+    assert exc.value.batch_id == "batch" and exc.value.waited_seconds == 65
+    assert exc.value.__cause__ is None
+    assert batches.retrieve.call_count == 3 and clock.pauses == [30, 30, 5]
+    batches.results.assert_not_called()
+
+
+async def test_lifecycle_sdk_collect_chains_last_retrieve_failure() -> None:
+    from brain_v42.lifecycle_cli.adapters import BatchStillProcessing
+
+    clock = PollClock()
+    first, last = RuntimeError("first failure"), RuntimeError("last failure")
+    batches = SimpleNamespace(retrieve=Mock(side_effect=[first, last]), results=Mock())
+    sdk = SimpleNamespace(messages=SimpleNamespace(batches=batches))
+    adapter = SDKExtraction(
+        Mock(return_value=sdk), max_wait_seconds=60, clock=clock.now, sleep=clock.sleep
+    )
+    with pytest.raises(BatchStillProcessing) as exc:
+        await adapter.collect("batch", extraction.Manifest("r", (), ()))
+    assert exc.value.batch_id == "batch" and exc.value.waited_seconds == 60
+    assert exc.value.__cause__ is last
+    assert batches.retrieve.call_count == 2 and clock.pauses == [30, 30]
+    batches.results.assert_not_called()
+
+
 def test_lifecycle_github_credential_is_sent_only_to_rest(monkeypatch: pytest.MonkeyPatch) -> None:
     import httpx
 

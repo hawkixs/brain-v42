@@ -1073,7 +1073,10 @@ Commands are `run --mode {dry-run,apply} --scope {all|PROJECT_KEY}
 --ceiling-usd AMOUNT`, `resume --run RUN_ID`, `invalidate --run RUN_ID --reason
 TEXT`, and `report --run RUN_ID`. All accept `--json`; reports go to stdout,
 structured logs to stderr, and entry text is never rendered. Exit codes are 0 for
-completion, 2 for a refusal, 3 for a failed execution, and 4 for an occupied run lock.
+completion, 2 for a refusal, 3 for a failed execution, 4 for an occupied run lock,
+and 5 for a batch still processing; resume later. Exit 5 prints the durable report
+and leaves the run submitted without result checkpoints. `run` and `resume` accept
+`--max-wait-seconds` (positive integer, default 7200) to bound each batch wait.
 Apply, resuming apply, and invalidate require `--backup-run-id ID` and
 `--backup-sealed-at ISO_8601_UTC`. The seal must be timezone-aware UTC, no older
 than one hour, and not in the future. The report states: "backup proof declared

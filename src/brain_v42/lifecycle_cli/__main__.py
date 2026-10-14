@@ -43,10 +43,10 @@ class GitHubAuthentication(httpx.Auth):
 async def main_async(argv: list[str], stdout: TextIO | None = None) -> int:
     output = stdout if stdout is not None else sys.stdout
     engine, registry = None, None
-    client = SDKExtraction()
+    client: SDKExtraction | None = None
     try:
         try:
-            parse_args(argv)
+            args = parse_args(argv)
         except ArgumentRefusal:
             render_report(
                 RunReport("", "", "refused", failure_reason="invalid_arguments"),
@@ -54,6 +54,7 @@ async def main_async(argv: list[str], stdout: TextIO | None = None) -> int:
                 output,
             )
             return 2
+        client = SDKExtraction(max_wait_seconds=getattr(args, "max_wait_seconds", 7200))
         settings = get_settings()
         engine = create_async_engine(settings.postgres_url, echo=False, hide_parameters=True)
         sessions = async_sessionmaker(engine)
@@ -87,7 +88,7 @@ async def main_async(argv: list[str], stdout: TextIO | None = None) -> int:
         )
         return 2
     finally:
-        closers = [client.aclose]
+        closers = [client.aclose] if client is not None else []
         if registry is not None:
             closers.append(registry.aclose)
         if engine is not None:

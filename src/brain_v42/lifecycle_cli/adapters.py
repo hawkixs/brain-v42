@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from time import monotonic
 from typing import Any
 
 import sqlalchemy as sa
@@ -126,11 +127,36 @@ class PostgresEvidence:
         return values, {}
 
 
+class BatchStillProcessing(Exception):
+    """Leave an unfinished batch resumable without inventing result checkpoints."""
+
+    def __init__(self, batch_id: str, waited_seconds: float) -> None:
+        super().__init__("batch_still_processing")
+        self.batch_id = batch_id
+        self.waited_seconds = waited_seconds
+
+
 class SDKExtraction:
     """Keep SDK key handling lazy and blocking network calls off the event loop."""
 
-    def __init__(self, factory: Callable[[], Any] = extraction.make_client) -> None:
+    def __init__(
+        self,
+        factory: Callable[[], Any] = extraction.make_client,
+        *,
+        max_wait_seconds: float = 7200,
+        poll_interval_seconds: float = 30,
+        clock: Callable[[], float] = monotonic,
+        sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> None:
+        if max_wait_seconds <= 0:
+            raise ValueError("max_wait_seconds must be positive")
+        if poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be positive")
         self.factory = factory
+        self.max_wait_seconds = max_wait_seconds
+        self.poll_interval_seconds = poll_interval_seconds
+        self.clock = clock
+        self.sleep = sleep if sleep is not None else asyncio.sleep
         self.client: Any = None
 
     async def _client(self) -> Any:
@@ -150,11 +176,21 @@ class SDKExtraction:
         self, batch_id: str, manifest: extraction.Manifest
     ) -> extraction.CollectedResults:
         client = await self._client()
-        while True:
-            batch = await asyncio.to_thread(client.messages.batches.retrieve, batch_id)
-            if batch.processing_status == "ended":
-                return await asyncio.to_thread(extraction.collect, batch_id, manifest, client)
-            await asyncio.sleep(30)
+        started = self.clock()
+        last_error: Exception | None = None
+        while self.clock() - started < self.max_wait_seconds:
+            try:
+                batch = await asyncio.to_thread(client.messages.batches.retrieve, batch_id)
+            except Exception as exc:
+                last_error = exc
+            else:
+                last_error = None
+                if batch.processing_status == "ended":
+                    return await asyncio.to_thread(extraction.collect, batch_id, manifest, client)
+            remaining = self.max_wait_seconds - (self.clock() - started)
+            if remaining > 0:
+                await self.sleep(min(self.poll_interval_seconds, remaining))
+        raise BatchStillProcessing(batch_id, self.clock() - started) from last_error
 
     async def aclose(self) -> None:
         if self.client is not None:
