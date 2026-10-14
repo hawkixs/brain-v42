@@ -884,7 +884,7 @@ on schema `monitoring` (`pg_read_all_stats` only to see other roles' query text)
 The repository migration target is 067. No page in this repository proves a live
 schema head; read `alembic_version` in the target database.
 
-Migration 066 adds nullable `brain_client_credentials.allowed_projects` without a
+Migration 067 adds nullable `brain_client_credentials.allowed_projects` without a
 default or backfill. `NULL` preserves unrestricted scope. Change exact project keys
 in place with `brain-credentials scope <id> --projects brain-v42,red-shrik:agent-a
 --reason "restrict projects"`; restore `NULL` with `brain-credentials scope <id>
@@ -901,8 +901,8 @@ their existing family authorization. Downgrade refuses while any credential is
 scoped unless `-x allow_credential_scope_downgrade=yes` explicitly accepts widening
 authority. The scope audit vocabulary and rows survive downgrade; an older drainer
 that cannot render these events requires an operator upgrade before draining them.
-The current v23 recovery assets describe 065; a successor recovery contract must
-be minted and verified before deploying this schema.
+Recovery contract v25 (`ops/recovery/current.json`) describes 067; replay it against
+the target before deploying this schema.
 
 `brain-v42-migrate` uses the owner credentials from `POSTGRES_URL` and the
 wheel's Alembic chain. It refuses an uninitialized database and any head newer
