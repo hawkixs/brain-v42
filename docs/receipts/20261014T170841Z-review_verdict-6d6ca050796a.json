@@ -1,0 +1,76 @@
+{
+  "digest": "sha256:6d6ca050796a5833d141c38e3efec5cb765e4078296f92a81622d3fdfabcf464",
+  "idempotency_key": "review_verdict:763043a78c1faa3dbc6c33ffcefc806efd8515a3:115990533026",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carried_from": "f30e1fcc4132edf17083467f61433f33ca40c439",
+      "carry_decision": "57fa86dc",
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115990533026,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "In _append_event the early replay return matches on (evaluation_id, kind) for transitions and (invalidated_run_id, identity) for compensations without comparing the newly requested to_state/reason, so a caller submitting different arguments under the same key silently receives the first persisted ev",
+          "file": "src/brain_v42/repositories/pg_knowledge_lifecycle.py",
+          "id": "F-443-1",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Replay ignores newly requested state or reason"
+        },
+        {
+          "class": "note",
+          "evidence": "_append_event persists compensates_event_id verbatim; the only related check is the target run's INVALIDATED status. Whether migration 066 constrains the id to the same events table row set of invalidated_run_id lives outside this diff; verify the foreign keys or confirm the forthcoming CLI derives ",
+          "file": "src/brain_v42/repositories/pg_knowledge_lifecycle.py",
+          "id": "F-443-2",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "compensates_event_id is stored without validation"
+        },
+        {
+          "class": "note",
+          "evidence": "The parametrized refusal tests cover dry_run/incomplete/mode and the happy path invalidates first; no test exercises the InvalidRunTransition('Compensation requires an invalidated run') branch inside _append_event for a valid evaluation run pointing at a run still in failed status.",
+          "file": "tests/integration/db/test_knowledge_lifecycle_repository.py",
+          "id": "F-443-3",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Compensation against a not-yet-invalidated run is untested"
+        }
+      ],
+      "independent": true,
+      "judged_base": "448e1de5a5744198e591c9e37db5c41c98aa2df0",
+      "mode": "deep",
+      "new_base": "fb5305c0652d778c2244432e7764ef40a2c2d831",
+      "not_reviewed": [],
+      "patch_id": "697376fd1927a76c5e4a487e2904721c5af974fb",
+      "pr": 443,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "763043a78c1faa3dbc6c33ffcefc806efd8515a3",
+      "source_check_run_id": 115930782677,
+      "source_status_creator_id": 8717916,
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T17:08:41.918939Z",
+  "schema_version": 1
+}

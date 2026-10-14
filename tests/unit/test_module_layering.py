@@ -181,5 +181,15 @@ def test_real_credentials_package_only_imports_its_allowed_layers() -> None:
     }
 
 
+def test_real_knowledge_package_does_not_import_orchestration() -> None:
+    assert checker.build_module_graph(PACKAGE_ROOT)["knowledge"].isdisjoint(
+        {"services", "repositories", "mcp", "lifecycle_cli"}
+    )
+
+
+def test_real_knowledge_package_does_not_provide_a_lifecycle_process_shim() -> None:
+    assert not (PACKAGE_ROOT / "knowledge" / "lifecycle.py").exists()
+
+
 def test_real_metrics_package_does_not_import_mcp() -> None:
     assert "mcp" not in checker.build_module_graph(PACKAGE_ROOT)["metrics"]

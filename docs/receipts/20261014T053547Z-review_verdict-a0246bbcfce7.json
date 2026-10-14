@@ -1,0 +1,78 @@
+{
+  "digest": "sha256:a0246bbcfce7a794ac51593d259b225e7c6478a74d11742047275533e78a077b",
+  "idempotency_key": "review_verdict:c6f5ae60e036ee396ebe6b2ac6a8181d8af3e438:115698289463",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115698289463,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The added configure_cli_logging(get_settings().brain_log_format) introduces a Settings load into trace_retention._run, which previously did not read settings; whether main's existing error handler (outside this diff) catches ValidationError so the invalid-configuration path stays a clean error rathe",
+          "file": "src/brain_v42/maintenance/trace_retention.py",
+          "id": "F-415-1",
+          "line": 63,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "New get_settings() call may raise ValidationError on a path that never loaded settings before"
+        },
+        {
+          "class": "note",
+          "evidence": "The test only covers BRAIN_LOG_FORMAT=json; the stated contract that console output is unchanged (configure_cli_logging does nothing under console) is not pinned by any test, so a future regression to the default console behavior would go unnoticed.",
+          "file": "tests/unit/maintenance/test_maintenance_cli_json_logs.py",
+          "id": "F-415-2",
+          "line": null,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Console path is untested"
+        },
+        {
+          "class": "note",
+          "evidence": "Lines 62-67 json.loads every stderr line except the _DIAGNOSTICS prefixes and assert [event['event'] ...] == _ENGINE_EVENTS[module]; any additional plain-text stderr line (Python deprecation warning, blank line, driver notice) or any extra structured event on the connection-failure path \u2014 for exampl",
+          "file": "tests/unit/maintenance/test_maintenance_cli_json_logs.py",
+          "id": "F-415-3",
+          "line": 67,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Exact stderr line/sequence assertions are brittle to any extra output"
+        },
+        {
+          "class": "note",
+          "evidence": "test_cli_console_default_is_unchanged (lines 73-79) omits the result.returncode != 0 check that the JSON test has at line 59, so it does not explicitly pin that the console run exercised the same engine-logging failure path; the engine-events-present assertions make a silently successful run unlikel",
+          "file": "tests/unit/maintenance/test_maintenance_cli_json_logs.py",
+          "id": "F-415-4",
+          "line": 73,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Console-default test does not assert the run failed"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 415,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "c6f5ae60e036ee396ebe6b2ac6a8181d8af3e438",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T05:35:47.773733Z",
+  "schema_version": 1
+}

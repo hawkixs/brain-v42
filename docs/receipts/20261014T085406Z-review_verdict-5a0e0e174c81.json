@@ -1,0 +1,68 @@
+{
+  "digest": "sha256:5a0e0e174c81b685e44e47951b494ccd5701071bceaf72f54bbe6f2a87d948ec",
+  "idempotency_key": "review_verdict:b76dcbb43727bfd7ef8f62a3a9c1aab9b5a59d41:115763537561",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115763537561,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The description and the Checks section claim pyproject.toml and uv.lock are both 0.6.18; pyproject.toml is confirmed at 0.6.18, but no uv.lock hunk appears in the portion of the diff shown, and the diff is stated to be only the first part of a large one. Question to check: does the remainder of the ",
+          "file": "uv.lock",
+          "id": "F-433-1",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "uv.lock 0.6.18 parity not verifiable in visible diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The new README intro paragraph attributes substantive changes to release 0.6.18 (e.g., the /api/session-slots/v1 peer route, brain_delivery_list ticket filtering, JSON-logging sweep/retention CLIs, search-shard visibility), none of which is implemented in the shown portion of the diff. Given the dif",
+          "file": "README.md",
+          "id": "F-433-2",
+          "line": 5,
+          "severity": "minor",
+          "status": "new",
+          "title": "Described 0.6.18 feature code not visible in shown hunks"
+        },
+        {
+          "class": "note",
+          "evidence": "The description lists lot 0.6.12 as 'orphan rerank fallback settings and an uncalibrated primary refused', while the new README paragraph says only 'orphan rerank fallback settings refused'. Confirm whether the omission is deliberate summary compression or drift between release notes and README.",
+          "file": "README.md",
+          "id": "F-433-3",
+          "line": 5,
+          "severity": "minor",
+          "status": "new",
+          "title": "Intro paragraph drops one lot 0.6.12 item vs description"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 433,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "b76dcbb43727bfd7ef8f62a3a9c1aab9b5a59d41",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T08:54:06.448027Z",
+  "schema_version": 1
+}

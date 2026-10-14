@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:69e3a7056975ad31feff5a0b2d268e3c2736007068468666d53bdcf9b6d7db81",
+  "idempotency_key": "review_verdict:47772ec14abc0349b72a5b2bc5aa0117a1ff95b4:115833592662",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115833592662,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Line 13 imports `from tests.ci_shard import partition`. When invoked directly as a script (e.g. `python scripts/build_shard_plan.py` or `./scripts/build_shard_plan.py`), Python initializes `sys.path[0]` to the `scripts/` directory, which does not contain the `tests` package, causing `ModuleNotFoundE",
+          "file": "scripts/build_shard_plan.py",
+          "id": "F-435-1",
+          "line": 13,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Direct script execution fails without PYTHONPATH=. due to unadjusted sys.path"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 435,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "47772ec14abc0349b72a5b2bc5aa0117a1ff95b4",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T11:59:28.654138Z",
+  "schema_version": 1
+}

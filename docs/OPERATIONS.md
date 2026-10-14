@@ -1056,6 +1056,48 @@ administrator stays global. The runner forwards only the `active` bearer, in a
 allow-listed child environment, and strips the full registry. `BRAIN_CODE_MODE=true`
 is incompatible with it.
 
+## Knowledge lifecycle CLI
+
+Run `python -m brain_v42.lifecycle_cli`, the composition root above facts,
+repositories and services. The spec's `python -m brain_v42.knowledge.lifecycle`
+command is not provided because the pure knowledge package sits below
+orchestration in the module layering. It must not depend on orchestration through
+imports or a subprocess shim.
+
+The code defaults are `BRAIN_KNOWLEDGE_LIFECYCLE_ENABLED=false` and
+`BRAIN_KNOWLEDGE_LIFECYCLE_DRY_RUN=true`. The first refuses every command except
+`report`. The second refuses apply runs, resuming apply runs, and all invalidations.
+Read the invocation's actual environment to establish its arming state.
+
+Commands are `run --mode {dry-run,apply} --scope {all|PROJECT_KEY}
+--ceiling-usd AMOUNT`, `resume --run RUN_ID`, `invalidate --run RUN_ID --reason
+TEXT`, and `report --run RUN_ID`. All accept `--json`; reports go to stdout,
+structured logs to stderr, and entry text is never rendered. Exit codes are 0 for
+completion, 2 for a refusal, 3 for a failed execution, and 4 for an occupied run lock.
+Apply, resuming apply, and invalidate require `--backup-run-id ID` and
+`--backup-sealed-at ISO_8601_UTC`. The seal must be timezone-aware UTC, no older
+than one hour, and not in the future. The report states: "backup proof declared
+by the coordination, not re-read". No backup is restored by this command.
+
+The write target uses the existing `BRAIN_FACTS_PRODUCTION_IDENTITY` declaration:
+cluster system identifier, database name and server port, with an optional pinned
+server address. Missing, unreadable or mismatching identity refuses writes.
+GitHub REST resolves main once per evaluation snapshot; one codeload archive of
+that exact SHA provides both paths and Python identifier tokens. Archives are
+also pinned to the recorded SHA when resuming an interrupted evaluation. They are
+bounded, extracted into a temporary directory after validating every member,
+and never executed. Pull requests are paginated with `state=all`. Tickets are
+read in a read-only database transaction. Facts use the existing identity-bound
+fact registry; a CLI outside a declared immutable release cannot measure
+`live_release_sha`. Source failures make affected checks incomplete.
+
+Optionally set `BRAIN_KNOWLEDGE_LIFECYCLE_GITHUB_TOKEN_ENV` to the **name** of an
+environment variable containing a GitHub credential. It is sent only to GitHub
+REST and never logged. The extraction SDK owns its standard environment handling;
+the CLI never reads its API key. The operator-only `dream.nightly` decision has
+no machine-readable binding in this adapter and remains unknown rather than
+being inferred from prose or deployment flags.
+
 ## Nightly claim verification
 
 `dream.sh` runs `verify` once per night, before provider preflight and the project

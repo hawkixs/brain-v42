@@ -1,0 +1,78 @@
+{
+  "digest": "sha256:b0d943cd1b2e647d77093c2a706ed2313c85cab7622829f9b23c958bb30def14",
+  "idempotency_key": "review_verdict:27d8be4dbc2ac6623c33558d2ba4f45846a1e059:115686504614",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115686504614,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The then-branch echo is matched loosely for both jobs (`echo \"session-sweep: [^\\\"]*\"` here and the analogous trace-retention branch at line 505), while the else branch still pins the 'run failed' prefix; the exact text 'run succeeded, heartbeat not written' is therefore guarded only by the new behav",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-413-1",
+          "line": 501,
+          "severity": "minor",
+          "status": "new",
+          "title": "Regex no longer pins the success-message wording"
+        },
+        {
+          "class": "note",
+          "evidence": "Lines 620 and 622 compare boolean expressions with `is` (works for bools, but `==` is the idiomatic form), and line 621 omits the `, result.stderr` diagnostic message that both neighboring assertions carry, so that failure reports no loop stderr to debug.",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-413-2",
+          "line": 620,
+          "severity": "minor",
+          "status": "new",
+          "title": "Bool asserts use `is`; middle assert lacks stderr context"
+        },
+        {
+          "class": "note",
+          "evidence": "The stub does `echo \"$1\" >> {touched}; exit {touch_rc}`, so the assertion `beat in beats` verifies that a touch was attempted (and not attempted on a failed run), not that a failing touch leaves no file behind; acceptable as a stub but worth a comment. Also, the `touched` path from tmp_path is inter",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-413-3",
+          "line": 598,
+          "severity": "minor",
+          "status": "new",
+          "title": "Stub touch records its path even when it exits nonzero"
+        },
+        {
+          "class": "note",
+          "evidence": "`import subprocess` is placed inside the test function; check the module's import convention at the top of the file (neighboring tests visible in the diff use `re` and `pathlib.Path` at top level) and move it there if that is the file's style.",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-413-4",
+          "line": 591,
+          "severity": "minor",
+          "status": "new",
+          "title": "Local stdlib import inside the test"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 413,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "27d8be4dbc2ac6623c33558d2ba4f45846a1e059",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T04:52:02.291396Z",
+  "schema_version": 1
+}

@@ -1,0 +1,88 @@
+{
+  "digest": "sha256:068335e6beb28d6935eed716ff61ed3e0de5ba9909169947432cc25b937cfac2",
+  "idempotency_key": "review_verdict:50c8cd7dd4594a86d6dc504783e886eeaa60c924:115630971096",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115630971096,
+      "diff_truncated": false,
+      "finding_count": 5,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Assuming brain_v42.maintenance.embedding_backfill's no-execute path (module not in the diff, not modified by this PR) genuinely only performs the backlog count and prints JSON while still constructing the client, the service writes nothing and calls no provider; check that module's dry path and that",
+          "file": "deploy/compose.yaml",
+          "id": "F-366-1",
+          "line": 379,
+          "severity": "important",
+          "status": "new",
+          "title": "Dry-run inertness of the CLI is asserted, not shown in the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "If the top-level secrets section (visible context shows only postgres_password) does not already define embedding_token, docker compose would refuse the file; assuming it exists for the MCP/embedding path, this is only a pinning-test blind spot, since the unit tests parse YAML without compose-level ",
+          "file": "deploy/compose.yaml",
+          "id": "F-366-2",
+          "line": 388,
+          "severity": "minor",
+          "status": "new",
+          "title": "embedding_token definition not visible in the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "YAML merge keys resolve <<: [*brain-env, *embedding-env] with earlier maps winning duplicates, while the test asserts {**x-brain-env, **x-embedding-env} where later wins; assuming the two anchors are disjoint (tests pass today) the two agree, but a key added to both anchors would make the pinning te",
+          "file": "deploy/compose.yaml",
+          "id": "F-366-3",
+          "line": 385,
+          "severity": "minor",
+          "status": "new",
+          "title": "Merge-key precedence vs test expectation"
+        },
+        {
+          "class": "note",
+          "evidence": "The probe only asserts the module name appears in /proc/1/cmdline, so it stays healthy while every hourly run fails (e.g. DB down or token unreadable); this is intentional and disclosed in the inline comment, docs/OPERATIONS.md and the test docstring, and reports are readable via the container log, ",
+          "file": "deploy/compose.yaml",
+          "id": "F-366-4",
+          "line": 391,
+          "severity": "minor",
+          "status": "new",
+          "title": "Healthcheck cannot see run failure"
+        },
+        {
+          "class": "note",
+          "evidence": "test_embedding_backfill_drains_the_backlog_hourly_and_dry asserts a dry, non-draining configuration; the name would mislead a future reader into expecting write-path assertions, though everything the test actually pins is correct.",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-366-5",
+          "line": 571,
+          "severity": "minor",
+          "status": "new",
+          "title": "Test name overstates dry behavior"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 366,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "50c8cd7dd4594a86d6dc504783e886eeaa60c924",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T01:29:17.006262Z",
+  "schema_version": 1
+}

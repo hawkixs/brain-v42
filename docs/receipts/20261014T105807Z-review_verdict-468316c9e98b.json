@@ -1,0 +1,79 @@
+{
+  "digest": "sha256:468316c9e98b99cc6d8974f58f50c8381a8f5e00935d813e464aaeb2f40b79a2",
+  "idempotency_key": "review_verdict:e946641fa61423366fdfbc1d4f374ad19bb4a994:115814821008",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115814821008,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "decide() reads only item.observations[0] for the refuted rule (lines 153-160), the pending-state-ended rule (lines 161-178) and the incidental-transient contested exemption (lines 185-189). _resolve_assertions puts every top-rank observation in one group, so two same-rank CONTRADICTS rows on one ass",
+          "file": "src/brain_v42/knowledge/decide.py",
+          "id": "F-429-1",
+          "line": 154,
+          "severity": "blocking",
+          "status": "fixed",
+          "title": "A mixed top-rank contradiction group can hide a refutation-grade contradiction"
+        },
+        {
+          "class": "note",
+          "evidence": "The endings filter explicitly excludes propagation (line 130), but the decay_archived scan at lines 146-150 accepts any observation. If a caller ever sets rule='decay_archived' on a propagation observation (the Observation dataclass does not forbid it), decide() returns unverifiable in the structura",
+          "file": "src/brain_v42/knowledge/decide.py",
+          "id": "F-429-2",
+          "line": 146,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Decay-archival scan does not exclude propagation observations"
+        },
+        {
+          "class": "note",
+          "evidence": "The description claims the State, Polarity, Centrality, Temporal and ValidFromPrecision values match the CHECKs of migration 066, but migration 066 lives in PR #428 and is not part of this diff; test_ranks.py pins only the local values. Question to check: diff these enum values against the migration",
+          "file": "src/brain_v42/knowledge/ranks.py",
+          "id": "F-429-3",
+          "line": 23,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Vocabulary parity with migration 066 cannot be verified here"
+        },
+        {
+          "class": "note",
+          "evidence": "The endings loop returns on its first iteration, so the ValueError for a missing rule (lines 135-136) is raised only for the highest-rank/lowest-id ending; a lower-ranked ENDS observation without a rule is silently ignored. test_structural_end_requires_a_rule covers only the single-ending case.",
+          "file": "src/brain_v42/knowledge/decide.py",
+          "id": "F-429-4",
+          "line": 134,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Only the selected structural ending is rule-validated"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 429,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "e946641fa61423366fdfbc1d4f374ad19bb4a994",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T10:58:07.701379Z",
+  "schema_version": 1
+}

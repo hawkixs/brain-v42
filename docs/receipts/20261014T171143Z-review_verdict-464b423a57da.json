@@ -1,0 +1,79 @@
+{
+  "digest": "sha256:464b423a57daf8e545e47aaf83032df1e13ec1a6e7bea955c9bbf8b2d8119ec6",
+  "idempotency_key": "review_verdict:ad499d30585874a938355408ef3d452ccd379172:115982346765",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115982346765,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "SDKExtraction.collect loops `while True` checking processing_status and sleeps 30s with no maximum poll count or deadline; a batch that never reports `ended` makes the operator CLI hang indefinitely (only Ctrl-C stops it). Consider a bounded wait converted to a failed report.",
+          "file": "src/brain_v42/lifecycle_cli/adapters.py",
+          "id": "F-446-1",
+          "line": 145,
+          "severity": "important",
+          "status": "new",
+          "title": "SDK batch polling loop has no time/attempt bound"
+        },
+        {
+          "class": "note",
+          "evidence": "execute maps any RunNotFound from pipeline.report/resume/invalidate to a code-2 'run_not_found' refusal; metadata in the intermediate backup proof test... specifically, a RunNotFound raised from internal DB reads other than the existence check would be reported as a typed run-not-found refusal. Know",
+          "file": "src/brain_v42/lifecycle_cli/command.py",
+          "id": "F-446-2",
+          "line": 211,
+          "severity": "minor",
+          "status": "new",
+          "title": "Broad RunNotFound catch can mislabel internal absences as run_not_found"
+        },
+        {
+          "class": "note",
+          "evidence": "Parser.error is overridden, but argparse's --help raises SystemExit, which is a BaseException and escapes both the inner try and `except Exception` in main_async, so help exits 0 printing usage text and no report. Harmless, but docs say every outcome prints the report.",
+          "file": "src/brain_v42/lifecycle_cli/__main__.py",
+          "id": "F-446-3",
+          "line": 53,
+          "severity": "minor",
+          "status": "new",
+          "title": "--help bypasses the 'every outcome prints the report' contract"
+        },
+        {
+          "class": "note",
+          "evidence": "Other Settings fields use explicit _brain_alias(...) helper aliases while the two new booleans have none; they bind by field name case-insensitively, which likely matches BRAIN_KNOWLEDGE_LIFECYCLE_*, but if the settings source configures a prefix or forbids name-based lookup differently than assumed",
+          "file": "src/brain_v42/config.py",
+          "id": "F-446-4",
+          "line": 223,
+          "severity": "minor",
+          "status": "new",
+          "title": "New lifecycle settings rely on default env-name binding, unlike aliased siblings"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 446,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "ad499d30585874a938355408ef3d452ccd379172",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T17:11:43.448158Z",
+  "schema_version": 1
+}

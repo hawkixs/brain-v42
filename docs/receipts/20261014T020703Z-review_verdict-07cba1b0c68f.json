@@ -1,0 +1,149 @@
+{
+  "digest": "sha256:07cba1b0c68fcc8e835ca05bef380162132d44932342e05610e79bd56094e570",
+  "idempotency_key": "review_verdict:c6b32969e758a76d36f6dfd812e87047e0ce87cd:115636584729",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115636584729,
+      "diff_truncated": false,
+      "finding_count": 11,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The old `child -> source` MERGED_INTO edges stay in the graph store, and per the description the projection rebuild derives both edges from consolidation_log; every MERGED_INTO reader in src/ is asserted to tolerate multiple or stale out-edges, but that code is not visible in the diff. Check each ME",
+          "file": "src/brain_v42/services/consolidation.py",
+          "id": "F-379-1",
+          "line": 152,
+          "severity": "important",
+          "status": "new",
+          "title": "Correctness of retained stale child->source edges depends on readers outside the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "If decisions.status has terminal states other than 'superseded' (e.g. deleted/archived; the enum is not visible in the diff), the predicate `status != 'superseded'` still accepts them for supersession. Verify the status enum only distinguishes supersede-eligibility by 'superseded'.",
+          "file": "src/brain_v42/repositories/pg_decision.py",
+          "id": "F-379-2",
+          "line": 576,
+          "severity": "minor",
+          "status": "new",
+          "title": "Other non-superseded statuses remain supersedable"
+        },
+        {
+          "class": "note",
+          "evidence": "After the authoritative commit the job performs N+1 graph relation writes (source plus each child), each preceded by authorization revalidation; a failure mid-loop propagates to the caller although the merge is committed. This extends a pre-existing post-commit pattern to N edges, and nothing in the",
+          "file": "src/brain_v42/services/consolidation.py",
+          "id": "F-379-3",
+          "line": 152,
+          "severity": "minor",
+          "status": "new",
+          "title": "Post-commit child graph writes can fail after the merge is durable"
+        },
+        {
+          "class": "note",
+          "evidence": "The repointed audit loop issues one log_action_in_session per child inside the transaction and one post-commit graph write plus revalidation per child; acceptable at consolidation scale but a batch path may be worth checking against typical child counts.",
+          "file": "src/brain_v42/services/consolidation.py",
+          "id": "F-379-4",
+          "line": 127,
+          "severity": "minor",
+          "status": "new",
+          "title": "Per-child audit inserts and graph writes are O(N) round trips"
+        },
+        {
+          "class": "note",
+          "evidence": "If `_cleanup_postgres` (defined outside the diff) deletes only the decision rows it is handed, the audit rows written by these merges (merged/repointed) linger in the shared database after teardown; check which tables it clears, since the fixture does not collect consolidation_log ids.",
+          "file": "tests/integration/test_consolidation_write_through.py",
+          "id": "F-379-5",
+          "line": 30,
+          "severity": "minor",
+          "status": "new",
+          "title": "Fixture cleanup may leave consolidation_log rows behind"
+        },
+        {
+          "class": "note",
+          "evidence": "test_returns_confirmation_string and test_converts_old_decision_id_string_to_uuid now pass project_key='brain-v42', but the tool diff does not obviously make project_key mandatory; if a sub-path (e.g. plan_extracted_claims or persist_extracted_claims) rejects None, the unscoped tool path would depen",
+          "file": "tests/unit/mcp/tools/test_brain_decision_tools.py",
+          "id": "F-379-6",
+          "line": 266,
+          "severity": "minor",
+          "status": "new",
+          "title": "Unexplained project_key requirement added to existing supersede tests"
+        },
+        {
+          "class": "note",
+          "evidence": "DecisionNotSupersedableError(ValueError) covers both a nonexistent id and an already-superseded one, and the MCP tool returns the same message text for both; callers cannot distinguish a lookup failure from a state refusal. Cosmetic given the previous silent-success behavior was worse.",
+          "file": "src/brain_v42/repositories/pg_decision.py",
+          "id": "F-379-7",
+          "line": 39,
+          "severity": "minor",
+          "status": "new",
+          "title": "Missing and already-superseded decisions are conflated"
+        },
+        {
+          "class": "note",
+          "evidence": "The update predicate is id plus status with no project_key, so a caller may supersede another project's decision. Deliberate per the measured data (2 of 56 rows, project renames) and tracked in ticket 80a22743; listed so the authorization surface stays visible to the operator decision.",
+          "file": "src/brain_v42/repositories/pg_decision.py",
+          "id": "F-379-8",
+          "line": 576,
+          "severity": "minor",
+          "status": "new",
+          "title": "Cross-project supersession remains allowed by design"
+        },
+        {
+          "class": "note",
+          "evidence": "test_supersede_filters_old_decision_by_status_only asserts on rendered fragments of str(statement) ('WHERE', 'decisions.status !=', 'RETURNING decisions.id'), which depend on SQLAlchemy rendering; compile-params-based assertions (used elsewhere in the same test) are sturdier.",
+          "file": "tests/unit/repositories/test_pg_decision.py",
+          "id": "F-379-9",
+          "line": 736,
+          "severity": "minor",
+          "status": "new",
+          "title": "SQL-string assertions are brittle"
+        },
+        {
+          "class": "note",
+          "evidence": "In _update_merge_pair, target_update and source_update explicitly update updated_at=sa.text('NOW()'), but child_update only sets merged_into=target_id without updating updated_at.",
+          "file": "src/brain_v42/services/consolidation.py",
+          "id": "F-379-10",
+          "line": 231,
+          "severity": "minor",
+          "status": "new",
+          "title": "Child repointing update does not set updated_at timestamp"
+        },
+        {
+          "class": "note",
+          "evidence": "In supersede, update_stmt filters on decisions.c.status != 'superseded'. In SQL ternary logic, if a decision row has status IS NULL, NULL != 'superseded' evaluates to UNKNOWN/false, preventing supersede of unscoped or default-null status records unless status is non-nullable.",
+          "file": "src/brain_v42/repositories/pg_decision.py",
+          "id": "F-379-11",
+          "line": 576,
+          "severity": "minor",
+          "status": "new",
+          "title": "Status predicate decisions.c.status != 'superseded' excludes NULL status rows in SQL"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 379,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "c6b32969e758a76d36f6dfd812e87047e0ce87cd",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T02:07:03.345085Z",
+  "schema_version": 1
+}

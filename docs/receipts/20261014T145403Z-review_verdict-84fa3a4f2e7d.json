@@ -1,0 +1,55 @@
+{
+  "digest": "sha256:84fa3a4f2e7dee968297ebc0230b4bcc17b8ae8e0e64f2b17efe3ed667adca24",
+  "idempotency_key": "review_verdict:5a486ac51bef755d16ecd9031d317ec2e50228bf:115923204580",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carried_from": "9c080569bac798d13b8921515bd02213c16c0405",
+      "carry_decision": "57fa86dc",
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115923204580,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The description states ruff, ruff format --check and mypy src passed locally, but not that the three touched test files (tests/unit/services/test_gpu_embedding_service.py, tests/unit/test_metrics_collector.py, tests/unit/metrics/test_read_exposure_pinned.py) were executed; the tests themselves read ",
+          "file": "src/brain_v42/services/gpu_embedding_service.py",
+          "id": "F-440-1",
+          "line": 198,
+          "severity": "minor",
+          "status": "new",
+          "title": "Local checks listed in the PR omit a pytest run"
+        }
+      ],
+      "independent": true,
+      "judged_base": "30f308eb9833dbdddd641f63b08838c2cb264523",
+      "mode": "light",
+      "new_base": "aeba6832c6854ad1ffcfdb1380b3a5b56a2d334c",
+      "not_reviewed": [],
+      "patch_id": "13b3452c48ca0c8c31903152d79b87fb4eddae49",
+      "pr": 440,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "5a486ac51bef755d16ecd9031d317ec2e50228bf",
+      "source_check_run_id": 115905212704,
+      "source_status_creator_id": 8717916,
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T14:54:03.969994Z",
+  "schema_version": 1
+}
