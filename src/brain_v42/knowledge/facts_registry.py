@@ -77,11 +77,12 @@ def _compose_value(inputs: FactInputs, key: str, shared: str) -> str | None:
     block = _block(text, shared)
     if service and not block:
         return None
-    if block and environment:
-        anchor = re.search(r"&([\w-]+)", block.splitlines()[0])
-        if anchor is None or not re.search(rf"\*{re.escape(anchor[1])}\b", environment):
-            return None
-    return _scalar(block or text, key)
+    if not block:
+        return _scalar(text, key)
+    anchor = re.search(r"&([\w-]+)", block.splitlines()[0])
+    if anchor is None or not re.search(rf"\*{re.escape(anchor[1])}\b", environment):
+        return None
+    return _scalar(block, key)
 
 
 def _host(inputs: FactInputs) -> str | None:

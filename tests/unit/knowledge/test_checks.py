@@ -103,6 +103,11 @@ class CheckTests(unittest.TestCase):
     def test_empty_path_is_unchecked(self) -> None:
         self.assertIsNone(self.evaluate(ref=""))
 
+    def test_missing_or_none_ref_is_unchecked(self) -> None:
+        for kind in ("code_path", "code_symbol", "pr", "ticket"):
+            with self.subTest(kind=kind):
+                self.assertIsNone(self.evaluate(check=kind, ref=None, claimed_status="open"))
+
     def test_root_code_refs_are_unchecked(self) -> None:
         for kind in ("code_path", "code_symbol"):
             for ref in (".", "/"):

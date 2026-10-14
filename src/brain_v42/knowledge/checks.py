@@ -94,7 +94,8 @@ def check(
         )
     except ValueError:
         return None
-    ref = str(assertion.get("ref", "")).strip()
+    raw_ref = assertion.get("ref")
+    ref = "" if raw_ref is None else str(raw_ref).strip()
     at: date | datetime | None = None
     current: str
     source_kind: str

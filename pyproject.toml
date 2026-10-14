@@ -82,6 +82,9 @@ brain-v42-migrate = "brain_v42.scripts.migrate_cli:main"
 brain-v42-restore = "brain_v42.scripts.restore_cli:main"
 
 [project.optional-dependencies]
+lifecycle = [
+    "anthropic>=1.13,<2",
+]
 # OTel tracing of tool calls — a SEPARATE extra, never in `dependencies`.
 # The OTLP HTTP exporter pulls `protobuf` and `googleapis-common-protos`
 # transitively (measured: 8 packages for opentelemetry-sdk 1.44.0), which has
@@ -93,6 +96,7 @@ tracing = [
     "opentelemetry-exporter-otlp-proto-http>=1.44,<2",
 ]
 dev = [
+    "anthropic>=1.13,<2",
     # EXACTLY pinned CI toolchain (learning c43ed8b8): unpinned deps →
     # local != CI, and main turns red on an upstream upgrade (mypy 1.19.1
     # local vs 2.2.0 in CI, 2026-07-10). An upgrade is an explicit, green commit.
