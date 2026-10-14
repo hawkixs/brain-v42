@@ -1,0 +1,78 @@
+{
+  "digest": "sha256:4de3901c41da7f7b74c7ee426817118de9c833924baa261e6a77fb616741b95a",
+  "idempotency_key": "review_verdict:38b98ca04a31327554478c6be94aa3a9ad518a95:115366124657",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115366124657,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The new assertion requires rerank_budget_seconds - rerank_primary_budget_seconds >= 1.4, and 3.0 - 1.6 meets it with zero margin; the PR's own measurement records one Cohere call at 1.85 s, which would exceed the 1.4 s fallback share and fall through to RRF order. This matches the tradeoff stated in",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-408-1",
+          "line": 444,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Fallback reserve sits exactly at the boundary and below an observed Cohere latency"
+        },
+        {
+          "class": "note",
+          "evidence": "The visible test changes set the fixture strings to \"3.0\"/\"1.6\" and assert primary < budget plus the >= 1.4 reserve, but no visible assertion compares the parsed values for equality against 3.0/1.6; the description's claim that 'the contract test pins the exact values' depends on code outside this d",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-408-2",
+          "line": 393,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Exact-value pinning claimed in the description is not visible in this diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The new assertion checks only \"3.0 s budget\"; the header prose \"its 1.6 s share\" (deploy/compose.yaml:23) is not asserted by any visible test, so a future primary-budget change could leave the documented share stale while the suite passes.",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-408-3",
+          "line": 450,
+          "severity": "minor",
+          "status": "new",
+          "title": "Header pin covers the 3.0 s total but not the 1.6 s primary share"
+        },
+        {
+          "class": "note",
+          "evidence": "may exceed a downstream caller's deadline: the diff shows no caller-side timeout configuration; if any caller of mcp search enforces under 3.0 s end to end, the added 0.5 s worst case could surface as client timeouts \u2014 check caller timeout settings outside this diff.",
+          "file": "deploy/compose.yaml",
+          "id": "F-408-4",
+          "line": 93,
+          "severity": "minor",
+          "status": "new",
+          "title": "Raised total budget may collide with unseen caller timeouts"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 408,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "38b98ca04a31327554478c6be94aa3a9ad518a95",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T14:59:11.195438Z",
+  "schema_version": 1
+}

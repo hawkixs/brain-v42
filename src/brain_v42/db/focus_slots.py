@@ -225,7 +225,10 @@ def _ticket_receipt(ticket_id: Any) -> Any:
 
 
 def _pr_receipt(project_key: Any, repository_id: Any, pr_number: Any) -> Any:
-    """The same predicate on the ticket of an active, current binding of the PR."""
+    """Require the receipt to have observed this PR's active, current binding.
+
+    A binding added after integration must not inherit the ticket's earlier receipt.
+    """
     b = delivery_artifact_bindings.alias("slot_pr_binding")
     t = tickets.alias("slot_pr_ticket")
     w = delivery_workflows.alias("slot_pr_workflow")
@@ -257,6 +260,11 @@ def _pr_receipt(project_key: Any, repository_id: Any, pr_number: Any) -> Any:
             b.c.pr_number == pr_number,
             t.c.to_project == project_key,
             r.c.milestone == "integration",
+            r.c.payload["proof"]["artifact_proofs"].contains(
+                sa.func.jsonb_build_array(
+                    sa.func.jsonb_build_object("binding_id", sa.cast(b.c.id, sa.Text))
+                )
+            ),
         )
         .order_by(r.c.issued_at, r.c.id)
         .limit(1)
@@ -361,7 +369,8 @@ async def lock_anchor_tickets(
     tickets: a cost in open's latency and in the rows it dirties. Growth after this
     statement is covered by the project fence when it comes with a receipt, that is, for
     every writer that runs `close_slots_satisfied_by`. A `bind_pr` that binds an already
-    integrated ticket to a PR anchor writes no receipt and is NOT covered (ticket 8401c44d).
+    integrated ticket to a PR anchor writes no receipt, and it is harmless: `_pr_receipt`
+    only counts a receipt whose artifact proofs name that binding (ticket 8401c44d).
     `record_released` re-checks, under its own ticket lock, that its candidate is still in this
     set, so a stale candidate cannot attest a release this lock did not see.
 

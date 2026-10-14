@@ -1,0 +1,45 @@
+{
+  "digest": "sha256:fdec20c854f7f65c5d6d9279fb15aa991dd508484c0cbf507d2e085dd9dca9b3",
+  "idempotency_key": "review_verdict:c661200c371ce03cc5241c7eb533a0cfba7d94d4:115112286625",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115112286625,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "In _run(), trace retention output is rendered immediately via print(_render('trace retention', traces)) on line 71, whereas outbox retention output is rendered in main() on line 90. If dispose_engine() in the finally block of _run() raises an exception after purge_delivered_outbox commits, the outbo",
+          "file": "src/brain_v42/maintenance/trace_retention.py",
+          "id": "F-357-1",
+          "line": 71,
+          "severity": "minor",
+          "status": "new",
+          "title": "Asymmetric report rendering between _run and main"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 357,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "c661200c371ce03cc5241c7eb533a0cfba7d94d4",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T03:23:58.619969Z",
+  "schema_version": 1
+}

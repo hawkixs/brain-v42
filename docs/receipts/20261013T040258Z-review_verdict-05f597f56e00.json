@@ -1,0 +1,34 @@
+{
+  "digest": "sha256:05f597f56e0029fabf6cc5e431606572086f14f78667a159a1ed01ce1a64322e",
+  "idempotency_key": "review_verdict:ac980d10f345e02dfc5eeffee4246e0e5154241a:115121991696",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115121991696,
+      "diff_truncated": false,
+      "finding_count": 0,
+      "findings": [],
+      "independent": true,
+      "mode": "deep",
+      "pr": 372,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "ac980d10f345e02dfc5eeffee4246e0e5154241a",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T04:02:58.756074Z",
+  "schema_version": 1
+}

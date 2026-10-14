@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:f06a2386a7b530fdd07926b26a38ca0e90cd880ef76506d2a9d13b5d985dd5f1",
+  "idempotency_key": "review_verdict:14d8955b6b05f1fdb0f9f0d739adea9c2dcb4468:115474330241",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115474330241,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "if the collector-built `graph_outbox_stats` on its unavailable path carries keys beyond available/pending/ready/claimed/exhausted/oldest_pending_age_seconds/projector, `**graph_outbox_stats` now surfaces them where the previous code emitted a fixed 7-key schema; the failure-path key set is not pinne",
+          "file": "src/brain_v42/metrics/collector.py",
+          "id": "F-417-1",
+          "line": 953,
+          "severity": "minor",
+          "status": "new",
+          "title": "Error-path graph_outbox passthrough may widen the payload schema"
+        },
+        {
+          "class": "note",
+          "evidence": "on any failure in the same try (e.g., the tested connection-close failure after a successful read), `dict.fromkeys(worker_last_24h)` discards counters that were successfully measured, whereas `graph_outbox` retains values read before the identical failure; this matches the documented rule ('null on ",
+          "file": "src/brain_v42/metrics/collector.py",
+          "id": "F-417-2",
+          "line": 952,
+          "severity": "minor",
+          "status": "new",
+          "title": "Worker counters nulled even when already read"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 417,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "14d8955b6b05f1fdb0f9f0d739adea9c2dcb4468",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T18:45:45.635742Z",
+  "schema_version": 1
+}

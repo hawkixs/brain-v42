@@ -35,6 +35,7 @@ from brain_v42.metrics.codex_telemetry import (
 )
 from brain_v42.metrics.collector import MetricsCollector
 from brain_v42.metrics.dream_scheduler import DreamSchedulerMode
+from brain_v42.metrics.read_admission import admit_read
 from brain_v42.metrics.slow_block_cache import SlowBlockCache
 
 logger = structlog.get_logger(__name__)
@@ -288,6 +289,8 @@ class MetricsServer:
         database_probe: Callable[[], Awaitable[object]] | None = None,
         database_probe_timeout_seconds: float = 2.0,
         dream_scheduler: DreamSchedulerMode = "systemd_user",
+        metrics_read_clients: list[str] | None = None,
+        read_bucket: TokenBucket | None = None,
     ) -> None:
         if receiver_auth not in {"none", "credentials"}:
             raise ValueError("METRICS_RECEIVER_AUTH must be none or credentials")
@@ -297,6 +300,8 @@ class MetricsServer:
         self._credential_verifier = credential_verifier
         self._credential_listener = credential_listener
         self._receiver_bucket = receiver_bucket or TokenBucket(10, 20, monotonic=time.monotonic)
+        self._metrics_read_clients = frozenset(metrics_read_clients or ())
+        self._read_bucket = read_bucket or TokenBucket(10, 20, monotonic=time.monotonic)
         self._receiver_refused: dict[str, int] = {}
         self._database_probe = database_probe
         self._database_probe_timeout_seconds = database_probe_timeout_seconds
@@ -336,6 +341,7 @@ class MetricsServer:
             app.cleanup_ctx.append(self._credential_registry_lifecycle)
         app.router.add_get("/metrics", self._handle_metrics)
         app.router.add_get("/api/cockpit", self._handle_cockpit)
+        app.router.add_get("/api/session-slots/v1", self._handle_session_slots)
         # Programme progress (contract docs/contracts/programmes_v1.md): its own
         # route, so the /metrics payload red-monitor stores on every probe does not
         # carry it. Same listener and same read exposure as /metrics.
@@ -441,6 +447,35 @@ class MetricsServer:
                 "metrics_receiver.refused", receiver=receiver, reason=reason, status=status
             )
         return response
+
+    async def _admit_read(
+        self,
+        request: web.Request,
+        *,
+        route: str,
+        loopback_peer: bool | None = None,
+    ) -> web.Response | None:
+        """Share protected read admission while leaving receiver admission independent."""
+        return await admit_read(
+            request,
+            route=route,
+            loopback_peer=(
+                _has_loopback_tcp_peer(request) if loopback_peer is None else loopback_peer
+            ),
+            verifier=self._credential_verifier,
+            clients=self._metrics_read_clients,
+            bucket=self._read_bucket,
+        )
+
+    async def _handle_session_slots(self, request: web.Request) -> web.Response:
+        """Serve the same cached slot inventory as /metrics without its other blocks."""
+        refusal = await self._admit_read(request, route="/api/session-slots/v1")
+        if refusal is not None:
+            return refusal
+        block = await self._slow_block_cache.get(
+            "session_slots", lambda: self._collector.collect_session_slots()
+        )
+        return web.json_response({"session_slots": block} if block else {})
 
     async def _handle_programmes(self, _request: web.Request) -> web.Response:
         """`{"programmes": <block>}`, or `{}` while this cycle's read failed (contract §3).

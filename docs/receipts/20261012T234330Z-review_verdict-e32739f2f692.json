@@ -1,0 +1,55 @@
+{
+  "digest": "sha256:e32739f2f6927e0a6d9f1af6cbda2bd78a76a153bc04f172904d7d4796d261eb",
+  "idempotency_key": "review_verdict:d455a408db169cb2153c842732a5e64ad48f7b57:115055565878",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115055565878,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "In _read_state, the permission validation tests 'stat.S_IMODE(metadata.st_mode) & 0o077', whereas _read_private in brain_admin_elevate.py enforces 'stat.S_IMODE(metadata.st_mode) != 0o600'. Consequently, modes such as 0700 are accepted by _read_state despite being rejected by _read_private and test_",
+          "file": "scripts/hooks/brain_session_state.py",
+          "id": "F-347-1",
+          "line": 95,
+          "severity": "minor",
+          "status": "new",
+          "title": "Permission check in _read_state allows modes that _read_private rejects"
+        },
+        {
+          "class": "note",
+          "evidence": "In test helper within(), threading.Thread target is 'lambda: outcome.append(call())', which leaves outcome empty whenever call() raises an unhandled exception. The subsequent assertion 'self.assertTrue(outcome, ...)' reports that 'the hook did not return in time', masking the actual exception raised",
+          "file": "tests/unit/test_brain_session_state_hook.py",
+          "id": "F-347-2",
+          "line": 224,
+          "severity": "minor",
+          "status": "new",
+          "title": "Test helper within() reports timeouts when target call raises exceptions"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "pr": 347,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "d455a408db169cb2153c842732a5e64ad48f7b57",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-12T23:43:30.850835Z",
+  "schema_version": 1
+}

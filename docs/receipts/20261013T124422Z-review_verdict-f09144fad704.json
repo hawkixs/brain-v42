@@ -1,0 +1,55 @@
+{
+  "digest": "sha256:f09144fad704ac5a36a06df60f73dfd57422288aa2b6653c04804a9b12085ace",
+  "idempotency_key": "review_verdict:ae0673782e321478b0dd7b7928d554fa1747a77b:115302265973",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115302265973,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The new assertions read settings.rerank_fallback_model, settings.rerank_fallback_provider and settings.rerank_primary_budget_seconds; those fields are presumably added by the base branch feat/rerank-fallback-chain (#400), which is not visible here. Check that #400 defines them (including the primary",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-401-1",
+          "line": 427,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Asserted Settings fields live on the stacked base, not in this diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The new assertion checks only settings.rerank_primary_budget_seconds < settings.rerank_budget_seconds; it never asserts they equal the compose values 2.5/1.0 from BRAIN_RERANK_BUDGET_SECONDS/BRAIN_RERANK_PRIMARY_BUDGET_SECONDS. If the validator mis-mapped either var, the inequality could still pass ",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-401-2",
+          "line": 432,
+          "severity": "minor",
+          "status": "new",
+          "title": "Budget env vars pinned only relatively in the Settings test"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "pr": 401,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "ae0673782e321478b0dd7b7928d554fa1747a77b",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T12:44:22.586304Z",
+  "schema_version": 1
+}

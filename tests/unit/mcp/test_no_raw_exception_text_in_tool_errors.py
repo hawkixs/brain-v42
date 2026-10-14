@@ -91,9 +91,9 @@ CALLER_SAFE_SITES: dict[tuple[str, str, str, str], str] = {
     (
         "mcp/tools/decay_tools.py",
         "brain_merge_entities",
-        "(ConsolidationEntityNotFoundError, ConsolidationEndpointMergedError)",
+        "(ConsolidationEntityNotFoundError, ConsolidationEndpointMergedError, ConsolidationChildrenUnstableError)",
         "format_error(str(exc))",
-    ): "Consolidation constructs a missing or already-merged endpoint message from entity type and UUID.",
+    ): "Consolidation constructs a missing, already-merged or unstable endpoint message from entity type and UUID.",
     (
         "mcp/tools/brain_tools.py",
         "brain_supersede_decision",

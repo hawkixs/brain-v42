@@ -1,8 +1,14 @@
 {
   "block": "session_slots",
   "source": "ADR #34 D12; GET http://127.0.0.1:9200/metrics, key session_slots",
+  "routes": [
+    {"method": "GET", "path": "/metrics", "key": "session_slots"},
+    {"method": "GET", "path": "/api/session-slots/v1", "key": "session_slots", "failed_read": {}}
+  ],
   "rules": [
     "read-only: the block writes nothing and reads no access counter",
+    "both routes share the session_slots SlowBlockCache entry and its generated_at",
+    "the dedicated route admits headerless transport-loopback peers; supplied bearers require telemetry and a METRICS_READ_CLIENTS client id; without a verifier non-loopback peers are refused",
     "open slots and open operator sessions only; agent traces are counted, never listed",
     "no slot body, no session summary, no client_key",
     "the block's queries are not one snapshot: a bound session may briefly appear in slots but not in sessions",

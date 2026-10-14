@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 
-def _utc_day() -> Any:
+def _utc_day(accessed_at: sa.ColumnElement[Any]) -> Any:
     """The calendar day of an access, in UTC and never in the session's zone.
 
     `date(accessed_at)` alone would resolve through `TimeZone`, so the same row
@@ -34,7 +34,7 @@ def _utc_day() -> Any:
     different placeholders are two different expressions, and the query dies with
     `column "access_log.accessed_at" must appear in the GROUP BY clause`.
     """
-    return sa.func.date(sa.func.timezone(sa.literal_column("'UTC'"), access_log.c.accessed_at))
+    return sa.func.date(sa.func.timezone(sa.literal_column("'UTC'"), accessed_at))
 
 
 async def _write_daily_journal(session: AsyncSession, rows: Sequence[Any]) -> None:
@@ -121,24 +121,34 @@ class PgAccessLogRepo:
         if max_id is None:
             return {}
 
-        # 2. Aggregate only snapshotted rows, split by actor so the
+        # 2. Drain and aggregate in ONE statement: under READ COMMITTED, a
+        #    separate DELETE could see newly committed low ids the aggregation
+        #    never counted. RETURNING supplies exactly the deleted rows.
+        #    The queue stays transient (ADR #21); split by actor so the
         #    human/system rule stays in ONE place (brain_v42.provenance).
-        stmt = (
-            sa.select(
-                access_log.c.entity_type,
-                access_log.c.entity_id,
-                access_log.c.actor,
-                _utc_day().label("day"),
-                sa.func.max(access_log.c.accessed_at).label("max_accessed"),
-                sa.func.count().label("cnt"),
-            )
+        drained = (
+            sa.delete(access_log)
             .where(access_log.c.id <= max_id)
-            .group_by(
+            .returning(
                 access_log.c.entity_type,
                 access_log.c.entity_id,
                 access_log.c.actor,
-                _utc_day(),
+                access_log.c.accessed_at,
             )
+            .cte("drained")
+        )
+        stmt = sa.select(
+            drained.c.entity_type,
+            drained.c.entity_id,
+            drained.c.actor,
+            _utc_day(drained.c.accessed_at).label("day"),
+            sa.func.max(drained.c.accessed_at).label("max_accessed"),
+            sa.func.count().label("cnt"),
+        ).group_by(
+            drained.c.entity_type,
+            drained.c.entity_id,
+            drained.c.actor,
+            _utc_day(drained.c.accessed_at),
         )
         result = await session.execute(stmt)
         rows = result.mappings().all()
@@ -178,16 +188,10 @@ class PgAccessLogRepo:
             if row["max_accessed"] > entry["max_accessed"]:
                 entry["max_accessed"] = row["max_accessed"]
 
-        # 4. The DURABLE journal, written BEFORE the delete and in the SAME
-        #    transaction — otherwise a crash between the two would lose exactly
-        #    the events this table exists to keep (ticket b93e32be).
+        # 4. Write the DURABLE journal AFTER the drain in the SAME transaction:
+        #    the caller commits or rolls back both, so a failed journal write
+        #    cannot lose the drained events (ticket b93e32be).
         await _write_daily_journal(session, rows)
-
-        # 5. Delete only snapshotted rows (same txn — caller commits).
-        #    The queue stays transient: ADR #21 rules that `access_log` is an
-        #    aggregation buffer and not a journal. The journal is a SECOND
-        #    store, never a reason to keep the queue.
-        await session.execute(sa.delete(access_log).where(access_log.c.id <= max_id))
 
         logger.debug(
             "access_log.aggregated",

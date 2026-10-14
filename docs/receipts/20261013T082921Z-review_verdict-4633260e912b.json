@@ -1,0 +1,65 @@
+{
+  "digest": "sha256:4633260e912bd3e4311d331cee9eb8d521fd1175d4381b79890a96f36216eb3f",
+  "idempotency_key": "review_verdict:0551c936969b162170b4f5e7938945dbebb3d8f2:115202248989",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115202248989,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "In test_logging_failure_cannot_interrupt_the_write, get_current_principal returns None, which sets cause to 'unauthenticated'. Line 39 in observe_declared_project selects log = _logger.debug, but the test configures side_effect on _logger.info. Because _logger.debug does not raise, lines 48-53 in ob",
+          "file": "tests/unit/mcp/test_author_binding.py",
+          "id": "F-386-1",
+          "line": 115,
+          "severity": "blocking",
+          "status": "fixed",
+          "title": "Logging failure test does not trigger a logging exception"
+        },
+        {
+          "class": "note",
+          "evidence": "The PR description states that author_binding_candidates should be added to DYNAMIC_MAPS in tests/unit/metrics/test_read_exposure_pinned.py, but the diff only modifies the docstrings dictionary, PINNED_SCHEMA, and populated_server; check whether DYNAMIC_MAPS exists elsewhere in the file and requires",
+          "file": "tests/unit/metrics/test_read_exposure_pinned.py",
+          "id": "F-386-2",
+          "line": 199,
+          "severity": "important",
+          "status": "still_open",
+          "title": "DYNAMIC_MAPS not updated despite mention in PR description"
+        },
+        {
+          "class": "note",
+          "evidence": "test_ticket_write_observes_author_and_preserves_result only exercises successful outcomes for reply, transition, and plan, whereas delivery writes are parametrized across both success and failure with fails=[False, True].",
+          "file": "tests/unit/mcp/test_author_binding_tools.py",
+          "id": "F-386-3",
+          "line": 23,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Ticket write failure outcomes not tested for author observation"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 386,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "0551c936969b162170b4f5e7938945dbebb3d8f2",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T08:29:21.155572Z",
+  "schema_version": 1
+}

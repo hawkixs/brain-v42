@@ -454,6 +454,7 @@ def build_metrics_runtime(
             receiver_auth="credentials" if credential_verifier is not None else "none",
             credential_verifier=credential_verifier,
             credential_listener=credential_listener,
+            metrics_read_clients=effective_settings.metrics_read_clients,
             slow_block_cache_ttl_seconds=effective_settings.metrics_slow_block_cache_ttl_seconds,
             slow_block_cache_error_ttl_seconds=(
                 effective_settings.metrics_slow_block_cache_error_ttl_seconds

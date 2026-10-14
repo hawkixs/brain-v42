@@ -40,6 +40,10 @@ class DecisionNotSupersedableError(ValueError):
     """Refuse a replacement without an eligible old decision to avoid orphan rows."""
 
 
+class DecisionCrossProjectSupersedeError(DecisionNotSupersedableError):
+    """Prevent one project's replacement from rewriting another project's decision (SEC1b)."""
+
+
 #: Passes `_lock_with_referrers` makes before giving up. Each repeat needs a fresh
 #: concurrent commit pointing at the decision, inside a window of a few statements.
 _MAX_LOCK_PASSES = 3
@@ -556,9 +560,10 @@ class PgDecisionRepo(BasePgRepository):
         1. INSERT new decision row via super().create(session=s)
         2. UPDATE exactly one old decision that is not already superseded:
            status='superseded', superseded_by=new_id; otherwise roll back.
-           There is deliberately no project predicate: cross-project supersession
-           exists in production (2 of 56 rows on 2026-10-13, both project
-           renames), so restricting it is an operator decision, not a fix.
+           Operator ruling 5da112d1, option (a), forbids cross-project supersession:
+           SEC1b requires that project B cannot rewrite project A's decision.
+           Both decisions must belong to the same project or both be unscoped;
+           the two historical cross-project supersessions remain unchanged.
         3. COMMIT once (via transaction() context manager exit)
 
         With a caller-owned ``session`` both writes run in a savepoint of the
@@ -574,6 +579,7 @@ class PgDecisionRepo(BasePgRepository):
             .where(
                 decisions.c.id == old_id,
                 decisions.c.status != "superseded",
+                decisions.c.project_key.is_not_distinct_from(new_data.project_key),
             )
             .values(
                 status="superseded",
@@ -586,6 +592,21 @@ class PgDecisionRepo(BasePgRepository):
             row = await super().create(payload, session=sess)
             updated = await sess.execute(update_stmt)
             if len(updated.scalars().all()) != 1:
+                existing = await sess.execute(
+                    sa.select(decisions.c.status, decisions.c.project_key).where(
+                        decisions.c.id == old_id
+                    )
+                )
+                old = existing.mappings().one_or_none()
+                if (
+                    old is not None
+                    and old["status"] != "superseded"
+                    and old["project_key"] != new_data.project_key
+                ):
+                    raise DecisionCrossProjectSupersedeError(
+                        "The old decision belongs to a different project scope; "
+                        "supersede it from its own project (same project_key)"
+                    )
                 raise DecisionNotSupersedableError(
                     f"Decision {old_id} does not exist or is already superseded"
                 )

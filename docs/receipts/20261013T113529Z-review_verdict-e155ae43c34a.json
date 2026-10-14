@@ -1,0 +1,56 @@
+{
+  "digest": "sha256:e155ae43c34a0711c22494b4f9f0d2fc4309851159505d7fee2748dcec321f80",
+  "idempotency_key": "review_verdict:8535180f350bc9f5949e5d73c99bbd02ad9af571:115274411149",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115274411149,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The forbidden-character regex excludes neither U+061C (ARABIC LETTER MARK, a bidi control) nor U+2060 (WORD JOINER, a zero-width character). Embedded values such as \"a\\u061cb\" and \"a\\u2060b\" therefore pass line(), despite the documented rejection of bidi and zero-width characters. Extend the filter ",
+          "file": "src/brain_v42/models/programme.py",
+          "id": "F-377-1",
+          "line": 41,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Invisible-character filtering misses advertised cases"
+        },
+        {
+          "class": "note",
+          "evidence": "ProgrammeProgress uses ordinary Pydantic int fields without strict validation. Consequently, done=true and total=true become integers before model_dump() forwards them to the service, bypassing the explicit boolean rejection in models/programme.py. Use strict integer fields and test through MCP argu",
+          "file": "src/brain_v42/mcp/tools/programme_tools.py",
+          "id": "F-377-2",
+          "line": 49,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Progress coercion bypasses boolean rejection"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "pr": 377,
+      "providers": [
+        "glm",
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "8535180f350bc9f5949e5d73c99bbd02ad9af571",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T11:35:29.390903Z",
+  "schema_version": 1
+}

@@ -1,0 +1,115 @@
+{
+  "digest": "sha256:7d0f2d15f8422f03e5bb1243d88ee8f95a42a92ebe5d93990433691e53f9c593",
+  "idempotency_key": "review_verdict:b762ebdecc8f664bd5cdde6dbacfb09aa418c3f3:115119436473",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": true,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115119436473,
+      "diff_truncated": false,
+      "finding_count": 8,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "In lines 300-310, the while loop pops items from kept to fit the signature. When _signature returns an empty string because the signature exceeds cap, kept is drained until empty and the loop breaks with signature = \"\", leaving message as f\"{prefix} invalid value shape.\" from line 303. The original ",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-1",
+          "line": 300,
+          "severity": "blocking",
+          "status": "fixed",
+          "title": "Clauses discarded when signature cannot fit"
+        },
+        {
+          "class": "blocker",
+          "evidence": "In line 141, optional_text += f\", \u2026 (+{remaining} more)\" prepends a leading comma and space. When kept is empty, optional_text begins with \", \u2026\". At line 143, when required_text is non-empty, {', ' if required_text and optional_text else ''} inserts another comma, formatting as \"{name}({required_tex",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-2",
+          "line": 141,
+          "severity": "blocking",
+          "status": "fixed",
+          "title": "Malformed signature with double or leading comma"
+        },
+        {
+          "class": "note",
+          "evidence": "At lines 305 and 312, signature is only appended to message when len(message) + len(marker) + len(signature) <= 600. Consequently, whenever message contains \" Expected: \", len(message) <= 600 is already satisfied and line 313 unconditionally returns, making the subsequent truncation logic at lines 3",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-3",
+          "line": 315,
+          "severity": "important",
+          "status": "fixed",
+          "title": "Unreachable truncation logic for Expected signature"
+        },
+        {
+          "class": "note",
+          "evidence": "In line 249, _schema_path returns path truncated at the last recognized property name. When an extra forbidden key is present in a nested dictionary, path contains only the enclosing parent parameter. At line 261, clauses.append(f\"'{loc}': unexpected field\") reports the parent parameter as an unexpe",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-4",
+          "line": 260,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Nested extra_forbidden errors attribute to parent property"
+        },
+        {
+          "class": "note",
+          "evidence": "At line 154, matched is initialized as an empty list and appended to on lines 158, 163, and 171, but matched is never read or returned.",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-5",
+          "line": 154,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Unused local variable matched"
+        },
+        {
+          "class": "blocker",
+          "evidence": "In src/brain_v42/mcp/argument_guidance.py lines 107-108, 'if not props: return f\"{name}()\"' returns the signature without verifying 'len(f\"{name}()\") <= cap'. When cap is smaller than the signature length (including when cap is negative or zero), _signature returns the signature string instead of em",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-6",
+          "line": 108,
+          "severity": "blocking",
+          "status": "new",
+          "title": "_signature returns parameterless signature exceeding cap"
+        },
+        {
+          "class": "blocker",
+          "evidence": "In src/brain_v42/mcp/argument_guidance.py lines 274-275, 'message[:597].rstrip(\" ;\") + \"\u2026\"' slices message at character 597 when len(message) > 600. When signature is present and kept_unexpected is empty (such as when core has a single clause and unexpected clauses cannot fit, where line 247 appends",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-7",
+          "line": 275,
+          "severity": "blocking",
+          "status": "new",
+          "title": "Hard slice truncates signature mid-string instead of omitting it whole"
+        },
+        {
+          "class": "note",
+          "evidence": "In src/brain_v42/mcp/argument_guidance.py line 247, 'parts[-1] += \"\u2026\"' appends an ellipsis to parts[-1] whenever truncated is True. When no unexpected clauses fit and kept_unexpected is empty, parts[-1] is core[-1], marking a retained core clause as truncated even though all core clauses are present",
+          "file": "src/brain_v42/mcp/argument_guidance.py",
+          "id": "F-373-8",
+          "line": 247,
+          "severity": "important",
+          "status": "new",
+          "title": "Ellipsis appended to core clause when unexpected clauses cannot fit"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "pr": 373,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "b762ebdecc8f664bd5cdde6dbacfb09aa418c3f3",
+      "verdict": "request_changes"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T03:55:03.176196Z",
+  "schema_version": 1
+}

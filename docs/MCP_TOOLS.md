@@ -710,6 +710,7 @@ brain_supersede_decision(old_decision_id, title, context, decision_made,
                          project_key=None, tags=None)
 ```
 Create a new decision and mark the old one `status=superseded`, `superseded_by=new_id`. Atomic (one transaction). The old decision must exist and must not already be superseded. Otherwise the call is refused and no replacement is created.
+The old decision must belong to the same project as the replacement (or both must be unscoped); a decision of another project is refused and nothing is written.
 
 ### brain_get_supersession_chain
 ```
@@ -1106,7 +1107,7 @@ brain_slot_list(project_key, status='open'|'closed'|'all', limit=20, offset=0)
 ```
 Read only. Each slot carries its anchors, `bound_session_id`, `is_stale` and `receipt_pending`. `receipt_pending` is true on an open slot whose receipts have all arrived but which a writer has not closed yet (a missed hook call; `brain_slot_close` closes it); it is derived, never stored. Refusals: `project_not_found`, `invalid_limit`.
 
-A slot also closes by itself, with no tool call and no distillation into the base: when the receipt of its anchors is written, the writer closes it in the same transaction (`close_reason = 'receipt:<id>'`, `close_note` null, revision + 1, a `slot_close` history row). Only two writers do: the integration receipt (ticket and PR anchors) and the delivery observer's `released` attestation (lot anchors). A caller-declared `brain_delivery_attest` is not a measurement and closes nothing; neither does a `released` attestation by another issuer, for another project, or on a ticket of another project. A slot with a lot anchor is decided by its lot; otherwise every ticket and PR anchor must be integrated, at the workflow's current contract revision and attempt (a receipt of an older revision does not count). A closed slot never reopens. A session bound to a slot closed this way ends with `slot_closed` at the post-close revision and records `conflict` at the pre-close revision; it can always be abandoned.
+A slot also closes by itself, with no tool call and no distillation into the base: when the receipt of its anchors is written, the writer closes it in the same transaction (`close_reason = 'receipt:<id>'`, `close_note` null, revision + 1, a `slot_close` history row). Only two writers do: the integration receipt (ticket and PR anchors) and the delivery observer's `released` attestation (lot anchors). A caller-declared `brain_delivery_attest` is not a measurement and closes nothing; neither does a `released` attestation by another issuer, for another project, or on a ticket of another project. A slot with a lot anchor is decided by its lot; otherwise every ticket and PR anchor must be integrated, at the workflow's current contract revision and attempt (a receipt of an older revision does not count). A PR anchor counts only a receipt whose own artifact proofs observed that PR's current binding: binding an already integrated ticket to another PR does not satisfy that PR. A closed slot never reopens. A session bound to a slot closed this way ends with `slot_closed` at the post-close revision and records `conflict` at the pre-close revision; it can always be abandoned.
 
 ### brain_slot_close
 ```
@@ -1354,6 +1355,10 @@ List quasi-duplicate pairs detected by embedding similarity (`ConsolidationJob`)
 brain_merge_entities(entity_type, source_id, target_id)
 ```
 Keep `target`, archive `source` with `merged_into=target_id`, union `tags`. Writes a row to `consolidation_log` for audit.
+An already-merged endpoint is refused; the error names the source or target endpoint.
+Rows already merged into the source are re-pointed to the target in the same transaction, each with a `repointed` consolidation audit entry and a `MERGED_INTO` relation written after commit.
+Children of another project are left in place and counted in a warning for a project-scoped merge.
+If the child set keeps changing while locks are taken, the merge refuses after three passes, changing nothing; the caller can retry.
 
 ---
 
