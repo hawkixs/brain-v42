@@ -1,0 +1,109 @@
+{
+  "digest": "sha256:f155a907ba27e24678f7ce48e872b5a2f0b5332c745811d68b442adc1db61edd",
+  "idempotency_key": "review_verdict:afce3d84bf97cb7f9572defeb291b7d7edf705d5:115469710515",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115469710515,
+      "diff_truncated": false,
+      "finding_count": 7,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The BeforeValidator widening changes accepted input and published descriptions for every user of TagList, ShortTextList and StepList, but the schema contract snapshots only the 30 knowledge tools; any tool outside that set that uses these types silently gains string acceptance and unguarded schema d",
+          "file": "src/brain_v42/models/input_bounds.py",
+          "id": "F-372-1",
+          "line": 36,
+          "severity": "important",
+          "status": "new",
+          "title": "Coverage of every user of the shared list types is not evidenced"
+        },
+        {
+          "class": "note",
+          "evidence": "The new text says objects retain `{order?, title, command?, description?}`, while the unchanged published schema description for brain_create_runbook.steps in tests/fixtures/mcp_knowledge_tool_input_schemas_base.json says `{order?, title, command?, verification?}` \u2014 `description?` vs `verification?`",
+          "file": "docs/MCP_TOOLS.md",
+          "id": "F-372-2",
+          "line": 779,
+          "severity": "minor",
+          "status": "new",
+          "title": "Documented step-object shape disagrees with the schema"
+        },
+        {
+          "class": "note",
+          "evidence": "Any single string whose stripped form starts with '[' but is not valid JSON is refused with 'looks like a JSON list but is not valid JSON', so legitimate free-text values such as a step title '[1] Build image' or a tag '[urgent]' are rejected even though accepting model-sent strings is the purpose o",
+          "file": "src/brain_v42/models/input_bounds.py",
+          "id": "F-372-3",
+          "line": 43,
+          "severity": "minor",
+          "status": "new",
+          "title": "Bracket-leading free text is refused"
+        },
+        {
+          "class": "note",
+          "evidence": "The validator catches only json.JSONDecodeError; json.loads on deeply nested brackets (e.g. '[' * 20000 + ']' * 20000) raises RecursionError, which surfaces as an unhandled server error instead of a clean validation refusal. Whether transport-level message-size limits already bound this is a questio",
+          "file": "src/brain_v42/models/input_bounds.py",
+          "id": "F-372-4",
+          "line": 46,
+          "severity": "minor",
+          "status": "new",
+          "title": "RecursionError from deeply nested JSON escapes the validator"
+        },
+        {
+          "class": "note",
+          "evidence": "test_text_list_item_bound_applies_after_string_coercion actually asserts the per-item max_length (a 101-character single string coerced to one item), not the list maxItems bound; no test feeds a valid JSON list with more than LIST_MAX_ITEMS items to confirm maxItems still applies after BeforeValidat",
+          "file": "tests/unit/models/test_input_bounds.py",
+          "id": "F-372-5",
+          "line": 32,
+          "severity": "minor",
+          "status": "new",
+          "title": "List-bound-after-coercion untested; test name overstates"
+        },
+        {
+          "class": "note",
+          "evidence": "published_input_schemas() relies on `await server._list_tools()`, a private fastmcp method; a fastmcp upgrade can silently break the contract-test tooling.",
+          "file": "scripts/snapshot_knowledge_tool_schemas.py",
+          "id": "F-372-6",
+          "line": 45,
+          "severity": "minor",
+          "status": "new",
+          "title": "Private fastmcp API in snapshot tooling"
+        },
+        {
+          "class": "note",
+          "evidence": "StepList publishes 'Each step is an object or a title string.' and does not mention that a single string is accepted as a one-element list, which docs/MCP_TOOLS.md 'Accepted shapes' advertises; if the per-parameter description on the runbook steps/rollback_steps params does not cover it either, sche",
+          "file": "src/brain_v42/models/input_bounds.py",
+          "id": "F-372-7",
+          "line": 65,
+          "severity": "minor",
+          "status": "new",
+          "title": "StepList description omits the single-string acceptance"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 372,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "afce3d84bf97cb7f9572defeb291b7d7edf705d5",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T18:56:57.911129Z",
+  "schema_version": 1
+}

@@ -5,8 +5,8 @@ table for matches (same project_key, cosine similarity >= threshold), then
 inserts links into feature_artifacts.
 
 When a ClusterGuard is provided **and** the caller passes a title, the linker
-delegates to ClusterGuard.resolve() (which may link, merge, or create a
-feature) and then inserts the feature_artifact link.  Otherwise it falls back to
+delegates to ClusterGuard.resolve_and_link() (which may link or create a
+feature). Otherwise it falls back to
 a raw-SQL cosine-similarity path.
 
 DIVERGENCE — the two paths do NOT share a contract, and reading the fallback as
@@ -15,8 +15,8 @@ DIVERGENCE — the two paths do NOT share a contract, and reading the fallback a
     |                     | ClusterGuard path      | raw-SQL fallback     |
     |---------------------|------------------------|----------------------|
     | links per artifact  | at most 1, structural  | up to ``max_links``  |
-    | reranker            | yes (0.75 / 0.50)      | none                 |
-    | grey zone 0.50–0.70 | arbitrated             | ignored              |
+    | reranker            | none                   | none                 |
+    | grey zone 0.50–0.70 | links at cosine 0.65   | ignored              |
     | link-only mode      | honoured               | unknown              |
     | feature creation    | possible               | never                |
 
@@ -128,34 +128,23 @@ class FeatureLinker:
         project_key: str,
         title: str,
     ) -> int:
-        """Delegate to ClusterGuard, then insert the feature_artifact link."""
+        """Delegate resolution and the live-target insertion to ClusterGuard."""
         assert self._cluster_guard is not None  # guaranteed by caller
 
-        feature, action = await self._cluster_guard.resolve(
+        feature, action, linked = await self._cluster_guard.resolve_and_link(
             text=title,
             embedding=embedding,
             project_key=project_key,
             signal_type=artifact_type,
+            artifact_type=artifact_type,
+            artifact_id=artifact_id,
+            similarity_score_for=lambda _: 1.0,
         )
 
-        if feature is None:
-            # Link-only mode: no confident candidate for a non-creating
-            # signal_type. Nothing to link — this is not an error.
+        if not linked or feature is None:
+            # A skipped signal or a lost status CAS has no target to link.
+            # Both are normal no-link outcomes for knowledge signals.
             return 0
-
-        async with self._sf() as session:
-            stmt = (
-                pg_insert(feature_artifacts)
-                .values(
-                    feature_id=feature.id,  # type: ignore[attr-defined]
-                    artifact_type=artifact_type,
-                    artifact_id=artifact_id,
-                    similarity_score=1.0,
-                )
-                .on_conflict_do_nothing()
-            )
-            await session.execute(stmt)
-            await session.commit()
 
         logger.debug(
             "feature_linker.linked_via_guard",

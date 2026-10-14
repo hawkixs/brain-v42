@@ -69,7 +69,7 @@ async def test_link_artifact_delegates_to_cluster_guard(mock_session_factory):
     factory, session = mock_session_factory
     cluster_guard = AsyncMock()
     mock_feature = MagicMock(id=uuid.uuid4(), name="Test Feature")
-    cluster_guard.resolve.return_value = (mock_feature, "linked")
+    cluster_guard.resolve_and_link.return_value = (mock_feature, "linked", True)
 
     linker = FeatureLinker(session_factory=factory, cluster_guard=cluster_guard)
     result = await linker.link_artifact(
@@ -79,8 +79,12 @@ async def test_link_artifact_delegates_to_cluster_guard(mock_session_factory):
         project_key="test",
         title="Some learning",
     )
-    cluster_guard.resolve.assert_called_once()
-    assert result >= 0
+    cluster_guard.resolve_and_link.assert_awaited_once()
+    args = cluster_guard.resolve_and_link.await_args.kwargs
+    assert args["signal_type"] == args["artifact_type"] == "learning"
+    assert args["similarity_score_for"]("linked") == 1.0
+    assert result == 1
+    session.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -110,7 +114,7 @@ async def test_link_artifact_falls_back_to_raw_sql_when_no_title(mock_session_fa
         artifact_id=uuid.uuid4(),
         project_key="test",
     )
-    cluster_guard.resolve.assert_not_called()
+    cluster_guard.resolve_and_link.assert_not_called()
     assert result >= 0
 
 
@@ -121,7 +125,7 @@ async def test_link_artifact_cluster_guard_inserts_link(mock_session_factory):
     cluster_guard = AsyncMock()
     feature_id = uuid.uuid4()
     mock_feature = MagicMock(id=feature_id, name="Auth Feature")
-    cluster_guard.resolve.return_value = (mock_feature, "created")
+    cluster_guard.resolve_and_link.return_value = (mock_feature, "created", True)
 
     linker = FeatureLinker(session_factory=factory, cluster_guard=cluster_guard)
     artifact_id = uuid.uuid4()
@@ -133,14 +137,16 @@ async def test_link_artifact_cluster_guard_inserts_link(mock_session_factory):
         title="Add JWT auth",
     )
     assert result == 1
-    # session.execute should have been called to insert the link
-    session.execute.assert_called_once()
-    session.commit.assert_called_once()
+    args = cluster_guard.resolve_and_link.await_args.kwargs
+    assert args["artifact_id"] == artifact_id
+    assert args["similarity_score_for"]("created") == 1.0
+    session.execute.assert_not_awaited()
+    session.commit.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_link_artifact_returns_zero_when_cluster_guard_skips(mock_session_factory):
-    """ClusterGuard link-only mode: (None, "skipped") -> 0 links, no insert.
+    """ClusterGuard link-only mode: (None, "skipped", False) -> 0 links, no insert.
 
     An explicit `if feature is None: return 0` guard is required *before* the
     insert. Without it, `feature.id` would raise AttributeError, which the
@@ -149,7 +155,7 @@ async def test_link_artifact_returns_zero_when_cluster_guard_skips(mock_session_
     """
     factory, session = mock_session_factory
     cluster_guard = AsyncMock()
-    cluster_guard.resolve.return_value = (None, "skipped")
+    cluster_guard.resolve_and_link.return_value = (None, "skipped", False)
 
     linker = FeatureLinker(session_factory=factory, cluster_guard=cluster_guard)
     with patch("brain_v42.services.feature_linker.logger") as mock_logger:
@@ -171,11 +177,29 @@ async def test_link_artifact_returns_zero_when_cluster_guard_skips(mock_session_
 
 
 @pytest.mark.asyncio
+async def test_link_artifact_returns_zero_when_shared_helper_loses_target(mock_session_factory):
+    factory, session = mock_session_factory
+    guard = AsyncMock()
+    guard.resolve_and_link.return_value = (None, "lost", False)
+    linker = FeatureLinker(session_factory=factory, cluster_guard=guard)
+    with patch("brain_v42.services.feature_linker.logger") as logs:
+        assert (
+            await linker.link_artifact(
+                [0.1], "learning", uuid.uuid4(), "brain-v42", title="Knowledge"
+            )
+            == 0
+        )
+    logs.warning.assert_not_called()
+    logs.debug.assert_not_called()
+    session.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_link_artifact_cluster_guard_exception_caught(mock_session_factory):
-    """Exceptions from cluster_guard.resolve() are caught (fire-and-forget)."""
+    """Exceptions from cluster_guard.resolve_and_link() are caught (fire-and-forget)."""
     factory, session = mock_session_factory
     cluster_guard = AsyncMock()
-    cluster_guard.resolve.side_effect = RuntimeError("reranker timeout")
+    cluster_guard.resolve_and_link.side_effect = RuntimeError("reranker timeout")
 
     linker = FeatureLinker(session_factory=factory, cluster_guard=cluster_guard)
     result = await linker.link_artifact(
@@ -315,7 +339,7 @@ class TestTheFallbackPathIsAnnouncedInsteadOfSilent:
         feature = MagicMock()
         feature.id = uuid.uuid4()
         cluster_guard = MagicMock()
-        cluster_guard.resolve = AsyncMock(return_value=(feature, "linked"))
+        cluster_guard.resolve_and_link = AsyncMock(return_value=(feature, "linked", True))
         linker = FeatureLinker(session_factory=factory, cluster_guard=cluster_guard)
 
         with capture_logs() as logs:

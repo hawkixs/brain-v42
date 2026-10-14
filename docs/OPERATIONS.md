@@ -333,6 +333,57 @@ The contract is `docs/contracts/programmes_v1.md`. Three things to know when ope
   writable by its coordinating project. Mark a finished programme `done`: it stays published
   for seven days, then leaves the block but remains readable through `brain_programme_list`.
 
+## Protected sidecar reads
+
+Consumers can read `GET /api/session-slots/v1` (the slot inventory alone) and
+`GET /api/brain-graph/v1` (the graph snapshot) over the sidecar's WireGuard listener.
+The operator issues each consumer's client credential through the registry CLI;
+issuing credentials is an operator gesture. Configure `METRICS_RECEIVER_AUTH=credentials`
+and `METRICS_READ_CLIENTS=red-monitor,red-cockpit` with the client ids the operator
+actually issued, in the metrics service's `environment:` list of `deploy/compose.yaml`
+(that list is explicit, so a value set elsewhere never reaches the container; changing it
+ships with a release). The allowlist is comma-separated with no spaces; each id must match
+`[a-z0-9][a-z0-9.-]{0,63}`. Its default is empty, which admits no credentialed reader.
+The credential must have the existing `telemetry` family as well as an allowlisted id.
+
+Store the bearer token in a file with mode `0600` on the consumer's machine. The
+consumer reads that file and sends exactly one `Authorization: Bearer <token>` header.
+Keep the token out of the repository, environment and command line. This telemetry
+credential exposes no MCP tools, but can also submit OTLP usage to `/v1/logs` and
+`/v1/logs/claude`: the accepted residual risk is fabricated usage counters, so restrict
+issuance to the operator's consumers (decision 11defbe0).
+
+Headerless transport-loopback requests are admitted for local diagnostics. Any supplied
+Authorization header is checked even on loopback; forwarded headers do not change the
+transport peer. Without a verifier, non-loopback requests get
+`403 {"error": "loopback peer required"}` before header inspection, and a loopback
+request supplying any Authorization header gets `401`.
+
+Credentialed read refusals return `{"reason": "<code>"}`:
+
+| HTTP status | Reason |
+|---|---|
+| 401 | `malformed_authorization` (duplicate, non-Bearer or empty header/token), `missing_token`, `unknown_token`, `revoked_token`, `expired_token` |
+| 403 | `client_not_allowed` (not allowlisted), `family_denied` (no telemetry family) |
+| 429 | `rate_limited` (10 reads/s per client, burst 20, shared across both read routes) |
+| 503 | `registry_unavailable` (cold snapshot or last successful refresh older than 90 s) |
+
+`429` and credential `503` responses include `Retry-After: 1`. Malformed or missing
+headers are refused locally with `401` before consulting even a cold or stale registry.
+The registry refreshes every 30 s: an outage preserves valid cached credentials until
+90 s after the last successful refresh. Expiry is checked on every request; revocation
+is effective after the next successful refresh. A revoked credential still cached
+during an outage can read until that 90 s boundary, after which reads fail closed.
+Read quotas and refusal logs (`metrics.read_refused`, plus debug `metrics.read_admitted`)
+are separate from telemetry receiver quotas and observation counters.
+
+The slot response is `{"session_slots": <block>}`, matching the existing block in
+`/metrics` and `docs/contracts/session_slots_block.json`. Both routes to that block
+share one computation per cache TTL (30 s by default). A failed slot read returns `{}`
+and retries after the error TTL (5 s by default); `/metrics.block_status.session_slots`
+reports that health. The existing public reads `/metrics`, `/api/cockpit`, `/programmes`
+and `/healthz` keep their admission and payloads, including `/metrics.session_slots`.
+
 ## Admin elevation hook (`/brain-admin`)
 
 The operator elevates the current Brain session to admin by typing a command in the
@@ -1348,6 +1399,28 @@ Deleted successes remain recoverable from the preceding backup dump.
 ## Agent trace and graph outbox retention
 
 `python -m brain_v42.maintenance.trace_retention` previews old, unreferenced closed agent traces and delivered graph outbox rows; deletion is dry by default and requires `--execute`. Trace retention has a 30-day minimum window, and outbox retention has a seven-day minimum (both default to 30 days). It keeps open and operator sessions, traces referenced by artifacts, checkpoints, slot history or relay children, and every undelivered outbox row. Batches default to 5000 rows, with at most 100 batches per purge. A dry run counts every candidate; an execute run is capped at `--max-batches` × `--batch-size` rows. Locked candidates are skipped, and later invocations can process the remainder.
+
+## Historical merge chain repair
+
+`python scripts/repair_merge_chains.py` (or
+`python -m brain_v42.scripts.repair_merge_chains`) inventories merge chains in
+learnings, decisions, snippets, runbooks and ADRs. The default is a dry run in a
+read-only transaction and emits one JSON report. After reviewing that report,
+an explicit operator go is required to run `--execute --expect N`, where `N`
+must equal the measured `in_project_chained_count` across all five tables.
+Execution flattens those pointers to their roots, writes a `repointed` audit
+row per change and stages `MERGED_INTO` relations in the PostgreSQL ledger/outbox
+in the same transaction; it never writes Neo4j directly. Cycles, dangling roots,
+depths beyond 64, a changed count or failed final verification refuse the repair.
+The repair takes a share-row-exclusive lock on the five knowledge tables for its
+duration and refuses after 5 s if it cannot acquire it. Reads proceed, but every
+write to these tables waits, including the access-count flush (which updates
+freshness counters) and new knowledge writes, to keep the approved inventory stable.
+Chains rooted in another project are reported, not changed; `transits_other_project`
+counts rows whose path visits another project, including chains returning to their
+own project, which remain eligible for repair. All changes commit together or
+roll back together. The database URL comes only
+from the existing settings (`POSTGRES_URL`), never from a CLI argument.
 
 ## Automation service
 

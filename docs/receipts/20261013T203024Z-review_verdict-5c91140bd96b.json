@@ -1,0 +1,68 @@
+{
+  "digest": "sha256:5c91140bd96bf0ae58db86ed5184b7b6d95317bb85ff9e4ac9b25ef074153726",
+  "idempotency_key": "review_verdict:db66d42c015127a7a58abf8dc102e1815031c8cd:115522604482",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115522604482,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "if the collector-built `graph_outbox_stats` on its unavailable path carries keys beyond available/pending/ready/claimed/exhausted/oldest_pending_age_seconds/projector, `**graph_outbox_stats` now surfaces them where the previous code emitted a fixed 7-key schema; the failure-path key set is not pinne",
+          "file": "src/brain_v42/metrics/collector.py",
+          "id": "F-417-1",
+          "line": 953,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Error-path graph_outbox passthrough may widen the payload schema"
+        },
+        {
+          "class": "note",
+          "evidence": "on any failure in the same try (e.g., the tested connection-close failure after a successful read), `dict.fromkeys(worker_last_24h)` discards counters that were successfully measured, whereas `graph_outbox` retains values read before the identical failure; this matches the documented rule ('null on ",
+          "file": "src/brain_v42/metrics/collector.py",
+          "id": "F-417-2",
+          "line": 952,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Worker counters nulled even when already read"
+        },
+        {
+          "class": "note",
+          "evidence": "On a successful search_log read with zero queries, hitRate still returns 0.0 (`... if total else 0.0`) and rerankUsed 0.0 (rer_ratio's `else 0.0` branch at line 255) - values not measured from any data - while the failure path now nulls them; the new test_cockpit_search_log_success_reports_health_an",
+          "file": "src/brain_v42/metrics/cockpit.py",
+          "id": "F-417-3",
+          "line": 261,
+          "severity": "minor",
+          "status": "new",
+          "title": "Empty-success retrieval still publishes fabricated zeros"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 417,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "db66d42c015127a7a58abf8dc102e1815031c8cd",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T20:30:24.933429Z",
+  "schema_version": 1
+}

@@ -1,0 +1,99 @@
+{
+  "digest": "sha256:9693ab48adff06323060ce37907d32b02f136f1b13da9476e1791481f78a638b",
+  "idempotency_key": "review_verdict:46459eaefb1086445bfaf90c7509713a04ebd301:115513305659",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115513305659,
+      "diff_truncated": false,
+      "finding_count": 6,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Armed requires UnitFileState=enabled AND ActiveState=active. A timer that is running but not [Install]-enabled (UnitFileState empty -> None, e.g. pulled in by a dependency or started manually) falls through to 'suspended', so a genuinely scheduled Dream is reported unjudged. Assuming the deployment ",
+          "file": "src/brain_v42/metrics/dream_scheduler.py",
+          "id": "F-416-1",
+          "line": 89,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Active-but-not-enabled timer classifies as suspended"
+        },
+        {
+          "class": "note",
+          "evidence": "With judged=False a recorded failure yields last_run.status='failed' (new value), but the history entry built from the same recorded rows keeps the pre-existing 'partial' (pinned by test_unjudged_recorded_failure_is_failed). ARCHITECTURE.md documents only last_run semantics; red-monitor consumers mu",
+          "file": "src/brain_v42/metrics/collector_dream.py",
+          "id": "F-416-2",
+          "line": 252,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Unjudged last_run says 'failed' while history for the same run stays 'partial'"
+        },
+        {
+          "class": "note",
+          "evidence": "When the scheduler probe fails transiently (state not_measured, judged False), a run that died before later phases recorded has fail==0 and no fabricated missing phases, so status is 'success' until the next cache refresh re-measures. The state is visible via scheduler_state/nightly.dream_state and ",
+          "file": "src/brain_v42/metrics/collector_dream.py",
+          "id": "F-416-3",
+          "line": 194,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "not_measured window reports an incomplete night as success"
+        },
+        {
+          "class": "note",
+          "evidence": "The test fakes NextElapseUSecRealtime as 'Tue 2026-10-13 03:00:00 UTC', but 'systemctl show --property=NextElapseUSecRealtime' reports integer microseconds (the human-readable form is the separate NextElapseUSecRealtimeUSec property). The value passes through unparsed so nothing breaks, yet producti",
+          "file": "src/brain_v42/metrics/dream_scheduler.py",
+          "id": "F-416-4",
+          "line": 84,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "next_elapse fixture format differs from real systemctl output"
+        },
+        {
+          "class": "note",
+          "evidence": "The absent branch (lines 87-88) fires only when `systemctl --user show` exits 0 with LoadState=not-found; if the target systemd exits nonzero for an unloaded unit, a genuinely absent scheduler is reported not_measured (error_type systemctl_exit_N). Both are non-armed so the judged gate is unaffected",
+          "file": "src/brain_v42/metrics/dream_scheduler.py",
+          "id": "F-416-5",
+          "line": 87,
+          "severity": "minor",
+          "status": "new",
+          "title": "Missing unit may surface as not_measured instead of absent"
+        },
+        {
+          "class": "note",
+          "evidence": "The diff forwards the configured mode only in _compute_dream_block and _handle_metrics; if another handler (e.g. a /api/cockpit assembly in the same server) also calls collect_nightly_ops or collect_dream_metrics directly, it would run with the default 'systemd_user' \u2014 inside the container that prob",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-416-6",
+          "line": 848,
+          "severity": "minor",
+          "status": "new",
+          "title": "Possible collector call sites outside the shown hunks keep the default scheduler mode"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 416,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "46459eaefb1086445bfaf90c7509713a04ebd301",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T20:25:07.144817Z",
+  "schema_version": 1
+}

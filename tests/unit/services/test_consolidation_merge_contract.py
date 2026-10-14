@@ -97,6 +97,7 @@ def _job_fixture(
     session = AsyncMock()
     session.execute = AsyncMock(side_effect=execute)
     session.begin = MagicMock(return_value=_Transaction(events))
+    session.begin_nested = MagicMock(side_effect=lambda: _Transaction([]))
     session_context = AsyncMock()
     session_context.__aenter__ = AsyncMock(return_value=session)
     session_context.__aexit__ = AsyncMock(return_value=False)
@@ -217,6 +218,121 @@ async def test_merge_locks_and_repoints_both_children_with_transactional_audits(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("scoped", [False, True])
+async def test_straggler_releases_locks_before_retry_and_is_repointed(scoped: bool) -> None:
+    source_id, target_id, child_id = uuid4(), uuid4(), uuid4()
+    children: list[dict[str, Any]] = []
+    job, session, log_repo, _graph, statements, _events = _job_fixture(
+        source_id, target_id, children=children
+    )
+    savepoint_events: list[str] = []
+    session.begin_nested = MagicMock(side_effect=lambda: _Transaction(savepoint_events))
+    execute = session.execute.side_effect
+    rereads = 0
+
+    async def commit_straggler(statement: Any) -> MagicMock:
+        nonlocal rereads
+        result = await execute(statement)
+        if "NOT IN" in str(statement):
+            rereads += 1
+            if rereads == 1:
+                children.append({"id": child_id})
+                return _result(scalar=child_id)
+        elif "FOR UPDATE" in str(statement) and children:
+            assert savepoint_events == [
+                "transaction_enter",
+                "transaction_rollback",
+                "transaction_enter",
+            ]
+        return result
+
+    session.execute.side_effect = commit_straggler
+    authorization = MagicMock(project_key="owned") if scoped else None
+    if authorization is not None:
+        authorization.revalidate_ids = AsyncMock()
+
+    await job.merge("decision", source_id, target_id, authorization=authorization)
+
+    assert savepoint_events == [
+        "transaction_enter",
+        "transaction_rollback",
+        "transaction_enter",
+        "transaction_commit",
+    ]
+    assert session.begin_nested.call_count == 2
+    assert len([stmt for stmt in statements if "FOR UPDATE" in str(stmt)]) == 2
+    assert rereads == 2
+    child_update = next(
+        stmt for stmt in statements if str(stmt).startswith("UPDATE") and "id IN" in str(stmt)
+    )
+    assert child_update.compile().params["id_1"] == [child_id]
+    assert child_update.compile().params["merged_into"] == target_id
+    log_repo.log_action_in_session.assert_any_await(
+        session,
+        source_id=child_id,
+        target_id=target_id,
+        entity_type="decision",
+        similarity=1.0,
+        action="repointed",
+    )
+
+
+@pytest.mark.asyncio
+async def test_unstable_children_refuse_after_three_passes_without_any_write() -> None:
+    source_id, target_id = uuid4(), uuid4()
+    job, session, log_repo, graph, statements, events = _job_fixture(source_id, target_id)
+    savepoint_events: list[str] = []
+    session.begin_nested = MagicMock(side_effect=lambda: _Transaction(savepoint_events))
+    execute = session.execute.side_effect
+
+    async def keep_gaining_children(statement: Any) -> MagicMock:
+        result = await execute(statement)
+        return _result(scalar=uuid4()) if "NOT IN" in str(statement) else result
+
+    session.execute.side_effect = keep_gaining_children
+
+    with pytest.raises(RuntimeError, match="kept gaining children.*retry") as raised:
+        await job.merge("decision", source_id, target_id)
+
+    assert type(raised.value).__name__ == "ConsolidationChildrenUnstableError"
+    assert session.begin_nested.call_count == 3
+    assert savepoint_events == ["transaction_enter", "transaction_rollback"] * 3
+    assert len([stmt for stmt in statements if "FOR UPDATE" in str(stmt)]) == 3
+    assert len([stmt for stmt in statements if "NOT IN" in str(stmt)]) == 3
+    assert all(str(stmt).startswith("SELECT") for stmt in statements)
+    assert events == ["transaction_enter", "transaction_rollback"]
+    log_repo.log_action_in_session.assert_not_awaited()
+    graph.create_relation.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scoped", [False, True])
+async def test_stable_children_need_one_lock_pass_and_one_scoped_reread(scoped: bool) -> None:
+    source_id, target_id, child_id = uuid4(), uuid4(), uuid4()
+    job, session, _log_repo, _graph, statements, _events = _job_fixture(
+        source_id, target_id, children=[{"id": child_id}]
+    )
+    authorization = MagicMock(project_key="owned") if scoped else None
+    if authorization is not None:
+        authorization.revalidate_ids = AsyncMock()
+
+    await job.merge("decision", source_id, target_id, authorization=authorization)
+
+    assert session.begin_nested.call_count == 1
+    assert len([stmt for stmt in statements if "FOR UPDATE" in str(stmt)]) == 1
+    rereads = [stmt for stmt in statements if "NOT IN" in str(stmt)]
+    assert len(rereads) == 1
+    reread = rereads[0]
+    assert "FOR UPDATE" not in str(reread)
+    assert "merged_into =" in str(reread)
+    assert "LIMIT" in str(reread)
+    assert source_id in reread.compile().params.values()
+    excluded = next(value for value in reread.compile().params.values() if isinstance(value, list))
+    assert set(excluded) == {source_id, target_id, child_id}
+    assert ("project_key =" in str(reread)) is scoped
+
+
+@pytest.mark.asyncio
 async def test_child_graph_relations_are_authorized_and_written_only_after_commit() -> None:
     source_id, target_id = uuid4(), uuid4()
     child_ids = [uuid4(), uuid4()]
@@ -242,6 +358,18 @@ async def test_handler_formats_merged_endpoint_error() -> None:
     job = MagicMock()
     message = f"Target decision {uuid4()} already merged into {uuid4()}"
     job.merge = AsyncMock(side_effect=consolidation.ConsolidationEndpointMergedError(message))
+    merge, _mcp = _registered_handler(job)
+
+    result = await merge("decision", str(uuid4()), str(uuid4()))
+
+    assert result == message
+
+
+@pytest.mark.asyncio
+async def test_handler_formats_unstable_children_error() -> None:
+    job = MagicMock()
+    message = f"Source decision {uuid4()} kept gaining children while its locks were taken; retry"
+    job.merge = AsyncMock(side_effect=consolidation.ConsolidationChildrenUnstableError(message))
     merge, _mcp = _registered_handler(job)
 
     result = await merge("decision", str(uuid4()), str(uuid4()))
@@ -304,7 +432,7 @@ async def test_job_locks_updates_and_audits_in_one_transaction_before_graph() ->
 
     selects = [statement for statement in statements if str(statement).startswith("SELECT")]
     updates = [statement for statement in statements if str(statement).startswith("UPDATE")]
-    assert len(selects) == 1
+    assert len(selects) == 2
     assert "FOR UPDATE" in str(selects[0])
     assert "ORDER BY decisions.id" in str(selects[0])
     assert " OR decisions.merged_into =" in str(selects[0])
@@ -360,7 +488,7 @@ async def test_job_scopes_lock_updates_and_graph_to_explicit_authorization() -> 
     await job.merge("decision", source_id, target_id, authorization=authorization)
 
     scoped_sql = [str(statement) for statement in statements]
-    assert len(scoped_sql) == 4
+    assert len(scoped_sql) == 5
     assert all("project_key" in sql.split("WHERE", maxsplit=1)[1] for sql in scoped_sql)
     authorization.revalidate_ids.assert_awaited_once_with([source_id, target_id])
     graph.create_relation.assert_awaited_once_with(

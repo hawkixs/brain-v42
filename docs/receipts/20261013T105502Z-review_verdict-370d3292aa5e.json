@@ -1,0 +1,55 @@
+{
+  "digest": "sha256:370d3292aa5e3ae2910ad37aa1541900306b72fae576414be27c6c985df805e2",
+  "idempotency_key": "review_verdict:83d07faa30b342c0bc537bc11bfdbe052af6b188:115259218835",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115259218835,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "test_session_sweep_runs_the_seven_day_rule_daily_and_dry now asserts arguments.wet is True and retention.execute is True, and its docstring documents the arming, but the function name still says \"and_dry\"; the name no longer matches what the test asserts.",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-395-1",
+          "line": 447,
+          "severity": "minor",
+          "status": "new",
+          "title": "Test name still ends in _and_dry while asserting the armed state"
+        },
+        {
+          "class": "note",
+          "evidence": "The rewritten loop lines keep `python -m ... --wet && touch /tmp/brain-v42-session-sweep.heartbeat || echo \"... run failed ...\"`: if the python command succeeds but touch fails, the echo misreports the run as failed. Pre-existing pattern carried through the rewrite; cosmetic.",
+          "file": "deploy/compose.yaml",
+          "id": "F-395-2",
+          "line": 331,
+          "severity": "minor",
+          "status": "new",
+          "title": "touch failure would be logged as a failed sweep run"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "pr": 395,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "83d07faa30b342c0bc537bc11bfdbe052af6b188",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T10:55:02.192586Z",
+  "schema_version": 1
+}

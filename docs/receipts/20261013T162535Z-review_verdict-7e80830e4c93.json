@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:7e80830e4c936d8f9153d97a71dafbb5e280221435c103e60690bc137f551289",
+  "idempotency_key": "review_verdict:32d9bca3ef9c32f43c16b6e0cb7db01a4590654c:115408899887",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115408899887,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The PR declines the F-361-1 note, asserting TicketService.list_grouped reads the key via canonicalize_project_key(project_key, strict=False) and that the non-strict read path never raises for a malformed key; neither module appears in the diff. Question to check: confirm that implementation and its ",
+          "file": "tests/unit/mcp/test_no_raw_exception_text_in_tool_errors.py",
+          "id": "F-393-1",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "F-361-1 refutation not verifiable from the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The new comment claims visit_Raise ignores causes, but self.generic_visit(node) still descends into node.cause, so an interpolated call in `from <call>` position can still be recorded by visit_Call; this behavior is unchanged from before the diff (Raise previously fell through to generic_visit), so ",
+          "file": "tests/unit/mcp/test_no_raw_exception_text_in_tool_errors.py",
+          "id": "F-393-2",
+          "line": 210,
+          "severity": "minor",
+          "status": "new",
+          "title": "Comment overstates that causes are ignored"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 393,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "32d9bca3ef9c32f43c16b6e0cb7db01a4590654c",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T16:25:35.535586Z",
+  "schema_version": 1
+}

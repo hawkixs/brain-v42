@@ -27,6 +27,7 @@ from brain_v42.mcp.tools.tool_annotations import (
 from brain_v42.models.brain import KnowledgeType, MutableKnowledgeType
 from brain_v42.services.consolidation import (
     MERGEABLE_ENTITY_TYPES,
+    ConsolidationChildrenUnstableError,
     ConsolidationEndpointMergedError,
     ConsolidationEntityNotFoundError,
 )
@@ -258,8 +259,12 @@ def register_decay_tools(
                 tgt_uid,
                 authorization=scope,
             )
-        except (ConsolidationEntityNotFoundError, ConsolidationEndpointMergedError) as exc:
-            # Both consolidation guards name only the endpoint, entity type and UUID.
+        except (
+            ConsolidationEntityNotFoundError,
+            ConsolidationEndpointMergedError,
+            ConsolidationChildrenUnstableError,
+        ) as exc:
+            # The consolidation guards name only the endpoint, entity type and UUID.
             return format_error(str(exc))
 
         logger.info(

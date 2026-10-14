@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:36365b6b4c643691afbc20ba48bcce82958ea4e05d53a3e385b1c24503a35e45",
+  "idempotency_key": "review_verdict:44d4bab99b8f3687ffe01e812fb6b7a8cd5c62f1:115348060841",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115348060841,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The description states uv.lock is changed (version only), but no uv.lock hunk appears in the diff portion shown; check that the lockfile brain_v42 version matches 0.6.14 before tagging.",
+          "file": "uv.lock",
+          "id": "F-406-1",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "uv.lock change not visible in diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 406,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "44d4bab99b8f3687ffe01e812fb6b7a8cd5c62f1",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T14:21:14.508040Z",
+  "schema_version": 1
+}

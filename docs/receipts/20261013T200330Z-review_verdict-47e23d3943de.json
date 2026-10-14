@@ -1,0 +1,49 @@
+{
+  "digest": "sha256:47e23d3943de246493c77337b365a4017121edefceb6f035fbf8dbcbbb219777",
+  "idempotency_key": "review_verdict:7b6c3f9368345b2d8660b98cadf7f55316a5980b:115505323162",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115505323162,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The active-process branch overrides tools, embedding, and reranker metrics with cross-process measurements, but the new active_processes-is-None branch replaces only selected embedding_service fields. Consequently, tools and reranker skip their aggregate overrides on failure. Check the initial metri",
+          "file": "src/brain_v42/metrics/server.py",
+          "id": "F-353-1",
+          "line": 665,
+          "severity": "important",
+          "status": "fixed",
+          "title": "Clear all aggregate-derived measurements on collection failure"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 353,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "7b6c3f9368345b2d8660b98cadf7f55316a5980b",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T20:03:30.041990Z",
+  "schema_version": 1
+}

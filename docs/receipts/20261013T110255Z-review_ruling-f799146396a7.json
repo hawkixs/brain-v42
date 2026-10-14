@@ -1,0 +1,19 @@
+{
+  "digest": "sha256:f799146396a77454ca596315680dd4c28d642a520882ce6a1aa5e371d9d5eaf3",
+  "idempotency_key": "review_ruling:hawkixs/brain-v42#376:F-376-2:2",
+  "issuer": "operator",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "decision": "Fixed in 6efd960c: tables.py _PROGRAMME_DEPENDS_ON mirrors the migration's split-cardinality clause; [''], ['G2,G3'], ['G1,'] are refused; DeepSeek independently traced them in both files.",
+      "finding": "F-376-2",
+      "pr": 376,
+      "repository": "hawkixs/brain-v42",
+      "ruling": "fix"
+    },
+    "kind": "review_ruling"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T11:02:55.396844Z",
+  "schema_version": 1
+}

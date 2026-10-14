@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:e8e03c4a056e97db8468b6883f2bf915d6e4b838a5c23d502e21f224c048cab3",
+  "idempotency_key": "review_verdict:bb937efe89389d387bac36872b9072feca59b3e9:115502142213",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115502142213,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The added containment requires payload['proof']['artifact_proofs'] to contain {\"binding_id\": <binding id as text>}; a receipt missing that path, or carrying a non-array there, yields SQL NULL and can never satisfy a PR anchor. The production measurement (54/54 integration receipts carry the array wi",
+          "file": "src/brain_v42/db/focus_slots.py",
+          "id": "F-420-1",
+          "line": 263,
+          "severity": "minor",
+          "status": "new",
+          "title": "Receipts lacking proof.artifact_proofs silently stop satisfying PR anchors"
+        },
+        {
+          "class": "note",
+          "evidence": "Both new tests repeat the same workflow/integrate/bind_pr/row_version setup blocks; the lineage review flagged this and it was deliberately left unchanged. Purely stylistic, no correctness impact.",
+          "file": "tests/integration/db/test_delivery_focus_slot_receipts.py",
+          "id": "F-420-2",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Duplicated setup across the two new tests"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 420,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "bb937efe89389d387bac36872b9072feca59b3e9",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T19:54:43.673630Z",
+  "schema_version": 1
+}

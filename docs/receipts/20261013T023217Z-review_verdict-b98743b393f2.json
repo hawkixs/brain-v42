@@ -1,0 +1,65 @@
+{
+  "digest": "sha256:b98743b393f23dfec6476af1d708330fc28e14bbae8db1a691cee68a7debb8ea",
+  "idempotency_key": "review_verdict:8fcb8b94a65671c95cfcb1ff3debd932729b5be9:115099809293",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115099809293,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "with pytest.raises(AssertionError) catches any assertion error during _assert_uv_version_parity(modified) without verifying the specific error message via match=.",
+          "file": "tests/unit/test_github_workflows.py",
+          "id": "F-355-1",
+          "line": 418,
+          "severity": "minor",
+          "status": "new",
+          "title": "pytest.raises lacks match pattern"
+        },
+        {
+          "class": "note",
+          "evidence": "The negative test only exercises top-level workflow env drift on continuous-delivery.yml, leaving the job-level and step-level override assertion branches without negative test coverage.",
+          "file": "tests/unit/test_github_workflows.py",
+          "id": "F-355-2",
+          "line": 413,
+          "severity": "minor",
+          "status": "new",
+          "title": "Missing negative test coverage for job- and step-level overrides"
+        },
+        {
+          "class": "note",
+          "evidence": "workflow.get('env', {}).get('UV_VERSION') (as well as job and step env checks) will raise AttributeError if env is explicitly defined as null in YAML rather than raising AssertionError.",
+          "file": "tests/unit/test_github_workflows.py",
+          "id": "F-355-3",
+          "line": 334,
+          "severity": "minor",
+          "status": "new",
+          "title": "Chained dict .get calls assume env mapping is not None"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "pr": 355,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "8fcb8b94a65671c95cfcb1ff3debd932729b5be9",
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T02:32:17.753702Z",
+  "schema_version": 1
+}

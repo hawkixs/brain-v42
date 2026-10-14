@@ -8,8 +8,7 @@ For each file:
   4. Chunk markdown via chunk_markdown() -> (parent, chunks)
   5. Embed parent + each chunk
   6. Upsert into indexed_plans + indexed_plan_chunks tables
-  7. Call ClusterGuard.resolve() to find/create feature (on parent)
-  8. Link plan to feature via feature_artifacts
+  7. Call ClusterGuard.resolve_and_link() to find/create and link a live feature
 """
 
 from __future__ import annotations
@@ -23,9 +22,8 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 import sqlalchemy as sa
 import structlog
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 
-from brain_v42.db.tables import feature_artifacts, indexed_plans, project_contexts
+from brain_v42.db.tables import indexed_plans, project_contexts
 from brain_v42.models.indexed_plan import IndexedPlanCreate
 from brain_v42.models.indexed_plan_chunk import IndexedPlanChunkCreate
 from brain_v42.repositories.pg_indexed_plan_repo import PgIndexedPlanRepo
@@ -431,8 +429,7 @@ class PlanIndexer:
                     # a provider switch create and merge features for files
                     # nobody edited -- and `signal_type="plan"` is in
                     # CREATING_SIGNALS, so link-only mode would not stop it.
-                    # The existing link is untouched: `_link_plan_to_feature`
-                    # inserts with on_conflict_do_nothing and deletes nothing.
+                    # The existing link is untouched by this vector refresh.
                     # `linked` stays 0 because no link was MADE this run; it does
                     # not mean the plan is unlinked.
                     logger.info(
@@ -445,22 +442,21 @@ class PlanIndexer:
                     return FileOutcome(indexed=1, chunks_created=len(chunks))
                 try:
                     assert self._cluster_guard is not None
-                    feature, action = await self._cluster_guard.resolve(
+                    _, action, target_linked = await self._cluster_guard.resolve_and_link(
                         text=title,
                         embedding=parent_embedding,
                         project_key=project_key,
                         signal_type="plan",
+                        artifact_type="plan",
+                        artifact_id=plan_id,
+                        similarity_score_for=lambda action: 1.0 if action == "created" else 0.85,
                     )
-                    # signal_type="plan" is in CREATING_SIGNALS: link-only
-                    # mode never skips it, so resolve() never returns
-                    # (None, "skipped") here.
-                    assert feature is not None
-                    await self._link_plan_to_feature(
-                        feature_id=feature.id,  # type: ignore[attr-defined]
-                        plan_id=plan_id,
-                        similarity_score=1.0 if action == "created" else 0.85,
-                    )
-                    linked = 1
+                    linked = int(target_linked)
+                    if action == "lost":
+                        logger.warning(
+                            "plan_indexer.link_target_lost",
+                            file_path=str(file_path),
+                        )
                 except Exception:
                     logger.warning(
                         "plan_indexer.link_failed",
@@ -785,27 +781,6 @@ class PlanIndexer:
             content_hash=content_hash[:16],
         )
         return ReindexVerdict(skip=True, content_identical=False)
-
-    async def _link_plan_to_feature(
-        self,
-        feature_id: object,
-        plan_id: object,
-        similarity_score: float,
-    ) -> None:
-        """Insert feature_artifact link (plan -> feature)."""
-        async with self._sf() as session:
-            stmt = (
-                pg_insert(feature_artifacts)
-                .values(
-                    feature_id=feature_id,
-                    artifact_type="plan",
-                    artifact_id=plan_id,
-                    similarity_score=similarity_score,
-                )
-                .on_conflict_do_nothing()
-            )
-            await session.execute(stmt)
-            await session.commit()
 
     async def _get_scan_paths(self, project_key: str) -> list[str] | None:
         """Get plan_scan_paths from project_contexts for a project_key."""

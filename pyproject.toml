@@ -6,7 +6,7 @@ build-backend = "hatchling.build"
 name = "brain_v42"
 # 0.x on purpose: the version contract lives in README.md#versioning, and it
 # refuses to promise a lossless downgrade (037 and 039 refuse theirs).
-version = "0.6.17"
+version = "0.6.18"
 description = "Second Cerveau v42 - Mémoire persistante pour Claude Code via MCP"
 readme = "README.md"
 requires-python = ">=3.12.7"
@@ -193,6 +193,10 @@ ignore_missing_imports = true
 [tool.coverage.run]
 source = ["src/brain_v42"]
 branch = true
+# Each unit shard measures coverage on its own runner; relative paths let
+# `coverage combine` in the test-coverage aggregator merge the shard data files
+# whatever their absolute paths were.
+relative_files = true
 
 [tool.coverage.report]
 exclude_lines = [

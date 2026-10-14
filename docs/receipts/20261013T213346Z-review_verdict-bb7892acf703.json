@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:bb7892acf703603b46d582a35ddea95b728ae6364e68fff7c14a77a26447c9f3",
+  "idempotency_key": "review_verdict:464f7b33094320b50e3f5d8e359adb5f95fb4ae0:115551454945",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 115551454945,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "if the untruncated diff does not include a uv.lock update to 0.6.17 for brain_v42, the hardened uv version parity test shipped in 0.6.16 should fail; the visible portion shows only pyproject.toml and README, so check that uv.lock's brain_v42 entry reads version 0.6.17",
+          "file": "uv.lock",
+          "id": "F-422-1",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "uv.lock bump claimed in the description but not visible in the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 422,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "464f7b33094320b50e3f5d8e359adb5f95fb4ae0",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-13T21:33:46.535571Z",
+  "schema_version": 1
+}
