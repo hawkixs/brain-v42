@@ -897,7 +897,7 @@ def format_search_results(
             )
         if failed_types:
             banner_lines.append(
-                f"degraded: recherche incomplète — types en échec : {', '.join(failed_types)}"
+                f"degraded: incomplete search — failed types: {', '.join(failed_types)}"
             )
 
     n = len(results)
@@ -1008,7 +1008,7 @@ def format_knowledge_by_type(
             )
         if failed_types:
             banner_lines.append(
-                f"degraded: recherche incomplète — types en échec : {', '.join(failed_types)}"
+                f"degraded: incomplete search — failed types: {', '.join(failed_types)}"
             )
 
     total = sum(

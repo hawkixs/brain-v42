@@ -108,9 +108,7 @@ async def test_failed_shard_keeps_the_floor_on_healthy_reranked_results(
     assert [r.item["id"] for r in results] == [str(high.id)]
     assert results[0].score_kind == "cross_encoder"
     assert response.diagnostics.rerank_mode == "reranked"
-    assert (
-        _render(response).count("degraded: recherche incomplète — types en échec : learning") == 1
-    )
+    assert _render(response).count("degraded: incomplete search — failed types: learning") == 1
 
 
 @pytest.mark.asyncio
@@ -128,7 +126,7 @@ async def test_all_failed_shards_explain_an_incomplete_search(grouped: bool) -> 
     assert response.diagnostics.failed_types == ALL_TYPES
     text = _render(response)
     names = ", ".join(ALL_TYPES)
-    assert text.count(f"degraded: recherche incomplète — types en échec : {names}") == 1
+    assert text.count(f"degraded: incomplete search — failed types: {names}") == 1
     assert f"failed types: {names}" in text
     assert "0 candidates in scope" not in text
 
@@ -166,8 +164,8 @@ async def test_fts_fallback_and_failed_shard_keep_both_banners_and_zero_floor(
     assert response.diagnostics.min_score_effective == 0.0
     assert response.total == 1
     text = _render(response)
-    assert text.count("degraded: embedding service indisponible") == 1
-    assert text.count("degraded: recherche incomplète — types en échec : learning") == 1
+    assert text.count("degraded: embedding service unavailable") == 1
+    assert text.count("degraded: incomplete search — failed types: learning") == 1
 
 
 @pytest.mark.asyncio
