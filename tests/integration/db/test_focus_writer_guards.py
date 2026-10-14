@@ -66,8 +66,27 @@ async def test_bound_relay_refuses_shrink_without_override(
     assert (await row(session_factory, session_id))["status"] == "open"
 
 
-async def test_operator_relay_can_override_slot_shrink(
+async def test_unelevated_operator_relay_cannot_override_slot_shrink(
     session_factory: Any, slot_project: str
+) -> None:
+    session_id, key, slot_id = await long_bound(session_factory, slot_project)
+    with pytest.raises(FocusSlotError, match="^focus_shrink_override_refused: "):
+        await sessions(session_factory).relay(
+            session_id,
+            key,
+            summary="summary",
+            handover="short",
+            expected_slot_revision=1,
+            new_client_key=f"successor-{uuid4().hex}",
+            initiator="operator",
+            allow_focus_shrink=True,
+        )
+    assert (await row(session_factory, session_id))["status"] == "open"
+    assert (await slot_row(session_factory, slot_id))["revision"] == 1
+
+
+async def test_elevated_operator_relay_can_override_slot_shrink(
+    session_factory: Any, slot_project: str, elevated_caller: Any
 ) -> None:
     session_id, key, slot_id = await long_bound(session_factory, slot_project)
     result = await sessions(session_factory).relay(

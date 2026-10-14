@@ -7,6 +7,7 @@ from uuid import UUID
 from fastmcp.server.auth import AccessToken
 
 from brain_v42.credentials.families import STORABLE_FAMILIES
+from brain_v42.models.project_key import canonicalize_project_key
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +17,7 @@ class ClientPrincipal:
     client_id: str
     families: frozenset[str]
     issuers: tuple[str, ...]
+    allowed_projects: tuple[str, ...] | None = None
 
 
 def resolve_client_principal(access_token: AccessToken | None) -> ClientPrincipal | None:
@@ -29,7 +31,8 @@ def resolve_client_principal(access_token: AccessToken | None) -> ClientPrincipa
         not isinstance(client_id, str)
         or not client_id.strip()
         or not isinstance(claims, Mapping)
-        or set(claims) != {"credential_id", "issuers"}
+        or set(claims)
+        not in ({"credential_id", "issuers"}, {"credential_id", "issuers", "allowed_projects"})
         or not isinstance(scopes, (list, tuple))
         or any(not isinstance(scope, str) or scope not in STORABLE_FAMILIES for scope in scopes)
     ):
@@ -46,4 +49,20 @@ def resolve_client_principal(access_token: AccessToken | None) -> ClientPrincipa
         not isinstance(issuer, str) or not issuer.strip() for issuer in issuers
     ):
         return None
-    return ClientPrincipal(client_id, frozenset(scopes), tuple(issuers))
+    projects = claims.get("allowed_projects")
+    if projects is not None:
+        if (
+            not isinstance(projects, (list, tuple))
+            or not projects
+            or any(not isinstance(key, str) or not 1 <= len(key) <= 50 for key in projects)
+            or len(set(projects)) != len(projects)
+        ):
+            return None
+        try:
+            if any(canonicalize_project_key(key) != key for key in projects):
+                return None
+        except ValueError:
+            return None
+    return ClientPrincipal(
+        client_id, frozenset(scopes), tuple(issuers), None if projects is None else tuple(projects)
+    )

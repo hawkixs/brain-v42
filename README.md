@@ -231,7 +231,7 @@ the first provider proves nothing about fallthrough.
 
 ## Production state
 
-The repository migration target is migration 066 (knowledge lifecycle storage, recovery contract v24). No page in this repository proves a
+The repository migration target is migration 067 (credential project scope; 066 added knowledge lifecycle storage, recovery contract v24). No page in this repository proves a
 live schema head — **measure it, do not read it here**:
 
 ```bash

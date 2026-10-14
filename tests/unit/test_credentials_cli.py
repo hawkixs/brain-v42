@@ -147,6 +147,12 @@ class FakeRepo:
     async def list_rows(self) -> list[CredentialRow]:
         return self.rows
 
+    async def set_scope(
+        self, credential_id: UUID, projects: list[str] | None, **kwargs: Any
+    ) -> CredentialRow:
+        self.calls.append(("scope", {"id": credential_id, "allowed_projects": projects, **kwargs}))
+        return credential()
+
     async def grant_elevation(self, **kwargs: Any) -> ElevationRow:
         self.calls.append(("elevate", kwargs))
         allowed = kwargs["elevatable_client_ids"]
@@ -325,7 +331,16 @@ def test_list_json_has_exact_public_fields_and_includes_revoked(
     rows = json.loads(capsys.readouterr().out)
     assert len(rows) == 2
     assert all(
-        set(row) == {"id", "client_id", "families", "transition", "expires_at", "revoked_at"}
+        set(row)
+        == {
+            "id",
+            "client_id",
+            "families",
+            "allowed_projects",
+            "transition",
+            "expires_at",
+            "revoked_at",
+        }
         for row in rows
     )
     assert rows[1]["revoked_at"] == NOW.isoformat()
@@ -578,6 +593,69 @@ def test_connections_attached_during_confirmation_are_not_frozen(
     monkeypatch.setattr(module, "_open_tty", confirmation)
     assert module.main(["elevate", str(SESSION_ID), "--ttl", "1h", "--reason", "maintenance"]) == 0
     assert repo.grants[0].connection_ids == [CONNECTION]
+
+
+@pytest.mark.parametrize(
+    "option,projects",
+    [
+        (["--projects", "brain,red-shrik:agent-a"], ["brain-v42", "red-shrik:agent-a"]),
+        (["--clear"], None),
+        (["--projects", "a" * 50], ["a" * 50]),
+    ],
+)
+def test_scope_is_an_audited_transaction(
+    cli: Any, option: list[str], projects: list[str] | None, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module, repo = cli
+    identifier = uuid4()
+    assert module.main(["scope", str(identifier), *option, "--reason", "restrict projects"]) == 0
+    name, call = repo.calls[0]
+    assert name == "scope"
+    assert call["id"] == identifier
+    assert call["allowed_projects"] == projects
+    assert call["reason"] == "restrict projects"
+    assert call["author"]
+    assert call["session"] is repo.session
+    assert repo.committed
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.parametrize(
+    "value", ["", "a,", "Bad", "bad_key", "a::b", "a-*", "a" * 51, "a,a", "brain,brain-v42"]
+)
+def test_scope_rejects_invalid_project_arrays(cli: Any, value: str) -> None:
+    module, repo = cli
+    assert module.main(["scope", str(uuid4()), "--projects", value, "--reason", "restrict"]) == 2
+    assert repo.calls == []
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        [],
+        ["--reason", "restrict"],
+        ["--clear", "--projects", "a", "--reason", "restrict"],
+        ["--projects", "a"],
+        ["--clear", "--reason", " "],
+    ],
+)
+def test_scope_requires_one_operation_and_a_reason(cli: Any, options: list[str]) -> None:
+    module, repo = cli
+    assert module.main(["scope", str(uuid4()), *options]) == 2
+    assert repo.calls == []
+
+
+@pytest.mark.parametrize("json_mode", [True, False])
+def test_scope_is_visible_in_credential_list(
+    cli: Any, json_mode: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    module, repo = cli
+    repo.rows = [credential(allowed_projects=["red-shrik:agent-a"])]
+    assert module.main(["list", *(["--json"] if json_mode else [])]) == 0
+    output = capsys.readouterr().out
+    assert "allowed_projects" in output
+    assert "red-shrik:agent-a" in output
+    assert "token_sha256" not in output
 
 
 def test_console_entry_point_names_sync_main() -> None:

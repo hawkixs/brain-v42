@@ -56,8 +56,41 @@ def test_execute_requires_expected_count(capsys: pytest.CaptureFixture[str]) -> 
 
 def test_negative_expected_count_is_refused() -> None:
     with pytest.raises(SystemExit) as error:
-        cli.parse_args(["--execute", "--expect", "-1"])
+        cli.parse_args(["--execute", "--expect", "learnings=-1"])
     assert error.value.code == 2
+
+
+def test_parses_per_table_expected_counts() -> None:
+    args = cli.parse_args(["--execute", "--expect", "learnings=3", "--expect", "features=1"])
+    assert args.execute is True
+    assert args.expect == {"learnings": 3, "features": 1}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "3",
+        "learnings",
+        "learnings=",
+        "learnings=three",
+        "learnings=1=2",
+        "unknown=1",
+        "learnings=1_0",
+        "learnings=+3",
+        "learnings= 3",
+    ],
+)
+def test_malformed_expected_table_is_refused(value: str) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.parse_args(["--execute", "--expect", value])
+    assert error.value.code == 2
+
+
+def test_duplicate_expected_table_is_refused(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli.parse_args(["--execute", "--expect", "features=1", "--expect", "features=1"])
+    assert error.value.code == 2
+    assert "duplicate" in capsys.readouterr().err
 
 
 @pytest.mark.asyncio
@@ -70,8 +103,8 @@ async def test_execute_passes_operator_count_and_commits_only_on_success(
     result = RepairReport(before=InventoryReport(()), after=InventoryReport(()), changed_count=0)
     repair = AsyncMock(return_value=result)
     monkeypatch.setattr(cli, "repair", repair)
-    assert await cli.run_from_args(cli.parse_args(["--execute", "--expect", "0"])) == 0
-    repair.assert_awaited_once_with(session, expected=0)
+    assert await cli.run_from_args(cli.parse_args(["--execute", "--expect", "learnings=0"])) == 0
+    repair.assert_awaited_once_with(session, expected={"learnings": 0})
     session.execute.assert_not_awaited()
     session.begin.return_value.__aexit__.assert_awaited_once_with(None, None, None)
     assert json.loads(capsys.readouterr().out)["changed_count"] == 0
@@ -83,12 +116,32 @@ async def test_refusal_rolls_back_and_reports_only_reason(
 ) -> None:
     session = _runtime(monkeypatch)
     monkeypatch.setattr(cli, "repair", AsyncMock(side_effect=MergeChainRepairError("cycle")))
-    assert await cli.run_from_args(cli.parse_args(["--execute", "--expect", "1"])) == 2
+    assert await cli.run_from_args(cli.parse_args(["--execute", "--expect", "learnings=1"])) == 2
     exit_args = session.begin.return_value.__aexit__.await_args.args
     assert exit_args[0] is MergeChainRepairError
     output = capsys.readouterr()
     assert output.out == ""
     assert json.loads(output.err) == {"status": "refused", "reason": "cycle"}
+
+
+@pytest.mark.asyncio
+async def test_count_mismatch_reports_the_table(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _runtime(monkeypatch)
+    monkeypatch.setattr(
+        cli,
+        "repair",
+        AsyncMock(side_effect=MergeChainRepairError("expected_count_mismatch", table="features")),
+    )
+    assert await cli.run_from_args(cli.parse_args(["--execute", "--expect", "features=1"])) == 2
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert json.loads(output.err) == {
+        "status": "refused",
+        "reason": "expected_count_mismatch",
+        "table": "features",
+    }
 
 
 @pytest.mark.asyncio
@@ -114,7 +167,10 @@ async def test_repair_resets_lock_timeout_before_inventory(monkeypatch: pytest.M
         assert value is session
         statements = [str(call.args[0]) for call in session.execute.await_args_list]
         assert statements[0] == "SET LOCAL lock_timeout = '5s'"
-        assert statements[1].startswith("LOCK TABLE ")
+        assert statements[1] == (
+            "LOCK TABLE adrs, decisions, features, learnings, runbooks, snippets "
+            "IN SHARE ROW EXCLUSIVE MODE"
+        )
         assert statements[2:] == ["RESET lock_timeout"]
         return InventoryReport(
             tuple(
@@ -134,7 +190,7 @@ async def test_repair_resets_lock_timeout_before_inventory(monkeypatch: pytest.M
         )
 
     monkeypatch.setattr(module, "inventory", inspect_inventory)
-    assert (await module.repair(session, expected=0)).changed_count == 0
+    assert (await module.repair(session, expected={"learnings": 0})).changed_count == 0
 
 
 @pytest.mark.asyncio
@@ -163,6 +219,14 @@ async def test_inventory_counts_foreign_project_transits() -> None:
 
     assert all(table.transits_other_project == 1 for table in report.tables)
     assert all(len(table.in_project_chains) == 1 for table in report.tables)
+    assert {table.table for table in report.tables} == {
+        "adrs",
+        "decisions",
+        "features",
+        "learnings",
+        "runbooks",
+        "snippets",
+    }
 
 
 @pytest.mark.asyncio
@@ -183,7 +247,7 @@ async def test_repair_maps_lock_timeout_and_rolls_back_savepoint(
     monkeypatch.setattr(module, "inventory", inventory)
 
     with pytest.raises(MergeChainRepairError, match="^lock_timeout$") as refused:
-        await module.repair(session, expected=1)
+        await module.repair(session, expected={"learnings": 1})
 
     assert refused.value.__cause__ is error
     assert str(session.execute.await_args_list[0].args[0]) == "SET LOCAL lock_timeout = '5s'"
@@ -202,6 +266,6 @@ async def test_repair_does_not_map_other_database_errors() -> None:
     session.execute.side_effect = [None, error]
 
     with pytest.raises(sa.exc.DBAPIError) as failed:
-        await module.repair(session, expected=0)
+        await module.repair(session, expected={"learnings": 0})
 
     assert failed.value is error

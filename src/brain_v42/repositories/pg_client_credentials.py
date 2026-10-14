@@ -7,7 +7,7 @@ the connections of one OPERATOR session and bounded to four hours. Only the conn
 of an allowlisted client are elevated, and a session's attributed connections must all
 belong to the client that owns it (``claim_or_check_session_owner``).
 
-Every gesture (issue, revoke, grant, end) inserts its audit row into
+Every gesture (issue, revoke, scope, grant, end) inserts its audit row into
 ``brain_credential_audit`` in the SAME transaction, so the two commit together or not at
 all. The outbox is drained at-least-once through ``claim_unemitted_audit`` and
 ``mark_audit_emitted``, and the natural expiry of an elevation is audited by
@@ -38,6 +38,7 @@ from brain_v42.db.tables import (
     brain_sessions,
     project_contexts,
 )
+from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.repositories.pg_base import BasePgRepository
 
 #: A credential seen again within this delay is not rewritten: it bounds the write rate of
@@ -99,6 +100,7 @@ class CredentialRow:
     revoked_at: datetime | None
     revoked_reason: str | None
     last_used_at: datetime | None
+    allowed_projects: list[str] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -374,6 +376,77 @@ class PgClientCredentialRepo(BasePgRepository):
                     "families": list(row["families"]),
                     "reason": row["revoked_reason"],
                     "author": author,
+                },
+            )
+        return _credential(row)
+
+    async def set_scope(
+        self,
+        credential_id: UUID,
+        projects: Sequence[str] | None,
+        *,
+        author: str,
+        reason: str,
+        session: AsyncSession | None = None,
+    ) -> CredentialRow:
+        """Lock the before-image so scope and its audit commit as one operator gesture."""
+        _require_author(author)
+        if not reason.strip() or len(reason) > MAX_REASON_LENGTH:
+            raise ClientCredentialError("invalid_reason", "scope changes need a bounded reason")
+        if projects is not None:
+            if (
+                not projects
+                or any(not isinstance(key, str) or len(key) > 50 for key in projects)
+                or len(set(projects)) != len(projects)
+            ):
+                raise ClientCredentialError(
+                    "invalid_project_scope", "scope needs distinct project keys"
+                )
+            try:
+                valid = all(canonicalize_project_key(key) == key for key in projects)
+            except ValueError:
+                valid = False
+            if not valid:
+                raise ClientCredentialError(
+                    "invalid_project_scope", "scope needs canonical project keys"
+                )
+        credentials = brain_client_credentials
+        async with self._maybe_session(session, write=True) as sess:
+            previous = (
+                (
+                    await sess.execute(
+                        sa.select(credentials)
+                        .where(credentials.c.id == credential_id)
+                        .with_for_update()
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            if previous is None:
+                raise ClientCredentialError("unknown_credential", "credential not found")
+            row = (
+                (
+                    await sess.execute(
+                        sa.update(credentials)
+                        .where(credentials.c.id == credential_id)
+                        .values(allowed_projects=None if projects is None else list(projects))
+                        .returning(*_CREDENTIAL_COLUMNS)
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            await _write_audit(
+                sess,
+                "credentials.scope_changed",
+                {
+                    "credential_id": str(row["id"]),
+                    "client_id": row["client_id"],
+                    "previous_allowed_projects": previous["allowed_projects"],
+                    "allowed_projects": row["allowed_projects"],
+                    "author": author,
+                    "reason": reason,
                 },
             )
         return _credential(row)
