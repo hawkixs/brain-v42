@@ -688,6 +688,42 @@ class TestSupersessionChain:
 
 class TestSupersede:
     @pytest.mark.asyncio
+    async def test_supersede_missing_old_decision_rolls_back_savepoint(self) -> None:
+        """A failed caller-owned supersede rolls back only its savepoint."""
+        new_row = _make_decision_row(id=NEW_UUID, title="Replacement", status="active")
+        caller_session = _make_mock_session(row=new_row)
+        caller_session.execute.return_value.scalars.return_value.all.return_value = []
+        repo = PgDecisionRepo()
+        data = DecisionCreate(
+            title="Replacement", description="Context", reasoning="Reason", project_key="test-proj"
+        )
+
+        with pytest.raises(pg_decision.DecisionNotSupersedableError):
+            await repo.supersede(OLD_UUID, data, session=caller_session)
+
+        caller_session.begin_nested.return_value.__aenter__.assert_awaited_once()
+        caller_session.commit.assert_not_awaited()
+        caller_session.begin.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_supersede_with_caller_session_uses_savepoint(self) -> None:
+        """A successful caller-owned supersede leaves commit to its caller."""
+        new_row = _make_decision_row(id=NEW_UUID, title="Replacement", status="active")
+        caller_session = _make_mock_session(row=new_row)
+        caller_session.execute.return_value.scalars.return_value.all.return_value = [OLD_UUID]
+        repo = PgDecisionRepo()
+        data = DecisionCreate(
+            title="Replacement", description="Context", reasoning="Reason", project_key="test-proj"
+        )
+
+        result = await repo.supersede(OLD_UUID, data, session=caller_session)
+
+        assert result.title == "Replacement"
+        caller_session.begin_nested.return_value.__aenter__.assert_awaited_once()
+        caller_session.commit.assert_not_awaited()
+        caller_session.begin.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_supersede_returns_new_decision(self) -> None:
         """supersede() creates new decision and marks old as superseded; returns new Decision."""
         new_row = _make_decision_row(id=NEW_UUID, title="New Decision", status="active")
