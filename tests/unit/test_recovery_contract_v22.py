@@ -107,7 +107,7 @@ def test_restore_contract_has_no_application_role_or_acl_requirement():
 
 
 def test_current_binding_has_moved_past_v22():
-    """v22 is frozen for head 064; 065 moved the binding to v23 (its own test pins it)."""
+    """v22 is frozen for head 064; 066 moves the binding to v24 (its own test pins it)."""
     current = json.loads((RECOVERY / "current.json").read_text())
     assert current["contract_version"] > 22
     assert current["schema_head"] != "064"
