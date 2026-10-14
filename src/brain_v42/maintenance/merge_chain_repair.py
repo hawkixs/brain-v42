@@ -3,30 +3,42 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from uuid import UUID
 
 import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from brain_v42.db.tables import adrs, consolidation_log, decisions, learnings, runbooks, snippets
+from brain_v42.db.tables import (
+    adrs,
+    consolidation_log,
+    decisions,
+    features,
+    learnings,
+    runbooks,
+    snippets,
+)
 
 MAX_DEPTH = 64
-_TABLES = (
+_TABLES: tuple[tuple[sa.Table, str | None], ...] = (
     (adrs, "adr"),
     (decisions, "decision"),
+    (features, None),
     (learnings, "learning"),
     (runbooks, "runbook"),
     (snippets, "snippet"),
 )
+TABLE_NAMES = frozenset(table.name for table, _ in _TABLES)
 
 
 class MergeChainRepairError(RuntimeError):
     """Expose a content-safe reason when the approved repair cannot proceed."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, *, table: str | None = None) -> None:
         self.reason = reason
-        super().__init__(reason)
+        self.table = table
+        super().__init__(reason if table is None else f"{reason}: {table}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +63,11 @@ class TableReport:
     dangling_roots: tuple[UUID, ...]
     cross_project_chains: tuple[ChainPointer, ...]
     in_project_chains: tuple[ChainPointer, ...]
+    audit: str = "consolidation_log plus graph ledger tombstones written by the registry trigger"
+
+    @property
+    def in_project_chained_count(self) -> int:
+        return len(self.in_project_chains)
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +78,7 @@ class InventoryReport:
 
     @property
     def in_project_chained_count(self) -> int:
-        return sum(len(table.in_project_chains) for table in self.tables)
+        return sum(table.in_project_chained_count for table in self.tables)
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +101,7 @@ async def inventory(session: AsyncSession) -> InventoryReport:
     names are a fixed local allowlist, never supplied by the operator.
     """
     reports: list[TableReport] = []
-    for table, _ in _TABLES:
+    for table, entity_type in _TABLES:
         statement = sa.text(
             f"""
             WITH RECURSIVE walk AS (
@@ -154,6 +171,11 @@ async def inventory(session: AsyncSession) -> InventoryReport:
                 dangling_roots=tuple(sorted(dangling)),
                 cross_project_chains=tuple(cross_project),
                 in_project_chains=tuple(in_project),
+                audit=(
+                    "JSON receipt plus graph ledger tombstones written by the registry trigger"
+                    if entity_type is None
+                    else "consolidation_log plus graph ledger tombstones written by the registry trigger"
+                ),
             )
         )
     return InventoryReport(tuple(reports))
@@ -168,10 +190,13 @@ def _refuse_corrupt(report: InventoryReport) -> None:
 
 
 async def repair(
-    session: AsyncSession, expected: int, *, lock_timeout_ms: int = 5000
+    session: AsyncSession, expected: Mapping[str, int], *, lock_timeout_ms: int = 5000
 ) -> RepairReport:
-    """Repair only the approved count, leaving commit ownership with the caller.
+    """Repair only approved per-table counts, leaving commit ownership with the caller.
 
+    Omitted tables are expected to have zero in-project chains. All six table
+    counts are checked before any pointer changes, so redistributing a total
+    cannot authorize changes to another table.
     The table locks stabilize roots and membership, including concurrent merges
     or inserts that row locks on the candidates alone cannot protect against.
     Acquisition refuses after five seconds by default to bound writer queueing.
@@ -179,10 +204,13 @@ async def repair(
     The registry pointer trigger stages each graph change in this same
     transaction: it tombstones the old MERGED_INTO edge, upserts the edge to the
     root and writes the matching outbox events.
+    consolidation_log is reserved for knowledge entities. Features audit is the
+    JSON receipt plus graph ledger tombstones written by the registry trigger;
+    feature repairs write no consolidation_log rows and require no schema change.
     """
     if not session.in_transaction():
         raise MergeChainRepairError("transaction_required")
-    if expected < 0:
+    if any(table not in TABLE_NAMES or count < 0 for table, count in expected.items()):
         raise MergeChainRepairError("invalid_expected_count")
     async with session.begin_nested():
         await session.execute(sa.text(f"SET LOCAL lock_timeout = '{lock_timeout_ms / 1000:g}s'"))
@@ -201,8 +229,9 @@ async def repair(
         await session.execute(sa.text("RESET lock_timeout"))
         before = await inventory(session)
         _refuse_corrupt(before)
-        if before.in_project_chained_count != expected:
-            raise MergeChainRepairError("expected_count_mismatch")
+        for report in before.tables:
+            if report.in_project_chained_count != expected.get(report.table, 0):
+                raise MergeChainRepairError("expected_count_mismatch", table=report.table)
 
         for (table, entity_type), report in zip(_TABLES, before.tables, strict=True):
             pointers = report.in_project_chains
@@ -212,15 +241,16 @@ async def repair(
                 await session.execute(
                     table.update().where(table.c.id == pointer.id).values(merged_into=pointer.root)
                 )
-                await session.execute(
-                    sa.insert(consolidation_log).values(
-                        source_id=pointer.id,
-                        target_id=pointer.root,
-                        entity_type=entity_type,
-                        similarity=1.0,
-                        action="repointed",
+                if entity_type is not None:
+                    await session.execute(
+                        sa.insert(consolidation_log).values(
+                            source_id=pointer.id,
+                            target_id=pointer.root,
+                            entity_type=entity_type,
+                            similarity=1.0,
+                            action="repointed",
+                        )
                     )
-                )
         after = await inventory(session)
         _refuse_corrupt(after)
         if after.in_project_chained_count:

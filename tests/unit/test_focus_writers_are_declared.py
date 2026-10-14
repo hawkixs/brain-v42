@@ -101,6 +101,11 @@ FOCUS_WRITERS: dict[str, tuple[str, bool | None, str]] = {
     ),
     "src/brain_v42/mcp/tools/session_tools.py": ("reader", None, "briefing"),
     "src/brain_v42/mcp/tools/formatters.py": ("reader", None, "rendering"),
+    "src/brain_v42/mcp/argument_guidance.py": (
+        "reader",
+        None,
+        "only names the field inside refusal guidance text; writes nothing",
+    ),
     "src/brain_v42/mcp/parameter_vocabulary.py": (
         "vocabulary",
         None,

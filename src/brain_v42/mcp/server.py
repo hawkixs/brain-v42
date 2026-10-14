@@ -84,9 +84,7 @@ from brain_v42.repositories.pg_runbook import PgRunbookRepo
 from brain_v42.repositories.pg_snippet import PgSnippetRepo
 from brain_v42.repositories.pg_ticket import PgTicketRepo
 from brain_v42.safe_logging import (
-    build_logging_processors,
-    configure_console_logging,
-    configure_json_logging,
+    configure_stderr_logging,
     redact_url,
 )
 from brain_v42.services.adr_service import ADRService
@@ -134,15 +132,7 @@ def _configure_stdio_logging() -> None:
     pytest's caplog handlers must stay intact).
     """
     log_format = get_settings().brain_log_format
-    processors = build_logging_processors(log_format, colors=False)
-    if log_format == "json":
-        configure_json_logging(processors)
-    else:
-        structlog.configure(
-            logger_factory=structlog.PrintLoggerFactory(file=sys.stderr),
-            processors=processors,
-        )
-        configure_console_logging(processors)
+    configure_stderr_logging(log_format)
     structlog.get_logger(__name__).info(
         "logging.configured", renderer=log_format, service="brain-v42-mcp", pid=os.getpid()
     )

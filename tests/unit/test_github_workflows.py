@@ -334,6 +334,22 @@ def test_github_shards_read_n_only_from_the_matrix(
             assert "${{ matrix.shard }}" in run, f"{job_name} must read its index from matrix.shard"
 
 
+def test_github_shards_report_every_test_duration(
+    ci_workflow: dict[Any, Any],
+) -> None:
+    """`--durations=0` keeps the shard plans regenerable from the hosted runs themselves.
+
+    The plans are weights measured per test file; without the durations in the hosted
+    logs they could only be refreshed from a local run, on other hardware.
+    """
+    for job_name in ("unit-shard", "integration-shard"):
+        steps = ci_workflow["jobs"][job_name].get("steps", [])
+        shard_runs = [str(s.get("run", "")) for s in steps if "--shard=" in str(s.get("run", ""))]
+        assert shard_runs, f"{job_name} must pass --shard to pytest"
+        for run in shard_runs:
+            assert "--durations=0" in run, f"{job_name} must pass --durations=0 to pytest"
+
+
 def test_github_aggregators_gate_their_shard_matrices(
     ci_workflow: dict[Any, Any],
 ) -> None:
