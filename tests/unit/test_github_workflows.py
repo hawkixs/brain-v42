@@ -331,9 +331,7 @@ def test_github_shards_read_n_only_from_the_matrix(
             assert "${{ strategy.job-total }}" in run, (
                 f"{job_name} must read N from strategy.job-total, never hardcode it"
             )
-            assert "${{ matrix.shard }}" in run, (
-                f"{job_name} must read its index from matrix.shard"
-            )
+            assert "${{ matrix.shard }}" in run, f"{job_name} must read its index from matrix.shard"
 
 
 def test_github_aggregators_gate_their_shard_matrices(
