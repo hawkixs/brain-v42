@@ -123,6 +123,8 @@ def decide(observations: Iterable[Observation], observed_day: date) -> Decision:
     for observation in propagation:
         if observation.propagated_from is None:
             raise ValueError("A propagation observation must name its propagated_from parent")
+        if observation.rule is not None:
+            raise ValueError("A propagation observation cannot carry a structural rule")
     endings = sorted(
         (
             observation
@@ -134,6 +136,9 @@ def decide(observations: Iterable[Observation], observed_day: date) -> Decision:
     for observation in endings:
         if observation.rule is None:
             raise ValueError("An ending observation must name its structural rule")
+    if endings:
+        observation = endings[0]
+        assert observation.rule is not None
         dated = observation.valid_from is not None
         return Decision(
             State.OBSOLETE,
@@ -151,42 +156,61 @@ def decide(observations: Iterable[Observation], observed_day: date) -> Decision:
     resolved = _resolve_assertions(evidence)
     contradictions = [item for item in resolved if item.polarity == Polarity.CONTRADICTS]
     for item in contradictions:
-        observation = item.observations[0]
-        if (
-            observation.centrality == Centrality.CORE
+        refuting = [
+            observation
+            for observation in item.observations
+            if observation.centrality == Centrality.CORE
             and observation.temporal == Temporal.DURABLE
             and observation.source_rank >= 5
-        ):
-            return Decision(State.REFUTED, f"contradicted_by_{observation.source_ref}", item.ids)
+        ]
+        if refuting:
+            return Decision(
+                State.REFUTED,
+                f"contradicted_by_{refuting[0].source_ref}",
+                tuple(sorted(observation.id for observation in refuting)),
+            )
     for item in contradictions:
-        observation = item.observations[0]
-        if (
-            observation.centrality == Centrality.CORE
+        ending = [
+            observation
+            for observation in item.observations
+            if observation.centrality == Centrality.CORE
             and observation.temporal == Temporal.TRANSIENT
             and observation.source_rank >= 3
-        ):
-            exact = (
-                observation.valid_from_precision == ValidFromPrecision.EXACT
+        ]
+        if ending:
+            exact_dates = [
+                observation.valid_from
+                for observation in ending
+                if observation.valid_from_precision == ValidFromPrecision.EXACT
                 and observation.valid_from is not None
-            )
+            ]
             return Decision(
                 State.OBSOLETE,
-                f"pending_state_ended_{observation.source_kind}",
-                item.ids,
-                observation.valid_from if exact else observed_day,
-                ValidFromPrecision.EXACT if exact else ValidFromPrecision.FIRST_OBSERVED,
+                f"pending_state_ended_{ending[0].source_kind}",
+                tuple(sorted(observation.id for observation in ending)),
+                max(exact_dates) if exact_dates else observed_day,
+                ValidFromPrecision.EXACT if exact_dates else ValidFromPrecision.FIRST_OBSERVED,
             )
     for item in resolved:
         if item.polarity == Polarity.NONE:
             continue
-        observation = item.observations[0]
         if item.polarity == "tied":
             return Decision(State.CONTESTED, "tied", item.ids)
-        if item.polarity == Polarity.CONTRADICTS and not (
-            observation.centrality == Centrality.INCIDENTAL
-            and observation.temporal == Temporal.TRANSIENT
-        ):
-            return Decision(State.CONTESTED, f"contested_by_{observation.source_kind}", item.ids)
+        if item.polarity == Polarity.CONTRADICTS:
+            contesting = [
+                observation
+                for observation in item.observations
+                if not (
+                    observation.centrality == Centrality.INCIDENTAL
+                    and observation.temporal == Temporal.TRANSIENT
+                )
+            ]
+            if contesting:
+                return Decision(
+                    State.CONTESTED,
+                    f"contested_by_{contesting[0].source_kind}",
+                    tuple(sorted(observation.id for observation in contesting)),
+                )
     for observation in propagation:
         if observation.polarity == Polarity.CONTRADICTS:
             return Decision(

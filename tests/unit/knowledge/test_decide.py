@@ -41,6 +41,126 @@ def evidence(
 
 
 class DecisionTests(unittest.TestCase):
+    def test_incidental_transient_cannot_mask_refutation_in_the_top_group(self) -> None:
+        incidental = evidence("a", centrality=Centrality.INCIDENTAL, temporal=Temporal.TRANSIENT)
+        core = evidence("z")
+        expected = Decision(State.REFUTED, "contradicted_by_embedding.provider", ("z",))
+        for observations in permutations([incidental, core]):
+            with self.subTest(ids=[o.id for o in observations]):
+                self.assertEqual(decide(iter(observations), DAY), expected)
+
+    def test_refutation_reports_only_qualifying_top_group_observations(self) -> None:
+        core = evidence("a")
+        other_core = evidence("z")
+        incidental = evidence("b", centrality=Centrality.INCIDENTAL)
+        weaker = evidence("lower", kind="code")
+        self.assertEqual(
+            decide([core, incidental, weaker, other_core], DAY),
+            Decision(State.REFUTED, "contradicted_by_embedding.provider", ("a", "z")),
+        )
+
+    def test_incidental_transient_cannot_mask_pending_end_in_the_top_group(self) -> None:
+        incidental = evidence(
+            "a", kind="ticket", centrality=Centrality.INCIDENTAL, temporal=Temporal.TRANSIENT
+        )
+        core = replace(
+            evidence("z", kind="ticket", temporal=Temporal.TRANSIENT),
+            valid_from=ENDED,
+            valid_from_precision=ValidFromPrecision.EXACT,
+        )
+        expected = Decision(
+            State.OBSOLETE, "pending_state_ended_ticket", ("z",), ENDED, ValidFromPrecision.EXACT
+        )
+        for observations in permutations([incidental, core]):
+            with self.subTest(ids=[o.id for o in observations]):
+                self.assertEqual(decide(iter(observations), DAY), expected)
+
+    def test_pending_end_uses_latest_exact_date_from_qualifying_observations(self) -> None:
+        first = replace(
+            evidence("a", temporal=Temporal.TRANSIENT),
+            valid_from=ENDED,
+            valid_from_precision=ValidFromPrecision.EXACT,
+        )
+        latest = replace(first, id="z", valid_from=date(2026, 10, 7))
+        undated = replace(first, id="b", valid_from=None)
+        incidental = replace(first, id="c", centrality=Centrality.INCIDENTAL, valid_from=DAY)
+        durable = replace(
+            first, id="d", centrality=Centrality.INCIDENTAL, temporal=Temporal.DURABLE
+        )
+        weaker = replace(
+            first, id="lower", source_kind="code", source_rank=RANKS["code"], valid_from=DAY
+        )
+        self.assertEqual(
+            decide([first, latest, undated, incidental, durable, weaker], DAY),
+            Decision(
+                State.OBSOLETE,
+                "pending_state_ended_config",
+                ("a", "b", "z"),
+                date(2026, 10, 7),
+                ValidFromPrecision.EXACT,
+            ),
+        )
+
+    def test_pending_end_ignores_exact_dates_from_nonqualifying_observations(self) -> None:
+        incidental = replace(
+            evidence("a", centrality=Centrality.INCIDENTAL, temporal=Temporal.TRANSIENT),
+            valid_from=ENDED,
+            valid_from_precision=ValidFromPrecision.EXACT,
+        )
+        core = evidence("z", temporal=Temporal.TRANSIENT)
+        self.assertEqual(
+            decide([incidental, core], DAY),
+            Decision(
+                State.OBSOLETE,
+                "pending_state_ended_config",
+                ("z",),
+                DAY,
+                ValidFromPrecision.FIRST_OBSERVED,
+            ),
+        )
+
+    def test_contested_exemption_requires_all_top_contradictions_incidental_transient(self) -> None:
+        incidental = evidence(
+            "a", kind="code", centrality=Centrality.INCIDENTAL, temporal=Temporal.TRANSIENT
+        )
+        for centrality in (Centrality.CORE, Centrality.INCIDENTAL):
+            durable = replace(incidental, id="z", centrality=centrality, temporal=Temporal.DURABLE)
+            for observations in permutations([incidental, durable]):
+                with self.subTest(centrality=centrality, ids=[o.id for o in observations]):
+                    self.assertEqual(
+                        decide(observations, DAY),
+                        Decision(State.CONTESTED, "contested_by_code", ("z",)),
+                    )
+
+    def test_all_incidental_transient_top_contradictions_remain_exempt(self) -> None:
+        first = evidence("a", centrality=Centrality.INCIDENTAL, temporal=Temporal.TRANSIENT)
+        second = replace(first, id="z")
+        self.assertEqual(
+            decide([first, second], DAY), Decision(State.VALID, "declaration_only", ())
+        )
+
+    def test_propagation_cannot_carry_a_structural_rule(self) -> None:
+        for polarity in Polarity:
+            for rule in ("merged", "decay_archived"):
+                with self.subTest(polarity=polarity, rule=rule):
+                    observation = replace(
+                        evidence(kind="propagation", polarity=polarity),
+                        propagated_from="parent",
+                        rule=rule,
+                    )
+                    with self.assertRaisesRegex(ValueError, "structural rule"):
+                        decide([observation], DAY)
+
+    def test_every_end_requires_a_rule_even_when_lower_ranked(self) -> None:
+        valid = replace(
+            evidence("valid", kind="structure", key=None, polarity=Polarity.ENDS), rule="merged"
+        )
+        missing_rule = evidence("missing", kind="pr", key=None, polarity=Polarity.ENDS)
+        for observations in permutations([valid, missing_rule]):
+            with self.subTest(ids=[o.id for o in observations]):
+                with self.assertRaisesRegex(ValueError, "structural rule"):
+                    decide(iter(observations), DAY)
+
     def test_new_row_ids_cannot_change_the_selected_reason(self) -> None:
         first = replace(evidence("a"), source_ref="first")
         second = replace(evidence("b"), source_ref="second")
