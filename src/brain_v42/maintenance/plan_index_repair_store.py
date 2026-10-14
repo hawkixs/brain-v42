@@ -293,7 +293,11 @@ if TYPE_CHECKING:
 # indexes and narrower runtime grants on those new tables. No trigger, column,
 # constraint, index or grant on indexed_plans, indexed_plan_chunks or
 # project_contexts changes; the repair's DELETEs and UPDATEs keep their behavior.
-_REQUIRED_ALEMBIC_HEAD = "066"
+# Bumped to 067 after reviewing the complete migration, inert by TABLE: it adds a
+# nullable `allowed_projects` column and an inline CHECK to brain_client_credentials
+# and widens the brain_credential_audit event CHECK. No trigger, column, constraint,
+# index or grant on indexed_plans, indexed_plan_chunks or project_contexts changes.
+_REQUIRED_ALEMBIC_HEAD = "067"
 
 
 class RepairStore:

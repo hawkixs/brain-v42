@@ -313,6 +313,18 @@ def _guidance(
         unexpected_clauses.append(f"unexpected '{_safe_key(key)}'{suffix}")
     if missing:
         core_clauses.append("missing " + ", ".join(f"'{item}'" for item in missing))
+        if name == "brain_update_project_focus" and "expected_focus_revision" in missing:
+            core_clauses.append(
+                "Read the current revision from brain_session_resume current_focus_revision "
+                "or session.started_focus_revision from brain_session_start, then pass it "
+                "as expected_focus_revision"
+            )
+        if name == "brain_session_end" and "next_focus" in missing:
+            core_clauses.append(
+                "next_focus must be the WHOLE base focus text because it replaces it; "
+                "a handover under 70% of the current base is refused as base_focus_shrink. "
+                "Read the current focus with brain_session_resume current_focus"
+            )
     for item in error_items:
         raw_loc = tuple(item.get("loc", ()))
         path, leaf_schema = _schema_path(parameters or {}, raw_loc)

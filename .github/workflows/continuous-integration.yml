@@ -165,7 +165,7 @@ jobs:
         env:
           COVERAGE_FILE: .coverage.unit-${{ matrix.shard }}
         run: >-
-          .venv/bin/pytest tests/unit/ -v --tb=short
+          .venv/bin/pytest tests/unit/ -v --tb=short --durations=0
           --shard=${{ matrix.shard }}/${{ strategy.job-total }}
           --shard-plan=tests/ci/shard_plan_unit.json
           --cov=brain_v42 --cov-report=
@@ -248,7 +248,7 @@ jobs:
       # would stay mute — the net would reinforce the failure.
       - name: Run integration tests
         run: >-
-          .venv/bin/pytest tests/integration/ -v --tb=short
+          .venv/bin/pytest tests/integration/ -v --tb=short --durations=0
           --shard=${{ matrix.shard }}/${{ strategy.job-total }}
           --shard-plan=tests/ci/shard_plan_integration.json
           -o faulthandler_timeout=120 -o faulthandler_exit_on_timeout=true

@@ -481,7 +481,7 @@
           },
           "allow_focus_shrink": {
             "default": false,
-            "description": "Operator-only override of the 70% guard for the whole base focus or slot body. Accepted only with initiator='operator'; guard_mod is refused in code, even with a /brain-admin elevation.",
+            "description": "Operator-only override of the 70% guard for the whole base focus or slot body. Requires an active /brain-admin elevation for this credential and MCP connection; guard_mod is refused in code, even with elevation.",
             "type": "boolean"
           },
           "knowledge_ids": {

@@ -154,14 +154,17 @@ def test_external_binds_are_explicit_and_parseable(
     assert mcp["MCP_HTTP_ALLOWED_HOSTS"] == "${BIND_ADDRESS}:8765"
     assert metrics["METRICS_ALLOW_NON_LOOPBACK"] == "yes"
     assert metrics["METRICS_RECEIVER_AUTH"] == "credentials"
+    assert metrics["METRICS_READ_CLIENTS"] == "red-cockpit"
     for environment in (mcp, metrics):
         for key, value in environment.items():
             clean_settings_env.setenv(key, value.replace("${BIND_ADDRESS}", "192.0.2.10"))
     clean_settings_env.setenv("GRAPH_PROJECTOR_NEO4J_PASSWORD", "test-only-password")
+    clean_settings_env.setenv("METRICS_READ_CLIENTS", metrics["METRICS_READ_CLIENTS"])
     settings = Settings(_env_file=None)
     assert settings.mcp_http_allow_non_loopback and settings.metrics_allow_non_loopback
     assert settings.mcp_http_allowed_hosts == frozenset({"192.0.2.10:8765"})
     assert settings.metrics_receiver_auth == "credentials"
+    assert settings.metrics_read_clients == ["red-cockpit"]
     assert not settings.mcp_http_stateless
 
 

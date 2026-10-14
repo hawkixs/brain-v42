@@ -1,7 +1,8 @@
 """Emit the credential outbox at least once, with a closed watcher contract.
 
 Logging cannot commit atomically with PostgreSQL. Consumers deduplicate elevations
-on ``(event, elevation_id)`` and credential gestures on ``(event, credential_id)``.
+on ``(event, elevation_id)``, scope edits on ``audit_id``, and issue/revoke gestures
+on ``(event, credential_id)``.
 """
 
 from __future__ import annotations
@@ -41,6 +42,16 @@ _ELEVATION_EVENTS = frozenset(
 )
 _ISSUED_KEYS = frozenset({"credential_id", "client_id", "families", "author"})
 _REVOKED_KEYS = _ISSUED_KEYS | {"reason"}
+_SCOPE_KEYS = frozenset(
+    {
+        "credential_id",
+        "client_id",
+        "author",
+        "reason",
+        "previous_allowed_projects",
+        "allowed_projects",
+    }
+)
 
 
 def _sanitize_reason(value: str) -> str:
@@ -62,6 +73,11 @@ def render_event(row: AuditRow) -> dict[str, Any]:
             fields["reason"] = _sanitize_reason(row.payload["reason"])
     elif row.event == "credentials.revoked":
         fields = {key: row.payload[key] for key in _REVOKED_KEYS}
+        fields["reason"] = _sanitize_reason(fields["reason"])
+    elif row.event == "credentials.scope_changed":
+        fields = {key: row.payload[key] for key in _SCOPE_KEYS}
+        # Repeated edits to one credential are distinct gestures, not duplicate delivery.
+        fields["audit_id"] = row.id
         fields["reason"] = _sanitize_reason(fields["reason"])
     else:
         raise ValueError("unsupported credential audit event")

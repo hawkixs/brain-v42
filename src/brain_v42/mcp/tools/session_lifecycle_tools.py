@@ -379,8 +379,9 @@ def register_session_lifecycle_tools(
             Field(
                 description=(
                     "Operator-only override of the 70% guard for the whole base focus "
-                    "or slot body. Accepted only with initiator='operator'; guard_mod "
-                    "is refused in code, even with a /brain-admin elevation."
+                    "or slot body. Requires an active /brain-admin elevation for this "
+                    "credential and MCP connection; guard_mod is refused in code, even "
+                    "with elevation."
                 )
             ),
         ] = False,
@@ -404,12 +405,14 @@ def register_session_lifecycle_tools(
         leaves the session open, unlike `end`, which closes anyway. SHRINK GUARD: a
         handover under 70% of the current base focus is refused (`base_focus_shrink`,
         both lengths in the message), because it REPLACES the whole base: carry the
-        durable content over. Only an operator relay may pass `allow_focus_shrink =
-        true`; a guard mod never can.
+        durable content over. An operator relay may pass `allow_focus_shrink = true`
+        only with an active /brain-admin elevation for this credential and MCP
+        connection; a guard mod never can.
 
         The same 70% guard applies to a bound slot body (`slot_focus_shrink`).
         The override is enforced before mutation: only initiator='operator' can
-        pass it, without elevation; a guard_mod relay is refused even if elevated.
+        pass it, and only with an active /brain-admin elevation for this credential
+        and MCP connection. A guard_mod relay is refused even if elevated.
 
         An equal replay returns the same successor with `replayed = true`; any other
         payload on an ended session is `terminal_conflict`. The successor's next end
