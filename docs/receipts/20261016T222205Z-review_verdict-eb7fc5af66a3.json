@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:eb7fc5af66a337769210361ed77895c49ed75856a694fdd005bf4c9d4df673a8",
+  "idempotency_key": "review_verdict:283e08082f15c6abbfdb065f61e027c614aa6e30:117222612926",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117222612926,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The hunks shown cover only pyproject.toml and README.md; the described one-line brain-v42 entry bump 0.7.1 -> 0.7.2 in uv.lock does not appear before END DIFF, and only part of a large diff may be visible. Question to check: confirm the PR's file list / remaining diff includes the uv.lock entry at 0",
+          "file": "uv.lock",
+          "id": "F-459-1",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Stated uv.lock entry bump not visible in the hunks shown"
+        },
+        {
+          "class": "note",
+          "evidence": "The new sentence asserts specifics not verifiable from the hunks shown: env var name `MCP_HTTP_MAX_SESSIONS` with default 6000 and idle-LRU eviction at the cap (#458), the drill's asyncpg database URL scheme (#457), and 4g/2g limits for the red-base MCP and PostgreSQL containers (#456). The PR descr",
+          "file": "README.md",
+          "id": "F-459-2",
+          "line": 5,
+          "severity": "minor",
+          "status": "new",
+          "title": "Release-sentence specifics rest on code outside this diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 459,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "283e08082f15c6abbfdb065f61e027c614aa6e30",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T22:22:05.978415Z",
+  "schema_version": 1
+}

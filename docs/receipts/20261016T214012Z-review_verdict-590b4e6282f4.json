@@ -1,0 +1,79 @@
+{
+  "digest": "sha256:590b4e6282f4331963b3e6fc873a74fd6eb29589dd6eaf0453e0ca88710fafc6",
+  "idempotency_key": "review_verdict:975dd86f5591a9cd9d8d4af318ac908adc1d8c89:117206962570",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117206962570,
+      "diff_truncated": false,
+      "finding_count": 4,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "test_session_bounds_update_without_stacking_and_preserve_explicit_values asserts installed.__bases__ == (original,) without monkeypatching/restoring fastmcp_http.StreamableHTTPSessionManager; the session_http_app-based tests defined later in the same file install the subclass globally and never rest",
+          "file": "tests/unit/mcp/test_http_transport_routing.py",
+          "id": "F-458-1",
+          "line": 318,
+          "severity": "minor",
+          "status": "new",
+          "title": "Idempotence test depends on module-global install state and file ordering"
+        },
+        {
+          "class": "note",
+          "evidence": "if the SDK's idle-expiry handler, triggered by scope.cancel(), also pops the session id from _server_instances, the pop-then-cancel order in _evict_idle_session depends on that handler not raising on a missing key; the ASGI test asserts termination and post-eviction state, but a swallowed background",
+          "file": "src/brain_v42/mcp/server.py",
+          "id": "F-458-2",
+          "line": 1070,
+          "severity": "minor",
+          "status": "new",
+          "title": "Eviction assumes SDK cleanup tolerates an already-unregistered session"
+        },
+        {
+          "class": "note",
+          "evidence": "brain_v42.server.session_eviction_unavailable is logged without naming the missing attribute (which is known at the raise site), making operator triage of SDK drift harder than necessary.",
+          "file": "src/brain_v42/mcp/server.py",
+          "id": "F-458-3",
+          "line": 1076,
+          "severity": "minor",
+          "status": "new",
+          "title": "Drift error log omits which attribute is missing"
+        },
+        {
+          "class": "note",
+          "evidence": "_install_session_idle_timeout(seconds: float, max_sessions: int = 6000) repeats the 6000 from config.py's mcp_http_max_sessions field; the sole call site always passes the setting, so today this is inert, but the two defaults could silently diverge if config.py changes.",
+          "file": "src/brain_v42/mcp/server.py",
+          "id": "F-458-4",
+          "line": 1017,
+          "severity": "minor",
+          "status": "new",
+          "title": "Hardcoded default duplicates the config default"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 458,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "975dd86f5591a9cd9d8d4af318ac908adc1d8c89",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T21:40:12.887724Z",
+  "schema_version": 1
+}

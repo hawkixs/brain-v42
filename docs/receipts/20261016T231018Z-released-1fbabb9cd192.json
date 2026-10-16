@@ -1,0 +1,32 @@
+{
+  "digest": "sha256:1fbabb9cd1921af198c9e845ad71c49810712f76f667aa856ecaef02de07a4d1",
+  "idempotency_key": "released:0.7.2",
+  "issuer": "agent:claude-code:66c7465f-f663-4fdb-aada-1cf5b98f3ac2",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "changelog": [
+        "\ud83d\udd16 chore(release): 0.7.2",
+        "docs(deploy): state the measured cause of the MCP OOM in the compose comment",
+        "\ud83d\udc1b fix(mcp): bound held MCP sessions and evict the oldest idle one at the cap",
+        "docs(deploy): align the memory headroom comment with the new limits",
+        "\ud83d\udc1b fix(rail): give the restore drill the asyncpg database URL scheme",
+        "fix(deploy): give the red-base MCP 4g and postgres 2g of memory",
+        "test: isolate provenance contextvars between unit tests",
+        "\ud83d\udd12\ufe0f test(rail): keep the drill's unauthenticated MCP switch out of every production config",
+        "\ud83d\udd27 chore(rail): declare the restore drill for brain-v42",
+        "\ud83d\udd16 chore(receipts): record the release and deployment of 0.7.1"
+      ],
+      "digest": "sha256:c329b8307893f8bf2e1f55e5190a8dd091efc557a10af3cff865a0af5aacc737",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:c329b8307893f8bf2e1f55e5190a8dd091efc557a10af3cff865a0af5aacc737",
+      "platform": "linux/amd64",
+      "sha": "da1d7c0bf4801a8b2fcde93a0ea51f2be3a6dc2c",
+      "tag": "v0.7.2",
+      "version": "0.7.2"
+    },
+    "kind": "released"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T23:10:18.063919Z",
+  "schema_version": 1
+}
