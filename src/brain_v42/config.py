@@ -835,6 +835,12 @@ class Settings(BaseSettings):
     mcp_http_session_idle_seconds: float = Field(
         default=8 * 3600.0, validation_alias=_brain_alias("MCP_HTTP_SESSION_IDLE_SECONDS")
     )
+    # Measured on 0.7.1: about 225 KiB per held session, so 6000 add ~1.3 GiB
+    # above a ~175 MiB base, well under the 4 GiB container limit. At capacity,
+    # evict the least recently active idle session before the kernel kills us.
+    mcp_http_max_sessions: int = Field(
+        default=6000, ge=1, validation_alias=_brain_alias("MCP_HTTP_MAX_SESSIONS")
+    )
 
     # --- Client activity reporting (emitter on the MCP process side) ---
     # Shipped CLOSED, like every new capability in this repository.

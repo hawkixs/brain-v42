@@ -998,6 +998,7 @@ _ALIASED_FIELDS: list[tuple[str, str]] = [
     ("metrics_host", "METRICS_HOST"),
     ("mcp_http_stateless", "MCP_HTTP_STATELESS"),
     ("mcp_http_session_idle_seconds", "MCP_HTTP_SESSION_IDLE_SECONDS"),
+    ("mcp_http_max_sessions", "MCP_HTTP_MAX_SESSIONS"),
     ("client_activity_reporting_enabled", "CLIENT_ACTIVITY_REPORTING_ENABLED"),
     ("client_activity_url", "CLIENT_ACTIVITY_URL"),
     ("otel_tracing_enabled", "OTEL_TRACING_ENABLED"),
@@ -1270,3 +1271,29 @@ def test_the_stateful_mcp_session_outlives_a_working_pause(monkeypatch):
     )
 
     assert settings.mcp_http_session_idle_seconds == 8 * 3600
+
+
+@pytest.mark.parametrize("value,expected", [(None, 6000), ("42", 42), ("1", 1)])
+def test_mcp_http_max_sessions_default_and_environment(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, expected: int
+) -> None:
+    from brain_v42.config import Settings
+
+    monkeypatch.delenv("MCP_HTTP_MAX_SESSIONS", raising=False)
+    monkeypatch.delenv("BRAIN_MCP_HTTP_MAX_SESSIONS", raising=False)
+    if value is not None:
+        monkeypatch.setenv("MCP_HTTP_MAX_SESSIONS", value)
+    settings = Settings(postgres_url="postgresql+asyncpg://u:p@localhost/db", _env_file=None)
+    assert settings.mcp_http_max_sessions == expected
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_mcp_http_max_sessions_refuses_nonpositive_values(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    from brain_v42.config import Settings
+
+    monkeypatch.delenv("BRAIN_MCP_HTTP_MAX_SESSIONS", raising=False)
+    monkeypatch.setenv("MCP_HTTP_MAX_SESSIONS", value)
+    with pytest.raises(ValidationError, match="mcp_http_max_sessions|MCP_HTTP_MAX_SESSIONS"):
+        Settings(postgres_url="postgresql+asyncpg://u:p@localhost/db", _env_file=None)

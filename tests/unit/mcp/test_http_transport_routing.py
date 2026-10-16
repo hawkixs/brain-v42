@@ -14,6 +14,8 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
@@ -277,15 +279,322 @@ def test_session_idle_timeout_is_injected_and_guarded(monkeypatch: Any) -> None:
 
     # POSITIVE CONTROL on a base that does accept it.
     class _Acceptable:
-        def __init__(self, session_idle_timeout: float | None = None, **kwargs: Any) -> None:
+        def __init__(
+            self,
+            session_idle_timeout: float | None = None,
+            max_sessions: int = 10000,
+            **kwargs: Any,
+        ) -> None:
             captured["session_idle_timeout"] = session_idle_timeout
+            captured["max_sessions"] = max_sessions
+
+        def _admit_session(self, requestor: Any) -> str | None:
+            return None
 
     monkeypatch.setattr(fastmcp_http, "StreamableHTTPSessionManager", _Acceptable)
-    _install_session_idle_timeout(900.0)
+    _install_session_idle_timeout(900.0, 42)
     fastmcp_http.StreamableHTTPSessionManager(app=object())
     assert captured["session_idle_timeout"] == 900.0
+    assert captured["max_sessions"] == 42
 
     monkeypatch.setattr(fastmcp_http, "StreamableHTTPSessionManager", original)
+
+
+@pytest.mark.parametrize(
+    "missing", ["session_idle_timeout", "max_sessions", "_admit_session", "requestor"]
+)
+def test_session_bounds_refuse_upstream_signature_drift(monkeypatch: Any, missing: str) -> None:
+    from fastmcp.server import http as fastmcp_http
+
+    from brain_v42.mcp.server import (
+        SessionIdleTimeoutUnavailableError,
+        _install_session_idle_timeout,
+    )
+
+    class Drifted:
+        def __init__(
+            self, session_idle_timeout: float | None = None, max_sessions: int = 10000
+        ) -> None:
+            pass
+
+        def _admit_session(self, requestor: Any) -> str | None:
+            return None
+
+    if missing == "session_idle_timeout":
+        monkeypatch.setattr(Drifted, "__init__", lambda self, max_sessions=10000: None)
+    elif missing == "max_sessions":
+        monkeypatch.setattr(Drifted, "__init__", lambda self, session_idle_timeout=None: None)
+    elif missing == "_admit_session":
+        monkeypatch.delattr(Drifted, "_admit_session")
+    else:
+        monkeypatch.setattr(Drifted, "_admit_session", lambda self: None)
+    monkeypatch.setattr(fastmcp_http, "StreamableHTTPSessionManager", Drifted)
+
+    with pytest.raises(SessionIdleTimeoutUnavailableError, match=missing):
+        _install_session_idle_timeout(3600.0, 2)
+
+
+def test_session_bounds_update_without_stacking_and_preserve_explicit_values() -> None:
+    from fastmcp.server import http as fastmcp_http
+
+    from brain_v42.mcp.server import _install_session_idle_timeout
+
+    original = fastmcp_http.StreamableHTTPSessionManager
+    _install_session_idle_timeout(3600.0, 2)
+    installed = fastmcp_http.StreamableHTTPSessionManager
+    _install_session_idle_timeout(7200.0, 7)
+    assert fastmcp_http.StreamableHTTPSessionManager is installed
+    assert installed.__bases__ == (original,)
+    manager = installed(app=object())
+    assert manager.session_idle_timeout == 7200.0
+    assert manager.max_sessions == 7
+
+    explicit = installed(app=object(), session_idle_timeout=123.0, max_sessions=3)
+    assert explicit.session_idle_timeout == 123.0
+    assert explicit.max_sessions == 3
+
+
+def test_stateful_http_plan_passes_both_session_bounds(monkeypatch: Any) -> None:
+    from unittest.mock import Mock
+
+    from fastmcp import FastMCP
+
+    from brain_v42.config import Settings
+    from brain_v42.mcp import server
+
+    install = Mock()
+    monkeypatch.setattr(server, "_install_session_idle_timeout", install)
+    settings = Settings(
+        postgres_url=_FAKE_PG_URL,
+        mcp_http_token="test-token",
+        mcp_http_session_idle_seconds=1234.0,
+        mcp_http_max_sessions=42,
+        _env_file=None,
+    )
+    server.plan_http_transport(FastMCP("bounds-wiring"), settings)
+    install.assert_called_once_with(1234.0, 42)
+
+
+_INITIALIZE = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "initialize",
+    "params": {
+        "protocolVersion": "2025-03-26",
+        "capabilities": {},
+        "clientInfo": {"name": "session-bounds-test", "version": "1"},
+    },
+}
+
+
+async def _open_session(client: Any) -> str:
+    response = await client.post("/mcp", json=_INITIALIZE)
+    assert response.status_code == 200, response.text
+    session_id = response.headers["mcp-session-id"]
+    response = await client.post(
+        "/mcp",
+        headers={"mcp-session-id": session_id},
+        json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+    )
+    assert response.status_code == 202, response.text
+    return session_id
+
+
+async def _ping_session(client: Any, session_id: str) -> Any:
+    return await client.post(
+        "/mcp",
+        headers={"mcp-session-id": session_id},
+        json={"jsonrpc": "2.0", "id": 2, "method": "ping"},
+    )
+
+
+@asynccontextmanager
+async def session_http_app(max_sessions: int) -> AsyncIterator[Any]:
+    """Exercise admission, cancellation and cleanup through the real SDK and ASGI."""
+    import httpx
+    from fastmcp import FastMCP
+
+    from brain_v42.mcp.server import _install_session_idle_timeout
+
+    _install_session_idle_timeout(3600.0, max_sessions)
+    mcp = FastMCP("session-bounds")
+    entered = {name: asyncio.Event() for name in ("a", "b")}
+    release = asyncio.Event()
+
+    @mcp.tool
+    async def hold(name: str) -> str:
+        entered[name].set()
+        await release.wait()
+        return name
+
+    app = mcp.http_app(stateless_http=False, json_response=True)
+    endpoint = next(
+        route.endpoint for route in app.routes if hasattr(route.endpoint, "session_manager")
+    )
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app),
+            base_url="http://localhost",
+            headers={"Accept": "application/json, text/event-stream"},
+        ) as client,
+    ):
+        try:
+            yield endpoint.session_manager, client, entered, release
+        finally:
+            release.set()
+
+
+async def test_session_cap_evicts_the_least_recently_active_idle_session(
+    monkeypatch: Any,
+) -> None:
+    from unittest.mock import Mock
+
+    from brain_v42.mcp import server
+
+    log = Mock()
+    monkeypatch.setattr(server, "logger", log)
+    async with session_http_app(2) as (manager, client, _, _):
+        a = await _open_session(client)
+        b = await _open_session(client)
+        # Activity, rather than creation order, chooses the victim: refresh A then B.
+        assert (await _ping_session(client, a)).status_code == 200
+        assert (await _ping_session(client, b)).status_code == 200
+        transport = manager._server_instances[a]
+        assert transport.idle_scope.deadline < manager._server_instances[b].idle_scope.deadline
+
+        c = await _open_session(client)
+
+        assert (await _ping_session(client, a)).status_code == 404
+        assert (await _ping_session(client, b)).status_code == 200
+        assert (await _ping_session(client, c)).status_code == 200
+        assert a not in manager._session_owners
+        assert transport.idle_scope.cancel_called
+        for _ in range(100):
+            if transport.is_terminated:
+                break
+            await asyncio.sleep(0.01)
+        assert transport.is_terminated
+        assert len(manager._server_instances) == 2
+        assert manager.session_evictions == 1
+        evictions = [
+            call
+            for call in log.warning.call_args_list
+            if call.args[0] == "brain_v42.server.session_evicted"
+        ]
+        assert len(evictions) == 1
+        assert evictions[0].kwargs["session_id"] == a[:8]
+        assert evictions[0].kwargs["evictions"] == 1
+
+
+async def test_session_cap_skips_an_already_cancelled_idle_session() -> None:
+    async with session_http_app(1) as (manager, client, _, _):
+        session_id = await _open_session(client)
+        transport = manager._server_instances[session_id]
+        transport.idle_scope.cancel()
+        assert transport.idle_scope.cancel_called
+
+        # Stay synchronous so the SDK cannot discard the cancelled session yet.
+        # SDK admission refusal is what handle_request maps to HTTP 503.
+        assert manager._admit_session(None) is None
+        assert set(manager._server_instances) == {session_id}
+        assert manager.session_evictions == 0
+
+
+async def test_session_cap_preserves_every_session_with_a_request_in_flight() -> None:
+    async with session_http_app(2) as (manager, client, entered, release):
+        sessions = [await _open_session(client), await _open_session(client)]
+        calls = [
+            asyncio.create_task(
+                client.post(
+                    "/mcp",
+                    headers={"mcp-session-id": session_id},
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": 3,
+                        "method": "tools/call",
+                        "params": {"name": "hold", "arguments": {"name": name}},
+                    },
+                )
+            )
+            for name, session_id in zip(("a", "b"), sessions, strict=True)
+        ]
+        try:
+            await asyncio.wait_for(asyncio.gather(*(event.wait() for event in entered.values())), 2)
+            assert all(t._requests_in_flight > 0 for t in manager._server_instances.values())
+            response = await client.post("/mcp", json=_INITIALIZE)
+            assert response.status_code == 503
+            assert set(manager._server_instances) == set(sessions)
+            assert manager.session_evictions == 0
+        finally:
+            release.set()
+            responses = await asyncio.wait_for(asyncio.gather(*calls), 2)
+        assert all(response.status_code == 200 for response in responses)
+
+
+@pytest.mark.parametrize("max_sessions", [5])
+async def test_session_capacity_warning_fires_once_per_crossing(
+    max_sessions: int, monkeypatch: Any
+) -> None:
+    from unittest.mock import Mock
+
+    from brain_v42.mcp import server
+
+    log = Mock()
+    monkeypatch.setattr(server, "logger", log)
+    async with session_http_app(max_sessions) as (manager, client, _, _):
+
+        def warnings() -> int:
+            return sum(
+                call.args[0] == "brain_v42.server.session_capacity"
+                for call in log.warning.call_args_list
+            )
+
+        for _ in range(3):
+            await _open_session(client)
+        assert warnings() == 0
+        await _open_session(client)
+        assert warnings() == 1
+        newest = [await _open_session(client), await _open_session(client)]
+        assert warnings() == 1  # Including eviction while remaining above the threshold.
+        for session_id in newest:
+            response = await client.delete("/mcp", headers={"mcp-session-id": session_id})
+            assert response.status_code == 200
+        assert len(manager._server_instances) == 3
+        await _open_session(client)
+        assert warnings() == 2
+
+
+@pytest.mark.parametrize(
+    "missing", ["_server_instances", "_session_owners", "idle_scope", "_requests_in_flight"]
+)
+async def test_session_eviction_private_attribute_drift_falls_back_and_logs_once(
+    monkeypatch: Any, missing: str
+) -> None:
+    from unittest.mock import Mock
+
+    from brain_v42.mcp import server
+
+    log = Mock()
+    monkeypatch.setattr(server, "logger", log)
+    async with session_http_app(2) as (manager, client, _, _):
+        a = await _open_session(client)
+        b = await _open_session(client)
+        target = manager if missing.startswith("_s") else manager._server_instances[a]
+        with monkeypatch.context() as drift:
+            drift.delattr(target, missing)
+            # Direct admission isolates the guard from unrelated SDK uses of the
+            # deliberately removed attribute. Rejection is what handle_request maps to 503.
+            assert manager._admit_session(None) is None
+            assert manager._admit_session(None) is None
+        assert set(manager._server_instances) == {a, b}
+        assert manager.session_evictions == 0
+        errors = [
+            call
+            for call in log.error.call_args_list
+            if call.args[0] == "brain_v42.server.session_eviction_unavailable"
+        ]
+        assert len(errors) == 1
 
 
 def test_stateless_can_be_restored_by_settings(monkeypatch: Any) -> None:
