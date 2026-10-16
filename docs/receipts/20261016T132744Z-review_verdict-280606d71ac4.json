@@ -1,0 +1,70 @@
+{
+  "digest": "sha256:280606d71ac4b61e67109069c1b82f9c2638769f998b8e94908abb0e29de4a75",
+  "idempotency_key": "review_verdict:35d9fc91af714c194eea3ff690dd2727eaafe130:116995143008",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 116995143008,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "The diff section contains no content at all: no uv.lock or pyproject.toml hunks. The stated change (mcp 1.28.1 -> 1.30.0, version/sdist/wheel fields updated, dependency list unchanged, no other package moving, range mcp>=1.27,<2 respected) cannot be checked against any code. Either the branch is emp",
+          "file": "uv.lock",
+          "id": "F-452-1",
+          "line": null,
+          "severity": "blocking",
+          "status": "fixed",
+          "title": "PR diff is empty; claimed mcp bump is not visible"
+        },
+        {
+          "class": "note",
+          "evidence": "The description reports test_delivery_deployment.py and release_path_unsafe failing locally, claimed to pass under umask 022. Whether the merge-gating CI environment yields the same result cannot be confirmed from the diff; confirm CI is green for the head commit 35d9fc91af714c194eea3ff690dd2727eaaf",
+          "file": "tests/unit/test_delivery_deployment.py",
+          "id": "F-452-2",
+          "line": null,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Two local test failures attributed to umask 002"
+        },
+        {
+          "class": "note",
+          "evidence": "Description reports 2 of 16516 unit tests failing locally (test_delivery_deployment.py, release_path_unsafe), attributed to umask 002 and passing under umask 022. Nothing in the diff contradicts this, but merge-gating CI results for head 35d9fc91af714c194eea3ff690dd2727eaafe130 cannot be seen here; ",
+          "file": "tests/unit/test_delivery_deployment.py",
+          "id": "F-452-3",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Confirm CI is green for the two umask-attributed test failures"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [
+        "F-452-2"
+      ],
+      "pr": 452,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "35d9fc91af714c194eea3ff690dd2727eaafe130",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T13:27:44.189031Z",
+  "schema_version": 1
+}

@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:dfe874c32ff24e709088e1d3ddbe1f1b6f7476ec25f9acb4118485357f2d6da9",
+  "idempotency_key": "review_verdict:7cadf295b7f7ff4056d6d7265c6fce9d4a20a7de:117006317149",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117006317149,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The description claims uv.lock is bumped to 0.7.1 with `uv lock --check` passing, but the uv.lock change is not in the visible part of the large diff; if it is present later in the diff this resolves, otherwise version parity should be checked (claimed to pass locally).",
+          "file": "uv.lock",
+          "id": "F-451-1",
+          "line": null,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "uv.lock bump not visible in shown diff"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "not_reviewed": [],
+      "pr": 451,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "7cadf295b7f7ff4056d6d7265c6fce9d4a20a7de",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T13:51:57.064366Z",
+  "schema_version": 1
+}

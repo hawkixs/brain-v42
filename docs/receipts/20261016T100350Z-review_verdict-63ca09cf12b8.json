@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:63ca09cf12b8cf2a2e5d1476c5bd9726f72cde481b46a312a5e964e0f4476664",
+  "idempotency_key": "review_verdict:35d9fc91af714c194eea3ff690dd2727eaafe130:116918901423",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": true,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 116918901423,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "The diff section contains no content at all: no uv.lock or pyproject.toml hunks. The stated change (mcp 1.28.1 -> 1.30.0, version/sdist/wheel fields updated, dependency list unchanged, no other package moving, range mcp>=1.27,<2 respected) cannot be checked against any code. Either the branch is emp",
+          "file": "uv.lock",
+          "id": "F-452-1",
+          "line": null,
+          "severity": "blocking",
+          "status": "new",
+          "title": "PR diff is empty; claimed mcp bump is not visible"
+        },
+        {
+          "class": "note",
+          "evidence": "The description reports test_delivery_deployment.py and release_path_unsafe failing locally, claimed to pass under umask 022. Whether the merge-gating CI environment yields the same result cannot be confirmed from the diff; confirm CI is green for the head commit 35d9fc91af714c194eea3ff690dd2727eaaf",
+          "file": "tests/unit/test_delivery_deployment.py",
+          "id": "F-452-2",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Two local test failures attributed to umask 002"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 452,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "35d9fc91af714c194eea3ff690dd2727eaafe130",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "request_changes"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T10:03:50.725249Z",
+  "schema_version": 1
+}

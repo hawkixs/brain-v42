@@ -1,0 +1,69 @@
+{
+  "digest": "sha256:770fdf65a2c4259816b524e12c48a2756ef7b74d65e2fcc0eb7d4e8291333815",
+  "idempotency_key": "review_verdict:a9edb84688953adeebbe6887a12846956cc1b053:116030013617",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": true,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 116030013617,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "log.error includes error_message=str(cause) for SDK retrieval errors; if an SDK exception ever embeds request details, they go to stderr structured logs. The comment acknowledges this and stdout never shows the message; acceptable, but worth confirming the SDK error types are safe when the ticket F-",
+          "file": "src/brain_v42/lifecycle_cli/command.py",
+          "id": "F-450-1",
+          "line": 228,
+          "severity": "minor",
+          "status": "new",
+          "title": "str(cause) logged verbatim"
+        },
+        {
+          "class": "note",
+          "evidence": "When pipeline.report succeeds for a no-cause BatchStillProcessing, the printed report is the durable one whose failure_reason stays unset, while with a cause the reason is overwritten onto the printed copy; the durable record itself is never given the exit-5 reason. This is deliberate per the tests ",
+          "file": "src/brain_v42/lifecycle_cli/command.py",
+          "id": "F-450-2",
+          "line": 232,
+          "severity": "minor",
+          "status": "new",
+          "title": "Fallback report may diverge from durable report"
+        },
+        {
+          "class": "blocker",
+          "evidence": "SDKExtraction.collect assigns last_error = exc at line 186 on retrieve failure, but does not reset last_error = None in the else block at line 187 when client.messages.batches.retrieve succeeds. When an initial retrieve failure is recovered on subsequent iterations and the batch remains in progress ",
+          "file": "src/brain_v42/lifecycle_cli/adapters.py",
+          "id": "F-450-3",
+          "line": 187,
+          "severity": "blocking",
+          "status": "new",
+          "title": "Stale retrieve error chained on batch wait expiration"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 450,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "a9edb84688953adeebbe6887a12846956cc1b053",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "request_changes"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T18:41:35.245409Z",
+  "schema_version": 1
+}

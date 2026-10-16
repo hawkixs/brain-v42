@@ -1,0 +1,137 @@
+{
+  "digest": "sha256:28bd463155ae23b67d6edf206ff6aa0458e70657ca53afb00a18e8dbe7f07cdb",
+  "idempotency_key": "review_verdict:104de1b9c003e1e1769bf7fe9439b8e41c9ceb1d:116003401313",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 116003401313,
+      "diff_truncated": true,
+      "finding_count": 9,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "If a concurrent 0.7.0-code merge creates a chain between the preflight count (plain SELECT, no table lock) and the first CREATE INDEX (which takes SHARE and thereafter blocks writes for the rest of the migration transaction), that transaction's snapshot predates the new triggers, so its commit skips",
+          "file": "alembic/versions/068_merge_chain_guard.py",
+          "id": "F-449-1",
+          "line": 26,
+          "severity": "important",
+          "status": "new",
+          "title": "Upgrade preflight has a TOCTOU window against live 067 writers"
+        },
+        {
+          "class": "note",
+          "evidence": "The WHEN (NEW.merged_into IS NOT NULL) clause removes the plain-insert privilege failure documented in the code, but a deferred event queued by an INSERT/UPDATE that sets a pointer still executes the two SELECTs as the committing role, so any role that may set merged_into without SELECT on the table",
+          "file": "alembic/versions/068_merge_chain_guard.py",
+          "id": "F-449-2",
+          "line": 95,
+          "severity": "minor",
+          "status": "new",
+          "title": "Deferred guard re-reads run with committing role's privileges"
+        },
+        {
+          "class": "note",
+          "evidence": "In expected_table_constraints the six *_merge_chain_guard entries (adrs, decisions, features, learnings, runbooks, snippets) all carry definition_md5 40b04baf4eb12bc74afe359f88bfeaaa, the same value baked for the check constraints project_contexts_focus_history_required and focus_slots_history_requi",
+          "file": "ops/recovery/brain-v42-v26-pgrestore.sql",
+          "id": "F-449-3",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Six merge-chain-guard fingerprints share one md5 that also belongs to two check constraints"
+        },
+        {
+          "class": "note",
+          "evidence": "may: the JSON records only aggregate catalog_counts (indexes 215->221, consistent with 6 new indexes) and named invariants like trigger_function_fingerprints; the per-fingerprint delta lives in the SQL variants and manifest, which are separate parts of this split diff",
+          "file": "ops/recovery/brain-v42-v26.json",
+          "id": "F-449-4",
+          "line": 1,
+          "severity": "minor",
+          "status": "new",
+          "title": "Cannot verify the 13 added fingerprints from the JSON alone"
+        },
+        {
+          "class": "note",
+          "evidence": "In expected_table_constraints, the entries for adrs/decisions/features/learnings/runbooks/snippets merge_chain_guard all carry definition_md5 '40b04baf4eb12bc74afe359f88bfeaaa', the same value assigned to the unrelated CHECK constraints project_contexts_focus_history_required and focus_slots_history",
+          "file": "ops/recovery/brain-v42-v26.sql",
+          "id": "F-449-5",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Six merge_chain_guard constraint fingerprints share one md5 (suspected bad mint)"
+        },
+        {
+          "class": "note",
+          "evidence": "The later-migration additions (ck_project_contexts_archived_reason_needs_a_date, tickets_target_release_valid, brain_sessions relay/slot entries, programme gates entries, etc.) are appended at the end of the VALUES lists rather than in table order, matching the described 'measured delta of v25' with",
+          "file": "ops/recovery/brain-v42-v26.sql",
+          "id": "F-449-6",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Pre-existing structure of appended fingerprints inherited from v25 unchanged"
+        },
+        {
+          "class": "note",
+          "evidence": "If the disposable fresh-head database were built with exactly the extension set the contract pins (vector 0.8.2), the extension_versions check would pass and the else-branch of _assert_contract would fail on 'assert extensions is not None' even though the contract replayed correctly; the test presup",
+          "file": "tests/integration/db/test_recovery_contract_v26.py",
+          "id": "F-449-7",
+          "line": 187,
+          "severity": "minor",
+          "status": "new",
+          "title": "Fresh-head pass presumes the local vector build differs from the pinned set"
+        },
+        {
+          "class": "note",
+          "evidence": "If the unseen handler for brain_merge_entities in mcp/tools/decay_tools.py catches MergeChainRefusedError in its own except clause, this whitelist entry (which adds only ConsolidationForeignChildrenError) would not match; the two tests in this diff agree only if MergeChainRefusedError is caught by a",
+          "file": "tests/unit/mcp/test_no_raw_exception_text_in_tool_errors.py",
+          "id": "F-449-8",
+          "line": 94,
+          "severity": "minor",
+          "status": "new",
+          "title": "Reconcile MergeChainRefusedError handling in decay_tools across parts"
+        },
+        {
+          "class": "note",
+          "evidence": "Both merge-sequence tests only feed _scalar_one(0) for the new 'features still merged into the loser' read and assert log['repointed_children'] == [], covering only the zero-children case; a test where the loser still has merged children and they are re-pointed may exist in another part of the split",
+          "file": "tests/unit/test_roadmap_curate_apply.py",
+          "id": "F-449-9",
+          "line": 285,
+          "severity": "minor",
+          "status": "new",
+          "title": "Re-pointing branch not exercised in this part"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 449,
+      "providers": [
+        "glm",
+        "glm",
+        "glm",
+        "glm",
+        "agy",
+        "glm",
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "104de1b9c003e1e1769bf7fe9439b8e41c9ceb1d",
+      "unseen_count": 2,
+      "unseen_files": [
+        "ops/recovery/brain-v42-v26-pgrestore.sql",
+        "ops/recovery/brain-v42-v26.sql"
+      ],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T18:22:23.619821Z",
+  "schema_version": 1
+}

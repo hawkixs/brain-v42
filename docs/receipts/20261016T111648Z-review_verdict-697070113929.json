@@ -1,0 +1,63 @@
+{
+  "digest": "sha256:697070113929e171e09692ab8ec47e2db30c5a73329ad2347a051b11e4034009",
+  "idempotency_key": "review_verdict:35d9fc91af714c194eea3ff690dd2727eaafe130:116943927894",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": true,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 116943927894,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "blocker",
+          "evidence": "The diff section contains no content at all: no uv.lock or pyproject.toml hunks. The stated change (mcp 1.28.1 -> 1.30.0, version/sdist/wheel fields updated, dependency list unchanged, no other package moving, range mcp>=1.27,<2 respected) cannot be checked against any code. Either the branch is emp",
+          "file": "uv.lock",
+          "id": "F-452-1",
+          "line": null,
+          "severity": "blocking",
+          "status": "still_open",
+          "title": "PR diff is empty; claimed mcp bump is not visible"
+        },
+        {
+          "class": "note",
+          "evidence": "The description reports test_delivery_deployment.py and release_path_unsafe failing locally, claimed to pass under umask 022. Whether the merge-gating CI environment yields the same result cannot be confirmed from the diff; confirm CI is green for the head commit 35d9fc91af714c194eea3ff690dd2727eaaf",
+          "file": "tests/unit/test_delivery_deployment.py",
+          "id": "F-452-2",
+          "line": null,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Two local test failures attributed to umask 002"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [
+        "F-452-1",
+        "F-452-2"
+      ],
+      "pr": 452,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "35d9fc91af714c194eea3ff690dd2727eaafe130",
+      "unseen_count": 1,
+      "unseen_files": [
+        "uv.lock"
+      ],
+      "verdict": "request_changes"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T11:16:48.338489Z",
+  "schema_version": 1
+}
