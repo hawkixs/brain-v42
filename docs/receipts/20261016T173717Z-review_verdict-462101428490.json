@@ -1,0 +1,65 @@
+{
+  "digest": "sha256:4621014284904b9a7299a757799c4e5779b125e0d1b13dcf4e6307f6be27cecd",
+  "idempotency_key": "review_verdict:df1c357570a4bbd889f777165dd5ad5754115a9e:117108593365",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carried_from": "3b7cf66949575136a84c867ae615f2b8a9c2753e",
+      "carry_decision": "57fa86dc",
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117108593365,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Every key under drill.restore.env (e.g. RERANK_BACKEND=none, BRAIN_DELIVERY_ENABLED, MCP_HTTP_ALLOW_UNAUTHENTICATED semantics), the field schema_head in ops/recovery/current.json, the /healthz route, and brain_v42.db.engine.get_engine depend on v0.7.0/068 code outside the diff, and the drill that wo",
+          "file": "rail.yaml",
+          "id": "F-454-1",
+          "line": 18,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Allow-list names and command internals assert v0.7.0 compatibility but are unverifiable from this diff"
+        },
+        {
+          "class": "note",
+          "evidence": "MCP_HTTP_ALLOW_UNAUTHENTICATED is true while BRAIN_MCP_AUTH_MODE is shared_token, so the drill transport runs without auth; mitigated by MCP_HTTP_HOST 127.0.0.1 and drill-only scope, and it keeps any token out of the rail config.",
+          "file": "rail.yaml",
+          "id": "F-454-2",
+          "line": 23,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Unauthenticated MCP HTTP listener during the drill"
+        }
+      ],
+      "independent": true,
+      "judged_base": "2009ca37be1ca5cd70788c698073b4303e248241",
+      "mode": "incremental",
+      "new_base": "b0d7cd16bf5d70d6a78fe8aec3d15ac6ea639d0a",
+      "not_reviewed": [],
+      "patch_id": "c923af1f03d4ea5835fc206537a1a30bb0a59c3f",
+      "pr": 454,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "df1c357570a4bbd889f777165dd5ad5754115a9e",
+      "source_check_run_id": 117082677796,
+      "source_status_creator_id": 8717916,
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T17:37:17.145984Z",
+  "schema_version": 1
+}

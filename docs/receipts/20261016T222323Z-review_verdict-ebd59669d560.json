@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:ebd59669d560a5ad92b04734e95dc64f2e3c640013f1a8948e6bad5ded72d6c8",
+  "idempotency_key": "review_verdict:bedc94245b9bc0faa94ab8cf86be9ccd483e16df:117223251535",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117223251535,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The comment records measured RSS of MCP 224 MiB and postgres 238 MiB against new ceilings of 4g (~18x) and 2g (~8.6x); this is justified by the observed OOM kill at 512m and the per-request peak investigation is deferred to ticket 961cfbe2, and the comment correctly frames the limits as runaway ceil",
+          "file": "deploy/compose.yaml",
+          "id": "F-456-1",
+          "line": 53,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "New ceilings far exceed the measured-RSS headroom basis the comment documents"
+        },
+        {
+          "class": "note",
+          "evidence": "The description states test_delivery_deployment.py::test_preflight_accepts_a_manifested_pyvenv_cfg_that_matches also fails on origin/main without this change; the diff provides no way to confirm that baseline, so the question to check is whether that failure reproduces on a clean origin/main checkou",
+          "file": "tests/unit/test_red_base_compose.py",
+          "id": "F-456-2",
+          "line": null,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Claimed pre-existing test failure is unverifiable from the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 456,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "bedc94245b9bc0faa94ab8cf86be9ccd483e16df",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T22:23:23.875800Z",
+  "schema_version": 1
+}

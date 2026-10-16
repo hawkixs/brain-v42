@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:f65dd47251741492c17a10c8da8853d9d0dbad7c55d06beba4e32f573717c917",
+  "idempotency_key": "review_verdict:0a96ab341c43db9a4c085b1eecf20c1b7de802bf:117105534371",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117105534371,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "_restore_provenance_context uses provenance._current_actor/_current_actor_project/_current_principal with .get/.set/.reset directly; the token logic itself is correct and restore happens in finally, but the underscore-private attributes could be renamed in brain_v42.provenance and break the fixture ",
+          "file": "tests/unit/conftest.py",
+          "id": "F-455-1",
+          "line": 128,
+          "severity": "minor",
+          "status": "new",
+          "title": "Fixture couples to private provenance contextvars"
+        },
+        {
+          "class": "note",
+          "evidence": "_isolate_autoopener now resets the _current_actor token itself while the new global autouse fixture also restores all three provenance vars (harmless duplication). Teardown still uses set_current_transport(None) instead of a token restore, so if an ambient transport value could ever exist outside th",
+          "file": "tests/unit/mcp/test_session_autoopen.py",
+          "id": "F-455-2",
+          "line": 109,
+          "severity": "minor",
+          "status": "new",
+          "title": "Redundant actor restore and implicit-None transport teardown"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 455,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "0a96ab341c43db9a4c085b1eecf20c1b7de802bf",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T17:31:31.110157Z",
+  "schema_version": 1
+}

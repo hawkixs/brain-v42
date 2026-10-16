@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:78353a12a3814749c9cba88122d01cedc0d2fa42baecde30210259f3dda95ebc",
+  "idempotency_key": "review_verdict:3b7cf66949575136a84c867ae615f2b8a9c2753e:117082677796",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117082677796,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "Every key under drill.restore.env (e.g. RERANK_BACKEND=none, BRAIN_DELIVERY_ENABLED, MCP_HTTP_ALLOW_UNAUTHENTICATED semantics), the field schema_head in ops/recovery/current.json, the /healthz route, and brain_v42.db.engine.get_engine depend on v0.7.0/068 code outside the diff, and the drill that wo",
+          "file": "rail.yaml",
+          "id": "F-454-1",
+          "line": 18,
+          "severity": "important",
+          "status": "still_open",
+          "title": "Allow-list names and command internals assert v0.7.0 compatibility but are unverifiable from this diff"
+        },
+        {
+          "class": "note",
+          "evidence": "MCP_HTTP_ALLOW_UNAUTHENTICATED is true while BRAIN_MCP_AUTH_MODE is shared_token, so the drill transport runs without auth; mitigated by MCP_HTTP_HOST 127.0.0.1 and drill-only scope, and it keeps any token out of the rail config.",
+          "file": "rail.yaml",
+          "id": "F-454-2",
+          "line": 23,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Unauthenticated MCP HTTP listener during the drill"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "not_reviewed": [],
+      "pr": 454,
+      "providers": [
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "3b7cf66949575136a84c867ae615f2b8a9c2753e",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T16:53:12.451304Z",
+  "schema_version": 1
+}
