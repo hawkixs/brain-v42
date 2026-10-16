@@ -7,6 +7,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from brain_v42.config import Settings
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DRILL_ONLY_FLAG = "MCP_HTTP_ALLOW_UNAUTHENTICATED"
 _IGNORED_DIRECTORIES = {
@@ -23,6 +25,15 @@ _IGNORED_DIRECTORIES = {
     ".nox",
     "node_modules",
 }
+
+
+def test_restore_database_url_scheme_matches_settings_validator() -> None:
+    rail = yaml.safe_load((REPO_ROOT / "rail.yaml").read_bytes())
+    restore = rail["drill"]["restore"]
+    scheme = restore.get("database_url_scheme", "postgresql")
+
+    assert "POSTGRES_URL" in restore["database_env"]
+    assert Settings.validate_postgres_url(f"{scheme}://drill:x@database:5432/drill")
 
 
 def _rail_flag_locations(value: object, path: tuple[str, ...] = ()) -> list[str]:
