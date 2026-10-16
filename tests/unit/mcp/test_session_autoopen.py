@@ -23,6 +23,7 @@ from uuid import UUID, uuid4
 import pytest
 from structlog.testing import capture_logs
 
+from brain_v42 import provenance
 from brain_v42.config import Settings
 from brain_v42.mcp.provenance_middleware import ProvenanceMiddleware
 from brain_v42.mcp.session_autoopen import (
@@ -104,11 +105,14 @@ def _opener(
 @pytest.fixture(autouse=True)
 def _isolate_autoopener() -> Iterator[None]:
     reset_session_autoopener()
-    set_current_actor(_ACTOR)
+    actor_token = provenance._current_actor.set(_ACTOR)
     set_current_transport(_CONNECTION)
-    yield
-    reset_session_autoopener()
-    set_current_transport(None)
+    try:
+        yield
+    finally:
+        reset_session_autoopener()
+        set_current_transport(None)
+        provenance._current_actor.reset(actor_token)
 
 
 class TestClosedByDefault:
