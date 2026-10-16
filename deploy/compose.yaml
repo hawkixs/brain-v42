@@ -51,8 +51,9 @@
 # metrics 191 MiB -> 384m, delivery-observer 124 MiB -> 256m. One-shots get 512m;
 # weekly graph inventory, the daily session sweep and the hourly embedding backfill get
 # 256m each. Neo4j has 1G heap + 1G page cache within 2.5g.
-# On 2026-10-16 the MCP container was OOM-killed at 512m by a child task while many
-# agents ran in parallel: the MCP now gets 4g and postgres 2g. The host has 22 GiB of RAM,
+# On 2026-10-16 the MCP container hit its 512m memcg limit and the server process was
+# OOM-killed: abandoned MCP sessions are retained for the 8 h idle timeout (~0.22 MiB each,
+# ticket 961cfbe2). The MCP now gets 4g and postgres 2g. The host has 22 GiB of RAM,
 # and these are ceilings against a runaway, not a budget the steady state should reach.
 
 name: brain-v42
