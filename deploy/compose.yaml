@@ -47,7 +47,7 @@
 # Persistent volumes: brain-v42-postgres-data and brain-v42-neo4j-data.
 # Empty-volume retry: stop writers, remove these two volumes only after operator
 # approval, then replay the verified restore -> migrate -> graph-bootstrap chain.
-# Memory headroom above measured RSS: postgres 238 MiB -> 512m, MCP 224 MiB -> 512m,
+# Memory headroom above measured RSS: postgres 238 MiB -> 2g, MCP 224 MiB -> 4g (see below),
 # metrics 191 MiB -> 384m, delivery-observer 124 MiB -> 256m. One-shots get 512m;
 # weekly graph inventory, the daily session sweep and the hourly embedding backfill get
 # 256m each. Neo4j has 1G heap + 1G page cache within 2.5g.
