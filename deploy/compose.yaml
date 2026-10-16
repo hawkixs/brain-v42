@@ -51,6 +51,9 @@
 # metrics 191 MiB -> 384m, delivery-observer 124 MiB -> 256m. One-shots get 512m;
 # weekly graph inventory, the daily session sweep and the hourly embedding backfill get
 # 256m each. Neo4j has 1G heap + 1G page cache within 2.5g.
+# On 2026-10-16 the MCP container was OOM-killed at 512m by a child task while many
+# agents ran in parallel: the MCP now gets 4g and postgres 2g. The host has 22 GiB of RAM,
+# and these are ceilings against a runaway, not a budget the steady state should reach.
 
 name: brain-v42
 
@@ -105,7 +108,7 @@ services:
     image: pgvector/pgvector:0.8.4-pg16@sha256:ad2e18408bf447f62092a8a5259e7df10505c5a0360bd1a1853ac8b8b0763da2
     container_name: brain-v42-postgres
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 2g
     environment:
       POSTGRES_USER: brain
       POSTGRES_DB: brain
@@ -199,7 +202,7 @@ services:
   mcp:
     <<: [*brain-service, *server]
     container_name: brain-v42-mcp
-    mem_limit: 512m
+    mem_limit: 4g
     command: [python, -m, brain_v42.mcp.server]
     ports:
       - "${BIND_ADDRESS}:8765:8765"
