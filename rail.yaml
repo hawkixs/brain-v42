@@ -19,6 +19,10 @@ drill:
       BRAIN_MCP_AUTH_MODE: shared_token
       MCP_HTTP_HOST: 127.0.0.1
       MCP_HTTP_PORT: "8765"
+      # Drill-only: safe only on the rail's own unique --internal Docker network,
+      # with no published port, no route to production and no credential file mounted.
+      # Production configuration must never carry this switch; enforced by
+      # tests/unit/test_drill_auth_config_hygiene.py.
       MCP_HTTP_ALLOW_UNAUTHENTICATED: "true"
       GRAPH_ENABLED: "false"
       GRAPH_LEDGER_WRITE_ENABLED: "false"
@@ -27,6 +31,10 @@ drill:
       CLIENT_ACTIVITY_REPORTING_ENABLED: "false"
       BRAIN_SESSION_AUTO_OPEN_ENABLED: "false"
       BRAIN_SESSION_INACTIVE_SWEEP_ENABLED: "false"
+      # The embedding client is still built, but points at an unused loopback port.
+      # The --internal network gives the container no route out; on a restored
+      # database the one-shot startup plan-index finds nothing new to index,
+      # so no embedding call succeeds or leaves the container.
       EMBEDDING_SERVICE_URL: http://127.0.0.1:8003
       RERANK_BACKEND: none
       BRAIN_DELIVERY_ENABLED: "false"
