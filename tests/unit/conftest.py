@@ -123,3 +123,21 @@ def _no_real_group_watcher(monkeypatch: pytest.MonkeyPatch) -> None:
     from headless_agents import procgroup
 
     monkeypatch.setattr(procgroup, "start_watcher", procgroup.Lifeline.unwatched)
+
+
+@pytest.fixture(autouse=True)
+def _restore_provenance_context() -> Iterator[None]:
+    """Restore caller provenance even when a test raises or fails."""
+    from brain_v42 import provenance
+
+    actor_token = provenance._current_actor.set(provenance._current_actor.get())
+    actor_project_token = provenance._current_actor_project.set(
+        provenance._current_actor_project.get()
+    )
+    principal_token = provenance._current_principal.set(provenance._current_principal.get())
+    try:
+        yield
+    finally:
+        provenance._current_principal.reset(principal_token)
+        provenance._current_actor_project.reset(actor_project_token)
+        provenance._current_actor.reset(actor_token)
