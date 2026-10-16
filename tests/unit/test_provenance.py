@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+import subprocess
+import sys
+import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -212,6 +216,93 @@ class TestCurrentActor:
 
         await asyncio.gather(worker("red-lab"), worker("dream-codex-scan"))
         assert sorted(seen) == ["dream-codex-scan", "red-lab"]
+
+
+class TestUnitProvenanceIsolation:
+    @pytest.mark.parametrize(
+        ("ambient", "first_test_fails", "expected_failures"),
+        [("defaults", False, 0), ("seeded", False, 0), ("seeded", True, 1)],
+    )
+    def test_unit_fixture_restores_provenance_between_tests(
+        self,
+        tmp_path: Path,
+        ambient: str,
+        first_test_fails: bool,
+        expected_failures: int,
+    ) -> None:
+        """Exercise the real unit fixture in a separate pytest process."""
+        repo_root = Path(__file__).resolve().parents[2]
+        config = tmp_path / "pytest.ini"
+        config.write_text("[pytest]\n", encoding="utf-8")
+        test_file = tmp_path / "test_lifecycle.py"
+        test_file.write_text(
+            textwrap.dedent(
+                f"""
+                import pytest
+                from brain_v42 import provenance
+
+                if {ambient!r} == "seeded":
+                    provenance.set_current_actor("ambient-actor")
+                    provenance.set_current_actor_project("ambient-project")
+                    provenance.set_current_principal("ambient-principal")
+
+                def test_00_mutates_provenance():
+                    provenance.set_current_actor("changed-actor")
+                    provenance.set_current_actor_project("changed-project")
+                    provenance.set_current_principal("changed-principal")
+                    if {first_test_fails!r}:
+                        pytest.fail("intentional first-test failure")
+
+                def test_01_sees_pre_test_provenance():
+                    expected = (
+                        ("ambient-actor", "ambient-project", "ambient-principal")
+                        if {ambient!r} == "seeded"
+                        else (provenance.UNKNOWN_ACTOR, None, None)
+                    )
+                    assert (
+                        provenance.get_current_actor(),
+                        provenance.get_current_actor_project(),
+                        provenance.get_current_principal(),
+                    ) == expected
+                """
+            ),
+            encoding="utf-8",
+        )
+        env = os.environ.copy()
+        env["PYTHONPATH"] = os.pathsep.join((str(repo_root), str(repo_root / "src")))
+        env["POSTGRES_URL"] = (
+            "postgresql+asyncpg://unit-test:unit-test@127.0.0.1:1/brain_unit_test_unreachable"
+        )
+        env.pop("BRAIN_V42_TEST_DB_URL", None)
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-c",
+                str(config),
+                "--confcutdir",
+                str(tmp_path),
+                "-p",
+                "tests.unit.conftest",
+                "-q",
+                str(test_file),
+            ],
+            cwd=tmp_path,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+
+        assert result.returncode == (1 if expected_failures else 0), result.stdout + result.stderr
+        assert f"{2 - expected_failures} passed" in result.stdout
+        if expected_failures:
+            assert "1 failed" in result.stdout
+            assert "intentional first-test failure" in result.stdout
+        else:
+            assert "2 passed" in result.stdout
 
 
 class TestNormalizeSession:
