@@ -1,0 +1,89 @@
+{
+  "digest": "sha256:7f13a09425990db04f68c77ae775f81a9da6c019758d92a3e1086dde567c28c4",
+  "idempotency_key": "review_verdict:95798bf24392cebbba631933fbd36000d2280512:116036754350",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": true,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 116036754350,
+      "diff_truncated": false,
+      "finding_count": 5,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "log.error includes error_message=str(cause) for SDK retrieval errors; if an SDK exception ever embeds request details, they go to stderr structured logs. The comment acknowledges this and stdout never shows the message; acceptable, but worth confirming the SDK error types are safe when the ticket F-",
+          "file": "src/brain_v42/lifecycle_cli/command.py",
+          "id": "F-450-1",
+          "line": 228,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "str(cause) logged verbatim"
+        },
+        {
+          "class": "note",
+          "evidence": "When pipeline.report succeeds for a no-cause BatchStillProcessing, the printed report is the durable one whose failure_reason stays unset, while with a cause the reason is overwritten onto the printed copy; the durable record itself is never given the exit-5 reason. This is deliberate per the tests ",
+          "file": "src/brain_v42/lifecycle_cli/command.py",
+          "id": "F-450-2",
+          "line": 232,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Fallback report may diverge from durable report"
+        },
+        {
+          "class": "blocker",
+          "evidence": "SDKExtraction.collect assigns last_error = exc at line 186 on retrieve failure, but does not reset last_error = None in the else block at line 187 when client.messages.batches.retrieve succeeds. When an initial retrieve failure is recovered on subsequent iterations and the batch remains in progress ",
+          "file": "src/brain_v42/lifecycle_cli/adapters.py",
+          "id": "F-450-3",
+          "line": 187,
+          "severity": "blocking",
+          "status": "still_open",
+          "title": "Stale retrieve error chained on batch wait expiration"
+        },
+        {
+          "class": "note",
+          "evidence": "The bare `except Exception` around batches.retrieve (line 184) retries every failure kind, so non-transient errors (invalid key, missing batch) are re-polled every 30 s for the full --max-wait-seconds budget and then surface as exit 5 'batch_retrieve_failed' instead of failing fast; deliberately wit",
+          "file": "src/brain_v42/lifecycle_cli/adapters.py",
+          "id": "F-450-4",
+          "line": 184,
+          "severity": "minor",
+          "status": "new",
+          "title": "All retrieve exception types retried until budget exhaustion"
+        },
+        {
+          "class": "note",
+          "evidence": "__main__.py builds the client with `SDKExtraction(max_wait_seconds=getattr(args, \"max_wait_seconds\", 7200))`, duplicating the argparse `default=7200` at command.py:108; changing one constant silently diverges from the other, guarded only implicitly by test_lifecycle_main_passes_max_wait_to_sdk asser",
+          "file": "src/brain_v42/lifecycle_cli/__main__.py",
+          "id": "F-450-5",
+          "line": 57,
+          "severity": "minor",
+          "status": "new",
+          "title": "Default 7200 duplicated between argparse and composition fallback"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 450,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "95798bf24392cebbba631933fbd36000d2280512",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "request_changes"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T19:09:41.331949Z",
+  "schema_version": 1
+}

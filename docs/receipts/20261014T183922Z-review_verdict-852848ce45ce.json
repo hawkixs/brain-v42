@@ -1,0 +1,167 @@
+{
+  "digest": "sha256:852848ce45ce5a6b7ee067c918ce9678b708042bf613532d352a2921cb53c98c",
+  "idempotency_key": "review_verdict:1e7c429385cc7a93ca01c78cce846bd6c37c2f62:116026235012",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 116026235012,
+      "diff_truncated": true,
+      "finding_count": 12,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "If any of the six tables lacked a foreign key on merged_into (definitions outside this diff), a pointer to a deleted row would be invisible to the upgrade's residue count (s JOIN t ON t.id = s.merged_into drops it) and would also pass the guard's NULL re-read at alembic/versions/068_merge_chain_guar",
+          "file": "alembic/versions/068_merge_chain_guard.py",
+          "id": "F-449-1",
+          "line": 24,
+          "severity": "minor",
+          "status": "new",
+          "title": "Residue check ignores dangling merged_into values"
+        },
+        {
+          "class": "note",
+          "evidence": "The swapped-in 068 row says 068 'adds six partial merge indexes, six deferred constraint triggers and the shared refuse_merge_chain function on the six mergeable knowledge tables. It changes no table the repair writes.' The sentence was carried from the v25 row (accurate for 067, which touched other",
+          "file": "docs/PLAN_INDEX_REPAIR_RUNBOOK.md",
+          "id": "F-449-2",
+          "line": 27,
+          "severity": "minor",
+          "status": "new",
+          "title": "'It changes no table the repair writes' is wrong for 068"
+        },
+        {
+          "class": "note",
+          "evidence": "If the v26 mint is complete as the description states (assets minted on disposable databases, red-backup precheck GO), then docs/SCHEMA.md ('candidate pending mint'), docs/ARCHITECTURE.md ('candidate, pending mint') and the runbook rows ('pending mint and binding', 'CANDIDATE twin ... pending mint')",
+          "file": "docs/SCHEMA.md",
+          "id": "F-449-3",
+          "line": 5,
+          "severity": "minor",
+          "status": "new",
+          "title": "Contract v26 described as 'pending mint' while description says minted"
+        },
+        {
+          "class": "note",
+          "evidence": "The md5 values for columns/constraints/indexes can only be validated against a live database at head 068; tests reportedly cover this (test_recovery_contract_v26 green, red-backup precheck GO with catalog index delta 215->221), so the doubt is procedural, not a visible defect. [not in the part this ",
+          "file": "ops/recovery/brain-v42-v26-pgrestore.sql",
+          "id": "F-449-4",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Fingerprint hashes unverifiable in review"
+        },
+        {
+          "class": "note",
+          "evidence": "The alembic_head check reads {\"id\":\"alembic_head\",\"kind\":\"alembic_head_single\"} with no revision field, whereas other checks carry revisions (project_context_updated_at_039 has revision 039, runtime_acl_064 has revision 066). The described contract is 'for head 068'; the question to check in another",
+          "file": "ops/recovery/brain-v42-v26.json",
+          "id": "F-449-5",
+          "line": 1,
+          "severity": "minor",
+          "status": "new",
+          "title": "Contract JSON does not itself pin alembic head 068"
+        },
+        {
+          "class": "note",
+          "evidence": "assumption: all six `<table>_merge_chain_guard` constraints share md5 `40b04baf4eb12bc74afe359f88bfeaaa`, which is also the md5 of unrelated checks (`project_contexts_focus_history_required`, `focus_slots_history_required`). pg_get_constraintdef omits the constraint name and the trigger body may ren",
+          "file": "ops/recovery/brain-v42-v26.sql",
+          "id": "F-449-6",
+          "line": 1650,
+          "severity": "important",
+          "status": "new",
+          "title": "Identical md5 for guard triggers and unrelated checks may be correct or a copy error"
+        },
+        {
+          "class": "note",
+          "evidence": "_merge_chain_residue calls _new_engine(settings) and text(...); their definitions/imports are outside the diff. Question to check: both exist in the module \u2014 an absent name would crash every upgrade that crosses the guard before any write.",
+          "file": "src/brain_v42/scripts/migrate_cli.py",
+          "id": "F-449-7",
+          "line": 102,
+          "severity": "important",
+          "status": "new",
+          "title": "Preflight helpers invisible in this part"
+        },
+        {
+          "class": "note",
+          "evidence": "If the CLI also runs downgrades (database_heads differs from code_head), iterate_revisions(code_head, database_head) may yield or empty unexpectedly for a downward move; refusal is documented for upgrades only. Question to check: which directions main() reaches here.",
+          "file": "src/brain_v42/scripts/migrate_cli.py",
+          "id": "F-449-8",
+          "line": 98,
+          "severity": "minor",
+          "status": "new",
+          "title": "Guard-file scan direction on non-upgrade head diffs"
+        },
+        {
+          "class": "note",
+          "evidence": "The probe interpolates bare table names while the CLI preflight and test helpers use public.<table>; resolution depends on the source session's search_path outside the diff. If it is ever non-default, counts could silently target other schemas.",
+          "file": "src/brain_v42/facts/probes/merge_chains.py",
+          "id": "F-449-9",
+          "line": 17,
+          "severity": "minor",
+          "status": "new",
+          "title": "Probe tables not schema-qualified"
+        },
+        {
+          "class": "note",
+          "evidence": "if the pytest asyncio mode is strict (the pytest configuration lies outside this diff), test_probe_counts_each_table_with_one_read_only_self_join_query and test_probe_does_not_turn_a_failed_database_read_into_zeroes never execute: unlike every other async test added in this diff they carry no @pytes",
+          "file": "tests/unit/facts/test_merge_chains_probe.py",
+          "id": "F-449-10",
+          "line": 16,
+          "severity": "important",
+          "status": "new",
+          "title": "Async tests may be silently skipped (no asyncio mark)"
+        },
+        {
+          "class": "note",
+          "evidence": "The test plan lists \"[ ] CI green\" unchecked while this part adds cross-file pins whose validity depends on repository state outside this diff (ops/recovery asset sha256 digests, guardian count 1/2/49, catalog counts 215\u2192221, the alembic expected_chain extension); confirm a green CI run before merge",
+          "file": "<pull request description>",
+          "id": "F-449-11",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "CI run still pending"
+        },
+        {
+          "class": "note",
+          "evidence": "The new apply-log assertion checks log[\"repointed_children\"] == [] in a merge with zero children to re-point; coverage for a merge that actually re-points children cannot be confirmed from this part (the curation implementation and remaining tests live in other parts of the split diff). Check that a",
+          "file": "tests/unit/test_roadmap_curate_apply.py",
+          "id": "F-449-12",
+          "line": 285,
+          "severity": "minor",
+          "status": "new",
+          "title": "repointed_children asserted only on the empty path"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 449,
+      "providers": [
+        "glm",
+        "glm",
+        "glm",
+        "glm",
+        "glm",
+        "glm",
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "1e7c429385cc7a93ca01c78cce846bd6c37c2f62",
+      "unseen_count": 2,
+      "unseen_files": [
+        "ops/recovery/brain-v42-v26-pgrestore.sql",
+        "ops/recovery/brain-v42-v26.sql"
+      ],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-14T18:39:22.922097Z",
+  "schema_version": 1
+}

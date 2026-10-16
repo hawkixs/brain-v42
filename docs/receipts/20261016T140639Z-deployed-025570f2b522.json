@@ -1,0 +1,22 @@
+{
+  "digest": "sha256:025570f2b522d7f27f19348126ffd4f099f89ec8e48cca1bacd6bcb44ab784e3",
+  "idempotency_key": "deployed:private-compose:sha256:b95f2f1e80ff12385a78b56c7af4eee0cf791c96ed03551b5b8f7cab06bdc7c4:20261016T140639Z",
+  "issuer": "agent:claude-code:66c7465f-f663-4fdb-aada-1cf5b98f3ac2",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "digest": "sha256:b95f2f1e80ff12385a78b56c7af4eee0cf791c96ed03551b5b8f7cab06bdc7c4",
+      "domain": "red-base",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:b95f2f1e80ff12385a78b56c7af4eee0cf791c96ed03551b5b8f7cab06bdc7c4",
+      "mode": "release",
+      "previous_digest": "sha256:fa9688384d66a3e03f55cc1904734e1a847fb8bb4b1de247c097041e54cc4e62",
+      "sha": "e1920b28af9f2ec679e549e9200b26a872c06a64",
+      "target": "private-compose",
+      "version": "0.7.1"
+    },
+    "kind": "deployed"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T14:06:39.224629Z",
+  "schema_version": 1
+}

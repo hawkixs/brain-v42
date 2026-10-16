@@ -1,0 +1,42 @@
+{
+  "digest": "sha256:a146a69a32ec5fa8e7e746888b6b3a7122b446649ab2ae45502c72e7090877f7",
+  "idempotency_key": "released:0.7.1",
+  "issuer": "agent:claude-code:66c7465f-f663-4fdb-aada-1cf5b98f3ac2",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "changelog": [
+        "\ud83d\udcdd docs(readme): list mcp 1.30.0 in the 0.7.1 release notes",
+        "\ud83d\udd16 chore(release): 0.7.1",
+        "\ud83d\udd12\ufe0f fix(deps): bump mcp to 1.30.0 (CVE-2026-59951)",
+        "fix(knowledge): chain only a retrieve failure from the last poll",
+        "fix(knowledge): bound the wait for a lifecycle batch",
+        "feat(ops): recovery contract v26 for head 068",
+        "test(mcp): allowlist the foreign-children merge refusal",
+        "fix(security): justify the table-name fragments of the merge-chain counts",
+        "test: align curation mocks and the residue guard with the merge-chain work",
+        "fix(db): fire the merge-chain guard only when a pointer becomes non-NULL",
+        "feat(migrate): refuse an upgrade across the merge-chain guard as a preflight",
+        "feat(db): refuse merge chains at commit and flatten cross-project chains",
+        "feat(facts): measure merge chains per table, expected 0",
+        "fix(roadmap): re-point the loser's children when curation merges a feature",
+        "fix(consolidation): refuse a scoped merge that would strand foreign children",
+        "chore(receipts): record review verdicts since 2026-10-13",
+        "chore(receipts): record the release and deployment of 0.7.0",
+        "test(knowledge): prove a propagation evaluation without event replays on resume",
+        "feat(knowledge): add the lifecycle command line and its real adapters",
+        "feat(knowledge): orchestrate a lifecycle run end to end"
+      ],
+      "digest": "sha256:b95f2f1e80ff12385a78b56c7af4eee0cf791c96ed03551b5b8f7cab06bdc7c4",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:b95f2f1e80ff12385a78b56c7af4eee0cf791c96ed03551b5b8f7cab06bdc7c4",
+      "platform": "linux/amd64",
+      "sha": "e1920b28af9f2ec679e549e9200b26a872c06a64",
+      "tag": "v0.7.1",
+      "version": "0.7.1"
+    },
+    "kind": "released"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T14:01:09.721950Z",
+  "schema_version": 1
+}
