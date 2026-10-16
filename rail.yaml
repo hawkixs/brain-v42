@@ -4,6 +4,50 @@ brain_key: brain-v42
 tier: prod
 stack: python
 ledger: file
+drill:
+  schema_head:
+    path: ops/recovery/current.json
+    field: schema_head
+  restore:
+    database_image: pgvector/pgvector@sha256:ad2e18408bf447f62092a8a5259e7df10505c5a0360bd1a1853ac8b8b0763da2
+    database_env:
+      - POSTGRES_URL
+    # This is the complete application environment allow-list. Each switch below
+    # disables an external writer or caller; only the restored database is needed.
+    env:
+      BRAIN_MCP_TRANSPORT: http
+      BRAIN_MCP_AUTH_MODE: shared_token
+      MCP_HTTP_HOST: 127.0.0.1
+      MCP_HTTP_PORT: "8765"
+      MCP_HTTP_ALLOW_UNAUTHENTICATED: "true"
+      GRAPH_ENABLED: "false"
+      GRAPH_LEDGER_WRITE_ENABLED: "false"
+      GRAPH_PROJECTOR_ENABLED: "false"
+      METRICS_ENABLED: "false"
+      CLIENT_ACTIVITY_REPORTING_ENABLED: "false"
+      BRAIN_SESSION_AUTO_OPEN_ENABLED: "false"
+      BRAIN_SESSION_INACTIVE_SWEEP_ENABLED: "false"
+      EMBEDDING_SERVICE_URL: http://127.0.0.1:8003
+      RERANK_BACKEND: none
+      BRAIN_DELIVERY_ENABLED: "false"
+    env_deny_prefixes:
+      - SECRET
+      - TOKEN
+      - KEY
+      - PASSWORD
+      - PASS
+      - API_KEY
+      - PRIVATE
+    health_command:
+      - python
+      - -c
+      - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/healthz', timeout=5)"
+    read_command:
+      - python
+      - -c
+      - "import asyncio; from sqlalchemy import text; from brain_v42.db.engine import get_engine; exec(\"async def run():\\n async with get_engine().connect() as c:\\n  await c.execute(text('SELECT count(*) FROM learnings'))\"); asyncio.run(run())"
+    schema_head_file: schema_head.txt
+    disk_margin: 2.0
 deploy:
   target: private-compose
   site: red-base
