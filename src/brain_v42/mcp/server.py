@@ -30,7 +30,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, NamedTuple
+from typing import Any, NamedTuple, cast
 from weakref import WeakSet
 
 import structlog
@@ -983,36 +983,51 @@ def _configure_http_security(
 
 
 class SessionIdleTimeoutUnavailableError(RuntimeError):
-    """The upstream shape changed and the session deadline would no longer be set."""
+    """The upstream shape changed and stateful session bounds cannot be enforced."""
 
 
 # Marker carried by the injected subclass: it serves to RECOGNIZE it, hence to
 # avoid stacking it on itself at the second installation.
 _IDLE_TIMEOUT_MARKER = "_brain_v42_session_idle_timeout"
+_MAX_SESSIONS_MARKER = "_brain_v42_max_sessions"
 
 
-def _install_session_idle_timeout(seconds: float) -> None:
-    """Set the idle deadline FastMCP does not pass through.
+def _install_session_idle_timeout(seconds: float, max_sessions: int = 6000) -> None:
+    """Bound stateful sessions through one guarded, idempotent SDK subclass.
 
-    ``StreamableHTTPSessionManager`` accepts ``session_idle_timeout``, but
-    ``fastmcp.server.http`` constructs it without ever passing it: the stateful
-    mode would therefore keep the state of every session whose client dies
-    without a ``DELETE``, until the next process restart.
+    FastMCP does not pass through ``session_idle_timeout`` or ``max_sessions``.
+    Fill their defaults and replace the SDK's refusal at capacity with eviction
+    of the least recently active idle transport. Admission is synchronous under
+    the SDK's creation lock; cancellation follows its existing idle-expiry path.
 
     A symbol substitution inside FastMCP's module, for want of a public
-    extension point. It is NARROW — a subclass that does nothing but fill in a
-    default — and above all it is GUARDED: if the parameter disappears upstream,
-    we raise at startup rather than run with no deadline. A silent monkeypatch
-    that stops acting is worse than no monkeypatch, because it leaves people
-    believing the bound exists.
+    extension point. Keep this narrow: reject signature drift at startup and
+    fall back to SDK admission if the private eviction attributes disappear.
     """
     from fastmcp.server import http as fastmcp_http
+    from mcp.server.streamable_http import StreamableHTTPServerTransport
 
     base = fastmcp_http.StreamableHTTPSessionManager
-    if "session_idle_timeout" not in inspect.signature(base.__init__).parameters:
+    # Recheck the original constructor on repeated installation: our wrapper's
+    # **kwargs signature cannot establish that the SDK still accepts the bounds.
+    guarded_base: type[Any] = (
+        base.__bases__[0] if getattr(base, _IDLE_TIMEOUT_MARKER, None) is not None else base
+    )
+    parameters = inspect.signature(guarded_base.__init__).parameters
+    for parameter in ("session_idle_timeout", "max_sessions"):
+        if parameter not in parameters:
+            raise SessionIdleTimeoutUnavailableError(
+                f"StreamableHTTPSessionManager no longer accepts {parameter}; "
+                "stateful session bounds cannot be enforced"
+            )
+    admit = getattr(guarded_base, "_admit_session", None)
+    if not callable(admit):
         raise SessionIdleTimeoutUnavailableError(
-            "StreamableHTTPSessionManager no longer accepts session_idle_timeout; "
-            "stateful sessions would accumulate without expiry"
+            "StreamableHTTPSessionManager no longer has _admit_session"
+        )
+    if "requestor" not in inspect.signature(admit).parameters:
+        raise SessionIdleTimeoutUnavailableError(
+            "StreamableHTTPSessionManager._admit_session no longer accepts requestor"
         )
 
     # IDEMPOTENCE, and it is not fussiness: without it, two calls stack two
@@ -1021,24 +1036,86 @@ def _install_session_idle_timeout(seconds: float) -> None:
     # several times in a single process.
     if getattr(base, _IDLE_TIMEOUT_MARKER, None) is not None:
         setattr(base, _IDLE_TIMEOUT_MARKER, seconds)
+        setattr(base, _MAX_SESSIONS_MARKER, max_sessions)
         return
 
-    class _IdleTimeoutSessionManager(base):  # type: ignore[misc, valid-type]
+    class _BoundedSessionManager(base):  # type: ignore[misc, valid-type]
         def __init__(self, *args: object, **kwargs: object) -> None:
-            # ``setdefault``: if FastMCP ever starts passing it through, its
-            # value wins and this class becomes inert by itself.
+            # Explicit upstream values win if FastMCP starts passing them through.
             kwargs.setdefault(
                 "session_idle_timeout",
                 getattr(type(self), _IDLE_TIMEOUT_MARKER, seconds),
             )
+            kwargs.setdefault("max_sessions", getattr(type(self), _MAX_SESSIONS_MARKER))
             super().__init__(*args, **kwargs)
+            self.session_evictions: int = 0
+            self._capacity_warned: bool = False
+            self._eviction_error_logged: bool = False
 
-    setattr(_IdleTimeoutSessionManager, _IDLE_TIMEOUT_MARKER, seconds)
+        def _warn_session_capacity(self, count: int) -> None:
+            above = self.max_sessions is not None and count * 5 >= self.max_sessions * 4
+            if above and not self._capacity_warned:
+                logger.warning(
+                    "brain_v42.server.session_capacity",
+                    open_sessions=count,
+                    max_sessions=self.max_sessions,
+                )
+            self._capacity_warned = above
+
+        def _evict_idle_session(self) -> None:
+            instances: dict[str, StreamableHTTPServerTransport] = self._server_instances
+            owners = self._session_owners
+            candidates: list[tuple[float, str, StreamableHTTPServerTransport]] = []
+            # Inspect everything before mutating either registry: a missing
+            # private attribute must leave the existing sessions untouched.
+            for session_id, transport in instances.items():
+                scope = transport.idle_scope
+                in_flight = transport._requests_in_flight
+                if scope is not None and in_flight == 0 and not scope.cancel_called:
+                    candidates.append((scope.deadline, session_id, transport))
+            if not candidates:
+                return
+            _, session_id, transport = min(candidates, key=lambda candidate: candidate[0])
+            scope = transport.idle_scope
+            if scope is None:
+                return
+            instances.pop(session_id)
+            owners.pop(session_id, None)
+            scope.cancel()
+            self.session_evictions += 1
+            logger.warning(
+                "brain_v42.server.session_evicted",
+                session_id=session_id[:8],
+                evictions=self.session_evictions,
+                max_sessions=self.max_sessions,
+            )
+
+        def _admit_session(self, requestor: Any) -> StreamableHTTPServerTransport | None:
+            try:
+                count = len(self._server_instances)
+                # Observe before admission too, to rearm after DELETE or expiry.
+                self._warn_session_capacity(count)
+                if self.max_sessions is not None and count >= self.max_sessions:
+                    self._evict_idle_session()
+            except AttributeError:
+                if not self._eviction_error_logged:
+                    logger.error("brain_v42.server.session_eviction_unavailable")
+                    self._eviction_error_logged = True
+                # The SDK itself cannot reject admission if its registry vanished.
+                if not hasattr(self, "_server_instances"):
+                    return None
+                return cast(StreamableHTTPServerTransport | None, super()._admit_session(requestor))
+            transport = super()._admit_session(requestor)
+            self._warn_session_capacity(len(self._server_instances))
+            return cast(StreamableHTTPServerTransport | None, transport)
+
+    setattr(_BoundedSessionManager, _IDLE_TIMEOUT_MARKER, seconds)
+    setattr(_BoundedSessionManager, _MAX_SESSIONS_MARKER, max_sessions)
     # mypy refuses assignment to a type name; that is precisely what we are
     # doing, for want of a public extension point on the FastMCP side. The
     # signature guard above is what makes the substitution safe.
-    fastmcp_http.StreamableHTTPSessionManager = _IdleTimeoutSessionManager  # type: ignore[misc]
-    logger.info("brain_v42.server.session_idle_timeout", seconds=seconds)
+    fastmcp_http.StreamableHTTPSessionManager = _BoundedSessionManager  # type: ignore[misc]
+    logger.info("brain_v42.server.session_idle_timeout", seconds=seconds, max_sessions=max_sessions)
 
 
 class TransportTerminationHookUnavailableError(RuntimeError):
@@ -1283,7 +1360,9 @@ def plan_http_transport(
         auth="enabled" if auth_enabled else "disabled_by_opt_in",
     )
     if not settings.mcp_http_stateless:
-        _install_session_idle_timeout(settings.mcp_http_session_idle_seconds)
+        _install_session_idle_timeout(
+            settings.mcp_http_session_idle_seconds, settings.mcp_http_max_sessions
+        )
         _install_transport_termination_hook(close_connection_traces)
     return HttpTransportPlan(
         middleware=middleware,

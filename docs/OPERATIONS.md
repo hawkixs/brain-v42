@@ -23,6 +23,32 @@ is the default; `--execute` enables termination. Review its report before execut
 Log retention is dormant by default: the installer preserves timer state, and an
 operator must explicitly enable the log-rotate timer to prune eligible files.
 
+### MCP HTTP session bounds
+
+`MCP_HTTP_MAX_SESSIONS` bounds the number of held stateful HTTP sessions (default
+6000; values below 1 are rejected). `MCP_HTTP_SESSION_IDLE_SECONDS` retains its
+eight-hour default. Size the cap and idle timeout together:
+
+```text
+memory ~= 175 MiB + 0.22 MiB x held sessions
+held sessions ~= creation rate x idle timeout
+```
+
+The 0.7.1 measurement was about 225 KiB per held session: 6000 sessions add about
+1.3 GiB above the base, leaving headroom under the 4 GiB container limit. This is
+a sizing estimate, not a measurement of the live process.
+
+At the cap, the least recently active idle session is evicted. Its next request
+gets HTTP 404, and Claude Code reconnects automatically. Sessions with requests
+in flight are protected; only when no session is idle does a new session get
+HTTP 503. An eviction warning includes a shortened session ID and cumulative
+eviction count. A capacity warning is logged on reaching 80% of the cap and is
+rearmed after the count drops below 80%. If SDK private eviction attributes are
+missing, an error is logged once and admission falls back to the SDK's refusal.
+Eviction is decided at admission, before the opening request is validated, so at
+the cap any authenticated request without a session ID evicts one eligible idle
+session even if its initialize then fails; this is bounded by authentication.
+
 ## Measured facts
 
 Use `brain_fact_list` to discover registered facts and `brain_fact_get` to read a
