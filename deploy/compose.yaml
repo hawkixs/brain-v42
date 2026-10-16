@@ -47,10 +47,14 @@
 # Persistent volumes: brain-v42-postgres-data and brain-v42-neo4j-data.
 # Empty-volume retry: stop writers, remove these two volumes only after operator
 # approval, then replay the verified restore -> migrate -> graph-bootstrap chain.
-# Memory headroom above measured RSS: postgres 238 MiB -> 512m, MCP 224 MiB -> 512m,
+# Memory headroom above measured RSS: postgres 238 MiB -> 2g, MCP 224 MiB -> 4g (see below),
 # metrics 191 MiB -> 384m, delivery-observer 124 MiB -> 256m. One-shots get 512m;
 # weekly graph inventory, the daily session sweep and the hourly embedding backfill get
 # 256m each. Neo4j has 1G heap + 1G page cache within 2.5g.
+# On 2026-10-16 the MCP container hit its 512m memcg limit and the server process was
+# OOM-killed: abandoned MCP sessions are retained for the 8 h idle timeout (~0.22 MiB each,
+# ticket 961cfbe2). The MCP now gets 4g and postgres 2g. The host has 22 GiB of RAM,
+# and these are ceilings against a runaway, not a budget the steady state should reach.
 
 name: brain-v42
 
@@ -105,7 +109,7 @@ services:
     image: pgvector/pgvector:0.8.4-pg16@sha256:ad2e18408bf447f62092a8a5259e7df10505c5a0360bd1a1853ac8b8b0763da2
     container_name: brain-v42-postgres
     restart: unless-stopped
-    mem_limit: 512m
+    mem_limit: 2g
     environment:
       POSTGRES_USER: brain
       POSTGRES_DB: brain
@@ -199,7 +203,7 @@ services:
   mcp:
     <<: [*brain-service, *server]
     container_name: brain-v42-mcp
-    mem_limit: 512m
+    mem_limit: 4g
     command: [python, -m, brain_v42.mcp.server]
     ports:
       - "${BIND_ADDRESS}:8765:8765"

@@ -194,12 +194,12 @@ def test_workstation_runtime_arming_is_parseable_and_mcp_only(
 
 def test_memory_budgets_have_headroom(compose: dict[str, Any]) -> None:
     limits = {
-        "postgres": "512m",
+        "postgres": "2g",
         "neo4j": "2.5g",
         "restore": "512m",
         "migrate": "512m",
         "graph-bootstrap": "512m",
-        "mcp": "512m",
+        "mcp": "4g",
         "metrics": "384m",
         "delivery-observer": "256m",
         "graph-recon": "256m",
