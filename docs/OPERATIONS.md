@@ -628,12 +628,12 @@ persisted even without calls; the latest process report wins across processes.
 | `BRAIN_RERANK_HEALTH_PATH` | `/health` | GET path of the shim or Cohere availability probe. For OpenRouter set `/v1/key`, which is free and answers 200 only with a valid key (401 otherwise). Must stay unset for Voyage, which uses its POST probe. |
 | `BRAIN_RERANK_PROVIDER` | unset | Provider routing sent with every request, as JSON: `{"only": ["voyageai"]}`. Keys: `only`, `allow_fallbacks` (default `false`), `data_collection` (`deny` by default, or `allow`), `zdr`. Unknown keys are refused. |
 | `BRAIN_RERANK_PROBE_INTERVAL_SECONDS` | `300` | Period of the background probe the MCP server runs, once at startup and then on this interval. |
-| `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` | Positive elapsed-time budget for the whole hosted operation: connection, write, read, parsing and backoff sleeps. |
+| `BRAIN_RERANK_BUDGET_SECONDS` | `1.5` (code; `deploy/compose.yaml` sets `3.0`) | Positive elapsed-time budget for the whole hosted operation: connection, write, read, parsing and backoff sleeps. |
 | `BRAIN_RERANK_FALLBACK_MODEL` | empty | Optional second Cohere model, such as `cohere/rerank-4-fast`; must differ from the primary and have a measured calibration. |
 | `BRAIN_RERANK_FALLBACK_PROVIDER` | unset | JSON routing for the fallback, such as `{"only": ["cohere"]}`; required on OpenRouter and subject to the same author and privacy policy as the primary. Refused without `BRAIN_RERANK_FALLBACK_MODEL`. |
 | `BRAIN_RERANK_FALLBACK_URL` | empty | Fallback Cohere endpoint, such as `https://openrouter.ai/api`; must be an http(s) base URL without credentials, query or fragment. Required with a Voyage primary and a configured fallback; otherwise defaults to the primary URL. Refused without `BRAIN_RERANK_FALLBACK_MODEL`. |
 | `BRAIN_RERANK_FALLBACK_API_KEY_FILE` | unset | Fallback key file, with the same format and permissions as the primary key file. Required with a Voyage primary and a configured fallback; otherwise reuses the primary key. Refused without `BRAIN_RERANK_FALLBACK_MODEL`. |
-| `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS` | `1.0` | Positive primary-link budget; must be strictly below the overall budget when a fallback is configured. |
+| `BRAIN_RERANK_PRIMARY_BUDGET_SECONDS` | `1.0` (code; `deploy/compose.yaml` sets `1.6`) | Positive primary-link budget; must be strictly below the overall budget when a fallback is configured. |
 
 With a fallback configured, the primary gets one attempt, with no retry sleep,
 bounded by its primary budget. Any HTTP, transport or response parsing failure
@@ -734,11 +734,12 @@ observations appear as `{}`; the sidecar never substitutes its own generation.
 
 ### Optional local embedding shim
 
-Production search uses hosted embeddings and hosted reranking. The workstation
-GPU stack is retired, and neither `docker-compose.yml` nor `deploy/compose.yaml`
-starts `embedding`, `embedding-llama` or `embedding-shim`. The development stack
-requires no GPU, shim bearer secret or external `brain-net` network. Its only
-Compose secret is Neo4j authentication, whose source override is documented in
+Production search uses hosted embeddings and hosted reranking; `deploy/compose.yaml`
+starts no embedding service. The development `docker-compose.yml` still defines
+`embedding`, `embedding-llama` and `embedding-shim`, the `embedding_shim_bearer`
+secret and the external `brain-net` network, because the auto-discord bot still
+embeds through the shim; their removal waits on brain ticket `14bb4157`. Secret
+source overrides, the shim bearer included, are documented in
 `deploy/compose-secrets.env.example`.
 
 Local code defaults still point embedding and shim reranking at

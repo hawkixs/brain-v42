@@ -195,12 +195,12 @@ configuration; it does not start a local service.
 
 ### Retired workstation GPU stack
 
-The former workstation deployment is retired. The development `docker-compose.yml`
-no longer contains `embedding`, `embedding-llama` or `embedding-shim`; the `legacy`
-and `qodo` profiles, GPU reservations, shim bearer secret and unused external
-`brain-net` network have been removed. No Compose command in this repository starts
-those services. Removing their definitions does not stop previously running
-containers; an operator must retire any remaining containers separately.
+The former workstation deployment is retired and production search does not use
+the GPU stack. The development `docker-compose.yml` still defines `embedding`,
+`embedding-llama` and `embedding-shim`, with their `legacy` and `qodo` profiles, GPU
+reservations, the `embedding_shim_bearer` secret and the external `brain-net`
+network, because the auto-discord bot still embeds through the shim. Their removal
+waits on brain ticket `14bb4157`.
 
 The retained sources under `services/` may be run separately for local development.
 A local shim needs its own model/backend setup, bind and authentication controls;

@@ -2090,6 +2090,20 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
         assert residual_contract in document
     for contract in (target_contract, limits_contract, residual_contract):
         assert contract in OPERATIONS
+    # The development compose still defines the shim (ticket 14bb4157): no
+    # document may claim it was removed while docker-compose.yml carries it.
+    compose = (REPO_ROOT / "docker-compose.yml").read_text()
+    if "embedding-shim:" in compose:
+        for document in _docs_including_claude(README, ARCHITECTURE, OPERATIONS, SECURITY):
+            normalized = " ".join(document.split())
+            for stale in (
+                "no longer contains `embedding`",
+                "no longer defines `embedding`",
+                "starts `embedding`, `embedding-llama` or `embedding-shim`",
+                "requires no GPU, shim bearer secret",
+                "Neither Compose stack starts",
+            ):
+                assert stale not in normalized
     if CLAUDE:
         claude_normalized = " ".join(CLAUDE.split())
         assert "the dedicated automation runtime are constrained to loopback" in claude_normalized
