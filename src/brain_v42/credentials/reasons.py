@@ -21,7 +21,13 @@ TRANSPORT_STATUSES = MappingProxyType(
     }
 )
 TOOL_STATUSES = MappingProxyType(
-    {"family_denied": 403, "issuer_not_allowed": 403, "focus_side_effect_refused": 403}
+    {
+        "family_denied": 403,
+        "issuer_not_allowed": 403,
+        "focus_side_effect_refused": 403,
+        "scope_denied": 403,
+        "null_project_refused": 403,
+    }
 )
 REFUSAL_STATUSES = MappingProxyType({**TRANSPORT_STATUSES, **TOOL_STATUSES})
 _counts: dict[str, int] = {}

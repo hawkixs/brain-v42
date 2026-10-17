@@ -5,6 +5,40 @@
 **Profiles:** `compact` is the default presentation profile: the nine session lifecycle tools remain visible, while other tools are found with `brain_find_tool` and invoked with `brain_call_tool`. `native` exposes the registered catalogue. Dream capability principals receive only the phase allowlist and cannot use the catalog gateways. The `x-brain-tool-profile: native` request header selects native presentation when permitted. `brain_code_mode`, when enabled, installs its own profile only while Dream capability enforcement is off; HTTP security rejects code mode at startup when enforcement is enabled.
 **Transports:** the server supports HTTP and stdio. Authentication and HTTP request limits are enforced at the HTTP transport boundary; they do not change tool signatures.
 
+### Credential project scope
+
+In credentials HTTP mode, `BRAIN_CREDENTIAL_PROJECT_SCOPE_MODE` controls ordinary write
+scope checks: `off` skips them, `observe` (default) counts would-be denials and continues,
+and `enforce` refuses before the handler runs. The setting is validated only in this mode;
+shared-token HTTP, stdio and the metrics sidecar keep their existing boundaries. A credential
+with `allowed_projects=NULL` bypasses these scope checks in every mode. Family rights and
+admin elevation still apply first; project scope grants no tool access. The scoped own-focus
+grant keeps its existing exact-key and side-effect restrictions even in `off` mode.
+
+The reviewed policy in `mcp/project_scope.py` checks knowledge creation, session start and
+slot open through `project_key`; ticket create through `from_project` (never `to_project`);
+ticket reply, transition and plan through `author_project`; and delivery writes through
+`actor_project`. It independently checks the resolved provenance actor project, including
+an actor selected through `@project`. Programme writes require that actor project and
+gate upsert additionally checks `owner` when supplied. Project aliases are canonicalized
+and whitespace trimmed before exact-set comparison: `red-shrik:agent-a` admits neither
+`red-shrik` nor `red-shrik:agent-a:child`.
+
+In `enforce`, missing or NULL required targets and missing required programme actors return
+`null_project_refused`; invalid keys and out-of-scope keys return `scope_denied`. Both use
+the existing 403 authorization refusal path. In `observe`, the same candidates increment
+`<tool>:scope_unresolved` or `<tool>:scope_mismatch` in the existing author-binding counter
+and emit `credential_scope.candidate` with bounded tool, cause and client labels. Missing
+credential principals on write/delivery calls increment `scope_unauthenticated` in observe
+and enforce; their refusal remains `family_denied`.
+
+Scope is a write boundary: reads, including `brain_session_list` and delivery lists/get,
+remain exempt. The compact gateway checks the inner tool and arguments once. PR4 must
+still resolve stored ownership for session lifecycle calls after start, slot close,
+claim verification and entity-addressed writes. For those deferred tools PR3 checks only
+a resolved actor; a NULL actor is not refused yet. Enforce therefore does not yet provide
+complete project isolation for those operations.
+
 ### Catalog gateways (`compact` profile)
 
 `brain_find_tool` is the FastMCP search gateway: pass a natural-language search query to find registered tools. Each match is summarized as `name`, a one-line `description`, a `required` object mapping parameter names to short types, and an `optional` list of parameter names. Pass an exact tool name to get its full description and `input_schema`; output schemas are never included. The search transform returns at most five matches. `brain_call_tool(name, arguments)` invokes a discovered tool with its ordinary arguments and preserves that tool's result shape. These gateways are presentation tools and are unavailable to scoped Dream principals.

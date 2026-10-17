@@ -627,6 +627,8 @@ class Settings(BaseSettings):
     # --- MCP transport ---
     brain_mcp_transport: Literal["stdio", "http"] = "stdio"  # env BRAIN_MCP_TRANSPORT
     brain_mcp_auth_mode: Literal["shared_token", "credentials"] = "shared_token"
+    brain_credential_project_scope_mode: str = "observe"
+    """Ordinary write scope policy; validated only at the credentials HTTP boundary."""
     mcp_http_allow_non_loopback: bool = Field(
         default=False, validation_alias=_brain_alias("MCP_HTTP_ALLOW_NON_LOOPBACK")
     )
