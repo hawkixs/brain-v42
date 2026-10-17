@@ -533,9 +533,13 @@ guard still applies. `/healthz` reports process liveness without a database call
 
 **Tracked network boundary**: on red-base (`deploy/compose.yaml`) only two services publish a host port, MCP (`:8765`) and metrics (`:9200`), both on the host's WireGuard address (`BIND_ADDRESS`); no host publish is ever `0.0.0.0`, even though each container listens on all of its own interfaces. MCP runs in credentials mode (`BRAIN_MCP_AUTH_MODE: credentials`): the shared `MCP_HTTP_TOKEN` bearer is refused and must be absent, and `POST /mcp` answers `401` without a valid credential. Metrics opts into the non-loopback bind through `METRICS_ALLOW_NON_LOOPBACK`, which the fail-closed validator (`6c61b63`) requires, and its POST receivers are gated by credentials (`METRICS_RECEIVER_AUTH: credentials`). PostgreSQL and Neo4j publish no host port. The host firewall is the perimeter: the `DOCKER-USER` chain on `wg0` is owned by `red-watcher`, and the repository manages no firewall rule. The development `docker-compose.yml` binds to loopback, which remains the local-development default. What would make this paragraph false again: a host publish outside `BIND_ADDRESS`, or MCP leaving credentials mode. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
 
-**Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
+**Embedding topology**: production uses hosted embeddings via `deploy/compose.yaml` (`x-embedding-env`: `EMBEDDING_BACKEND=openai`, Mistral `codestral-embed-2505`, 1536 dimensions). The local endpoint `http://localhost:8003` is optional for development only; the former workstation deployment is retired.
 
-**SEC2 residuals** (replayed 2026-08-23): bearer authentication and the dedicated Docker client network are done — the coordinated `auto-discord` cutover happened, and both `auto-discord` containers sit on `brain-net`. One residual stands, and it is wider than previously written: the versioned legacy PyTorch profile remains unbounded — `services/embedding/main.py` carries no body cap, no read deadline, no concurrency semaphore and no `413`/`503` — and it preserves neither of the two DNS names its clients use. A `--profile legacy` rollback publishes `embedding` and `brain_v42_embedding` on `brain-net`, while the compose sets `EMBEDDING_URL=http://embedding-shim:8003` and the running bot, carrying no `EMBEDDING_URL` of its own, falls back to the code default `http://brain_v42_embedding_shim:8003`. Two names break, not one.
+**Reranker**: production uses hosted Voyage `rerank-3-lite` with OpenRouter `cohere/rerank-4-fast` fallback via `deploy/compose.yaml` (`x-rerank-env`). Rollback replaces that block with `BRAIN_RERANK_BACKEND="none"` alone.
+
+**Optional local embedding shim limits**: the retained development source enforces 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`. The development `docker-compose.yml` still defines the shim for local use; it does not serve production search.
+
+**SEC2 residuals**: the retained legacy source `services/embedding/main.py` has no body cap, no read deadline, no concurrency semaphore and no `413`/`503`. The development `docker-compose.yml` still defines `embedding`, `embedding-llama` and `embedding-shim`; their removal waits on brain ticket `14bb4157` (the auto-discord bot still embeds through the shim). This source is not a production dependency or a reranker rollback; any separate local deployment needs its own network and authentication boundary.
 
 ## Private secret files
 
@@ -575,10 +579,14 @@ credential, nor writer quiescence, nor the absence of Neo4j sessions.
 
 ### Hosted reranker settings
 
-The reranker defaults to the local shim (`BRAIN_RERANK_BACKEND=shim`). Pointing it at
-a hosted Cohere-style API (`BRAIN_RERANK_BACKEND=cohere`, for example OpenRouter with
-`BRAIN_RERANKER_URL=https://openrouter.ai/api`) uses the settings below. None of
-them changes the shim deployment.
+Production selects direct Voyage `rerank-3-lite` with OpenRouter
+`cohere/rerank-4-fast` fallback in `deploy/compose.yaml` (`x-rerank-env`),
+with a 3.0 s overall budget and 1.6 s primary budget. Embeddings use the
+separate `x-embedding-env` block: OpenAI-compatible Mistral
+`codestral-embed-2505`, 1536 dimensions. Neither uses a local `:8003` service.
+The `shim` code default is for an optional, separately supplied local development
+endpoint; the defaults in the table below do not describe production.
+A standalone Cohere-style API can instead use `BRAIN_RERANK_BACKEND=cohere`.
 
 For direct Voyage, set `BRAIN_RERANK_BACKEND=voyage`,
 `BRAIN_RERANKER_URL=https://api.voyageai.com`,
@@ -647,10 +655,10 @@ line (optional `export `, quotes, blank lines and `#` comments; every other line
 ignored and never sent anywhere). Anything else is refused, so an env fragment is
 never forwarded;
 anything readable beyond its owner, malformed, empty, or unreadable stops the runtime at construction with a `RerankKeyError` that
-names the path, never the content. Create it the way the shim bearer is created, with
-a redirection under a tight `umask`. The cohere and voyage backends never read
-`BRAIN_EMBEDDING_TOKEN_FILE`: that file is the shim's bearer and must not reach a
-hosted vendor.
+names the path, never the content. Create it with a redirection under a tight
+`umask`. The cohere and voyage backends never read `BRAIN_EMBEDDING_TOKEN_FILE`:
+that file belongs to the embedding backend (the hosted embedding credential in
+production, or a bearer for an optional local shim) and must not reach a rerank vendor.
 
 When the cohere backend targets `openrouter.ai` (or a subdomain), the routing is
 **policed at load time, not just required**: `BRAIN_RERANK_PROVIDER` must be set,
@@ -724,107 +732,36 @@ and persisted even before its first search. Readers reset their baseline when
 this generation changes, never merely because a counter drops. Missing search
 observations appear as `{}`; the sidecar never substitutes its own generation.
 
-### Embedding shim static bearer
+### Optional local embedding shim
 
-The shim reads its bearer from a file, never from a variable: `docker inspect`
-prints `Config.Env` verbatim, so a token wired as a value would be readable by
-anyone who can reach the daemon. Compose passes only the path.
+Production search uses hosted embeddings and hosted reranking. The workstation
+GPU stack is retired, and neither `docker-compose.yml` nor `deploy/compose.yaml`
+starts `embedding`, `embedding-llama` or `embedding-shim`. The development stack
+requires no GPU, shim bearer secret or external `brain-net` network. Its only
+Compose secret is Neo4j authentication, whose source override is documented in
+`deploy/compose-secrets.env.example`.
 
-```dotenv
-BRAIN_SHIM_BEARER_FILE=~/.config/brain-v42/embedding-shim-bearer
-```
+Local code defaults still point embedding and shim reranking at
+`http://localhost:8003`. These are optional client settings, not a supplied service:
+configure a hosted backend or supply a separate local endpoint. If you run the
+retained shim source yourself, provide its model/backend setup and restrict its
+bind and network access. `POST /rerank` uses the local ONNX backend, while the
+`/embed*` routes need the configured llama.cpp backend. These are independent of
+production and of the hosted rerank rollback.
 
-Generate it without letting the value reach a terminal, an argument list or the
-shell history — a redirection under a tight `umask`, never `echo`:
+The optional shim reads `SHIM_BEARER_TOKEN_FILE` once at startup. Use a private
+file (mode `0600` or stricter, at least 32 bytes, no placeholder); never put the
+token value into container environment metadata. `SHIM_BEARER_MODE=optional`
+serves every caller and logs missing/invalid bearer use; it does not enforce
+authentication. `required` rejects unauthenticated network clients. Verify all
+local clients carry the token before selecting it. Loopback probes remain exempt.
 
-```bash
-( umask 077; openssl rand -hex 32 > ~/.config/brain-v42/embedding-shim-bearer )
-```
-
-Mode `0600` is a hard precondition, not hygiene. Compose bind-mounts a file
-secret **as-is**: the mode the container sees is the mode on the host, and
-`load_bearer_token` refuses anything readable beyond its owner, anything under
-32 bytes, and anything still carrying a `REPLACE_` placeholder. A loose secret
-does not degrade the guard, it stops the container from starting. Unlike the
-Neo4j secret, whose override is exported ad hoc at cutover time, this path lives
-in the shared `.env` so an ordinary `docker compose up -d` resolves it; the
-versioned default (`./.secrets/embedding-shim-bearer`) is a fallback that does
-not exist on this host.
-
-`SHIM_BEARER_MODE=optional` is a **census**, not an authentication: every caller
-is served, and the ones arriving without a valid token are logged with their
-address and user agent, never with the value they presented. That is the point —
-six `auto-discord` containers reach `:8003` on `brain-net` carrying no bearer at
-all, and `required` would 401 all of them. Arming is a separate operator gesture
-that waits on the client-side ticket; it is not a config tweak.
-
-The token is read **once, at startup**. Rotating the file changes nothing until
-the container restarts:
-
-```bash
-docker compose build embedding-shim
-docker compose up -d --no-deps embedding-shim   # --no-deps: never recreate embedding-llama
-```
-
-Never widen that to a bare `docker compose up -d`. One trap still makes the
-global form unsafe on a running host, and it is silent until it is not: every
-secret source whose override variable is unset falls back to a versioned
-default under `./.secrets/`, a directory this host does not have, so the `up`
-fails on the first service that needs one. Always name the service and pass
-`--no-deps`.
-
-A second trap depends on the configuration: since 2026-09-26
-`embedding-llama` sits behind the `qodo` Compose profile
-(docs/ARCHITECTURE.md), so a plain `docker compose up -d` never starts it.
-The production deployment embeds through the OpenAI-compatible backend
-(Mistral codestral) and does not need it; the shipped configuration
-(`BRAIN_EMBEDDING_BACKEND=shim`, `BRAIN_EMBEDDING_MODEL=qodo`, `config.py` and
-`.env.example`) does, and must run with `--profile qodo`. Without
-`QODO_GGUF_DIR` set, Compose then mounts an empty model directory and puts
-`embedding-llama` into a crash-loop (incident 2026-08-21) whenever the profile
-is included: `docker compose --profile qodo up -d`.
-
-The override variables are documented in `deploy/compose-secrets.env.example`
-and belong in the repository's `.env`, which Compose reads on its own — no
-ad-hoc export before the command, which is what made the Neo4j one invisible
-until 2026-09-02. `tests/unit/test_docker_compose.py::TestComposeSecretSources`
-refuses a hard-coded secret source and an undocumented override variable; it
-cannot tell whether the file exists on any given host, so
-`docker compose config` stays the measurement before any `up`.
-
-### The MCP process is a client of that shim, and it carries no token yet
-
-`SHIM_BEARER_MODE=optional` was armed to answer one question, and it answered it
-on the first day: the census names `python-httpx/0.28.1` on `/embed/query` and
-`/rerank`, which is this repository's own MCP process. Arming `required` before
-that client carries a bearer would cut `brain_search` off from its own
-embeddings. The six `auto-discord` containers are the other half, tracked in
-ticket `9ef5c69d` and living in another repository.
-
-The client half is wired and ships CLOSED. `brain_embedding_token_file`
-(`BRAIN_EMBEDDING_TOKEN_FILE`) defaults to `None`, which keeps today's contract:
-no `Authorization` header at all. Point it at the same 0600 file the shim reads
-and both clients — embedding and reranker — send `Authorization: Bearer` on
-every route they use (`/embed`, `/embed/query`, `/rerank`, `/healthz`,
-`/health`; the two health routes are exempt server-side and the header is simply
-ignored there).
-
-A PATH, never a value: `systemctl show` prints a unit's environment verbatim.
-The file is read once, at construction, which is startup for every runtime that
-goes through `build_embedding_service` / `build_reranker_client` — so rotating
-it needs a restart, exactly like the shim's own read. Configured but absent,
-empty or unreadable is a **named startup failure**, never a silent call without
-the header: while the shim answers `optional`, such a call still succeeds, and
-the misconfiguration would stay invisible until the day someone arms `required`.
-
-Arming the client is an operator gesture — a drop-in and a restart, not a config
-tweak — and it must land BEFORE `SHIM_BEARER_MODE=required` is even considered.
-
-Rollback, once the previous image is tagged before the build:
-
-```bash
-docker tag <previous-image-id> brain_v42_embedding_shim:pre-bearer-<date>
-```
+For local clients using the `shim` backend, `BRAIN_EMBEDDING_TOKEN_FILE` points
+at that same private file. The embedding and reranker clients read it once at
+construction and send a bearer on their shim routes. Configured but absent,
+empty or unreadable files refuse startup. Rotation requires restarting the
+separately managed shim and its clients. Hosted reranking uses its own credential
+files, and production embeddings use their own hosted API credential.
 
 ## MCP HTTP input bounds and residuals
 

@@ -394,7 +394,7 @@ CREATE TABLE decisions (
     status VARCHAR(20) NOT NULL DEFAULT 'active'
         CHECK (status IN ('active', 'superseded', 'deprecated')),
     superseded_by UUID REFERENCES decisions(id) ON DELETE SET NULL,
-    embedding vector(1536),              -- pgvector type, Qodo-Embed-1-1.5B via GPU service
+    embedding vector(1536),              -- pgvector type, configured embedding model
     metadata JSONB DEFAULT '{}',
     search_vector TSVECTOR,              -- GENERATED ALWAYS AS ... STORED column (created by migration 001)
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -1374,11 +1374,11 @@ RETURNING *;
 | PlanChunk | `{section_title} {content}` (truncated to 15,000 chars max in `plan_indexer.py`) |
 | ProjectContext | No embedding |
 
-## GPU Embedding Service
+## Embedding client (optional local shim example)
 
 ```python
 class GPUEmbeddingService:
-    """Embedding service using HTTP GPU inference (Qodo-Embed-1-1.5B)."""
+    """Embedding client; the backend is selected by the embedding factory."""
 
     def __init__(
         self,
@@ -1391,4 +1391,4 @@ class GPUEmbeddingService:
     async def embed_batch(self, texts: list[str]) -> list[list[float]]: ...
 ```
 
-**Note**: The `Settings.embedding_service_url` default and the constructor's default are both `http://localhost:8003`. The interface stays `embed()` / `embed_batch()` in async via httpx. The `DIMENSION = 1536` constant is not defined in `GPUEmbeddingService` — the dimension is configured via `Settings.embedding_dimension`.
+**Note**: The `Settings.embedding_service_url` default and the constructor's default are both `http://localhost:8003`, an optional local development endpoint supplied separately. Production overrides this in `deploy/compose.yaml` with hosted Mistral `codestral-embed-2505` embeddings (OpenAI-compatible backend, 1536 dimensions). The interface stays `embed()` / `embed_batch()` in async via httpx. The `DIMENSION = 1536` constant is not defined in `GPUEmbeddingService` — the dimension is configured via `Settings.embedding_dimension`.

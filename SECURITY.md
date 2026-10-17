@@ -10,9 +10,13 @@ vulnerability here:
   (`BIND_ADDRESS:8765`) in credentials mode, with every MCP call authenticated,
   and metrics on `BIND_ADDRESS:9200`. PostgreSQL and Neo4j publish no host port.
   Local HTTP, development database publishes, metrics and automation default to loopback.
-- The embedding/reranker endpoint (`:8003`) should be treated as
-  LAN-exposed until you have proved the live bind yourself — repository
-  code alone does not prove a firewall state.
+- Production embedding and reranking use hosted HTTPS APIs configured in
+  `deploy/compose.yaml`: Mistral `codestral-embed-2505` (1536 dimensions),
+  Voyage `rerank-3-lite` and OpenRouter `cohere/rerank-4-fast` fallback. Provider
+  credentials are separate, and providers receive the text submitted to them.
+  An optional local development endpoint (`:8003`, the development
+  `docker-compose.yml` shim) is not used by production; verify its bind and
+  authentication yourself.
 - **Never** expose the MCP port, the embedding endpoint, PostgreSQL or
   Neo4j to the Internet. There is no per-request authentication layer
   designed to survive that exposure: MCP credentials protect access within

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""regen_embeddings.py — Regenerate all embeddings via the GPU embedding service.
+"""regen_embeddings.py — Regenerate embeddings through the configured backend.
 
-Reads rows from brain_v42 PostgreSQL tables, sends text batches to the GPU
-embedding service (POST /embed), and writes the resulting vectors back.
+Reads rows from brain_v42 PostgreSQL tables, sends text batches through the
+embedding facade, and writes the resulting vectors back. Production selects
+hosted Mistral in deploy/compose.yaml; local shim endpoints are optional.
 
 Usage:
     python scripts/regen_embeddings.py                           # Dry-run by default
@@ -12,7 +13,7 @@ Usage:
 
 Environment variables:
     POSTGRES_URL              PostgreSQL connection URL (required unless passed explicitly)
-    EMBEDDING_SERVICE_URL     GPU embedding service URL (default: http://localhost:8003)
+    EMBEDDING_SERVICE_URL     Embedding API URL (local code default: http://localhost:8003)
 """
 
 from __future__ import annotations

@@ -5,7 +5,7 @@ Transport: controlled by BRAIN_MCP_TRANSPORT env var (default: stdio)
 
 Initialization sequence on startup:
 1. get_session_factory() — shared SQLAlchemy async_sessionmaker singleton
-2. GPUEmbeddingService — connects to GPU embedding service at localhost:8003
+2. Embedding service — hosted in production; optional local endpoint for development
 3. All domain repos (PgDecisionRepo, PgLearningRepo, etc.) — injected with session_factory
 4. All domain services (DecisionService, LearningService, etc.) — injected with repo + embedding_svc
 5. BrainService — fans out semantic search across all domain services

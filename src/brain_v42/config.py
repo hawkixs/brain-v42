@@ -198,8 +198,9 @@ class Settings(BaseSettings):
 
     Optional:
         LOG_LEVEL: Logging level (default: INFO)
-        EMBEDDING_SERVICE_URL: GPU embedding service URL
-            (default: http://localhost:8003 — PC serveur local, restore 2026-07-06)
+        EMBEDDING_SERVICE_URL: Embedding API URL
+            (default: http://localhost:8003 — optional local development endpoint;
+            production selects hosted providers in deploy/compose.yaml)
         EMBEDDING_DIMENSION: Embedding vector dimension (default: 1536)
     """
 
@@ -1187,8 +1188,8 @@ class Settings(BaseSettings):
     )
 
     # --- Reranker ---
-    # Same target as embedding_service_url (single 8003 unified service since
-    # decision 40d63a94). Default aligned to the local container to match.
+    # Optional local shim client default, matching embedding_service_url.
+    # Production overrides this with hosted reranking in deploy/compose.yaml.
     reranker_url: str = Field(
         default="http://localhost:8003", validation_alias=_brain_alias("RERANKER_URL")
     )

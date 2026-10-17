@@ -11,7 +11,7 @@ and stdio remains available for development and fallback deployments.
 ## Overview
 
 The current runtime has distinct MCP, metrics, delivery-observer, graph-projector,
-and embedding components. The MCP server composes tool services with HTTP middleware
+and hosted embedding/reranking clients. The MCP server composes tool services with HTTP middleware
 for host/origin checks, fail-closed bearer authentication, request-size enforcement,
 and request provenance. Bounded input models constrain tool arguments. HTTP
 connections can own server-created agent traces; transport termination closes
@@ -22,7 +22,7 @@ PostgreSQL is the source of truth for knowledge, projects, sessions, delivery da
 and graph facts. The transactional graph ledger/outbox records graph changes;
 the separate graph projector consumes it and updates Neo4j, a rebuildable
 relationship projection. Search uses PostgreSQL FTS and pgvector, with embedding
-and reranking supplied by the configured endpoint. The metrics sidecar reads
+and reranking supplied by hosted APIs in production (`deploy/compose.yaml`). The metrics sidecar reads
 operational state and exposes metrics and health. The delivery observer polls
 providers and records confirmations for ticket and release views. The facts
 registry exposes definitions and measured values through `brain_fact_get` and
@@ -45,23 +45,23 @@ registry exposes definitions and measured values through `brain_fact_get` and
                   |                                |                          |
                   +--------------------------------+--------------------------+
                                                    |
-         +----------------+------------------------+----------------+
-         |                |                        |                |
-         v                v                        v                v
-   +---------+      +-------------+          +----------+    +-------------+
-   | Postgres|      | Neo4j 5     |          | GPU      |    | Reranker    |
-   | 16+pgv  |      | Community   |          | embed svc|    | cross-enc   |
-   | :5433   |      | bolt :7687  |          | :8003    |    | :8003      |
-   | source  |      | relations   |          | Qodo-    |    | same unified|
-   | of truth|      | only        |          | Embed-1.5|    | endpoint    |
-   +---------+      +-------------+          +----------+    +-------------+
+         +----------------+------------------------+-----------------------+
+         |                |                        |                       |
+         v                v                        v                       v
+   +-------------+  +-------------+      +------------------+  +-----------------------+
+   | Postgres    |  | Neo4j 5     |      | Hosted embedding |  | Hosted rerank         |
+   | 16+pgvector |  | Community   |      | Mistral codestral |  | Voyage rerank-3-lite  |
+   | internal DB |  | internal DB |      | embed-2505        |  | -> OpenRouter Cohere  |
+   | source      |  | relations   |      | HTTPS, 1536 dims  |  | rerank-4-fast, HTTPS  |
+   | of truth    |  | only        |      |                  |  |                       |
+   +-------------+  +-------------+      +------------------+  +-----------------------+
 ```
 
 ## Core principles
 
 1. **Single MCP process principle.** Production clients share one persistent FastMCP HTTP
-   process; dev/fallback clients may run the stdio server directly. Postgres, Neo4j and the
-   unified GPU embedding/reranker service are separate and independently restartable.
+   process; dev/fallback clients may run the stdio server directly. Postgres and Neo4j
+   are separate services; production embedding and reranking use hosted HTTPS APIs.
 2. **PG is the source of truth.** All CRUD, FTS (tsvector), vector search (pgvector HNSW, 1536 dims), supersession chains (recursive CTE), and audit tables live in PG.
 3. **Neo4j is a relationship index.** Canonical entity data stays in PostgreSQL. Neo4j stores bounded identity/display fields, graph edges (`SUPERSEDES`, `MOTIVATED_BY`, `IMPLEMENTS`, `DOCUMENTS`, `USES`, `RELATED_TO`, `CONTAINS`, `DEPENDS_ON`, `BELONGS_TO`, `MERGED_INTO`, `BELONGS_TO_DOMAIN`), and internal projection fence/cursor nodes. It enriches search results through a "Related" section or explicit `brain_get_neighbors`.
 4. **Graph projection is explicit.** PostgreSQL stores graph facts and the transactional outbox; the graph projector delivers them to Neo4j. Configuration controls whether graph integration and ledger writes are enabled. Durable ledger failures propagate instead of degrading into success.
@@ -149,19 +149,19 @@ Activated by `BRAIN_MCP_TRANSPORT=stdio` (default) or omitting the env var. Used
 
 **Tracked network boundary**: on red-base (`deploy/compose.yaml`) only two services publish a host port, MCP (`:8765`) and metrics (`:9200`), both on the host's WireGuard address (`BIND_ADDRESS`); no host publish is ever `0.0.0.0`, even though each container listens on all of its own interfaces. MCP runs in credentials mode (`BRAIN_MCP_AUTH_MODE: credentials`): the shared `MCP_HTTP_TOKEN` bearer is refused and must be absent, and `POST /mcp` answers `401` without a valid credential. Metrics opts into the non-loopback bind through `METRICS_ALLOW_NON_LOOPBACK`, which the fail-closed validator (`6c61b63`) requires, and its POST receivers are gated by credentials (`METRICS_RECEIVER_AUTH: credentials`). PostgreSQL and Neo4j publish no host port. The host firewall is the perimeter: the `DOCKER-USER` chain on `wg0` is owned by `red-watcher`, and the repository manages no firewall rule. The development `docker-compose.yml` binds to loopback, which remains the local-development default. What would make this paragraph false again: a host publish outside `BIND_ADDRESS`, or MCP leaving credentials mode. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
 
-**Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
+**Embedding topology**: production uses hosted embeddings via `deploy/compose.yaml` (`x-embedding-env`: `EMBEDDING_BACKEND=openai`, Mistral `codestral-embed-2505`, 1536 dimensions). The local endpoint `http://localhost:8003` is optional for development only; the former workstation deployment is retired.
 
-**Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
+**Optional local embedding shim limits**: the retained development source enforces 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`. The development `docker-compose.yml` still defines the shim for local use; it does not serve production search.
 
-**SEC2 residuals** (replayed 2026-08-23): bearer authentication and the dedicated Docker client network are done — the coordinated `auto-discord` cutover happened, and both `auto-discord` containers sit on `brain-net`. One residual stands, and it is wider than previously written: the versioned legacy PyTorch profile remains unbounded — `services/embedding/main.py` carries no body cap, no read deadline, no concurrency semaphore and no `413`/`503` — and it preserves neither of the two DNS names its clients use. A `--profile legacy` rollback publishes `embedding` and `brain_v42_embedding` on `brain-net`, while the compose sets `EMBEDDING_URL=http://embedding-shim:8003` and the running bot, carrying no `EMBEDDING_URL` of its own, falls back to the code default `http://brain_v42_embedding_shim:8003`. Two names break, not one.
+**SEC2 residuals**: the retained legacy source `services/embedding/main.py` has no body cap, no read deadline, no concurrency semaphore and no `413`/`503`. The development `docker-compose.yml` still defines `embedding`, `embedding-llama` and `embedding-shim`; their removal waits on brain ticket `14bb4157` (the auto-discord bot still embeds through the shim). This source is not a production dependency or a reranker rollback; any separate local deployment needs its own network and authentication boundary.
 
 The deployment model is personal agents on a trusted LAN. Remote database administration goes
-through an SSH tunnel. The loopback publish is code-ready but not live proof: until an authorized
-rollout verifies the effective bind and listeners, treat `:8003` as LAN-exposed. Do not expose it
-to the Internet; independently verify the router/network boundary.
+through an SSH tunnel. Production search needs no local `:8003` listener. If a developer runs
+a separate local shim, verify its effective bind and authentication and keep it private.
 
-### Reranker: GPU with CPU fallback
+### Optional local reranker: GPU with CPU fallback
 
+The retained local-development source is outside both Compose stacks and production search.
 `OnnxRerankBackend` (`services/embedding_shim/shim_backends.py`) prefers
 `CUDAExecutionProvider` (env `RERANK_DEVICE=auto|cuda|cpu`, default `auto`), falling back to
 `CPUExecutionProvider` when CUDA is unavailable or a CUDA run raises (retried once on CPU for
@@ -174,53 +174,37 @@ CPU vs CUDA scores: max |diff| 0.00012, identical top-10.
 
 ### Reranker backends
 
-`RerankerClient` speaks through a wire (`services/rerank_wire.py`). `ShimRerankWire`
-is the private `POST /rerank` contract of the bundled shim, the default.
-`CohereRerankWire` speaks `POST /v1/rerank` (TEI, Jina, vLLM, and hosted APIs such as
-OpenRouter), remaps results to input order and converts the provider's relevance score
-back to a logit so `HybridReranker`'s sigmoid stays idempotent. It can carry an
-optional `provider` routing object, and each wire exposes an `identity` (`shim`,
-`cohere:<model>`). `build_reranker_client` is the single construction path; it resolves
-the cohere key from its own file and never from the shim bearer. The MCP server probes
-the configured health path in the background and records the last outcome on the client;
-see `docs/OPERATIONS.md`, "Hosted reranker settings".
+`RerankerClient` speaks through a wire (`services/rerank_wire.py`). Production
+selects `VoyageRerankWire` for direct Voyage, with `CohereRerankWire` through
+OpenRouter as fallback. Both remap results to input order and calibrate relevance
+scores for `HybridReranker`. Each wire exposes its provider/model identity.
+`build_reranker_client` is the single construction path; hosted reranker keys come
+from their own files, separately from the embedding credential. The MCP server
+probes the configured backend in the background and records the last outcome.
 
-### Qodo retired from the default stack (2026-09-26)
+**Reranker**: production uses hosted Voyage `rerank-3-lite` with OpenRouter `cohere/rerank-4-fast` fallback via `deploy/compose.yaml` (`x-rerank-env`). Rollback replaces that block with `BRAIN_RERANK_BACKEND="none"` alone.
 
-brain-v42 embeds through the Mistral codestral endpoint since 2026-09-22; the local
-Qodo-Embed-1-1.5B GGUF served by `embedding-llama` (llama.cpp) is no longer a brain
-dependency. `auto-discord`, the last `/embed` client, is migrating off it in its own
-change. Consequently `embedding-llama` sits behind the `qodo` Compose profile: a plain
-`docker compose up` never starts it, and `embedding-shim` carries no `depends_on` on it
-— the shim starts on its own and serves `/rerank` (used by brain's hybrid search)
-regardless of whether qodo is running.
+The production chain has a 3.0 s overall budget and a 1.6 s primary budget.
+If both links fail, search falls back to RRF ordering. The deliberate `none`
+rollback disables reranking and its background probe. See
+`docs/OPERATIONS.md`, "Hosted reranker settings".
 
-`POST /embed`, `/embed/query` and `/embed/single` on the shim depend on
-`embedding-llama` and answer with an upstream error while it is stopped — this is
-expected, not a regression, for any caller that has not migrated off `/embed` yet.
+`ShimRerankWire` retains the private `POST /rerank` protocol for an optional local
+endpoint. `shim` remains the code default, independently of the production
+configuration; it does not start a local service.
 
-**The `qodo` Compose profile change alone does not stop a container already running
-from the old default stack.** `docker compose up` only skips starting
-`embedding-llama` on a fresh bring-up; it does not touch a container that a previous
-`docker compose up` (before this change) already started and left running. Stop it
-explicitly on any host that ran the old default stack:
+### Retired workstation GPU stack
 
-```bash
-docker stop brain_v42_embedding_llama
-```
+The former workstation deployment is retired. The development `docker-compose.yml`
+no longer contains `embedding`, `embedding-llama` or `embedding-shim`; the `legacy`
+and `qodo` profiles, GPU reservations, shim bearer secret and unused external
+`brain-net` network have been removed. No Compose command in this repository starts
+those services. Removing their definitions does not stop previously running
+containers; an operator must retire any remaining containers separately.
 
-Verify with `docker ps -a`: the container should show as `Exited`, not `Up`, once
-stopped (it stays present, just not running, unless also `docker rm`d). This was done
-by the operator on the production host on 2026-09-26, alongside this change.
-
-To bring qodo back deliberately (e.g. to serve a caller that still needs `/embed`):
-
-```bash
-docker compose --profile qodo up -d embedding-llama
-```
-
-This does not change the reranker: `/rerank` is served locally by the ONNX
-cross-encoder (see above) and never depended on `embedding-llama`.
+The retained sources under `services/` may be run separately for local development.
+A local shim needs its own model/backend setup, bind and authentication controls;
+it is not a production dependency or the hosted rerank rollback.
 
 ## Storage layout
 
@@ -228,8 +212,8 @@ cross-encoder (see above) and never depended on `embedding-llama`.
 |-------|------|------|--------------|
 | Postgres 16 + pgvector | 5433 | CRUD + FTS + 1536-d vectors + audit + graph ledger/outbox + time series | `src/brain_v42/db/tables.py`, `alembic/versions/` |
 | Neo4j 5 Community | 7687 (bolt) / 7474 (browser) | Relationship traversal, clusters, neighbourhood, domain classification | `src/brain_v42/db/neo4j.py`, `src/brain_v42/services/graph_service.py` |
-| GPU embedding service | 8003 | Cross-encoder reranker (always on); `/embed*` only when the `qodo` profile runs `embedding-llama` (Qodo-Embed-1-1.5B, 1536 dims) — the shipped configuration (`BRAIN_EMBEDDING_BACKEND=shim`, `BRAIN_EMBEDDING_MODEL=qodo`) embeds through it, so it needs `--profile qodo`; the production deployment instead sets the OpenAI-compatible backend to Mistral codestral | `src/brain_v42/services/gpu_embedding_service.py` |
-| Reranker | 8003 | Cross-encoder rerank for hybrid search (same unified endpoint as embed) | `src/brain_v42/services/reranker_client.py` |
+| Hosted embeddings | HTTPS (no host publish) | Production Mistral `codestral-embed-2505`, 1536 dimensions, OpenAI-compatible API | `deploy/compose.yaml` (`x-embedding-env`), `src/brain_v42/services/embedding_factory.py` |
+| Hosted reranker | HTTPS (no host publish) | Production Voyage `rerank-3-lite` → OpenRouter `cohere/rerank-4-fast` fallback | `deploy/compose.yaml` (`x-rerank-env`), `src/brain_v42/services/reranker_client.py` |
 
 ### 43 PG tables (`src/brain_v42/db/tables.py`)
 
@@ -518,7 +502,7 @@ All are optional via settings (`metrics_enabled`, `decay_enabled`, `graph_enable
 
 | Marker | Condition | Banner text |
 |--------|-----------|-------------|
-| `fts_fallback` | GPU embedding service down — only FTS results | "degraded: embedding service unavailable — FTS results only (text order)" |
+| `fts_fallback` | Configured embedding provider unavailable — only FTS results | "degraded: embedding service unavailable — FTS results only (text order)" |
 | `rrf_fallback` | Reranker down — RRF rank-based scores instead of cross-encoder | "degraded: reranker unavailable — RRF order (no cross-encoder re-scoring)" |
 | `rrf_only` | No reranker configured | "note: reranker not configured — RRF order (no cross-encoder re-scoring)" |
 
@@ -532,7 +516,7 @@ All are optional via settings (`metrics_enabled`, `decay_enabled`, `graph_enable
 
 - `GET /metrics` — JSON, read from `MetricsCollector` in-memory counters and PG aggregates.
 - `GET /programmes` — the `programmes/v1` block (contract `docs/contracts/programmes_v1.md`) as `{"programmes": <block>}`, or `{}` while the block's read failed. It never rides in `/metrics`, so the payload red-monitor stores on every brain-card probe does not grow. It is memoised with the slow blocks (TTL 30 s, single flight) and relayed by red-monitor's `GET /api/v1/programmes` to the cockpit. Same listener and same unauthenticated read exposure as `/metrics`; it carries declared one-line texts and project keys, no secret.
-- `GET /api/cockpit` — single JSON snapshot (`CockpitCollector`) consumed by `red-monitor` with ~2s poll. The `transport` field reads `settings.brain_mcp_transport` (so it correctly shows `"http"` post-cutover). `cache_hit_ratio` is `null` — the GPU embedding service does not expose a cache-hit counter.
+- `GET /api/cockpit` — single JSON snapshot (`CockpitCollector`) consumed by `red-monitor` with ~2s poll. The `transport` field reads `settings.brain_mcp_transport` (so it correctly shows `"http"` post-cutover). `cache_hit_ratio` is `null` — the embedding facade does not expose a cache-hit counter.
 
 **Read boundary (decisions 30cacb0b and 94771690, 2026-10-13)**: when the sidecar binds a non-loopback
 address with `METRICS_ALLOW_NON_LOOPBACK` (as on red-base's wg0), `GET /metrics`,
@@ -995,17 +979,19 @@ Feature creation has two deliberate paths:
 
 ## GitNexus integration
 
-Side-by-side, not merged. GitNexus is a second MCP stdio server exposing `gitnexus_*` tools (code graph: AST + call chains + impact analysis). Isolation invariants: disjoint MCP surfaces (`brain_*` vs `gitnexus_*`), disjoint data (`.gitnexus/` vs PG+Neo4j), disjoint compute (transformers.js CPU vs GPU embed :8003). Nightly reindex at 04:30 finishes before the Dream timer's 06:00 window (plus up to 120 seconds of jitter).
+Side-by-side, not merged. GitNexus is a second MCP stdio server exposing `gitnexus_*` tools (code graph: AST + call chains + impact analysis). Isolation invariants: disjoint MCP surfaces (`brain_*` vs `gitnexus_*`), disjoint data (`.gitnexus/` vs PG+Neo4j), disjoint compute (transformers.js CPU vs hosted embedding APIs). Nightly reindex at 04:30 finishes before the Dream timer's 06:00 window (plus up to 120 seconds of jitter).
 
 ## Configuration
 
-Environment variables (`src/brain_v42/config.py`):
+Environment variables and their local code defaults (`src/brain_v42/config.py`), with optional search endpoints supplied
+separately. Production overrides these through `deploy/compose.yaml` (`x-embedding-env`
+and `x-rerank-env`) as described above:
 
 ```
 POSTGRES_URL=postgresql+asyncpg://brain:brain@localhost:5433/brain   # required
-EMBEDDING_SERVICE_URL=http://localhost:8003                           # local unified GPU service
+EMBEDDING_SERVICE_URL=http://localhost:8003                           # optional local development endpoint
 EMBEDDING_DIMENSION=1536
-RERANKER_URL=http://localhost:8003                                    # same unified endpoint
+RERANKER_URL=http://localhost:8003                                    # optional local development endpoint
 NEO4J_URL=bolt://localhost:7687                                      # legacy path only
 NEO4J_USER=neo4j                                                     # legacy path only
 NEO4J_PASSWORD=...                                                   # legacy path only
@@ -1103,8 +1089,8 @@ brain_v42/
 | Network hops per tool call | 4 (HTTP chain) | 0 for tool logic; 1 HTTP hop for MCP protocol (WireGuard in production, loopback locally) |
 | Source of truth | Neo4j (CRUD + graph + vectors) | Postgres + pgvector |
 | Graph | Neo4j Cypher reduce() for similarity | Neo4j relationship index only, pgvector for similarity |
-| Embeddings | sentence-transformers / PyTorch in-process | Configurable (`BRAIN_EMBEDDING_BACKEND`): shipped default `shim` → local :8003 (Qodo-Embed-1-1.5B, 1536d, `qodo` profile); production deployment: OpenAI-compatible backend on Mistral codestral |
-| Reranker | none | Cross-encoder :8003 unified endpoint, BatchingRerankerClient (20 ms window) |
+| Embeddings | sentence-transformers / PyTorch in-process | Production: hosted Mistral `codestral-embed-2505` (1536d), OpenAI-compatible backend; optional local shim code default supplied separately |
+| Reranker | none | Production: hosted Voyage with OpenRouter Cohere fallback; `BatchingRerankerClient` (20 ms window); rollback `none` |
 | MCP transport | stdio | Production: HTTP on BIND_ADDRESS:8765/mcp + HostOriginGuard + client credentials on every MCP call; local HTTP: loopback by default; dev/fallback: stdio |
 | MCP tools | 21 | 84 always-on + 2 graph-gated = 86 |
 | Tables | 6 | 31 (knowledge, audit, plans, dream, webhook, coordination, sessions, graph ledger) |
