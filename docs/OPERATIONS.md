@@ -1395,6 +1395,16 @@ same kind is stored but is not a measurement. The identity is a declared label,
 like every attestation issuer, not a proof of origin: it holds inside the same
 trust boundary as the MCP bearer.
 
+Observable delivery proves the independence of the source (GitHub) and of the
+issuer identity, not the isolation of keys on the host: the host is the trust
+boundary (operator decision of 2026-10-05, option (a) of ticket `fd0df7d6`). On
+red-base (`deploy/compose.yaml`) the observer runs in its own container under the
+uid every brain-v42 service uses (`1000:1000`), and its two file secrets, the
+configuration (`/etc/brain-v42/delivery-observer.env`, mode 0600) and the GitHub
+App key (`/etc/brain-v42/github-app-key.pem`), are mounted only in that container. That separation is a property of this deployment, not something the
+proof depends on. A dedicated system user for the observer remains a possible
+later hardening.
+
 **Reopened tickets.** A reopen deactivates the bindings; the next attempt binds a
 new merge under the same deliverable. Both passes then treat that merge as new work:
 a row counts as "already recorded" only when it carries the binding's
