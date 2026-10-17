@@ -17,6 +17,10 @@ the unit suite, instead of surfacing as an opaque runtime refusal much later.
 on the six mergeable knowledge tables and share refuse_merge_chain(). The
 repair's tables and statements are unaffected.
 
+069 was reviewed: nullable author_client_id columns and format CHECKs on five
+knowledge tables and focus_slots change none of indexed_plans,
+indexed_plan_chunks or project_contexts, which are the repair's write targets.
+
 Bumping the constant stays a deliberate act. The failure message says what to
 review before doing it.
 """

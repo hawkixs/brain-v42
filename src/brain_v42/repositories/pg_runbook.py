@@ -72,6 +72,7 @@ def _runbook_create_to_dict(data: RunbookCreate, embedding: list[float] | None) 
         "prerequisites": data.prerequisites,
         "steps": [s.model_dump() for s in data.steps],
         "rollback_steps": [s.model_dump() for s in data.rollback_steps],
+        "author_client_id": data.author_client_id,
         "estimated_duration": data.estimated_duration,
         "tags": data.tags,
         "metadata": data.metadata,

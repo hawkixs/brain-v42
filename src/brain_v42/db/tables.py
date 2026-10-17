@@ -417,6 +417,11 @@ decisions = Table(
         "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_decisions_freshness_source",
     ),
+    Column("author_client_id", Text, nullable=True),
+    sa.CheckConstraint(
+        "author_client_id IS NULL OR author_client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="decisions_author_client_id_format",
+    ),
 )
 
 # ─── learnings ────────────────────────────────────────────────────────────────
@@ -492,6 +497,11 @@ learnings = Table(
         "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_learnings_freshness_source",
     ),
+    Column("author_client_id", Text, nullable=True),
+    sa.CheckConstraint(
+        "author_client_id IS NULL OR author_client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="learnings_author_client_id_format",
+    ),
 )
 
 # ─── snippets ─────────────────────────────────────────────────────────────────
@@ -561,6 +571,11 @@ snippets = Table(
         "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_snippets_freshness_source",
     ),
+    Column("author_client_id", Text, nullable=True),
+    sa.CheckConstraint(
+        "author_client_id IS NULL OR author_client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="snippets_author_client_id_format",
+    ),
 )
 
 # ─── runbooks ─────────────────────────────────────────────────────────────────
@@ -629,6 +644,11 @@ runbooks = Table(
     sa.CheckConstraint(
         "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_runbooks_freshness_source",
+    ),
+    Column("author_client_id", Text, nullable=True),
+    sa.CheckConstraint(
+        "author_client_id IS NULL OR author_client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="runbooks_author_client_id_format",
     ),
 )
 
@@ -708,6 +728,11 @@ adrs = Table(
     sa.CheckConstraint(
         "freshness_source IS NULL OR freshness_source IN ('merge', 'judgment', 'score', 'revive', 'manual_update', 'plan_reindex')",
         name="ck_adrs_freshness_source",
+    ),
+    Column("author_client_id", Text, nullable=True),
+    sa.CheckConstraint(
+        "author_client_id IS NULL OR author_client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="adrs_author_client_id_format",
     ),
 )
 
@@ -2241,6 +2266,11 @@ focus_slots = Table(
         "title",
         unique=True,
         postgresql_where=sa.text("closed_at IS NULL"),
+    ),
+    Column("author_client_id", Text, nullable=True),
+    sa.CheckConstraint(
+        "author_client_id IS NULL OR author_client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'",
+        name="focus_slots_author_client_id_format",
     ),
 )
 

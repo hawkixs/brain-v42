@@ -308,7 +308,7 @@ MCP over authenticated HTTP on `BIND_ADDRESS:8765/mcp` in production (red-base),
 - **Embeddings** — hosted Mistral `codestral-embed-2505`, 1536 dimensions, through the
   OpenAI-compatible backend in `deploy/compose.yaml` (`x-embedding-env`).
 - **Reranker**: production uses hosted Voyage `rerank-3-lite` with OpenRouter `cohere/rerank-4-fast` fallback via `deploy/compose.yaml` (`x-rerank-env`). Rollback replaces that block with `BRAIN_RERANK_BACKEND="none"` alone.
-- **Schema** managed by Alembic; the **repository** carries migration 068 (recovery contract v26 candidate). The **live**
+- **Schema** managed by Alembic; the **repository** carries migration 069 (original-author attribution; recovery contract v27 candidate). The **live**
   head is measured, it is not read here.
 - **Ledger/outbox** PostgreSQL → Neo4j, active in production
 - **Network model**: personal agents on a trusted LAN; production MCP uses the host's

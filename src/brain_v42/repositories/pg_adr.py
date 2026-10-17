@@ -84,6 +84,7 @@ class PgADRRepo(BasePgRepository):
         else:
             data = dict(row._mapping)
         known_fields = {
+            "author_client_id",
             "id",
             "number",
             "title",
@@ -162,6 +163,7 @@ class PgADRRepo(BasePgRepository):
         async with self.transaction(session) as s:
             number = await self._next_number(s, data.project_key)
             payload: dict[str, Any] = {
+                "author_client_id": data.author_client_id,
                 "number": number,
                 "title": data.title,
                 "context": data.context,
@@ -383,6 +385,7 @@ class PgADRRepo(BasePgRepository):
                 adrs.insert()
                 .values(
                     number=number,
+                    author_client_id=data.author_client_id,
                     title=data.title,
                     context=data.context,
                     decision=data.decision,

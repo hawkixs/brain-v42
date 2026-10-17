@@ -8,10 +8,36 @@ These tests do NOT require a live DB connection — they only test Python-level 
 
 from __future__ import annotations
 
+import pytest
 import sqlalchemy as sa
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
+
+
+@pytest.mark.parametrize(
+    "table_name", ["decisions", "learnings", "snippets", "runbooks", "adrs", "focus_slots"]
+)
+def test_original_author_column_is_appended_like_migration_069(table_name: str) -> None:
+    from brain_v42.db.tables import METADATA
+
+    assert list(METADATA.tables[table_name].c.keys())[-1] == "author_client_id"
+
+
+def test_original_author_columns_use_nullable_credential_grammar() -> None:
+    from brain_v42.db.tables import METADATA
+
+    for name in ("decisions", "learnings", "snippets", "runbooks", "adrs", "focus_slots"):
+        table = METADATA.tables[name]
+        column = table.c.author_client_id
+        assert isinstance(column.type, sa.Text)
+        assert column.nullable and column.server_default is None
+        assert not any(column.name in index.columns for index in table.indexes)
+        check = next(c for c in table.constraints if c.name == f"{name}_author_client_id_format")
+        assert (
+            str(check.sqltext)
+            == "author_client_id IS NULL OR author_client_id ~ '^[a-z0-9][a-z0-9.-]{0,63}$'"
+        )
 
 
 class TestMetadataAndTablePresence:

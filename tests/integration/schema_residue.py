@@ -90,6 +90,7 @@ PRIVATE_HEAD_DOWNGRADING_FILES: tuple[str, ...] = (
     # Downgrades the module-private fresh-head database to prove the upgrade
     # refuses a legacy chain and the round-trip restores the guard triggers.
     "tests/integration/db/test_migration_068_merge_chain_guard.py",
+    "tests/integration/db/test_migration_069_author_client_id.py",
 )
 
 # Tables probed for leftover rows, in the order the message lists them.

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, cast
 import structlog
 from sqlalchemy.exc import IntegrityError
 
+from brain_v42.mcp.client_principal import current_author_client_id
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.capture_rule import CAPTURE_RULE
 from brain_v42.mcp.tools.claim_writes import (
@@ -94,6 +95,7 @@ def register_runbook_tools(
         create and update agree on what a valid step is (ticket 2af71e69).
         """
         return RunbookCreate(
+            author_client_id=current_author_client_id(),
             title=title,
             description=description,
             project_key=project_key,

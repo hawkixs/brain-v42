@@ -42,7 +42,7 @@ class LearningBase(BaseModel):
 
 
 class LearningCreate(LearningBase, ProjectKeyCanonicalMixin):
-    pass
+    author_client_id: str | None = None
 
 
 class LearningUpdate(ProjectKeyCanonicalMixin):
@@ -67,6 +67,7 @@ class LearningUpdate(ProjectKeyCanonicalMixin):
 
 
 class Learning(LearningBase, TimestampMixin, DecayMixin):
+    author_client_id: str | None = None
     id: UUID = Field(default_factory=uuid4)
     validated_at: datetime | None = None
     embedding: list[float] | None = None

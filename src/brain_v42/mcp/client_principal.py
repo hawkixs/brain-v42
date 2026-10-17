@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 from fastmcp.server.auth import AccessToken
+from fastmcp.server.dependencies import get_access_token
 
 from brain_v42.credentials.families import STORABLE_FAMILIES
 from brain_v42.models.project_key import canonicalize_project_key
@@ -18,6 +19,12 @@ class ClientPrincipal:
     families: frozenset[str]
     issuers: tuple[str, ...]
     allowed_projects: tuple[str, ...] | None = None
+
+
+def current_author_client_id() -> str | None:
+    """Attribute new rows only to a credential verified for the current request."""
+    principal = resolve_client_principal(get_access_token())
+    return principal.client_id if principal is not None else None
 
 
 def resolve_client_principal(access_token: AccessToken | None) -> ClientPrincipal | None:

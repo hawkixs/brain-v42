@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
+from brain_v42.mcp.client_principal import current_author_client_id
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.capture_rule import CAPTURE_RULE
 from brain_v42.mcp.tools.claim_writes import (
@@ -101,6 +102,7 @@ def register_snippet_tools(
         from brain_v42.models.snippet import SnippetCreate
 
         data = SnippetCreate(
+            author_client_id=current_author_client_id(),
             title=title,
             intention=intention,
             code=code,

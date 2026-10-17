@@ -31,7 +31,7 @@ class SnippetBase(BaseModel):
 
 
 class SnippetCreate(SnippetBase, ProjectKeyCanonicalMixin):
-    pass
+    author_client_id: str | None = None
 
 
 class SnippetUpdate(ProjectKeyCanonicalMixin):
@@ -58,6 +58,7 @@ class SnippetUpdate(ProjectKeyCanonicalMixin):
 
 
 class Snippet(SnippetBase, TimestampMixin, DecayMixin):
+    author_client_id: str | None = None
     id: UUID = Field(default_factory=uuid4)
     use_count: int = 0
     last_used_at: datetime | None = None

@@ -21,7 +21,17 @@ def _service() -> tuple[FocusSlotService, MagicMock]:
 async def test_open_canonicalises_and_trims_before_the_repository() -> None:
     service, repo = _service()
     await service.open("brain_v42", "  relay  ", "  handover  ", [LOT])
-    repo.open.assert_awaited_once_with("brain-v42", "relay", "handover", [LOT])
+    repo.open.assert_awaited_once_with(
+        "brain-v42", "relay", "handover", [LOT], author_client_id=None
+    )
+
+
+async def test_open_forwards_the_server_derived_author() -> None:
+    service, repo = _service()
+    await service.open("brain-v42", "relay", "handover", [LOT], author_client_id="client-a")
+    repo.open.assert_awaited_once_with(
+        "brain-v42", "relay", "handover", [LOT], author_client_id="client-a"
+    )
 
 
 async def test_zero_anchors_is_anchor_required_s6() -> None:

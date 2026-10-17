@@ -38,7 +38,7 @@ class ADRBase(BaseModel):
 
 
 class ADRCreate(ADRBase, ProjectKeyCanonicalMixin):
-    pass
+    author_client_id: str | None = None
 
 
 class ADRUpdate(BaseModel):
@@ -67,6 +67,7 @@ class ADRUpdate(BaseModel):
 
 
 class ADR(ADRBase, TimestampMixin, DecayMixin):
+    author_client_id: str | None = None
     id: UUID = Field(default_factory=uuid4)
     number: int = 0
     decided_at: datetime | None = None
