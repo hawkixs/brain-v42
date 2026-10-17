@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Annotated, Literal
+from typing import TYPE_CHECKING, Annotated, Literal, Protocol
 from uuid import UUID
 
 import structlog
@@ -19,6 +18,7 @@ from brain_v42.mcp.tools.tool_annotations import (
 from brain_v42.models.brain_session import (
     MAX_CAPTURED_KNOWLEDGE_IDS,
     MAX_CHECKPOINT_TEXT,
+    BrainSession,
     BrainSessionAbandonResult,
     BrainSessionCaptureResult,
     BrainSessionCheckpointResult,
@@ -38,12 +38,25 @@ from brain_v42.models.focus_slot import (
 if TYPE_CHECKING:
     from brain_v42.services.brain_session_service import BrainSessionService
 
+
 #: `(project_key, session_id)`. The session entered the signature with M-C: the
 #: briefing renders that session's last checkpoints, and a project-scoped loader
 #: could not know which session asked. Passed by BOTH start and resume — a start
 #: that REPLAYS an open session returns a session that may already hold judgment,
 #: and hiding it there would be the one place the reader most expects it.
-BriefingLoader = Callable[[str, UUID], Awaitable[str]]
+#: Start/relay additionally pass the presentation mode and a focus reference;
+#: consumers without a structured focus snapshot retain the original defaults.
+class BriefingLoader(Protocol):
+    async def __call__(
+        self,
+        project_key: str,
+        session_id: UUID,
+        *,
+        briefing: Literal["full", "compact"] = "full",
+        focus_reference: str | None = None,
+    ) -> str: ...
+
+
 CapturedKnowledgeIdsArg = Annotated[
     list[UUID],
     Field(min_length=1, max_length=MAX_CAPTURED_KNOWLEDGE_IDS),
@@ -171,14 +184,31 @@ logger = structlog.get_logger(__name__)
 _BRIEFING_UNAVAILABLE = "## Session Briefing\n(briefing unavailable; session remains open)"
 
 
+def _started_focus_reference(session: BrainSession) -> str | None:
+    if not isinstance(session.started_focus, str):
+        return None
+    # Keep the revisioned, machine-readable snapshot as the sole focus copy;
+    # the live project focus may already have changed when the briefing loads.
+    return (
+        f"(see session.started_focus, revision {session.started_focus_revision}, "
+        f"{len(session.started_focus)} chars)"
+    )
+
+
 async def _load_briefing_safely(
     briefing_loader: BriefingLoader,
     *,
     project_key: str,
     session_id: UUID,
+    briefing: Literal["full", "compact"] = "full",
+    focus_reference: str | None = None,
 ) -> str:
     """Keep a persisted session observable when the optional briefing fails."""
     try:
+        if briefing != "full" or focus_reference is not None:
+            return await briefing_loader(
+                project_key, session_id, briefing=briefing, focus_reference=focus_reference
+            )
         return await briefing_loader(project_key, session_id)
     except Exception as exc:
         logger.warning(
@@ -201,8 +231,12 @@ def register_session_lifecycle_tools(
     async def brain_session_start(
         project_key: ProjectKeyArg,
         client_key: ClientKeyArg,
+        briefing: Literal["full", "compact"] = "full",
     ) -> BrainSessionStartResult:
         """Start or replay a concurrent session from an explicit user command.
+
+        `briefing` defaults to full detail; compact returns counts and IDs in at
+        most 4,000 characters. Focus text appears only in `session.started_focus`.
 
         An agent tracer is the only session the server opens or closes on
         its own; no hook and no auto-close may invoke this lifecycle
@@ -212,12 +246,14 @@ def register_session_lifecycle_tools(
             project_key=project_key,
             client_key=client_key,
         )
-        briefing = await _load_briefing_safely(
+        briefing_text = await _load_briefing_safely(
             briefing_loader,
             project_key=result.session.project_key,
             session_id=result.session.id,
+            briefing=briefing,
+            focus_reference=_started_focus_reference(result.session),
         )
-        return result.model_copy(update={"briefing": briefing})
+        return result.model_copy(update={"briefing": briefing_text})
 
     @mcp.tool(version="4.0", output_schema=None, annotations=_WRITE_ANNOTATIONS)
     async def brain_session_capture(
@@ -387,6 +423,7 @@ def register_session_lifecycle_tools(
         ] = False,
         knowledge_ids: RelayKnowledgeIdsArg | None = None,
         nothing_to_capture_reason: ReasonArg | None = None,
+        briefing: Literal["full", "compact"] = "full",
     ) -> BrainSessionRelayResult:
         """Relay an open session onto its slot, or its project base: capture, end, restart.
 
@@ -394,6 +431,9 @@ def register_session_lifecycle_tools(
         the `handover` is written under a compare-and-swap, the old session ends, and
         a successor opens under `new_client_key`; its briefing follows. Two forms,
         and exactly one revision per call.
+
+        `briefing` defaults to full detail; compact returns counts and IDs in at
+        most 4,000 characters. Focus text appears only in `session.started_focus`.
 
         Bound session: send `expected_slot_revision`; the `handover` (at most 4,000
         characters) REPLACES the whole slot body and the successor stays on the slot. A
@@ -442,12 +482,14 @@ def register_session_lifecycle_tools(
             knowledge_ids=knowledge_ids,
             nothing_to_capture_reason=nothing_to_capture_reason,
         )
-        briefing = await _load_briefing_safely(
+        briefing_text = await _load_briefing_safely(
             briefing_loader,
             project_key=result.session.project_key,
             session_id=result.session.id,
+            briefing=briefing,
+            focus_reference=_started_focus_reference(result.session),
         )
-        return result.model_copy(update={"briefing": briefing})
+        return result.model_copy(update={"briefing": briefing_text})
 
     @mcp.tool(version="4.0", output_schema=None, annotations=_READ_ANNOTATIONS)
     async def brain_session_list(
