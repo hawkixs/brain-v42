@@ -762,7 +762,8 @@ class TestBrainSessionStartTool:
 
         assert "### Killswitches" in result.briefing
         assert "### Focus" in result.briefing
-        assert "ship" in result.briefing
+        assert "see session.started_focus" in result.briefing
+        assert result.session.started_focus == "f"
 
     @pytest.mark.asyncio
     async def test_killswitch_crash_renders_unavailable_not_no_activity(self):

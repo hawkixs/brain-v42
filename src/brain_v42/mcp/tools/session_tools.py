@@ -6,7 +6,7 @@ import asyncio
 import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from uuid import UUID
 
 import structlog
@@ -44,6 +44,9 @@ logger = structlog.get_logger(__name__)
 
 _CAP = 5
 _TICKETS_CAP = 5
+COMPACT_BRIEFING_MAX_CHARS = 4_000
+_COMPACT_TITLE_MAX_CHARS = 120
+_COMPACT_TRUNCATION_MARKER = "\n[compact briefing truncated]"
 
 
 def _section_tickets(groups: Any | None, lots: list[ReleaseLot] | None = None) -> str:
@@ -643,6 +646,84 @@ def _section_to_distill(view: SlotBriefing | None) -> str:
     return "\n".join(lines)
 
 
+def _compact_id_title(item: Any) -> str:
+    """Keep each entry on one bounded line, even when its title contains newlines."""
+    title = " ".join(str(item.title).split())
+    title = _capped(title, _COMPACT_TITLE_MAX_CHARS - 1)
+    return f"- {item.id} {title}"
+
+
+def _format_compact_session_briefing(
+    ctx: Any | None,
+    *,
+    focus_reference: str | None,
+    ticket_groups: Any | None,
+    slot_view: SlotBriefing | None,
+    decisions: list[Any],
+    learnings: list[Any],
+    checkpoints: list[Any],
+    roadmap_items: list[Any],
+    stale_pinned: list[Any],
+    cross_block: Any | None,
+    delivery_briefing: str,
+) -> str:
+    """Render only counts and entry identities; never include narrative bodies."""
+    focus = getattr(ctx, "current_focus", None) or ""
+    sections = [
+        _section_header(ctx),
+        "### Focus\n"
+        + (focus_reference or f"{len(focus)} chars (use a full briefing to read focus)"),
+    ]
+    if ticket_groups is not None:
+        tickets = [*ticket_groups.a_traiter, *ticket_groups.a_confirmer]
+        awaiting = len(ticket_groups.awaiting_requester_confirmation)
+        sections.append(
+            "\n".join(
+                [f"### Tickets ({len(tickets)} actionable, {awaiting} awaiting confirmation)"]
+                + [_compact_id_title(ticket) for ticket in tickets[:_TICKETS_CAP]]
+            )
+        )
+    # Delivery counts precede potentially long lists so they survive truncation.
+    if delivery_briefing:
+        sections.append(delivery_briefing)
+    if slot_view is not None:
+        if slot_view.bound_slot is not None:
+            sections.append("### Slot\n" + _compact_id_title(slot_view.bound_slot))
+        if slot_view.open_slots:
+            sections.append(
+                "\n".join(
+                    [f"### Slots ({len(slot_view.open_slots)})"]
+                    + [_compact_id_title(slot) for slot in slot_view.open_slots]
+                )
+            )
+        if slot_view.to_distill:
+            sections.append(
+                "\n".join(
+                    [f"### To distill ({len(slot_view.to_distill)})"]
+                    + [_compact_id_title(slot) for slot in slot_view.to_distill]
+                )
+            )
+    for heading, items in (("Roadmap", roadmap_items), ("Stale-pinned", stale_pinned)):
+        if items:
+            sections.append(f"### {heading}\n{len(items)} features")
+    sections.extend(
+        [
+            f"### Checkpoints\n{len(checkpoints)} recent checkpoints",
+            f"### Blockers\n{len(getattr(ctx, 'blockers', None) or [])} blockers",
+            f"### Recap\n{len(decisions)} recent decisions, {len(learnings)} recent learnings",
+        ]
+    )
+    if cross_block is not None:
+        sections.append(f"### Cross-project\n{len(cross_block.entries)} entries")
+    rendered = "\n\n".join(sections)
+    if len(rendered) > COMPACT_BRIEFING_MAX_CHARS:
+        return (
+            rendered[: COMPACT_BRIEFING_MAX_CHARS - len(_COMPACT_TRUNCATION_MARKER)]
+            + _COMPACT_TRUNCATION_MARKER
+        )
+    return rendered
+
+
 def _format_session_briefing(
     ctx: Any | None,
     decisions: list[Any],
@@ -665,6 +746,7 @@ def _format_session_briefing(
     claim_suffixes: Mapping[tuple[str, UUID], str] | None = None,
     claim_inventory_line: str | None = None,
     slot_view: SlotBriefing | None = None,
+    focus_reference: str | None = None,
 ) -> str:
     blockers = list(getattr(ctx, "blockers", []) or []) if ctx else []
     sections = [
@@ -691,7 +773,7 @@ def _format_session_briefing(
             fact_lines=fact_lines,
             claim_inventory_line=claim_inventory_line,
         ),
-        _section_focus(ctx),
+        "### Focus\n" + focus_reference if focus_reference is not None else _section_focus(ctx),
         _section_bound_slot(slot_view),
         _section_slots(slot_view, now=datetime.now(UTC)),
         _section_bind_hint(slot_view),
@@ -793,8 +875,17 @@ def make_session_briefing_loader(
 ) -> BriefingLoader:
     """Build the shared, read-only session briefing loader without lifecycle effects."""
 
-    async def load_briefing(project_key: str, session_id: UUID) -> str:
-        """Build the action-forward project briefing in ~500-800 tokens.
+    async def load_briefing(
+        project_key: str,
+        session_id: UUID,
+        *,
+        briefing: Literal["full", "compact"] = "full",
+        focus_reference: str | None = None,
+    ) -> str:
+        """Build a full briefing or counts/IDs bounded to 4,000 characters.
+
+        Start/relay supply a reference to their structured focus snapshot;
+        other consumers keep the full focus prose by default.
 
         Returns: killswitches → last failure → roadmap (features vivantes) →
         stale pinned → focus → blockers → recent decisions/learnings.
@@ -923,7 +1014,7 @@ def make_session_briefing_loader(
         # turns a ClaimReadError into a visible marker for every entry instead
         # of raising, so a lookup failure never drops the briefing.
         claim_suffixes: dict[tuple[str, UUID], str] | None = None
-        if claim_read_svc is not None:
+        if claim_read_svc is not None and briefing == "full":
             claim_entries = [("decision", d.id) for d in decisions] + [
                 ("learning", lr.id) for lr in learnings
             ]
@@ -948,7 +1039,18 @@ def make_session_briefing_loader(
         if delivery_svc is not None:
             try:
                 delivery_page = await delivery_svc.list(actor_project=project_key, limit=5)
-                delivery_briefing = format_delivery_briefing(delivery_page)
+                if briefing == "compact":
+                    fresh = sum(
+                        item.assessment.observation_health == "fresh"
+                        for item in delivery_page.items
+                    )
+                    total = len(delivery_page.items) + delivery_page.omitted_count
+                    freshness = f"{fresh} fresh"
+                    if delivery_page.omitted_count:
+                        freshness += " among returned contracts"
+                    delivery_briefing = f"### Livraison\n{total} contracts ({freshness})"
+                else:
+                    delivery_briefing = format_delivery_briefing(delivery_page)
             except Exception:
                 logger.warning(
                     "brain_session_briefing_delivery_unavailable", project_key=project_key
@@ -965,6 +1067,21 @@ def make_session_briefing_loader(
                 slot_view = await focus_slot_svc.briefing(project_key, session_id)
             except Exception as exc:
                 logger.warning("brain_session_briefing_slots_failed", error=str(exc))
+
+        if briefing == "compact":
+            return _format_compact_session_briefing(
+                ctx,
+                focus_reference=focus_reference,
+                ticket_groups=ticket_groups,
+                slot_view=slot_view,
+                decisions=decisions,
+                learnings=learnings,
+                checkpoints=checkpoints,
+                roadmap_items=roadmap_items,
+                stale_pinned=stale_pinned,
+                cross_block=cross_block,
+                delivery_briefing=delivery_briefing,
+            )
 
         return _format_session_briefing(
             ctx,
@@ -987,6 +1104,7 @@ def make_session_briefing_loader(
             claim_suffixes=claim_suffixes,
             claim_inventory_line=claim_inventory_line,
             slot_view=slot_view,
+            focus_reference=focus_reference,
         )
 
     return load_briefing

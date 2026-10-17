@@ -197,6 +197,7 @@
     "tests/unit/mcp/test_session_capture_harness_isolation.py": 0.07,
     "tests/unit/mcp/test_session_lifecycle_tool_discovery.py": 0.28,
     "tests/unit/mcp/test_session_lifecycle_tools.py": 2.07,
+    "tests/unit/mcp/test_session_relay_focus_once.py": 0.05,
     "tests/unit/mcp/test_session_tools.py": 2.89,
     "tests/unit/mcp/test_ticket_tools.py": 1.1,
     "tests/unit/mcp/test_tool_catalog.py": 0.68,

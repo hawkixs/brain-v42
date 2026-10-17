@@ -47,6 +47,14 @@
             "maxLength": 128,
             "minLength": 1,
             "type": "string"
+          },
+          "briefing": {
+            "default": "full",
+            "enum": [
+              "full",
+              "compact"
+            ],
+            "type": "string"
           }
         },
         "required": [
@@ -512,6 +520,14 @@
               }
             ],
             "default": null
+          },
+          "briefing": {
+            "default": "full",
+            "enum": [
+              "full",
+              "compact"
+            ],
+            "type": "string"
           }
         },
         "required": [

@@ -45,7 +45,7 @@ VOCABULARY = frozenset(
     # List filters, pagination, and search.
     + "query types tags rel_types depth max_depth limit offset cursor history_limit history_cursor after_seq include_archived summary_only include_related group_by_type min_score confidence min_size max_members_per_cluster threshold max_links max_chars max_age_seconds full".split()
     # Session, slot, and focus lifecycle revisions.
-    + "session_id seq expected_focus_revision expected_slot_revision expected_revision expected_workflow_version expected_assessment_id expected_attempt expected_delivery_digest expected_catalog_revision known_catalog_revision known_guide_version allow_focus_shrink nothing_to_capture_reason initiator".split()
+    + "session_id seq expected_focus_revision expected_slot_revision expected_revision expected_workflow_version expected_assessment_id expected_attempt expected_delivery_digest expected_catalog_revision known_catalog_revision known_guide_version allow_focus_shrink nothing_to_capture_reason initiator briefing".split()
     # Delivery contracts, claims, and attestations.
     + "deliverable_key pr_number claim_token epoch ttl_seconds idempotency_key rationale issuer payload emitted_at contract contract_revision since until".split()
     # Dream and claim controls.
