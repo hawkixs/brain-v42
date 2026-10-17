@@ -3110,6 +3110,21 @@ def test_operations_documents_the_tag_pass_and_its_budget() -> None:
     assert "deployed" in text and "brain-v42 only" in text
 
 
+def test_operations_documents_the_observer_shared_uid_trust_boundary() -> None:
+    text = " ".join(_section(OPERATIONS, "## Delivery observer: releases and deployments").split())
+    for statement in (
+        "Observable delivery proves the independence of the source (GitHub) and of the "
+        "issuer identity, not the isolation of keys on the host",
+        "option (a) of ticket `fd0df7d6`",
+        "the observer runs in its own container under the uid every brain-v42 service "
+        "uses (`1000:1000`)",
+        "mounted only in that container",
+        "not something the proof depends on",
+    ):
+        assert statement in text, statement
+    assert "run under the same uid" not in text
+
+
 def test_mcp_tools_documents_the_release_line_and_the_lot_header() -> None:
     text = (REPO_ROOT / "docs" / "MCP_TOOLS.md").read_text()
     assert "planned, not shipped" in text
