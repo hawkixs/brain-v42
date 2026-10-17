@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:83f086a6d7e0583d9565a8c5e7b3cad1c11bd62bad710efe7c7fe3d500f62c7c",
+  "idempotency_key": "review_verdict:b1c236b5096f5da40c30413ce93a8a156dcafb77:117308188695",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117308188695,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The paragraph cites accepted option (a) recorded on 2026-10-05 (decision `8247fa5c`); no decision record is visible in the diff, so check that a record with that id and date exists elsewhere before relying on the citation.",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-464-1",
+          "line": 1401,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Decision reference not verifiable from the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The added paragraph asserts the delivery observer and the red-lab Factory run under the same uid and can read each other's PEM files and credentials; the diff adds prose only and no service or deployment configuration is visible, so check the service definitions to confirm both processes actually sh",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-464-2",
+          "line": 1398,
+          "severity": "minor",
+          "status": "new",
+          "title": "Shared-uid deployment claim not verifiable from the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 464,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "b1c236b5096f5da40c30413ce93a8a156dcafb77",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T04:26:10.565264Z",
+  "schema_version": 1
+}

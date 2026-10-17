@@ -1,0 +1,14 @@
+{
+  "digest": "sha256:33537fb44f4e42b4a4fb1872bba3e8a4e3a2d9b7d899fb261109b4ff98febc17",
+  "idempotency_key": "bind:hawkixs/brain-v42:471:ed309b121e65",
+  "issuer": "agent:claude-code:7af8f949-7b19-44b1-815d-2003e375d477",
+  "kind": "binding",
+  "payload": {
+    "head_sha": "ed309b121e6591546db72ac995dee9c7d71c27f3",
+    "number": 471,
+    "repository": "hawkixs/brain-v42"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T15:16:58.454727Z",
+  "schema_version": 1
+}

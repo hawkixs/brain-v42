@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:7704f273c36aa2a8b1ec55b32fcf906946c4abc31362883661aba42074627c64",
+  "idempotency_key": "review_verdict:025dc5c5f9411d990ea66ba4d6319bbd56adbcce:117305407994",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117305407994,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The paragraph cites accepted option (a) recorded on 2026-10-05 (decision `8247fa5c`); no decision record is visible in the diff, so check that a record with that id and date exists elsewhere before relying on the citation.",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-464-1",
+          "line": 1401,
+          "severity": "minor",
+          "status": "new",
+          "title": "Decision reference not verifiable from the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 464,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "025dc5c5f9411d990ea66ba4d6319bbd56adbcce",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T04:10:56.278176Z",
+  "schema_version": 1
+}

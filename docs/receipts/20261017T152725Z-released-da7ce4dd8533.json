@@ -1,0 +1,42 @@
+{
+  "digest": "sha256:da7ce4dd8533f578883957f5fe3a19c2cb1f60b49d3dbdaac7d0a5985de39a23",
+  "idempotency_key": "released:0.7.4",
+  "issuer": "agent:claude-code:7af8f949-7b19-44b1-815d-2003e375d477",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "changelog": [
+        "\ud83d\udd16 chore(release): 0.7.4",
+        "chore(deploy): allow red-monitor on the metrics read routes",
+        "\ud83d\udc1b fix(mcp): answer unbound session ids with 404 and keep owner bindings alive",
+        "\ud83d\udd25 chore(deploy): retire the workstation host-release machinery",
+        "\ud83d\udcdd docs: say the development compose still starts embedding-shim",
+        "\ud83d\udcdd docs: keep the shim retention claim true and guard it",
+        "\ud83d\udcdd docs: describe hosted embedding and rerank as production",
+        "\ud83d\udd12 fix(ops): refuse non-ASCII PostgreSQL passwords until SASLprep is supported",
+        "\ud83d\udd12 fix(ops): lock the PostgreSQL rotation and print recovery on every database failure",
+        "\ud83d\udd12 fix(ops): send SCRAM verifiers, silence statement logging, report the restore command",
+        "\ud83d\udcdd docs: describe red-base as production and the systemd path as retired",
+        "\ud83d\udcdd docs: scope the systemd path and the host probe to the retired workstation",
+        "\u2728 feat(ops): rotate the PostgreSQL owner and runtime passwords without showing them",
+        "\ud83d\udcdd docs: keep the automation port literal and cover OPERATIONS in the stale guard",
+        "\ud83d\udcdd docs: reconcile the MCP transport contract with red-base",
+        "\ud83d\udcdd docs(operations): describe the observer's isolation as measured on red-base",
+        "\ud83d\udcdd docs: state the red-base boundary exactly as the compose file sets it",
+        "\ud83d\udcdd docs: describe the WireGuard network boundary of red-base",
+        "\ud83d\udcdd docs(operations): state that the observer and the Factory share one uid",
+        "\ud83d\udd16 chore(receipts): record the release, deployment and drills of 0.7.3"
+      ],
+      "digest": "sha256:fe74affc753051171a9c7b6b031d0155b2619ab2936eda842f708133cee2be2d",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:fe74affc753051171a9c7b6b031d0155b2619ab2936eda842f708133cee2be2d",
+      "platform": "linux/amd64",
+      "sha": "986281b596f5a6202f9742d88599c152635cadbd",
+      "tag": "v0.7.4",
+      "version": "0.7.4"
+    },
+    "kind": "released"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T15:27:25.628654Z",
+  "schema_version": 1
+}

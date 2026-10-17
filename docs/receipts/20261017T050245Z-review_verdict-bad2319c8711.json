@@ -1,0 +1,98 @@
+{
+  "digest": "sha256:bad2319c87110993a676df925761900d1e9204d05d7a6ac5bd2c04216d9a3fdf",
+  "idempotency_key": "review_verdict:7da9bcf686bd82af6a9ed79af9fc9007959a5ff5:117314232869",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117314232869,
+      "diff_truncated": false,
+      "finding_count": 6,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The contract states the MCP listener never binds 0.0.0.0, but deploy/compose.yaml (outside the diff) only publishes \"${BIND_ADDRESS}:8765:8765\"; nothing in the diff shows a validator forbidding BIND_ADDRESS=0.0.0.0, analogous to the METRICS_HOST validator at 6c61b63. Check tests/unit/test_red_base_c",
+          "file": "src/brain_v42/documentation/claude_md_claims.py",
+          "id": "F-465-1",
+          "line": 110,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "'never 0.0.0.0' depends on the host-supplied BIND_ADDRESS value, not guarded in the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "Extends F-465-1's pattern from the earlier review to the delta's other new claims: NETWORK_BOUNDARY_CONTRACT now asserts only two published ports (`:8765`/`:9200`), `BRAIN_MCP_AUTH_MODE: credentials`, `METRICS_RECEIVER_AUTH: credentials`, and Postgres/Neo4j publishing no host port; `deploy/compose.y",
+          "file": "src/brain_v42/documentation/claude_md_claims.py",
+          "id": "F-465-2",
+          "line": 110,
+          "severity": "important",
+          "status": "still_open",
+          "title": "New specific claims are pinned in-diff only against the prose they were written with"
+        },
+        {
+          "class": "note",
+          "evidence": "The assertion substring \"`METRICS_HOST` is fail-closed\" is removed and not replaced; the contract text still links the fail-closed validator to `METRICS_ALLOW_NON_LOOPBACK`, but this test would no longer fail if the prose dropped the METRICS_HOST/validator link. The deliberate removal pins \"stay unr",
+          "file": "tests/unit/test_documentation_contract.py",
+          "id": "F-465-3",
+          "line": 1986,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Rewrite drops the prose pin that METRICS_HOST is fail-closed"
+        },
+        {
+          "class": "note",
+          "evidence": "The paragraph now also claims \"only two services publish a host port\", specific ports 8765/9200, and `METRICS_RECEIVER_AUTH: credentials`, but \"What would make this paragraph false again\" lists only a publish outside `BIND_ADDRESS` or MCP leaving credentials mode; a third publish on `BIND_ADDRESS` w",
+          "file": "src/brain_v42/documentation/claude_md_claims.py",
+          "id": "F-465-4",
+          "line": 124,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Falsification-trigger list narrower than the paragraph's own claims"
+        },
+        {
+          "class": "note",
+          "evidence": "The new paragraph asserts the observer runs as `1000:1000` under deploy/compose.yaml with two file-secret mounts (/etc/brain-v42/delivery-observer.env mode 0600, /etc/brain-v42/github-app-key.pem) 'mounted only in that container', but the new test_operations_documents_the_observer_shared_uid_trust_b",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-465-5",
+          "line": 1398,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Observer paragraph's deployment facts pinned only against its own prose"
+        },
+        {
+          "class": "note",
+          "evidence": "The delta's new '### HTTP bind and authentication' section (and the env-sample comment 'non-loopback requires credentials opt-in') claims `Settings._mcp_bind_requires_named_opt_in` forces a loopback MCP bind without `MCP_HTTP_ALLOW_NON_LOOPBACK=true` and that `Settings._credentials_require_attribute",
+          "file": "docs/ARCHITECTURE.md",
+          "id": "F-465-6",
+          "line": 114,
+          "severity": "minor",
+          "status": "new",
+          "title": "New bind/auth prose names Settings validators outside the diff, unpinned"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "not_reviewed": [],
+      "pr": 465,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "7da9bcf686bd82af6a9ed79af9fc9007959a5ff5",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T05:02:45.504695Z",
+  "schema_version": 1
+}

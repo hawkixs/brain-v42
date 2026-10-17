@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:72c38ddf95c206d0fd327c2151b9845fc721869bc9d0f097ea710cd4cc24fcdd",
+  "idempotency_key": "review_verdict:ed309b121e6591546db72ac995dee9c7d71c27f3:117430462724",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117430462724,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The description says uv.lock is part of the bump with `uv lock --check` clean, but the visible diff shows only pyproject.toml and README.md; since only the first part of a large diff is visible, confirm the uv.lock hunks pin brain_v42 to 0.7.4.",
+          "file": "uv.lock",
+          "id": "F-471-1",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "Lockfile bump not visible in reviewed diff portion"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 471,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "ed309b121e6591546db72ac995dee9c7d71c27f3",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T15:19:42.962488Z",
+  "schema_version": 1
+}

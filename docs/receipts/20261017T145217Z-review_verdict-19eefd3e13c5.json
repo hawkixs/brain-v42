@@ -1,0 +1,55 @@
+{
+  "digest": "sha256:19eefd3e13c5990ef97241b40e3391acb6e6e5362704fa95228215cca33ed12b",
+  "idempotency_key": "review_verdict:dd2f0e739539fe1a1e7167537775b1db106c87e9:117424882996",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carried_from": "b1c17b43ca3c5690e19342782d9b1f601b665854",
+      "carry_decision": "57fa86dc",
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117424882996,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The description states the client order matches docs/OPERATIONS.md, which is outside the visible diff. Internal consistency holds regardless, since the same order is pinned in tests/unit/test_red_base_compose.py:157 and :167. Only relevant to check if the docs ordering is meant to be normative.",
+          "file": "deploy/compose.yaml",
+          "id": "F-470-1",
+          "line": 273,
+          "severity": "minor",
+          "status": "new",
+          "title": "Claimed docs/OPERATIONS.md ordering not verifiable from the diff"
+        }
+      ],
+      "independent": true,
+      "judged_base": "325bf7acbb90c07bc4c768b58ead9395e98afd30",
+      "mode": "light",
+      "new_base": "42a9b2db79b162026851ebca48924e3e536ca2f3",
+      "not_reviewed": [],
+      "patch_id": "ff221d85415c1afbef240e8977fdef52379ab235",
+      "pr": 470,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "dd2f0e739539fe1a1e7167537775b1db106c87e9",
+      "source_check_run_id": 117423232416,
+      "source_status_creator_id": 8717916,
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T14:52:17.235896Z",
+  "schema_version": 1
+}

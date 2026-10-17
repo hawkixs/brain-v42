@@ -1,0 +1,69 @@
+{
+  "digest": "sha256:cb2d7b0f98b2e6b9f9fd7c8b706b0f22714d7923fea2a76a835f20380a225009",
+  "idempotency_key": "review_verdict:a575b88cd2166b486cbd2d74317613254b23318a:117348390257",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117348390257,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "test_documented_reranker_matches_hosted_deployment reads deployment[\"x-rerank-env\"] and asserts voyage/rerank-3-lite/cohere-rerank-4-fast, test_documented_embedding_topology_matches_hosted_deployment reads x-embedding-env (openai, https://api.mistral.ai, codestral-embed-2505, \"1536\"), and ARCHITECTU",
+          "file": "tests/unit/test_documentation_contract.py",
+          "id": "F-467-1",
+          "line": 1981,
+          "severity": "minor",
+          "status": "new",
+          "title": "Contract tests and docs pin to deploy/compose.yaml, which is not in this diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The contract string is rebuilt inside test_documented_embedding_topology_matches_hosted_deployment and must match four-plus documents verbatim, while claude_md_claims.py claims to own the assertions ONCE and does own the reranker/shim/SEC2 contracts; a future wording change to this paragraph must be",
+          "file": "tests/unit/test_documentation_contract.py",
+          "id": "F-467-2",
+          "line": 1999,
+          "severity": "minor",
+          "status": "new",
+          "title": "Embedding-topology contract is owned inline in the test, not once in claude_md_claims.py"
+        },
+        {
+          "class": "note",
+          "evidence": "The new guard reads docker-compose.yml and runs the stale-claim assertions only if 'embedding-shim:' is present, but the documents also assert that 'embedding' and 'embedding-llama' remain defined; a compose edit dropping only those two services would not trip the guard. Harmless today since the ser",
+          "file": "tests/unit/test_documentation_contract.py",
+          "id": "F-467-3",
+          "line": 2098,
+          "severity": "minor",
+          "status": "new",
+          "title": "Shim-retention guard triggers only on the 'embedding-shim:' substring"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 467,
+      "providers": [
+        "glm",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "a575b88cd2166b486cbd2d74317613254b23318a",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T08:11:42.764596Z",
+  "schema_version": 1
+}
