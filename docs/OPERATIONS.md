@@ -961,6 +961,37 @@ it is disabled by default and is the CLI's sole object-ACL exception, outside
 the public schema contract. Exit codes are 0 for success, 1 for refusal/failure,
 and 2 for invalid CLI usage.
 
+### Rotate the Compose PostgreSQL passwords
+
+On the Compose host, run as root from the repository:
+
+```bash
+sudo python3 scripts/rotate_postgres_role_passwords.py
+```
+
+This rotates `brain` and `brain_app` together, then atomically replaces the two
+value-only password files, both PostgreSQL env files and the observer DSN under
+`/etc/brain-v42`, preserving ownership, mode 0600 and unrelated observer lines.
+Before changing PostgreSQL it saves the original five files in
+`/root/pg-rotation-<UTC_TIMESTAMP>/` (mode 0700). Output contains only `ok`, the
+rewritten paths and that backup directory. `--dry-run` validates without writing;
+each file path, `--container` and `--backup-root` can be overridden.
+
+Immediately restart consumers through `rail deploy`, explicitly recreating
+`delivery-observer`: its mounted secret does not participate in Compose's recreate
+hash. Verify authenticated connections as both roles using the installed files
+without displaying their contents, MCP readiness, consumer/container health,
+observer heartbeat freshness and absence of authentication failures in logs.
+Confirm all five files still have their original uid/gid and mode 0600.
+
+For rollback, run `sudo python3 scripts/rotate_postgres_role_passwords.py --restore
+<UTC_TIMESTAMP>` with the timestamp from the backup directory (and the same path
+overrides, if used), then repeat `rail deploy`, explicit observer recreation and
+the verification list. Restore reapplies the backed-up passwords before restoring
+the files. Backups remain after failures; use restore if a filesystem failure or
+interruption left only some files replaced. File replacements are individually
+atomic; the database transaction and five replacements are separate steps.
+
 Recovery contract v20 is the recovery asset for the schema through 062. It includes
 the session connection ledger from 061 and the 062 monitoring extension inventory
 (`pg_stat_statements`, `plpgsql`, and `vector`), along with the expected database
