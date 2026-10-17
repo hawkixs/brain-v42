@@ -11,6 +11,9 @@ import sqlalchemy as sa
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from brain_v42.db.tables import brain_entities, entity_relations, graph_outbox
+from brain_v42.provenance import get_checked_project
+from brain_v42.repositories.checked_project import CheckedProjectMismatch, lock_checked_owner
+from brain_v42.repositories.pg_scope_lookup import ENTITY_TABLES
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -968,9 +971,22 @@ class PgGraphLedgerRepo:
     ) -> GraphOutboxEvent:
         """Upsert one UUID-anchored relation and enqueue its projection."""
         self._validate_relation(relation_type, confidence)
+        checked_source_id = source_id
         source_id, target_id = canonicalize_relation_endpoints(source_id, target_id, relation_type)
         async with self._session_factory() as session:
             try:
+                if get_checked_project() is not None:
+                    kind = (
+                        await session.execute(
+                            sa.select(brain_entities.c.entity_type).where(
+                                brain_entities.c.source_uuid == checked_source_id
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    table = ENTITY_TABLES.get(kind) if isinstance(kind, str) else None
+                    if table is None:
+                        raise CheckedProjectMismatch
+                    await lock_checked_owner(session, table, checked_source_id)
                 endpoints = await self._resolve_uuid_endpoints(session, source_id, target_id)
                 self._validate_project_scope(endpoints, project_key)
                 event = await self._stage_relation_in_session(

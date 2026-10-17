@@ -26,6 +26,7 @@ from brain_v42.mcp.tools.tool_annotations import (
     _READ_ANNOTATIONS,
 )
 from brain_v42.models.brain import KnowledgeType, MutableKnowledgeType
+from brain_v42.repositories.checked_project import checked_project_clause, lock_checked_owner
 from brain_v42.services.consolidation import (
     MERGEABLE_ENTITY_TYPES,
     ConsolidationChildrenUnstableError,
@@ -161,8 +162,10 @@ def register_decay_tools(
             return format_error(f"Invalid UUID: {entity_id}")
 
         async with session_factory() as session:
+            await lock_checked_owner(session, table, uid)
             stmt = (
                 sa.update(table)
+                .where(checked_project_clause(table.c.project_key))
                 .where(table.c.id == uid)
                 .values(
                     freshness_status="fresh",

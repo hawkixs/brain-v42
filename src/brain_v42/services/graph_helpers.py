@@ -8,6 +8,7 @@ from uuid import UUID
 
 import structlog
 
+from brain_v42.repositories.checked_project import CheckedProjectMismatch
 from brain_v42.repositories.pg_graph_ledger import UnknownGraphEndpoint
 
 logger = structlog.get_logger(__name__)
@@ -109,6 +110,8 @@ async def graph_create_relation_logged(
             )
         else:
             outcome = await graph.create_relation(src_id, tgt_id, rel_type)
+    except CheckedProjectMismatch:
+        raise
     except Exception:
         logger.error(
             "graph_relation_write_failed",

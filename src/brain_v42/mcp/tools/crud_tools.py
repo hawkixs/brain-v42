@@ -68,7 +68,13 @@ from brain_v42.models.project_key import canonicalize_project_key
 from brain_v42.models.relation import RelationInput
 from brain_v42.models.runbook import RunbookUpdate
 from brain_v42.models.snippet import SnippetLanguage, SnippetUpdate
-from brain_v42.provenance import get_current_actor, is_human_actor
+from brain_v42.provenance import (
+    advance_checked_project,
+    get_checked_project,
+    get_current_actor,
+    is_human_actor,
+)
+from brain_v42.repositories.checked_project import CheckedProjectMismatch
 from brain_v42.services.graph_helpers import graph_create_relation_logged
 
 if TYPE_CHECKING:
@@ -610,6 +616,11 @@ def register_crud_tools(
         if updated is None:
             return format_error(f"{entity_type} {entity_id} not found")
 
+        if get_checked_project() is not None:
+            updated_project = getattr(updated, "project_key", None)
+            if updated_project is not None:
+                advance_checked_project(updated_project)
+
         # Add graph relations if provided and service has a graph.
         if related_to and graph is not None:
             if scope is not None:
@@ -633,6 +644,8 @@ def register_crud_tools(
                             UUID(rel["id"]),
                             rel["type"],
                         )
+                except CheckedProjectMismatch:
+                    raise
                 except Exception:
                     logger.warning(
                         "brain_update.graph_relations_failed",

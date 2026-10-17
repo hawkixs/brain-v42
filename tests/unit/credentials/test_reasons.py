@@ -26,6 +26,7 @@ PAIRS = [
     ("issuer_not_allowed", 403),
     ("scope_denied", 403),
     ("null_project_refused", 403),
+    ("relay_override_refused", 403),
 ]
 
 

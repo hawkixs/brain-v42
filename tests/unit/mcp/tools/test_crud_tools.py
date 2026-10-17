@@ -567,6 +567,42 @@ class TestBrainDelete:
 
 class TestBrainUpdate:
     @pytest.mark.asyncio
+    async def test_unchecked_update_does_not_read_or_advance_owner(
+        self,
+        tools: dict[str, Any],
+        services: dict[str, Any],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from brain_v42.mcp.tools import crud_tools
+
+        class Result:
+            @property
+            def project_key(self) -> str:
+                raise AssertionError("An unchecked update must not inspect the owner")
+
+        services["decision_svc"].update.return_value = Result()
+        advance = MagicMock()
+        monkeypatch.setattr(crud_tools, "advance_checked_project", advance)
+
+        result = await tools["brain_update"]("decision", str(uuid4()), {"title": "Updated"})
+
+        assert result.startswith("ok Updated")
+        advance.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_checked_update_without_returned_owner_preserves_holder(
+        self, tools: dict[str, Any], services: dict[str, Any]
+    ) -> None:
+        from brain_v42.provenance import checked_project, get_checked_project
+
+        services["decision_svc"].update.return_value = object()
+
+        with checked_project("original"):
+            result = await tools["brain_update"]("decision", str(uuid4()), {"title": "Updated"})
+            assert result.startswith("ok Updated")
+            assert get_checked_project() == "original"
+
+    @pytest.mark.asyncio
     async def test_tool_registered(self, tools: dict[str, Any]) -> None:
         """brain_update is registered as an MCP tool."""
         assert "brain_update" in tools

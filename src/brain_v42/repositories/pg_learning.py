@@ -29,7 +29,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from brain_v42.db.project_group_scope import project_key_in_group
 from brain_v42.db.tables import learnings
 from brain_v42.models.learning import Learning, LearningCreate, LearningUpdate
+from brain_v42.provenance import get_checked_project
 from brain_v42.repositories.capture_guard import lock_unless_captured
+from brain_v42.repositories.checked_project import checked_project_clause, lock_checked_owner
 from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, Row, project_scope
 
 logger = structlog.get_logger(__name__)
@@ -148,6 +150,13 @@ class PgLearningRepo(BasePgRepository):
         updated_at is always bumped by super().update (datetime.now(UTC) client-side,
         aligned with the vague-3 contract for snippet/runbook).
         """
+        if get_checked_project() is not None:
+            if session is None:
+                async with self._maybe_session(None, write=True) as owned:
+                    return await self.update(
+                        learning_id, data, embedding, project_key=project_key, session=owned
+                    )
+            await lock_checked_owner(session, learnings, learning_id)
         values: dict = {
             k: v for k, v in data.model_dump(exclude_unset=True).items() if v is not None
         }
@@ -167,6 +176,7 @@ class PgLearningRepo(BasePgRepository):
         else:
             stmt = (
                 learnings.update()
+                .where(checked_project_clause(learnings.c.project_key))
                 .where(
                     learnings.c.id == learning_id,
                     learnings.c.project_key == project_key,
@@ -354,11 +364,13 @@ class PgLearningRepo(BasePgRepository):
             conditions.append(project_key_in_group(learnings.c.project_key, project_group))
         stmt = (
             learnings.update()
+            .where(checked_project_clause(learnings.c.project_key))
             .where(*conditions)
             .values(validated_at=datetime.now(UTC))
             .returning(*learnings.c)
         )
         async with self._maybe_session(None, write=True) as sess:
+            await lock_checked_owner(sess, learnings, learning_id)
             result = await sess.execute(stmt)
             row = result.mappings().first()
             if row is None:

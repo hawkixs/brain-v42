@@ -25,6 +25,7 @@ from brain_v42.facts.model import (
 from brain_v42.facts.registry import FactRegistry, UnknownFactError
 from brain_v42.facts.verdict_fingerprints import outcome_fingerprint, request_fingerprint
 from brain_v42.models.claim_verdict import ClaimVerificationError, validate_caller_string
+from brain_v42.repositories.checked_project import CheckedProjectMismatch, lock_checked_owner
 from brain_v42.repositories.pg_claim_verdicts import (
     ScopedClaim,
     VerdictRow,
@@ -33,6 +34,7 @@ from brain_v42.repositories.pg_claim_verdicts import (
     lookup_observation,
     lookup_request,
 )
+from brain_v42.repositories.pg_scope_lookup import claim_source
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -250,6 +252,37 @@ class ClaimVerificationService:
             async with self._session_factory() as owned_session, owned_session.begin():
                 return await self._verify(
                     owned_session, checked_id, issuer, kind, key, project_key=project_key
+                )
+
+    async def verify_checked_source(
+        self,
+        claim_id: UUID,
+        issuer_identity: str,
+        issuer_kind: Literal["robot", "human"],
+        idempotency_key: str,
+        *,
+        source_project_key: str,
+        project_key: str | None = None,
+    ) -> VerdictRow:
+        """Lock the checked source before the claim, within the shared admission bound."""
+        checked_id, issuer, kind, key = _validate_arguments(
+            claim_id, issuer_identity, issuer_kind, idempotency_key
+        )
+        validate_caller_string(source_project_key)
+        if project_key is not None:
+            validate_caller_string(project_key)
+        async with self._measured_write_gate():
+            async with self._session_factory() as session, session.begin():
+                source = await claim_source(session, checked_id)
+                if source is None:
+                    raise CheckedProjectMismatch
+                table, entity_id = source
+                if not await lock_checked_owner(
+                    session, table, entity_id, checked=source_project_key
+                ):
+                    raise CheckedProjectMismatch
+                return await self.verify(
+                    checked_id, issuer, kind, key, session=session, project_key=project_key
                 )
 
     async def _verify(

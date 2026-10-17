@@ -19,6 +19,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.models.decision import Decision, DecisionCreate, DecisionUpdate
+from brain_v42.provenance import advance_checked_project
 from brain_v42.repositories.pg_decision import PgDecisionRepo
 from brain_v42.services.embedding_enrichment import (
     EmbeddingEnrichmentService,
@@ -385,6 +386,10 @@ class DecisionService:
         self, old_id: UUID, result: Decision, new_data: DecisionCreate
     ) -> None:
         """Mirror a committed supersession to Neo4j; graph failures never break PG state."""
+        # The relation's source is the committed replacement, whose project was
+        # authorized independently of the old decision by the scoped caller.
+        if result.project_key is not None:
+            advance_checked_project(result.project_key)
         if self._graph:
             try:
                 await self._graph.upsert_node(

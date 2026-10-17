@@ -359,13 +359,37 @@ sidecar do not interpret the setting. It does not control the existing own-focus
    required targets or programme actors, both 403. Family denials retain priority.
    Returning to `observe` stops ordinary scope refusals; `off` also stops their counts.
 
-Enforce currently covers direct project arguments and independently resolved actors,
-including `@project`, on writes. It excludes ticket `to_project` and read operations.
-It is **not complete project isolation**: PR4 still needs stored-row ownership checks
-for session lifecycle calls after start, slot close, claim verification and
-entity-addressed knowledge writes. PR3 checks resolved actors on those deferred tools,
-but permits a NULL actor until their row resolver exists. The reviewed census is
-`src/brain_v42/mcp/project_scope.py`; every new write/delivery tool must be classified.
+Enforce covers every reviewed write's direct project arguments, independently resolved
+actors (including `@project`) and persisted ownership for session lifecycle calls, slot
+close, claim verification and entity-addressed knowledge writes. It excludes ticket
+`to_project` and read operations. Claims require both their own project and their concrete
+source row's project in scope. Invalid ids, missing rows and NULL ownership return the
+same `scope_denied`. Updates check a supplied move target; supersession also checks the
+replacement project, refusing an omitted one with `null_project_refused`.
+
+The checked-project guard operates only in enforce for scoped credentials. Each knowledge
+write transaction locks the concrete source row and rechecks its owner before writing;
+guarded UPDATEs also carry the checked project predicate. Empty-field updates take the
+same lock before claim writes. An intentional authorized move advances the request's
+checked owner only after commit, so subsequent relation transactions check the new owner.
+A later refusal does not undo earlier transactions committed while the entity was still
+in scope. Claim verification keeps the shared admission bound and locks the source before
+the claim, matching the update/claim-replacement lock order. Deferred snippet/runbook access
+events carry no caller content and only bump counters and freshness for the row authorized
+at request time; the background consumer has no request scope context.
+
+Scoped relay operator initiators and shrink overrides return `relay_override_refused`
+(403) before capture or transaction side effects. Observe counts these candidates and
+continues; off and unscoped relay keep their existing behavior. Returning to observe also
+disables the transaction guard. The reviewed census is `src/brain_v42/mcp/project_scope.py`;
+every new write/delivery tool must be classified, and the mutation census test requires
+an explicit guard or exemption for every knowledge UPDATE.
+
+PR4 changes no schema and needs no recovery-contract procedure: recovery contract v27
+is unchanged. Run `tests/integration/db/test_recovery_contract_v27.py` on the disposable
+database with the ownership-race tests before rollout. The metrics sidecar shares the
+credential verifier but installs no MCP family middleware; its existing receiver boundary
+is independent of this setting.
 
 Authorization uses the verifier's principal snapshot. Successful notification refreshes
 replace the whole snapshot; periodic refresh runs every 30 seconds. A failed refresh

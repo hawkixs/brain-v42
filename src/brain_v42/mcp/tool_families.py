@@ -16,12 +16,17 @@ from fastmcp.tools.base import Tool, ToolResult
 
 from brain_v42.credentials.author_binding import count_author_binding
 from brain_v42.credentials.families import ELEVATION_FAMILY
-from brain_v42.credentials.reasons import emit_refusal
 from brain_v42.credentials.redact import sanitize_label
 from brain_v42.mcp.client_principal import ClientPrincipal, resolve_client_principal
-from brain_v42.mcp.project_scope import scope_decision
+from brain_v42.mcp.project_scope import KNOWLEDGE_ROW_TOOLS, ROW_SOURCES, scope_decision
+from brain_v42.mcp.scope_refusal import emit_scope_refusal
 from brain_v42.models.project_key import canonicalize_project_key
-from brain_v42.provenance import get_current_actor, get_current_actor_project, get_current_peer
+from brain_v42.provenance import (
+    checked_claim_source,
+    checked_project,
+    get_current_actor_project,
+)
+from brain_v42.repositories.pg_scope_lookup import ENTITY_TABLES, Missing
 
 logger = structlog.get_logger(__name__)
 
@@ -138,9 +143,12 @@ class FamilyAuthorizationMiddleware(Middleware):
         self,
         elevation_checker: Callable[[str, str], Awaitable[bool]] | None = None,
         scope_mode: str = "observe",
+        row_project_resolver: Callable[[str, object], Awaitable[str | None | Missing]]
+        | None = None,
     ) -> None:
         self._elevation_checker = elevation_checker
         self._scope_mode = scope_mode
+        self._row_project_resolver = row_project_resolver
         self._catalog_elevations: ContextVar[dict[tuple[str, str], bool] | None] = ContextVar(
             "brain_v42_catalog_elevations", default=None
         )
@@ -224,20 +232,6 @@ class FamilyAuthorizationMiddleware(Middleware):
         finally:
             self._catalog_elevations.reset(token)
 
-    def _refuse(
-        self, *, tool: str | None = None, path: str | None = None, reason: str = "family_denied"
-    ) -> None:
-        principal = resolve_client_principal(get_access_token())
-        emit_refusal(
-            reason,
-            status=403,
-            client_id=None if principal is None else principal.client_id,
-            declared_agent=get_current_actor(),
-            peer=get_current_peer(),
-            tool=tool,
-            path=path,
-        )
-
     async def on_call_tool(
         self,
         context: MiddlewareContext[mt.CallToolRequestParams],
@@ -257,13 +251,13 @@ class FamilyAuthorizationMiddleware(Middleware):
                     key = None
                 assert principal is not None and principal.allowed_projects is not None
                 if key not in principal.allowed_projects:
-                    self._refuse(tool=name)
+                    emit_scope_refusal(tool=name)
                     raise AuthorizationError("family_denied")
                 if any(
                     arguments.get(field) is not None
                     for field in ("blockers", "feature_status", "unpin")
                 ):
-                    self._refuse(tool=name, reason="focus_side_effect_refused")
+                    emit_scope_refusal(tool=name, reason="focus_side_effect_refused")
                     raise AuthorizationError("focus_side_effect_refused")
         if not await self.allows_current_tool(name):
             if (
@@ -272,7 +266,7 @@ class FamilyAuthorizationMiddleware(Middleware):
                 and family_of(name) in {"write", "delivery"}
             ):
                 count_author_binding(f"{name}:scope_unauthenticated")
-            self._refuse(tool=name)
+            emit_scope_refusal(tool=name)
             raise AuthorizationError("family_denied")
         if (
             self._scope_mode != "off"
@@ -280,13 +274,38 @@ class FamilyAuthorizationMiddleware(Middleware):
             and principal.allowed_projects is not None
             and family_of(name) in {"write", "delivery"}
         ):
+            arguments = context.message.arguments or {}
+            row_projects = None
+            if name in ROW_SOURCES:
+                kind, argument = ROW_SOURCES[name]
+                if kind == "entity":
+                    entity_type = arguments.get("entity_type")
+                    kind = (
+                        entity_type
+                        if isinstance(entity_type, str) and entity_type in ENTITY_TABLES
+                        else ""
+                    )
+                resolver = self._row_project_resolver
+                resolved = (
+                    None
+                    if resolver is None or not kind
+                    else await resolver(kind, arguments.get(argument))
+                )
+                row_projects = [resolved if isinstance(resolved, str) else None]
+                if name == "brain_claim_verify":
+                    resolved = (
+                        None
+                        if resolver is None
+                        else await resolver("claim_source", arguments.get(argument))
+                    )
+                    row_projects.append(resolved if isinstance(resolved, str) else None)
             decision = scope_decision(
-                name, context.message.arguments or {}, principal, get_current_actor_project()
+                name, arguments, principal, get_current_actor_project(), row_projects
             )
             if decision is not None:
                 count_author_binding(f"{name}:{decision.cause}")
                 if self._scope_mode == "enforce":
-                    self._refuse(tool=name, reason=decision.reason)
+                    emit_scope_refusal(tool=name, reason=decision.reason)
                     raise AuthorizationError(decision.reason)
                 logger.info(
                     "credential_scope.candidate",
@@ -294,6 +313,15 @@ class FamilyAuthorizationMiddleware(Middleware):
                     cause=sanitize_label(decision.cause),
                     client_id=sanitize_label(None if principal is None else principal.client_id),
                 )
+            if self._scope_mode == "enforce" and decision is None and row_projects:
+                if name in KNOWLEDGE_ROW_TOOLS:
+                    assert row_projects[0] is not None
+                    with checked_project(row_projects[0]):
+                        return await call_next(context)
+                if name == "brain_claim_verify":
+                    assert row_projects[1] is not None
+                    with checked_claim_source(row_projects[1]):
+                        return await call_next(context)
         return await call_next(context)
 
     async def on_list_resources(
@@ -322,7 +350,7 @@ class FamilyAuthorizationMiddleware(Middleware):
         context: MiddlewareContext[mt.ReadResourceRequestParams],
         call_next: CallNext[mt.ReadResourceRequestParams, ResourceResult],
     ) -> ResourceResult:
-        self._refuse(path=str(context.message.uri))
+        emit_scope_refusal(path=str(context.message.uri))
         raise AuthorizationError("family_denied")
 
     async def on_get_prompt(
@@ -330,5 +358,5 @@ class FamilyAuthorizationMiddleware(Middleware):
         context: MiddlewareContext[mt.GetPromptRequestParams],
         call_next: CallNext[mt.GetPromptRequestParams, PromptResult],
     ) -> PromptResult:
-        self._refuse(tool=context.message.name)
+        emit_scope_refusal(tool=context.message.name)
         raise AuthorizationError("family_denied")

@@ -27,7 +27,9 @@ from brain_v42.models.runbook import (
     RunbookStep,
     RunbookUpdate,
 )
+from brain_v42.provenance import get_checked_project
 from brain_v42.repositories.capture_guard import lock_unless_captured
+from brain_v42.repositories.checked_project import checked_project_clause, lock_checked_owner
 from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, Row
 from brain_v42.repositories.promotion import (
     SourceLearningNotFound,
@@ -228,6 +230,13 @@ class PgRunbookRepo(BasePgRepository):
         session: Any = None,
     ) -> Runbook | None:
         """Partially update a Runbook. Returns None if not found."""
+        if get_checked_project() is not None:
+            if session is None:
+                async with self._maybe_session(None, write=True) as owned:
+                    return await self.update(
+                        id, data, embedding, project_key=project_key, session=owned
+                    )
+            await lock_checked_owner(session, runbooks, id)
         payload = _runbook_update_to_dict(data, embedding)
         if not payload:
             # Nothing to update — return current record
@@ -243,6 +252,7 @@ class PgRunbookRepo(BasePgRepository):
         else:
             stmt = (
                 runbooks.update()
+                .where(checked_project_clause(runbooks.c.project_key))
                 .where(
                     runbooks.c.id == id,
                     runbooks.c.project_key == project_key,
@@ -372,8 +382,10 @@ class PgRunbookRepo(BasePgRepository):
         """
 
         async def _execute(sess: Any) -> Runbook | None:
+            await lock_checked_owner(sess, self.table, id)
             stmt = (
                 self.table.update()
+                .where(checked_project_clause(self.table.c.project_key))
                 .where(self.table.c.id == id)
                 .values(
                     execution_count=self.table.c.execution_count + 1,
