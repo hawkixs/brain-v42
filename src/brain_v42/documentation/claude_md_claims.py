@@ -1,7 +1,7 @@
 """The five assertions the repository makes about `CLAUDE.md`, owned ONCE.
 
 Ticket 87ac8b7a. `CLAUDE.md` carries claims of MEASURABLE state — the schema
-revision in production, the MCP transport URL, the reranker port, the network
+revision in production, the MCP transport URL, the hosted reranker, the network
 boundary, the FastMCP major — and nothing confronted them with the source until
 `test_documentation_contract.py` grew assertions for them. Those assertions are
 the addressable unit the ticket asked for; they simply were not reusable.
@@ -17,11 +17,11 @@ document the other side rejects — the very drift this ticket describes,
 reproduced inside its own fix.
 
 Everything that CAN be derived IS derived, at call time: the Alembic head, the
-port from `Settings`, the local transport URL from the `Settings` MCP HTTP defaults, the FastMCP major from
+local transport URL from the `Settings` MCP HTTP defaults, the FastMCP major from
 `uv.lock`. A retyped number goes stale exactly like the document it guards. What
-stays literal is prose that has no machine-readable source — the three
-operator-facing paragraphs — and it lives here rather than in a test so the
-report cannot hold a different copy of it.
+stays literal is the operator-facing prose, including the hosted reranker
+contract checked against deploy/compose.yaml by the documentation tests. It
+lives here so the report cannot hold a different copy of the same assertion.
 """
 
 from __future__ import annotations
@@ -29,7 +29,6 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
@@ -92,16 +91,6 @@ def _local_mcp_url() -> str:
     return f"http://{host}:{port}/mcp"
 
 
-def _reranker_port() -> int:
-    from brain_v42.config import Settings  # noqa: PLC0415
-
-    default = Settings.model_fields["reranker_url"].default
-    port = urlsplit(str(default)).port
-    if port is None:
-        raise RuntimeError(f"reranker_url has no port: {default!r}")
-    return port
-
-
 #: The three operator-facing paragraphs. Literal because they have no
 #: machine-readable source — and here rather than in a test so that the guard and
 #: the report cannot hold two copies of the same sentence.
@@ -126,24 +115,22 @@ NETWORK_BOUNDARY_CONTRACT = (
 )
 
 SHIM_LIMITS_CONTRACT = (
-    "**Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read "
-    "timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum "
-    "JSON depth 64, one embedding calculation and one rerank calculation per worker. "
-    "Saturation returns short `503` JSON with `Retry-After: 1`."
+    "**Optional local embedding shim limits**: the retained development source enforces 8 "
+    "MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 "
+    "rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank "
+    "calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`. "
+    "The development `docker-compose.yml` still defines the shim for local use; it does not "
+    "serve production search."
 )
 
 SEC2_RESIDUALS_CONTRACT = (
-    "**SEC2 residuals** (replayed 2026-08-23): bearer authentication and the dedicated "
-    "Docker client network are done — the coordinated `auto-discord` cutover happened, and "
-    "both `auto-discord` containers sit on `brain-net`. One residual stands, and it is "
-    "wider than previously written: the versioned legacy PyTorch profile remains unbounded "
-    "— `services/embedding/main.py` carries no body cap, no read deadline, no concurrency "
-    "semaphore and no `413`/`503` — and it preserves neither of the two DNS names its "
-    "clients use. A `--profile legacy` rollback publishes `embedding` and "
-    "`brain_v42_embedding` on `brain-net`, while the compose sets "
-    "`EMBEDDING_URL=http://embedding-shim:8003` and the running bot, carrying no "
-    "`EMBEDDING_URL` of its own, falls back to the code default "
-    "`http://brain_v42_embedding_shim:8003`. Two names break, not one."
+    "**SEC2 residuals**: the retained legacy source `services/embedding/main.py` has no "
+    "body cap, no read deadline, no concurrency semaphore and no `413`/`503`. The "
+    "development `docker-compose.yml` still defines `embedding`, `embedding-llama` and "
+    "`embedding-shim`; their removal waits on brain ticket `14bb4157` (the auto-discord bot "
+    "still embeds through the shim). This source is "
+    "not a production dependency or a reranker rollback; any separate local deployment "
+    "needs its own network and authentication boundary."
 )
 
 
@@ -161,7 +148,11 @@ def mcp_transport_contract() -> str:
 
 
 def reranker_contract() -> str:
-    return f"unified embedding endpoint `:{_reranker_port()}/rerank`"
+    return (
+        "**Reranker**: production uses hosted Voyage `rerank-3-lite` with OpenRouter "
+        "`cohere/rerank-4-fast` fallback via `deploy/compose.yaml` (`x-rerank-env`). "
+        'Rollback replaces that block with `BRAIN_RERANK_BACKEND="none"` alone.'
+    )
 
 
 def fastmcp_contract(root: Path | None = None) -> str:

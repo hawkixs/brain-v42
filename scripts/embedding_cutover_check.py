@@ -1,4 +1,7 @@
-"""Embedding cutover validation — gold bench v1 against a baseline.
+"""Legacy local embedding cutover validation — gold bench v1 against a baseline.
+
+This harness targets separately supplied local endpoints, not the hosted
+production embedding and reranker configuration in deploy/compose.yaml.
 
 Three measurements on the target endpoint (native /embed, /rerank contract):
 
@@ -13,7 +16,7 @@ Three measurements on the target endpoint (native /embed, /rerank contract):
            PyTorch CrossEncoder).
 
 Usage:
-  # baseline (PyTorch still in production) — output path is an example under the
+  # local baseline (PyTorch) — output path is an example under the
   # private brain-v42-internal repository's copy of bench/embedding_v1/
   python scripts/embedding_cutover_check.py \\
       --url http://localhost:8003 \\

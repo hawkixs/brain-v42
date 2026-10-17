@@ -112,6 +112,18 @@ def test_the_claims_are_the_ones_the_documentation_contract_asserts() -> None:
         assert claim.expected, f"{claim.id} has an empty expectation"
 
 
+def test_local_endpoint_claim_does_not_satisfy_hosted_reranker_contract(tmp_path: Path) -> None:
+    from brain_v42.documentation.claude_md_claims import reranker_contract
+
+    document = tmp_path / "CLAUDE.md"
+    stale = _conforming_text().replace(
+        reranker_contract(), "unified embedding endpoint `:8003/rerank`"
+    )
+    document.write_text(stale, encoding="utf-8")
+
+    assert "documented_reranker_endpoint" in " ".join(_block(document))
+
+
 @pytest.mark.parametrize("claim_id", ["documented_migration_head", "documented_fastmcp_major"])
 def test_each_claim_is_derived_from_the_repository_not_typed(claim_id: str) -> None:
     """A retyped number goes stale exactly like the document it guards."""

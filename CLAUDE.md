@@ -10,7 +10,7 @@
 
 **MCP transport**: production (red-base) = HTTP on the host's WireGuard address (`BIND_ADDRESS`, port 8765, path `/mcp`) in credentials mode, every call authenticated; local HTTP (workstation/dev) = loopback `http://127.0.0.1:8765/mcp` (the configuration default bind); configuration default and dev/fallback transport = `stdio`.
 
-**Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
+**Embedding topology**: production uses hosted embeddings via `deploy/compose.yaml` (`x-embedding-env`: `EMBEDDING_BACKEND=openai`, Mistral `codestral-embed-2505`, 1536 dimensions). The local endpoint `http://localhost:8003` is optional for development only; the former workstation deployment is retired.
 
 ---
 
@@ -303,9 +303,9 @@ MCP over authenticated HTTP on `BIND_ADDRESS:8765/mcp` in production (red-base),
 
 - **PG (5433)** — source of truth: CRUD, FTS, pgvector semantic search
 - **Neo4j (bolt 7687, browser 7474)** — relation index, traversals, invisible to the LLM
-- **GPU embedding** — Qodo-Embed-1-1.5B GGUF Q8_0 via llama.cpp + a Starlette shim on
-  `localhost:8003`, 1536 dims; PyTorch rollback: `docker compose --profile legacy up -d embedding`
-- **Reranker** — unified embedding endpoint `:8003/rerank` (ONNX cross-encoder on CPU)
+- **Embeddings** — hosted Mistral `codestral-embed-2505`, 1536 dimensions, through the
+  OpenAI-compatible backend in `deploy/compose.yaml` (`x-embedding-env`).
+- **Reranker**: production uses hosted Voyage `rerank-3-lite` with OpenRouter `cohere/rerank-4-fast` fallback via `deploy/compose.yaml` (`x-rerank-env`). Rollback replaces that block with `BRAIN_RERANK_BACKEND="none"` alone.
 - **Schema** managed by Alembic; the **repository** carries migration 068 (recovery contract v26 candidate). The **live**
   head is measured, it is not read here.
 - **Ledger/outbox** PostgreSQL → Neo4j, active in production
@@ -314,10 +314,9 @@ MCP over authenticated HTTP on `BIND_ADDRESS:8765/mcp` in production (red-base),
   no host port in production; development databases and the dedicated automation runtime
   are constrained to loopback. Metrics are bound there by
   default but their bind stays configurable; while the legacy automation compatibility is
-  active, its `/gitlab/webhook` route shares that bind. `:8003` carries **no application
-  bearer** — what closes it is the bind, not authentication, and a client placed on
-  `brain-net` reaches it without a token. Check the upstream network boundary, and never
-  expose it to the Internet.
+  active, its `/gitlab/webhook` route shares that bind. Production embedding and reranking
+  use hosted HTTPS APIs with separate provider credentials. A separately run local
+  endpoint on `:8003` needs its own bind and authentication controls.
 
 ### Execution model: immutable release
 
@@ -355,9 +354,9 @@ together, or not at all.
 
 **Tracked network boundary**: on red-base (`deploy/compose.yaml`) only two services publish a host port, MCP (`:8765`) and metrics (`:9200`), both on the host's WireGuard address (`BIND_ADDRESS`); no host publish is ever `0.0.0.0`, even though each container listens on all of its own interfaces. MCP runs in credentials mode (`BRAIN_MCP_AUTH_MODE: credentials`): the shared `MCP_HTTP_TOKEN` bearer is refused and must be absent, and `POST /mcp` answers `401` without a valid credential. Metrics opts into the non-loopback bind through `METRICS_ALLOW_NON_LOOPBACK`, which the fail-closed validator (`6c61b63`) requires, and its POST receivers are gated by credentials (`METRICS_RECEIVER_AUTH: credentials`). PostgreSQL and Neo4j publish no host port. The host firewall is the perimeter: the `DOCKER-USER` chain on `wg0` is owned by `red-watcher`, and the repository manages no firewall rule. The development `docker-compose.yml` binds to loopback, which remains the local-development default. What would make this paragraph false again: a host publish outside `BIND_ADDRESS`, or MCP leaving credentials mode. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
 
-**Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
+**Optional local embedding shim limits**: the retained development source enforces 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`. The development `docker-compose.yml` still defines the shim for local use; it does not serve production search.
 
-**SEC2 residuals** (replayed 2026-08-23): bearer authentication and the dedicated Docker client network are done — the coordinated `auto-discord` cutover happened, and both `auto-discord` containers sit on `brain-net`. One residual stands, and it is wider than previously written: the versioned legacy PyTorch profile remains unbounded — `services/embedding/main.py` carries no body cap, no read deadline, no concurrency semaphore and no `413`/`503` — and it preserves neither of the two DNS names its clients use. A `--profile legacy` rollback publishes `embedding` and `brain_v42_embedding` on `brain-net`, while the compose sets `EMBEDDING_URL=http://embedding-shim:8003` and the running bot, carrying no `EMBEDDING_URL` of its own, falls back to the code default `http://brain_v42_embedding_shim:8003`. Two names break, not one.
+**SEC2 residuals**: the retained legacy source `services/embedding/main.py` has no body cap, no read deadline, no concurrency semaphore and no `413`/`503`. The development `docker-compose.yml` still defines `embedding`, `embedding-llama` and `embedding-shim`; their removal waits on brain ticket `14bb4157` (the auto-discord bot still embeds through the shim). This source is not a production dependency or a reranker rollback; any separate local deployment needs its own network and authentication boundary.
 
 ---
 
@@ -369,7 +368,7 @@ together, or not at all.
 # Required
 POSTGRES_URL=postgresql+asyncpg://brain:<password>@localhost:5433/brain
 
-# Optional
+# Optional local development endpoint, supplied separately (not production)
 LOG_LEVEL=INFO
 EMBEDDING_SERVICE_URL=http://localhost:8003
 EMBEDDING_DIMENSION=1536

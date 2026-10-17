@@ -1,6 +1,6 @@
 # brain-v42
 
-Persistent, typed project memory exposed through the Model Context Protocol (MCP). It stores decisions, learnings, snippets, runbooks, architecture decision records (ADRs), project focus, tickets, claims, and delivery evidence. PostgreSQL is the source of truth; PostgreSQL full-text search and pgvector provide retrieval, with an optional cross-encoder reranker. Neo4j is an optional relationship projection.
+Persistent, typed project memory exposed through the Model Context Protocol (MCP). It stores decisions, learnings, snippets, runbooks, architecture decision records (ADRs), project focus, tickets, claims, and delivery evidence. PostgreSQL is the source of truth; PostgreSQL full-text search and pgvector provide retrieval, with optional reranking. Production uses hosted Mistral embeddings and hosted Voyage reranking with an OpenRouter Cohere fallback. Neo4j is an optional relationship projection.
 
 brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's async engine, Pydantic, and Alembic. Release 0.7.3 ships no migration and keeps recovery contract v26: session relay and start answers return the project focus once instead of twice, with an optional compact briefing, on top of 0.7.2 (an explicit, tested bound on held MCP sessions (`MCP_HTTP_MAX_SESSIONS`, default 6000) that evicts the least recently active idle session at the cap instead of refusing every new one, the restore drill's asyncpg database URL scheme, and 4g/2g memory limits for the red-base MCP and PostgreSQL containers), 0.7.1 (migration 068 with recovery contract v26: merge chains are refused at commit by a deferred constraint trigger on the six tables carrying `merged_into`, the migrate preflight refuses the upgrade while any chain remains, and the chain repair also flattens cross-project chains under a separate expected count; it also ships the knowledge lifecycle run orchestration, its command line and real adapters, and a bounded wait for a lifecycle batch, still dormant (nothing schedules them), and mcp 1.30.0 (CVE-2026-59951)), 0.7.0 (migrations 066 and 067, recovery contract v25: the knowledge lifecycle tables and their dormant repository, pure decision, facts registry and batch extraction client (nothing runs them yet), exact project scopes with an own-focus grant for scoped writers, the relay shrink override requiring an elevation, feature chains covered by the historical chain repair, lifecycle refusals that name the corrective call, embedding transport errors degraded instead of raised, one shared stderr logging setup for the MCP server and the gateway, red-cockpit allowed on the metrics read routes through `METRICS_READ_CLIENTS`, and sharded CI test suites), 0.6.18 (search and consolidation hardening, MCP ergonomics, operability fixes, an hourly embedding backlog runner shipped dry and authenticated metrics reads for peers, with no migration and recovery contract v23), 0.6.17 (metrics M1 and MCP ergonomics), 0.6.16 (security and integrity follow-ups of lot 0.6.11), 0.6.15 (rerank budget), 0.6.14 (direct Voyage rerank) and 0.6.13 (programmes/v1, migration 065, recovery contract v23), and migrations 063 to 068. See [Architecture](docs/ARCHITECTURE.md), [MCP tool reference](docs/MCP_TOOLS.md), and [Operations](docs/OPERATIONS.md) for detailed contracts and procedures.
 
@@ -12,7 +12,8 @@ MCP clients ── authenticated HTTP BIND_ADDRESS:8765/mcp (production)
                     │
               brain-v42 / FastMCP
                ├── PostgreSQL 16 + pgvector (source of truth)
-               ├── unified embedding and reranking endpoint (optional)
+               ├── hosted Mistral embeddings (OpenAI-compatible API)
+               ├── hosted Voyage rerank → OpenRouter Cohere fallback
                └── Neo4j 5 (optional relationship projection)
 ```
 
@@ -26,12 +27,13 @@ evidence live in [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and the
 
 Embeddings are optional. When the configured service is unavailable, search falls
 back to full-text retrieval and writes can be stored without an embedding for later
-backfill. The default embedding and reranking endpoint is `http://localhost:8003`; the
-reranker uses the unified embedding endpoint `:8003/rerank`. The `shim` backend uses
-the bundled service protocol; `openai` supports OpenAI-compatible embeddings, and
-`cohere` selects the Cohere-style reranking protocol (`POST /v1/rerank`, as implemented
-by TEI, Jina and vLLM). Hosted providers receive the
-text sent for embedding or reranking.
+backfill. Production configures hosted Mistral `codestral-embed-2505` embeddings
+and hosted reranking through `deploy/compose.yaml`. Hosted providers receive the
+text sent for embedding or reranking. The `shim` code defaults support an optional,
+local endpoint; the development `docker-compose.yml` can start one (`embedding-shim`)
+for local use only. The `openai` backend supports OpenAI-compatible embeddings;
+`voyage` uses Voyage directly and `cohere` supports Cohere-style APIs such as
+OpenRouter, TEI, Jina and vLLM. See the production contracts below.
 
 `EMBEDDING_DIMENSION` defaults to 1536 and must be at most 2000 for pgvector's HNSW
 index. The ORM supports another dimension, but migrations 002, 005, 009, and 014
@@ -171,7 +173,7 @@ The settings surface is defined in `src/brain_v42/config.py`. Common settings:
 # Required
 POSTGRES_URL=postgresql+asyncpg://brain:change-me-locally@localhost:5433/brain
 
-# Optional search services
+# Optional local search endpoint, supplied separately (not production)
 EMBEDDING_SERVICE_URL=http://localhost:8003
 EMBEDDING_DIMENSION=1536
 BRAIN_EMBEDDING_BACKEND=shim       # shim or openai
@@ -179,7 +181,7 @@ BRAIN_EMBEDDING_MODEL=qodo
 BRAIN_EMBEDDING_QUERY_PREFIX=
 BRAIN_EMBEDDING_DOCUMENT_PREFIX=
 RERANKER_URL=http://localhost:8003
-BRAIN_RERANK_BACKEND=shim          # shim or cohere
+BRAIN_RERANK_BACKEND=shim          # shim, cohere, voyage or none
 
 # Optional graph features
 GRAPH_ENABLED=false
@@ -219,11 +221,14 @@ publishes MCP on `BIND_ADDRESS:8765` in credentials mode and metrics on
 `BIND_ADDRESS:9200`; PostgreSQL and Neo4j publish no host port. Local HTTP and
 development database publishes default to loopback, as do metrics and automation.
 
-**Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
+**Embedding topology**: production uses hosted embeddings via `deploy/compose.yaml` (`x-embedding-env`: `EMBEDDING_BACKEND=openai`, Mistral `codestral-embed-2505`, 1536 dimensions). The local endpoint `http://localhost:8003` is optional for development only; the former workstation deployment is retired.
 
-The reranker uses the unified embedding endpoint `:8003/rerank`. Treat the endpoint as
-LAN-exposed until you have verified its live bind, and never expose it or the MCP port
-to the Internet. Repository configuration alone does not prove the live firewall state.
+**Reranker**: production uses hosted Voyage `rerank-3-lite` with OpenRouter `cohere/rerank-4-fast` fallback via `deploy/compose.yaml` (`x-rerank-env`). Rollback replaces that block with `BRAIN_RERANK_BACKEND="none"` alone.
+
+Production calls hosted HTTPS APIs with separate provider credentials. If you run a
+local endpoint on `:8003`, verify its bind and authentication before using it. Never
+expose a local shim or the MCP port to the Internet. Repository configuration alone
+does not prove the live firewall state.
 
 ## Dream mode
 

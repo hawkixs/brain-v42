@@ -46,7 +46,7 @@ dependencies = [
     "pydantic-settings>=2.0",
     # Logging
     "structlog>=24.1",
-    # Reranker — uses shared unified HTTP service on :8003 (no local model deps)
+    # Reranker — hosted HTTP APIs in production; optional local shim (no local model deps)
     # Graph (optional Neo4j relationship index — disabled by default)
     "neo4j>=5.0,<7",
     # Shared agent runtime, released from its own repository (hawkixs/red-ha,

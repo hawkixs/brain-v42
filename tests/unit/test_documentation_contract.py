@@ -1978,37 +1978,50 @@ def test_documented_mcp_transport_rejects_stale_loopback_production_claims() -> 
             assert stale_claim not in normalized
 
 
-def test_documented_reranker_uses_unified_embedding_endpoint() -> None:
-    reranker_default = Settings.model_fields["reranker_url"].default
-    embedding_default = Settings.model_fields["embedding_service_url"].default
-    assert isinstance(reranker_default, str)
-    assert isinstance(embedding_default, str)
-    assert reranker_default.rstrip("/") == embedding_default.rstrip("/")
-    port = urlsplit(reranker_default).port
-    assert port is not None
+def test_documented_reranker_matches_hosted_deployment() -> None:
+    deployment = yaml.safe_load((REPO_ROOT / "deploy" / "compose.yaml").read_text())
+    rerank = deployment["x-rerank-env"]
+    assert rerank["BRAIN_RERANK_BACKEND"] == "voyage"
+    assert rerank["BRAIN_RERANK_MODEL"] == "rerank-3-lite"
+    assert rerank["BRAIN_RERANK_FALLBACK_MODEL"] == "cohere/rerank-4-fast"
     contract = reranker_contract()
-    assert str(port) in contract
+    assert "hosted Voyage" in contract
+    assert f"`{rerank['BRAIN_RERANK_MODEL']}`" in contract
+    assert f"`{rerank['BRAIN_RERANK_FALLBACK_MODEL']}`" in contract
 
-    assert contract in README
-    if CLAUDE:
-        assert contract in CLAUDE
-    assert f"| Reranker | {port} |" in ARCHITECTURE
-    for document in (README, CLAUDE, ARCHITECTURE):
+    for document in _docs_including_claude(README, ARCHITECTURE, OPERATIONS):
+        assert contract in document
+        assert '`BRAIN_RERANK_BACKEND="none"` alone' in document
+        assert "unified embedding endpoint `:8003/rerank`" not in document
         assert "reranker service :8004" not in document.lower()
         assert "reranker**: shared cross-encoder http service on :8004" not in document.lower()
 
 
-def test_documented_embedding_topology_matches_restored_local_default() -> None:
-    endpoint = Settings.model_fields["embedding_service_url"].default
-    assert endpoint == "http://localhost:8003"
+def test_documented_embedding_topology_matches_hosted_deployment() -> None:
+    deployment = yaml.safe_load((REPO_ROOT / "deploy" / "compose.yaml").read_text())
+    embedding = deployment["x-embedding-env"]
+    assert embedding["EMBEDDING_BACKEND"] == "openai"
+    assert embedding["EMBEDDING_SERVICE_URL"] == "https://api.mistral.ai"
+    assert embedding["EMBEDDING_MODEL"] == "codestral-embed-2505"
+    assert embedding["EMBEDDING_DIMENSION"] == "1536"
     contract = (
-        f"**Embedding topology**: production/default = local unified endpoint `{endpoint}`; "
-        "the personal `dev-pc` deployment is a superseded rollback/reference path, now private."
+        "**Embedding topology**: production uses hosted embeddings via "
+        "`deploy/compose.yaml` (`x-embedding-env`: `EMBEDDING_BACKEND=openai`, "
+        f"Mistral `{embedding['EMBEDDING_MODEL']}`, {embedding['EMBEDDING_DIMENSION']} dimensions). "
+        "The local endpoint `http://localhost:8003` is optional for development only; "
+        "the former workstation deployment is retired."
     )
 
-    for document in _docs_including_claude(README, ARCHITECTURE):
+    for document in _docs_including_claude(README, ARCHITECTURE, OPERATIONS):
         assert contract in document
+        assert "production/default = local unified endpoint" not in document
         assert "192.0.2.11:8003" not in document
+
+
+def test_documented_local_defaults_are_optional_development_endpoints() -> None:
+    endpoint = Settings.model_fields["embedding_service_url"].default
+    assert endpoint == "http://localhost:8003"
+    assert Settings.model_fields["reranker_url"].default == endpoint
     assert endpoint in SCHEMA
     assert "192.168.1.11:8003" not in SCHEMA
     assert "192.0.2.11:8003" not in SCHEMA
@@ -2077,6 +2090,21 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
         assert residual_contract in document
     for contract in (target_contract, limits_contract, residual_contract):
         assert contract in OPERATIONS
+    # The development compose still defines the shim (ticket 14bb4157): no
+    # document may claim it was removed while docker-compose.yml carries it.
+    compose = (REPO_ROOT / "docker-compose.yml").read_text()
+    if "embedding-shim:" in compose:
+        for document in _docs_including_claude(README, ARCHITECTURE, OPERATIONS, SECURITY):
+            normalized = " ".join(document.split())
+            for stale in (
+                "no longer contains `embedding`",
+                "no longer defines `embedding`",
+                "starts `embedding`, `embedding-llama` or `embedding-shim`",
+                "requires no GPU, shim bearer secret",
+                "Neither Compose stack starts",
+                "outside both Compose stacks",
+            ):
+                assert stale not in normalized
     if CLAUDE:
         claude_normalized = " ".join(CLAUDE.split())
         assert "the dedicated automation runtime are constrained to loopback" in claude_normalized
