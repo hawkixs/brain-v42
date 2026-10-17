@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail closed when effective settings diverge from the production MCP binding."""
+"""Fail closed on binding drift in the retired workstation/systemd install path."""
 
 from __future__ import annotations
 
@@ -136,7 +136,7 @@ def validate_mcp_http_runtime_files(
     require_effective_token: bool = False,
     require_effective_runtime_settings: bool = False,
 ) -> None:
-    """Attest production environment files without exposing their values."""
+    """Attest retired workstation/systemd environment files without exposing values."""
     _require_private_runtime_file(
         shared_path,
         label="shared MCP environment",
@@ -200,7 +200,7 @@ def validate_mcp_http_port(
     expected_host: str = _DEFAULT_MCP_HTTP_HOST,
     effective_environment: Mapping[str, str] | None = None,
 ) -> None:
-    """Require one unambiguous host/port pair equal to the production contract."""
+    """Require one unambiguous host/port pair for the retired workstation/systemd path."""
     if not 1 <= expected_port <= 65535:
         raise McpHttpPortContractError("expected MCP HTTP port is outside 1..65535")
     if not expected_host:
@@ -242,23 +242,27 @@ def validate_mcp_http_port(
     raw_value = port_assignments[0] if port_assignments else str(_DEFAULT_MCP_HTTP_PORT)
     resolved_port = _parse_port(raw_value, label="MCP_HTTP_PORT")
     if resolved_port != expected_port:
-        raise McpHttpPortContractError("MCP_HTTP_PORT differs from the production contract")
+        raise McpHttpPortContractError(
+            "MCP_HTTP_PORT differs from the retired workstation/systemd contract"
+        )
 
     host_assignments = assignments["mcp_http_host"]
     resolved_host = _unquote(host_assignments[0] if host_assignments else _DEFAULT_MCP_HTTP_HOST)
     if resolved_host != expected_host:
-        raise McpHttpPortContractError("MCP_HTTP_HOST differs from the production contract")
+        raise McpHttpPortContractError(
+            "MCP_HTTP_HOST differs from the retired workstation/systemd contract"
+        )
 
     if effective_environment is not None:
         effective_port = _effective_assignment(effective_environment, "mcp_http_port")
         if effective_port is not None and effective_port != str(expected_port):
             raise McpHttpPortContractError(
-                "effective MCP HTTP port differs from the production contract"
+                "effective MCP HTTP port differs from the retired workstation/systemd contract"
             )
         effective_host = _effective_assignment(effective_environment, "mcp_http_host")
         if effective_host is not None and effective_host != expected_host:
             raise McpHttpPortContractError(
-                "effective MCP HTTP host differs from the production contract"
+                "effective MCP HTTP host differs from the retired workstation/systemd contract"
             )
 
 

@@ -146,8 +146,8 @@ def test_is_brain_server_cmd_excludes_http_server() -> None:
 def test_build_mcp_server_procs_excludes_http_server_from_snapshot() -> None:
     """A snapshot with both --http-server and a normal stdio process returns only the stdio one.
 
-    The HTTP server process is supervised by systemd and must NEVER enter the
-    reap pipeline, even when it has crossed the 48h absolute cap.
+    In the retired workstation deployment, systemd supervises the HTTP server
+    process; it must NEVER enter the reap pipeline, even past the 48h absolute cap.
     """
     snap = {
         # Long-lived HTTP server (age > 48h) — must be excluded entirely.

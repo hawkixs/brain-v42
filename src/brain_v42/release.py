@@ -3,8 +3,10 @@
 Both facts are MEASURED at runtime, never written by hand.
 
 - The version comes from the installed package's dist-info, not from
-  `pyproject.toml`. Production runs an editable install: the dist-info is frozen
-  at `uv sync` time. That is precisely what we want to announce — what is
+  `pyproject.toml`. The former workstation deployment (now retired) used an
+  editable install: its dist-info was frozen at `uv sync` time. Production on
+  red-base runs the Compose deployment from `deploy/compose.yaml`. The installed
+  dist-info is precisely what we want to announce — what is
   running, and not what the repository claims to describe. A gap between the two
   is a signal, not a bug to mask.
 - The Alembic head is derived from the revision files SHIPPED with the package:

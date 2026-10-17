@@ -17,7 +17,7 @@ document the other side rejects — the very drift this ticket describes,
 reproduced inside its own fix.
 
 Everything that CAN be derived IS derived, at call time: the Alembic head, the
-port from `Settings`, the transport URL from the `Settings` MCP HTTP defaults, the FastMCP major from
+port from `Settings`, the local transport URL from the `Settings` MCP HTTP defaults, the FastMCP major from
 `uv.lock`. A retyped number goes stale exactly like the document it guards. What
 stays literal is prose that has no machine-readable source — the three
 operator-facing paragraphs — and it lives here rather than in a test so the
@@ -29,6 +29,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
@@ -45,8 +46,8 @@ class Claim:
     id: str
     expected: str
     #: Compare against whitespace-normalized text. The boundary paragraph is
-    #: wrapped differently in each document it appears in; the wrapping is not
-    #: the contract.
+    #: one identical line in each document; normalization keeps incidental
+    #: whitespace outside the contract.
     normalized: bool = False
 
     def holds(self, text: str) -> bool:
@@ -80,10 +81,10 @@ def _locked_version(package_name: str, root: Path | None = None) -> str:
     return str(versions.pop())
 
 
-def _production_mcp_url() -> str:
+def _local_mcp_url() -> str:
     # The repository's .mcp.json declares no server: each operator configures the
-    # client at user scope, so the documented address comes from the server's own
-    # defaults (FastMCP serves streamable HTTP on /mcp).
+    # client at user scope. The local HTTP example follows the server's defaults;
+    # the production host publish uses BIND_ADDRESS instead.
     from brain_v42.config import Settings  # noqa: PLC0415
 
     host = Settings.model_fields["mcp_http_host"].default
@@ -92,8 +93,6 @@ def _production_mcp_url() -> str:
 
 
 def _reranker_port() -> int:
-    from urllib.parse import urlsplit  # noqa: PLC0415
-
     from brain_v42.config import Settings  # noqa: PLC0415
 
     default = Settings.model_fields["reranker_url"].default
@@ -107,22 +106,23 @@ def _reranker_port() -> int:
 #: machine-readable source — and here rather than in a test so that the guard and
 #: the report cannot hold two copies of the same sentence.
 NETWORK_BOUNDARY_CONTRACT = (
-    "**Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to "
-    "loopback; metrics and automation default to loopback. The versioned Compose target "
-    "binds the embedding host publish to loopback and the live runtime matches it — "
-    "measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. "
-    "Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and "
-    "non-empty in the live server process, and `POST /mcp` answers `401` both without a "
-    "bearer and with a wrong one. The dedicated Docker client network exists and carries "
-    "the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. "
-    "Repository-managed WAN isolation remains unproven — the repository manages no "
-    "firewall rule at all. What would make this paragraph false again, and is watched by "
-    "no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. "
-    "`METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed "
-    "validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the "
-    "decision, and under that opt-in the three POST receivers stay unregistered and say "
-    "so on `/healthz`. Re-measure with `ss -ltnp`, "
-    "`docker port` and an unauthenticated `POST /mcp` — do not copy this line forward."
+    "**Tracked network boundary**: on red-base (`deploy/compose.yaml`) only two "
+    "services publish a host port, MCP (`:8765`) and metrics (`:9200`), both on the "
+    "host's WireGuard address (`BIND_ADDRESS`); no host publish is ever `0.0.0.0`, "
+    "even though each container listens on all of its own interfaces. MCP runs in "
+    "credentials mode (`BRAIN_MCP_AUTH_MODE: credentials`): the shared "
+    "`MCP_HTTP_TOKEN` bearer is refused and must be absent, and `POST /mcp` answers "
+    "`401` without a valid credential. Metrics opts into the non-loopback bind "
+    "through `METRICS_ALLOW_NON_LOOPBACK`, which the fail-closed validator "
+    "(`6c61b63`) requires, and its POST receivers are gated by credentials "
+    "(`METRICS_RECEIVER_AUTH: credentials`). PostgreSQL and Neo4j publish no host "
+    "port. The host firewall is the perimeter: the `DOCKER-USER` chain on `wg0` is "
+    "owned by `red-watcher`, and the repository manages no firewall rule. The "
+    "development `docker-compose.yml` binds to loopback, which remains the "
+    "local-development default. What would make this paragraph false again: a host "
+    "publish outside `BIND_ADDRESS`, or MCP leaving credentials mode. Re-measure "
+    "with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not "
+    "copy this line forward."
 )
 
 SHIM_LIMITS_CONTRACT = (
@@ -148,9 +148,15 @@ SEC2_RESIDUALS_CONTRACT = (
 
 
 def mcp_transport_contract() -> str:
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    local_url = _local_mcp_url()
     return (
-        f"**MCP transport**: production = HTTP loopback `{_production_mcp_url()}`; "
-        "configuration default and dev/fallback = `stdio`."
+        "**MCP transport**: production (red-base) = HTTP on the host's WireGuard address "
+        f"(`BIND_ADDRESS`, port {urlsplit(local_url).port}, path `/mcp`) in credentials mode, "
+        "every call authenticated; local HTTP (workstation/dev) = loopback "
+        f"`{local_url}` (the configuration default bind); "
+        "configuration default and dev/fallback transport = `stdio`."
     )
 
 

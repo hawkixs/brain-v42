@@ -531,7 +531,7 @@ guard still applies. `/healthz` reports process liveness without a database call
 `/version` reports the package version, `BRAIN_GIT_SHA` and `BRAIN_IMAGE_DIGEST`
 (null when absent), without echoing request headers.
 
-**Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to loopback; metrics and automation default to loopback. The versioned Compose target binds the embedding host publish to loopback and the live runtime matches it — measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and non-empty in the live server process, and `POST /mcp` answers `401` both without a bearer and with a wrong one. The dedicated Docker client network exists and carries the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. Repository-managed WAN isolation remains unproven — the repository manages no firewall rule at all. What would make this paragraph false again, and is watched by no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. `METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the decision, and under that opt-in the three POST receivers stay unregistered and say so on `/healthz`. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
+**Tracked network boundary**: on red-base (`deploy/compose.yaml`) only two services publish a host port, MCP (`:8765`) and metrics (`:9200`), both on the host's WireGuard address (`BIND_ADDRESS`); no host publish is ever `0.0.0.0`, even though each container listens on all of its own interfaces. MCP runs in credentials mode (`BRAIN_MCP_AUTH_MODE: credentials`): the shared `MCP_HTTP_TOKEN` bearer is refused and must be absent, and `POST /mcp` answers `401` without a valid credential. Metrics opts into the non-loopback bind through `METRICS_ALLOW_NON_LOOPBACK`, which the fail-closed validator (`6c61b63`) requires, and its POST receivers are gated by credentials (`METRICS_RECEIVER_AUTH: credentials`). PostgreSQL and Neo4j publish no host port. The host firewall is the perimeter: the `DOCKER-USER` chain on `wg0` is owned by `red-watcher`, and the repository manages no firewall rule. The development `docker-compose.yml` binds to loopback, which remains the local-development default. What would make this paragraph false again: a host publish outside `BIND_ADDRESS`, or MCP leaving credentials mode. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
 
 **Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
 
@@ -540,11 +540,16 @@ guard still applies. `/healthz` reports process liveness without a database call
 ## Private secret files
 
 Never place `MCP_HTTP_TOKEN` or `MCP_HTTP_DREAM_TOKENS` in the shared `.env`. The
-production systemd path requires `~/.config/brain-v42/mcp-token.env`, a regular file
+workstation systemd path (the former workstation deployment, retired by G14) requires
+`~/.config/brain-v42/mcp-token.env`, a regular file
 owned by the service user, mode `0600`, with a non-empty `MCP_HTTP_TOKEN`. Phase
 bearers stay optional while the Dream firewall is disabled. That private file accepts
 only `MCP_HTTP_TOKEN`, `MCP_HTTP_DREAM_TOKENS` and
 `BRAIN_DREAM_CAPABILITY_ENFORCEMENT`.
+
+This private shared-token file belongs to workstation rollback B. Production MCP on
+red-base (`deploy/compose.yaml`) uses credentials mode and requires `MCP_HTTP_TOKEN`
+to be absent.
 
 The `NEO4J_*` keys in the shared `.env` example belong to the legacy path and are
 absent from the active production runtime. For any other canonical cutover, remove
@@ -831,14 +836,15 @@ negative `Content-Length` returns 400 with `{"detail": "Invalid Content-Length"}
 Tool fields separately have character/list bounds documented in
 [MCP_TOOLS.md](MCP_TOOLS.md#input-bounds); values are refused, never truncated.
 
-HTTP startup raises `HttpAuthConfigurationError` when `MCP_HTTP_TOKEN` is empty or
+In local `shared_token` mode, HTTP startup raises `HttpAuthConfigurationError` when `MCP_HTTP_TOKEN` is empty or
 blank unless `MCP_HTTP_ALLOW_UNAUTHENTICATED=true`. This opt-out is **development
 only**, refused alongside a non-empty token and under Dream capability enforcement;
-it must never appear in the production systemd unit. Clearing the production token
+it must never appear in the workstation systemd unit (the former workstation deployment,
+retired by G14). Clearing the workstation token
 now causes an outage through startup refusal rather than unauthenticated access.
-The measured network-boundary paragraph above still describes that configuration
-drift literally; its measurements have not been changed. There is no minimum token
-length and the systemd preflight is unchanged in this release.
+These token rules apply to workstation rollback B; production red-base uses credentials
+mode with `MCP_HTTP_TOKEN` absent, as described in the network-boundary paragraph above.
+There is no minimum token length and the workstation systemd preflight is unchanged.
 
 `/health` remains auth-exempt and retains status, version, alembic_head and pool.
 Concurrent probes share one database round trip, with no TTL cache; sequential probes
@@ -847,7 +853,8 @@ always check the database again.
 Residuals retained for follow-up:
 
 - `X-Brain-Agent` and `X-Brain-Session` are attribution, not authorisation.
-- One shared admin bearer remains; per-client scoped admin bearers need a future ticket.
+- Local `shared_token` mode retains one shared admin bearer; production red-base uses
+  per-client credentials.
 - `SHIM_BEARER_MODE=optional` remains pending ticket `9ef5c69d`.
 - There is no body-read deadline or ingress concurrency cap. In capability enforcement
   mode, authentication rejects at the route inside user middleware, so unauthenticated
@@ -1068,9 +1075,11 @@ closed and reviewed.
 ## Dream capability firewall
 
 The capability firewall's protections are shipped but stay inactive with
-`BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false`. The production HTTP transport and the
+`BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false`. The local `shared_token` HTTP transport and the
 STDIO fallback keep their historical contracts while this boundary stays inactive.
-The administrator bearer `MCP_HTTP_TOKEN` stays global. Activation requires a separate
+The administrator bearer `MCP_HTTP_TOKEN` stays global in that mode; production red-base
+uses credentials mode with that variable absent. This capability rollout applies to
+the former workstation deployment (rollback B, retired by G14). Activation requires a separate
 operator rollout and a complete `MCP_HTTP_DREAM_TOKENS` registry for the six phases of
 each project. Each profile carries one `active` bearer sent to the runner, and zero or
 more `accepted` bearers reserved for rotation.

@@ -31,13 +31,14 @@ registry exposes definitions and measured values through `brain_fact_get` and
 ```
                             Claude Code
                                  |
-                  MCP HTTP (127.0.0.1:8765/mcp)
+                  MCP HTTP (BIND_ADDRESS:8765/mcp)
+                  Authenticated client credential
                   X-Brain-Agent: brain-v42
                                  |
                                  v
  +-------------------------------+--+  +----------------------+  +----------------------+
  | FastMCP server (Python 3.12+)     |  | Metrics runtime      |  | Automation runtime   |
- | 84 always-on + 2 graph-gated = 86 |  | 127.0.0.1:9200       |  | 127.0.0.1:9201       |
+ | 84 always-on + 2 graph-gated = 86 |  | BIND_ADDRESS:9200    |  | 127.0.0.1:9201       |
  | service layer + search fan-out    |  | /metrics / cockpit   |  | health / webhook     |
  | MCP background flushers/indexer   |  | optional legacy owner|  | dedup scheduler      |
  +----------------+------------------+  +----------+-----------+  +-----------+----------+
@@ -68,9 +69,22 @@ registry exposes definitions and measured values through `brain_fact_get` and
 
 ## Transport
 
-### Production: HTTP (loopback only)
+### Production: HTTP (WireGuard)
 
-brain_v42 runs as a persistent HTTP MCP server on `127.0.0.1:8765`. Claude Code connects via:
+On red-base, brain_v42 publishes persistent HTTP MCP on the host's WireGuard address,
+`BIND_ADDRESS:8765/mcp`, with `BRAIN_MCP_AUTH_MODE=credentials`. Every MCP call must be authenticated
+with a valid client credential; the shared `MCP_HTTP_TOKEN` must be absent.
+The production measurement on 2026-10-17 at 04:49Z found only the MCP and
+metrics host listeners, on `BIND_ADDRESS:8765` and `BIND_ADDRESS:9200`, with no
+loopback MCP listener and no PostgreSQL or Neo4j host port. An unauthenticated
+`POST /mcp` returned `401`. Re-measure the listeners and authentication response
+when verifying a deployment; local configuration defaults do not describe production.
+
+### Local HTTP (workstation/dev)
+
+When HTTP is selected locally, the configuration default bind is loopback.
+The following workstation/dev client example uses the default `shared_token` auth
+mode and a private `MCP_HTTP_TOKEN`; it is not the production credentials-mode client:
 
 ```json
 {
@@ -95,17 +109,32 @@ ship a host, an agent identity and a bearer source with the code.
 
 The `X-Brain-Agent` header is normalised by `_normalize_agent()` in `metrics/instrument.py` to produce clean per-project Prometheus labels (e.g. path-like values are reduced to their basename).
 
-The server binds only to `127.0.0.1` (validated by `Settings._loopback_only`).
-`HostOriginGuard` protects every HTTP mode. Authentication then follows one of two paths:
+### HTTP bind and authentication
 
-- **`HostOriginGuard`** — DNS-rebinding protection. Rejects any `Host` not in `{127.0.0.1, localhost, ::1}` (421) and any `Origin` whose host is non-loopback (403). Duplicate-Host protection comes from h11 (uvicorn's HTTP/1.1 parser) upstream.
-- **Dormant capability mode** — `BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false` keeps the
+`Settings._mcp_bind_requires_named_opt_in` requires a loopback MCP bind unless
+`MCP_HTTP_ALLOW_NON_LOOPBACK=true`. That opt-in requires
+`BRAIN_MCP_AUTH_MODE=credentials` and non-empty `MCP_HTTP_ALLOWED_HOSTS`.
+`Settings._credentials_require_attributed_http` also refuses a shared `MCP_HTTP_TOKEN`,
+unauthenticated HTTP, stateless HTTP and Dream capability enforcement in credentials mode.
+`HostOriginGuard` protects every HTTP mode. Authentication depends on the selected mode:
+
+- **`HostOriginGuard`** — DNS-rebinding protection. Loopback authorities are allowed
+  by default; explicitly configured `MCP_HTTP_ALLOWED_HOSTS` extend the allowed Host
+  and Origin authorities for network clients. Unlisted Host authorities receive `421`,
+  and unlisted Origin authorities receive `403`. Duplicate-Host protection comes
+  from h11 (uvicorn's HTTP/1.1 parser) upstream.
+- **Credentials mode (production)** — each MCP call requires a valid client
+  credential. The shared `MCP_HTTP_TOKEN` bearer is refused and must be absent;
+  unauthenticated `POST /mcp` receives `401`.
+- **Shared-token mode, dormant capabilities (local HTTP)** —
+  `BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false` keeps the
   fail-closed `BearerTokenGuard`. Empty or blank `MCP_HTTP_TOKEN` refuses HTTP startup
   unless `MCP_HTTP_ALLOW_UNAUTHENTICATED=true` explicitly opts out for development.
   The opt-out is refused with a token or under capability enforcement and never belongs
-  in the production systemd unit, which requires the private, non-empty admin bearer.
+  in a production deployment. The workstation systemd rollback uses a private,
+  non-empty admin bearer.
   Every non-`/health` request must carry the bearer when configured.
-- **Enabled capability mode** — FastMCP's token-verifier boundary authenticates the distinct
+- **Shared-token mode, enabled capabilities (local HTTP)** — FastMCP's token-verifier boundary authenticates the distinct
   admin bearer and phase-scoped Dream bearers. Application middleware then filters tool lists
   and authorizes calls. `HostOriginGuard` remains enforced; FastMCP authentication runs before
   the supplied ASGI middleware. Real loopback HTTP tests pin the resulting behavior.
@@ -118,7 +147,7 @@ Activated by `BRAIN_MCP_TRANSPORT=stdio` (default) or omitting the env var. Used
 
 ### Network trust boundary
 
-**Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to loopback; metrics and automation default to loopback. The versioned Compose target binds the embedding host publish to loopback and the live runtime matches it — measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and non-empty in the live server process, and `POST /mcp` answers `401` both without a bearer and with a wrong one. The dedicated Docker client network exists and carries the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. Repository-managed WAN isolation remains unproven — the repository manages no firewall rule at all. What would make this paragraph false again, and is watched by no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. `METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the decision, and under that opt-in the three POST receivers stay unregistered and say so on `/healthz`. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
+**Tracked network boundary**: on red-base (`deploy/compose.yaml`) only two services publish a host port, MCP (`:8765`) and metrics (`:9200`), both on the host's WireGuard address (`BIND_ADDRESS`); no host publish is ever `0.0.0.0`, even though each container listens on all of its own interfaces. MCP runs in credentials mode (`BRAIN_MCP_AUTH_MODE: credentials`): the shared `MCP_HTTP_TOKEN` bearer is refused and must be absent, and `POST /mcp` answers `401` without a valid credential. Metrics opts into the non-loopback bind through `METRICS_ALLOW_NON_LOOPBACK`, which the fail-closed validator (`6c61b63`) requires, and its POST receivers are gated by credentials (`METRICS_RECEIVER_AUTH: credentials`). PostgreSQL and Neo4j publish no host port. The host firewall is the perimeter: the `DOCKER-USER` chain on `wg0` is owned by `red-watcher`, and the repository manages no firewall rule. The development `docker-compose.yml` binds to loopback, which remains the local-development default. What would make this paragraph false again: a host publish outside `BIND_ADDRESS`, or MCP leaving credentials mode. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
 
 **Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
 
@@ -654,6 +683,10 @@ the cockpit endpoint themselves remain available on `:9200`.
 
 ## Dream Mode (nightly maintenance)
 
+The loopback MCP runner and systemd procedures in this section describe the former
+workstation deployment (rollback B, retired by G14), using local HTTP in `shared_token`
+mode. Production MCP runs on red-base through `deploy/compose.yaml` in credentials mode.
+
 `scripts/dream.sh` orchestrates six headless agent phases: **SCAN / CLEAN / CONNECT / SYNTH / PROMOTE / REORG**. Codex is the default provider and authenticates through the active ChatGPT login. The fast tier (phase 1: SCAN, CLEAN, CONNECT) uses `gpt-5.6-luna` with high reasoning; the deep tier (phase 2: SYNTH, PROMOTE, REORG) uses `gpt-6-astra` with max reasoning. Both defaults were canaried through the live Codex binary on 2026-09-12; `max` requires the runner that accepts it (same day).
 
 The Codex adapter exposes only the Brain MCP tools required by each phase:
@@ -687,7 +720,7 @@ Codex keeps the final report, JSONL events, and stderr in separate logs. `codex_
 
 ROADMAP and EXTRACT are separate Python jobs after the six agent phases. They continue to call the NVIDIA API with strict JSON and no MCP tools, retain their own killswitches and timeouts, and are outside the Codex migration.
 
-The repository systemd timer targets 06:00 local time with `RandomizedDelaySec=120` and persistent catch-up. Dream and HTTP both require `%h/.config/brain-v42/mcp-token.env`; the HTTP unit refuses a missing, symlinked, wrongly owned, non-`0600`, empty or effectively overridden admin token. That private file accepts only `MCP_HTTP_TOKEN`, `MCP_HTTP_DREAM_TOKENS`, and `BRAIN_DREAM_CAPABILITY_ENFORCEMENT`. The repository `.env` is attested separately and must contain no MCP bearer. The Dream unit applies `UMask=0077`, waits up to 30 seconds for the auth-exempt Brain MCP `/health` route, and has a three-hour worst-case cap. The independently managed `brain-mcp-http.service` must therefore already be active; the installer generates and validates it but leaves its lifecycle operator-managed. The orchestrator itself defaults to Codex.
+The workstation systemd timer targets 06:00 local time with `RandomizedDelaySec=120` and persistent catch-up. Dream and HTTP both require `%h/.config/brain-v42/mcp-token.env`; the HTTP unit refuses a missing, symlinked, wrongly owned, non-`0600`, empty or effectively overridden admin token. That private file accepts only `MCP_HTTP_TOKEN`, `MCP_HTTP_DREAM_TOKENS`, and `BRAIN_DREAM_CAPABILITY_ENFORCEMENT`. The repository `.env` is attested separately and must contain no MCP bearer. The Dream unit applies `UMask=0077`, waits up to 30 seconds for the auth-exempt Brain MCP `/health` route, and has a three-hour worst-case cap. The independently managed `brain-mcp-http.service` must therefore already be active; the installer generates and validates it but leaves its lifecycle operator-managed. The orchestrator itself defaults to Codex.
 
 The versioned user-unit profiles are workload-specific. Automation and the graph ledger inventory
 use the strong integrity profile with `PrivateUsers=true`, read-only HOME/system paths, empty
@@ -856,7 +889,7 @@ its closing summary.
 ### Future capability firewall rollout
 
 The repository ships SEC1a and SEC1b dormant. While
-`BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false`, production HTTP and dev/fallback STDIO keep their
+`BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false`, local `shared_token` HTTP and dev/fallback STDIO keep their
 historical capability contracts, and the admin principal remains global. A separate, operator-authorized rollout
 must enable the boundary. Enabled mode parses
 `MCP_HTTP_DREAM_TOKENS` as a `SecretStr` JSON registry keyed by canonical
@@ -891,7 +924,8 @@ Denials and logs may identify only the principal, phase, project, safe tool name
 reason code. They never include UUIDs, arguments, content, bearer or registry material, SQL,
 or tracebacks. Filesystem and root enforcement remain SEC1c.
 
-An authorized operator can activate the dormant boundary with this quiescent sequence:
+For the former workstation deployment (retired), an authorized operator can activate
+the dormant boundary with this quiescent sequence:
 
 1. Run `systemctl --user disable --now brain-v42-dream.timer`. Wait until
    `systemctl --user show brain-v42-dream.service -p ActiveState --value` reports `inactive`.
@@ -994,7 +1028,7 @@ AUTOMATION_DEDUP_INTERVAL_SECONDS=21600
 METRICS_LEGACY_AUTOMATION_ENABLED=true                               # safe default
 DECAY_ENABLED=true
 BRAIN_MCP_TRANSPORT=http                                              # or stdio (default)
-MCP_HTTP_HOST=127.0.0.1                                              # loopback only
+MCP_HTTP_HOST=127.0.0.1                                              # local HTTP default; non-loopback requires credentials opt-in
 MCP_HTTP_PORT=8765
 BRAIN_MCP_PROFILE=compact                                             # compact or native
 BRAIN_CODE_MODE=false                                                 # experimental; overrides profile
@@ -1002,10 +1036,12 @@ BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false                              # dormant 
 ```
 
 `MCP_HTTP_TOKEN` and `MCP_HTTP_DREAM_TOKENS` never belong in the shared `.env`.
-HTTP startup refuses an empty or blank token unless the development-only
+In local `shared_token` mode, HTTP startup refuses an empty or blank token unless the development-only
 `MCP_HTTP_ALLOW_UNAUTHENTICATED=true` opt-out is set. The opt-out is refused with a
-non-empty token or under capability enforcement. The production systemd path requires a
-non-empty `MCP_HTTP_TOKEN` in `~/.config/brain-v42/mcp-token.env` in mode `0600`.
+non-empty token or under capability enforcement. The workstation systemd path (the former
+workstation deployment, retired by G14) requires a non-empty `MCP_HTTP_TOKEN` in
+`~/.config/brain-v42/mcp-token.env` in mode `0600`. Production red-base uses credentials
+mode and requires `MCP_HTTP_TOKEN` to be absent.
 `MCP_HTTP_MAX_BODY_BYTES` defaults to 2,097,152 bytes; middleware refuses oversized
 bodies before the MCP request handler. Tool input bounds count characters.
 
@@ -1064,28 +1100,30 @@ brain_v42/
 | Aspect | datalake_v2 (pre-2026-02) | brain_v42 (current repository) |
 |--------|---------------------------|------------------------|
 | MCP application topology | API + MCP bridge inside a 7-container chain | 1 shared FastMCP HTTP process; stdio dev/fallback |
-| Network hops per tool call | 4 (HTTP chain) | 0 for tool logic; 1 HTTP hop for MCP protocol (loopback) |
+| Network hops per tool call | 4 (HTTP chain) | 0 for tool logic; 1 HTTP hop for MCP protocol (WireGuard in production, loopback locally) |
 | Source of truth | Neo4j (CRUD + graph + vectors) | Postgres + pgvector |
 | Graph | Neo4j Cypher reduce() for similarity | Neo4j relationship index only, pgvector for similarity |
 | Embeddings | sentence-transformers / PyTorch in-process | Configurable (`BRAIN_EMBEDDING_BACKEND`): shipped default `shim` → local :8003 (Qodo-Embed-1-1.5B, 1536d, `qodo` profile); production deployment: OpenAI-compatible backend on Mistral codestral |
 | Reranker | none | Cross-encoder :8003 unified endpoint, BatchingRerankerClient (20 ms window) |
-| MCP transport | stdio | HTTP loopback 127.0.0.1:8765 + HostOriginGuard + bearer obligatoire sous systemd (optionnel en HTTP dev direct) |
+| MCP transport | stdio | Production: HTTP on BIND_ADDRESS:8765/mcp + HostOriginGuard + client credentials on every MCP call; local HTTP: loopback by default; dev/fallback: stdio |
 | MCP tools | 21 | 84 always-on + 2 graph-gated = 86 |
 | Tables | 6 | 31 (knowledge, audit, plans, dream, webhook, coordination, sessions, graph ledger) |
 | Maintenance | manual | Dream mode nightly + DecayFlusher + ConsolidationJob |
 | Observability | none | /metrics :9200 + /api/cockpit + process_metrics |
 
-## Planned deployment
+## Deployment and roadmap
 
-The planned production direction is a dedicated server operated by the red-rail
+Production runs on red-base through `deploy/compose.yaml`, operated by the red-rail
 release rail as one Compose project: PostgreSQL, Neo4j, the MCP server, metrics
 sidecar, delivery observer, a one-shot migration service that proves the recovery
-contract, and Compose-scheduled work. Clients will reach MCP over a private
-WireGuard network with bearer authentication. Each client service is planned to
-have its own credential with scoped read, write, delivery, or admin rights; admin
-access is intended to require time-boxed operator elevation. Delivery attestation
-issuers are planned to be proven against the credential in attestation API v1.1.
-After deployment work, planned priorities are search and embedding quality,
+contract, and Compose-scheduled work. Clients reach MCP over a private WireGuard
+network in credentials mode; `MCP_HTTP_TOKEN` must be absent. Only MCP
+(`BIND_ADDRESS:8765`) and metrics (`BIND_ADDRESS:9200`) publish host ports, and
+unauthenticated `POST /mcp` returns `401`. The former workstation systemd deployment
+is retired. Each client service has its own credential with scoped read, write,
+delivery, or admin rights; admin access requires time-boxed operator elevation.
+Delivery attestation issuers are planned to be proven against the credential in
+attestation API v1.1. Planned priorities are search and embedding quality,
 disaster-recovery proof, and metrics. Dream can be suspended by the operator and
 re-armed later.
 

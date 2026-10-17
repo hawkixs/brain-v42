@@ -48,7 +48,8 @@ _NEO4J_URL_NAMES = (
     "GRAPH_PROJECTOR_NEO4J_URL",
     "BRAIN_GRAPH_PROJECTOR_NEO4J_URL",
 )
-# Compose publishes production bolt on 127.0.0.1:7687 (docker-compose.yml, neo4j).
+# The retired workstation's Compose Bolt publish stays guarded (docker-compose.yml, neo4j).
+# Production red-base publishes no Neo4j host port; retain the historical identity below.
 _COMPOSE_PRODUCTION_NEO4J = (_CANONICAL_LOOPBACK, 7687)
 _PROJECTOR_ENV_FILE = Path.home() / ".config" / "brain-v42" / "graph-projector.env"
 # domain_backfill, ticket_extract, roadmap_curate and canary_roadmap_model all

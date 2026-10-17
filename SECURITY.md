@@ -6,14 +6,17 @@ brain-v42 is built for personal agents on a **trusted LAN**, not for
 multi-tenant or public-Internet exposure. This shapes what counts as a
 vulnerability here:
 
-- MCP, PostgreSQL and Neo4j bind to loopback by default; metrics and
-  automation default to loopback too.
+- Production (red-base) publishes MCP on the host's WireGuard address
+  (`BIND_ADDRESS:8765`) in credentials mode, with every MCP call authenticated,
+  and metrics on `BIND_ADDRESS:9200`. PostgreSQL and Neo4j publish no host port.
+  Local HTTP, development database publishes, metrics and automation default to loopback.
 - The embedding/reranker endpoint (`:8003`) should be treated as
   LAN-exposed until you have proved the live bind yourself — repository
   code alone does not prove a firewall state.
 - **Never** expose the MCP port, the embedding endpoint, PostgreSQL or
   Neo4j to the Internet. There is no per-request authentication layer
-  designed to survive that exposure.
+  designed to survive that exposure: MCP credentials protect access within
+  the private-network trust model stated above, not on a public network.
 - Bearer tokens (`MCP_HTTP_TOKEN`, `MCP_HTTP_DREAM_TOKENS`) and the graph
   projector credential are meant to live in private `0600` files, never in
   a shared `.env`. See the Configuration section of
@@ -44,8 +47,8 @@ Email **armandasm@gmail.com** with:
 
 You should get an acknowledgement within a few days. This is a
 single-maintainer project run outside working hours — there is no SLA, but
-credential leaks, auth bypasses and anything that breaks the loopback-only
-guarantees above will be prioritized over everything else in the backlog.
+credential leaks, auth bypasses and anything that breaks the network boundary
+above will be prioritized over everything else in the backlog.
 
 ## Scope
 

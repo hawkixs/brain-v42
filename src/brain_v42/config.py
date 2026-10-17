@@ -642,17 +642,21 @@ class Settings(BaseSettings):
     mcp_http_token: str = Field(
         default="", repr=False, validation_alias=_brain_alias("MCP_HTTP_TOKEN")
     )
-    """Bearer token for HTTP transport authentication.
+    """Shared bearer for the retired workstation/systemd install path.
 
-    Empty = refused at HTTP startup unless MCP_HTTP_ALLOW_UNAUTHENTICATED=true.
+    Production red-base uses credentials mode: this token is refused and must be absent.
+
+    In shared_token mode, empty = refused at HTTP startup unless
+    MCP_HTTP_ALLOW_UNAUTHENTICATED=true.
 
     Non-empty = BearerTokenGuard is activated; HTTP requests outside /health,
     /healthz and /version must carry ``Authorization: Bearer <token>``.
 
     IMPORTANT — enabling this is a coordinated deployment operation:
     all fleet .mcp.json clients must be updated to inject the Authorization header
-    before this token is set in production. Changing only the server side without
-    updating every client will break all MCP calls. This workstream only wires the
+    before this token is set in the retired workstation/systemd install path.
+    Changing only the server side without updating every client will break all
+    MCP calls. This workstream only wires the
     server-side guard; fleet client updates are out of scope.
     """
 
@@ -844,8 +848,9 @@ class Settings(BaseSettings):
 
     # --- Client activity reporting (emitter on the MCP process side) ---
     # Shipped CLOSED, like every new capability in this repository.
-    # brain-mcp-http has Restart=always and the package is an editable install on
-    # src/: an open default would arm the emitter at the first restart to come,
+    # In the former workstation/systemd install path (now retired), brain-mcp-http
+    # had Restart=always with an editable install on src/: an open default would
+    # have armed the emitter at the first restart,
     # with nobody having decided it. The sidecar does expose the route, since
     # task 9 — so it is not the receiver that is missing, it is the arming
     # gesture. That belongs to the operator, to the rollout, with the end-to-end

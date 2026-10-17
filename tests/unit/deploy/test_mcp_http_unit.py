@@ -607,7 +607,7 @@ class TestInstallShWiresMcpUnits:
         uninstall = content.split("# --- Uninstall branch ---", maxsplit=1)[1]
         help_header = "\n".join(content.splitlines()[2:18])
         assert (
-            "--uninstall affects every managed unit, including production MCP HTTP" in help_header
+            "--uninstall affects every managed unit, including workstation MCP HTTP" in help_header
         )
         for unit in (
             "brain-mcp-http.service",
@@ -657,7 +657,9 @@ class TestMcpHttpServiceDocumentationPath:
             "check_mcp_http_port.py",
             "deploy/systemd/install.sh --check-only",
             'deploy/systemd/install.sh --render-dir "$render_dir"',
-            "production systemd contract is fixed to `127.0.0.1:8765`",
+            "workstation systemd contract is fixed to `127.0.0.1:8765`",
+            "Production is red-base (`deploy/compose.yaml`)",
+            "this workstation systemd deployment (rollback B) was retired by G14",
             '--token-file "$HOME/.config/brain-v42/mcp-token.env"',
             'test -n "${MCP_HTTP_TOKEN:-}"',
             "--require-effective-token",
