@@ -1984,16 +1984,19 @@ def test_documented_embedding_topology_matches_restored_local_default() -> None:
 def test_network_boundary_contract_describes_wireguard_perimeter() -> None:
     contract = " ".join(NETWORK_BOUNDARY_CONTRACT.split())
     for statement in (
-        "the MCP listener binds to the host's WireGuard address (`BIND_ADDRESS`)",
-        "never `0.0.0.0`, and every MCP call must carry a valid bearer",
+        "both on the host's WireGuard address (`BIND_ADDRESS`)",
+        "no host publish is ever `0.0.0.0`",
+        "MCP runs in credentials mode",
+        "the shared `MCP_HTTP_TOKEN` bearer is refused and must be absent",
+        "its POST receivers are gated by credentials",
+        "PostgreSQL and Neo4j publish no host port",
         "the `DOCKER-USER` chain on `wg0` is owned by `red-watcher`",
-        "PostgreSQL and Neo4j stay on loopback",
-        "loopback remains the local-development default for MCP",
-        "`METRICS_HOST` is fail-closed",
+        "loopback, which remains the local-development default",
         "do not copy this line forward",
     ):
         assert statement in contract, statement
     assert "MCP, PostgreSQL and Neo4j bind to loopback" not in contract
+    assert "stay unregistered" not in contract
 
 
 def test_documented_network_boundary_matches_tracked_bindings() -> None:
