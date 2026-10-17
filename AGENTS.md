@@ -60,7 +60,7 @@ Mandatory reading covers in particular:
 | Rule | Why |
 |---|---|
 | **The PR gate is never bypassed** | `continuous-integration.yml` triggers on `pull_request` only. A direct push to `main` runs **no** lint, test or security gate. `main` is the base of every immutable release. No `--admin`, no `--no-verify`, no branch-protection bypass. |
-| **A merge on `main` is not live** | The systemd writers run an immutable release from `~/.local/share/brain-v42/releases/<sha>/`. A new release must be built and switched over. |
+| **A merge on `main` is not live** | Brain runs the rail-built OCI image via `deploy/compose.yaml`. A merge is live only after `rail release` and `rail deploy` on red-base; measure the live SHA with `brain_fact_get("live_release_sha")`. |
 | **Never copy a measured value** | This file's ancestor announced a wrong schema head for ten days. Measure it, or read it with `brain_fact_get`. |
 | **`brain_test` is shared and not empty** | Never `TRUNCATE`. Integration fixtures place themselves in the future or in a rolled-back transaction. |
 | **Never add an `alembic upgrade head` gate on a shared database** | It would stay ahead of `main` and the residual guard would refuse every later integration. |

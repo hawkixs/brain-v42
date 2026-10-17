@@ -54,6 +54,46 @@ LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 requires_claude = pytest.mark.skipif(not CLAUDE, reason="CLAUDE.md is absent from this checkout")
 
 
+@pytest.mark.parametrize(
+    "relative_path",
+    (
+        "CLAUDE.md",
+        "AGENTS.md",
+        "docs/OPERATIONS.md",
+        "docs/ARCHITECTURE.md",
+        "deploy/systemd/README.md",
+    ),
+)
+def test_live_documentation_uses_the_image_execution_model(relative_path: str) -> None:
+    document = (REPO_ROOT / relative_path).read_text()
+    for retired in (
+        "check_delivery_deployment",
+        "90-immutable-release",
+        ".local/share/brain-v42/releases",
+    ):
+        assert retired not in document, (relative_path, retired)
+
+
+def test_merge_is_live_only_after_rail_release_and_deploy_on_red_base() -> None:
+    assert re.search(
+        r"A merge on `main` is live only after `rail release` and `rail deploy` on red-base",
+        " ".join(CLAUDE.split()),
+    )
+
+
+def test_operations_documents_canary_identity_from_live_facts() -> None:
+    text = " ".join(OPERATIONS.split())
+    for required in (
+        "observer_env_file",
+        "mcp_token_file",
+        "measured_live_facts",
+        "running_artifact_unverified",
+        '`brain_fact_get("live_release_sha")`',
+        '`brain_fact_get("alembic_head")`',
+    ):
+        assert required in text
+
+
 def _docs_including_claude(*others: str) -> tuple[str, ...]:
     """Documents to check, adding CLAUDE.md only when it exists.
 
@@ -3173,6 +3213,14 @@ def test_operations_documents_the_tag_pass_and_its_budget() -> None:
     assert "released:<ticket>:<deliverable>:<tag>" in text
     assert "BRAIN_DELIVERY_REQUEST_BUDGET_PER_MINUTE" in text
     assert "deployed" in text and "brain-v42 only" in text
+
+
+def test_operations_documents_the_observer_image_identity() -> None:
+    text = " ".join(_section(OPERATIONS, "## Delivery observer: releases and deployments").split())
+    assert "`running_release_identity`" in text
+    assert "`image_release_sha()`" in text
+    assert "`BRAIN_RELEASE_SHA`" in text
+    assert "falls back" in text
 
 
 def test_operations_documents_the_observer_shared_uid_trust_boundary() -> None:

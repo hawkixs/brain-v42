@@ -532,7 +532,6 @@
     "tests/unit/test_delivery_bind_token_is_documented.py": 0.0,
     "tests/unit/test_delivery_canary.py": 2.44,
     "tests/unit/test_delivery_config.py": 0.0,
-    "tests/unit/test_delivery_deployment.py": 70.34,
     "tests/unit/test_direct_graph_writer_guards.py": 0.05,
     "tests/unit/test_disk_floor.py": 1.41,
     "tests/unit/test_docker_compose.py": 1.39,

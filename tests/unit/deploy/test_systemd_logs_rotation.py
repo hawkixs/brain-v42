@@ -39,10 +39,8 @@ def test_log_rotation_unit_is_rendered_but_not_enabled(tmp_path: Path) -> None:
     assert "Type=oneshot" in service
     assert "ReadWritePaths=-" in service
     assert "ReadWritePaths=-__REPO_ROOT__" not in service
-    assert (
-        f"ReadWritePaths=-{rendered_repo_root}/logs -%h/.local/share/brain-v42/releases"
-    ) in service
-    assert "-%h/.local/share/brain-v42/releases" in service
+    assert f"ReadWritePaths=-{rendered_repo_root}/logs\n" in service
+    assert "-%h/.local/share/brain-v42/releases" not in service
     assert "__LOG_TARGETS__" not in service
     assert "Persistent=false" in timer
     assert not any("logs-rotate" in line for line in systemctl_log.read_text().splitlines())

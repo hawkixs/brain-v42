@@ -155,8 +155,8 @@ def check_preconditions(
 # is the one that calls it only for a claim whose `target == "live_release"`.
 # ---------------------------------------------------------------------------
 
-#: The evidence `scripts/check_delivery_deployment.py:_SYSTEMD_TIMEOUT_SECONDS`
-#: already uses for a `systemctl --user` round trip.
+#: Bound each `systemctl --user` round trip so a stalled user manager cannot
+#: block nightly claim verification indefinitely.
 _SYSTEMCTL_TIMEOUT_SECONDS: Final = 5
 
 #: `(ActiveState, MainPID)`, both the RAW strings `systemctl --user show`

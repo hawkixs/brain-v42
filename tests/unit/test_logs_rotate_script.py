@@ -128,7 +128,7 @@ def test_dry_run_listing_failure_returns_nonzero(tmp_path: Path) -> None:
     assert "listing failed" in result.stderr.lower()
 
 
-def test_default_targets_include_repository_and_kept_release_logs(tmp_path: Path) -> None:
+def test_default_targets_exclude_retired_release_logs(tmp_path: Path) -> None:
     home = tmp_path / "home"
     release_logs = home / ".local/share/brain-v42/releases/abc/brain-v42/logs"
     release_logs.mkdir(parents=True)
@@ -138,16 +138,21 @@ def test_default_targets_include_repository_and_kept_release_logs(tmp_path: Path
     os.utime(old_release_log, (old_timestamp, old_timestamp))
     repository_logs = tmp_path / "logs"
     repository_logs.mkdir()
+    old_repository_log = repository_logs / "night.log"
+    old_repository_log.write_text("night")
+    os.utime(old_repository_log, (old_timestamp, old_timestamp))
 
     result = subprocess.run(
-        [str(SCRIPT), "--dry-run"],
+        [str(SCRIPT)],
         capture_output=True,
         text=True,
         env={**os.environ, "HOME": str(home), "BRAIN_LOGS_REPO_ROOT": str(tmp_path)},
     )
 
     assert result.returncode == 0, result.stderr
-    assert f"target: {release_logs} (mtime > 90 days)" in result.stdout
-    assert f"would delete: {old_release_log}" in result.stdout
+    assert str(release_logs) not in result.stdout
+    assert old_release_log.exists()
+    assert f"target: {repository_logs} (mtime > 90 days)" in result.stdout
+    assert not old_repository_log.exists()
     assert "files before: 1" in result.stdout
-    assert "files eligible: 1" in result.stdout
+    assert "files deleted: 1" in result.stdout

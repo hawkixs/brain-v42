@@ -28,7 +28,7 @@ that copies a measurement cannot know it has aged: it stays green through the dr
 |---|---|
 | Alembic head **in production** | `brain_fact_get("alembic_head")` |
 | Head shipped **with the release** | `brain_fact_get("alembic_head_shipped")` |
-| **Live** immutable release | `brain_fact_get("live_release_sha")` |
+| **Live** image release | `brain_fact_get("live_release_sha")` |
 | **Declared** Dream killswitches | `brain_fact_get("dream_killswitches_declared")` |
 | Last Dream night | `brain_fact_get("dream_last_night")` |
 | Last nightly claim verification | `brain_fact_get("claims_verification_last_night")` |
@@ -45,16 +45,18 @@ document can.
 **If no fact covers what you are looking for: measure it, and say where the measurement
 comes from.** Never copy a value found in a document — this one included.
 
-Fallback commands, when the MCP server is unreachable:
+Fallback commands on red-base, when the MCP server is unreachable, using the
+production Compose stack (`deploy/compose.yaml`):
 
 ```bash
 # Schema head in production
-docker exec brain_v42_postgres psql -U brain -d brain -Atc "select version_num from alembic_version;"
+docker compose -f deploy/compose.yaml exec -T postgres psql -U brain -d brain -Atc "select version_num from alembic_version;"
 # SHA of the live release
-systemctl --user show brain-mcp-http.service -p ExecStart | grep -o 'releases/[0-9a-f]\{8\}'
-# Declared killswitches
-cat ~/.config/systemd/user/brain-v42-dream.service.d/killswitches.conf
+docker compose -f deploy/compose.yaml exec -T mcp printenv BRAIN_RELEASE_SHA
 ```
+
+Use `brain_fact_get("dream_killswitches_declared")` for the declared killswitch fact;
+verify effective arming in the environment of the process that runs each phase.
 
 ---
 
@@ -318,19 +320,18 @@ MCP over authenticated HTTP on `BIND_ADDRESS:8765/mcp` in production (red-base),
   use hosted HTTPS APIs with separate provider credentials. A separately run local
   endpoint on `:8003` needs its own bind and authentication controls.
 
-### Execution model: immutable release
+### Execution model: rail-built image
 
-The systemd writers run from `~/.local/share/brain-v42/releases/<sha>/`: a dedicated
-venv, `brain_v42` installed as a **wheel** (not editable), `PYTHONSAFEPATH=1`. All of it is
-set by the `90-immutable-release.conf` drop-ins.
+Brain runs on red-base from the rail-built OCI image, using `deploy/compose.yaml`.
+The image carries the installed package, its migrations and `BRAIN_RELEASE_SHA`.
+The workstation host stack is retired; its user units and local release scripts
+are no longer the production execution path.
 
-**Consequence: a merge on `main` is active neither at the next restart nor on the next
-night.** A new release has to be built and switched over, backed by the fail-closed
-preflight `scripts/check_delivery_deployment.py`. Side effect: `dream.sh` computes its logs
-relative to itself, so `logs/dream/` lives under `releases/<sha>/brain-v42/logs/dream/`,
-no longer in the repository.
+A merge on `main` is live only after `rail release` and `rail deploy` on red-base.
+Merging alone does not replace the running image.
 
-> The live SHA is **measured** (`brain_fact_get("live_release_sha")`), never copied.
+> The live SHA and schema head are **measured** with
+> `brain_fact_get("live_release_sha")` and `brain_fact_get("alembic_head")`, never copied.
 
 ### Observable delivery and attestations
 

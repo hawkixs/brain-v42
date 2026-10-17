@@ -1395,10 +1395,12 @@ not exist, the candidate is skipped for the life of the process, any other failu
 is retried on the next cycle.
 
 **`deployed` — whether the live brain-v42 release carries a merge.** brain-v42 only:
-the observer reads the release it runs from (`releases/<40-hex sha>/` of its own
-import path) and asks GitHub whether that SHA contains each brain-v42 merge not yet
-attested for it. A process running from a checkout measures no release and records
-nothing. The pass is the observer's own measurement of its own release, so it
+the observer uses `running_release_identity`, which reads `image_release_sha()`
+first (`BRAIN_RELEASE_SHA`, embedded by the Dockerfile) and falls back to a
+`releases/<40-hex sha>/` segment of its own import path for legacy compatibility.
+It asks GitHub whether that SHA contains each brain-v42 merge not yet attested for
+it. Without either identity, a checkout measures no release and records nothing.
+The pass is the observer's own measurement of its own release, so it
 covers the brain-v42 repository only, and only while that repository is registered
 for `brain-v42` in the observer's repository registry.
 
@@ -1597,54 +1599,39 @@ PostgreSQL `codex_ro` and `brain` credentials use development defaults. Its `/re
 check validates the SQL contract, including `security_barrier` on views scoped to the
 red group; the gateway is not ready when that contract fails.
 
+## Delivery canary: measured live identity
+
+`scripts/verify_delivery_canary.py --config <absolute-private-json> --phase <phase>`
+verifies the persisted generation, current GitHub evidence, required checks and
+receipts without mutating Brain or GitHub. Its private configuration contains the
+generation scope (`ticket_id`, `actor_project`, `repository_id`, `pr_number`,
+`deliverable_key`, `contract_revision`, `attempt`, `contract_digest`), `mcp_url`,
+`mcp_token_file` and `observer_env_file`. Both file paths must be absolute; the MCP
+token and JSON configuration must satisfy the private-file checks. The observer
+environment supplies the existing read-only GitHub adapter's configuration.
+
+Every phase reads `brain_fact_get("live_release_sha")` and
+`brain_fact_get("alembic_head")` through the same authenticated MCP client as the
+delivery view. The release SHA must be 40 lowercase hexadecimal characters and
+the schema revision must equal `shipped_alembic_head()` from the verifier's package.
+Missing, unreadable, stale or malformed facts fail closed with
+`running_artifact_unverified`. Successful receipts use `source="measured_live_facts"`
+and retain `source_sha` and `schema_revision`. No local host release is required.
+
 ## Release: recovery binding
 
 `ops/recovery/current.json` answers which recovery contract covers the schema
 the WORKING CHECKOUT ships (`tests/unit/test_recovery_current_binding.py`).
-`red-backup` needs the operational half of that answer: which recovery contract
-covers the schema of the LIVE release, found WITHOUT brain running and WITHOUT
-reading brain's working checkout — a checkout moves under a release the moment
-`main` advances. `brain_v42.release_recovery` (`src/brain_v42/release_recovery.py`)
-is that bridge, and the out-of-repo release script calls it at three points:
-
-- **Build** — once `current.json`'s source tree and `delivery-release.json` exist
-  in the new release directory:
-
-  ```bash
-  python -m brain_v42.release_recovery publish "$RELEASE"
-  ```
-
-  Copies the three files `<release>/brain-v42/ops/recovery/current.json` names
-  into `<release>/recovery/` (sha256-verified before AND after the copy, and
-  `schema_head` checked against the release's own shipped Alembic head), writes
-  `<release>/recovery/recovery-binding.json` atomically, and records that
-  binding's own sha256 into `<release>/delivery-release.json` under
-  `recovery_binding`. `scripts/check_delivery_deployment.py` refuses, fail-closed,
-  any manifest missing this key or disagreeing with it — with no
-  backward-compatibility grace period, unlike `pyvenv_cfg`.
-
-- **Cutover** — once the new release's units are active and the dormant/canary
-  preflight is green:
-
-  ```bash
-  python -m brain_v42.release_recovery live "$RELEASES_ROOT" "$SHA"
-  ```
-
-  Atomically replaces `<releases_root>/live` (a temporary symlink created next
-  to it, then `os.replace`) so no reader ever observes a missing or half-written
-  link. Refuses a `SHA` with no release directory or no published recovery
-  binding.
-
-- **Rollback** — identical swap, pointed at the predecessor:
-
-  ```bash
-  python -m brain_v42.release_recovery live "$RELEASES_ROOT" "$PREDECESSOR_SHA"
-  ```
-
-`red-backup` reads `<releases_root>/live/recovery/recovery-binding.json` — never
-brain's working checkout, and never a running brain process. Show the current
-target at any time with:
+The production image carries the corresponding recovery contract independently
+of a running Brain process or a moving checkout. During the image build, the
+Dockerfile invokes:
 
 ```bash
-python -m brain_v42.release_recovery show-live "$RELEASES_ROOT"
+python -m brain_v42.release_recovery publish-image /app /app/recovery --release-sha "$GIT_SHA"
 ```
+
+This copies the assets named by `ops/recovery/current.json`, verifies their sha256
+digests and the shipped schema head, and writes `recovery-binding.json` alongside
+them. Production activation uses `rail release` and `rail deploy` on red-base.
+The module's `publish`, `live` and `show-live` commands remain compatibility
+interfaces for archived host release directories; they do not deploy the image.

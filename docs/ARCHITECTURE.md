@@ -782,10 +782,9 @@ uv add "headless-agents @ git+https://github.com/hawkixs/red-ha.git@v0.5.4"
 
 Inside this repository `uv sync` installs the pinned Git dependency alongside `brain_v42`.
 Since the move to red-ha, `headless-agents` is a third-party dependency pinned by commit in
-`uv.lock`, like every other dependency; `scripts/check_delivery_deployment.py` no longer
-attests its files individually. The release builds only the `brain_v42` wheel and sdist.
-Deployment validation still checks any `packages/<dir>` workspace member carried by a release
-archive; brain-v42 carries none.
+`uv.lock`, like every other dependency. The package release builds the `brain_v42` wheel
+and sdist. Production runs the rail-built OCI image on red-base through
+`deploy/compose.yaml`; its installed dependencies come from the locked build.
 
 What the runtime offers beyond what the Dream uses today, for the red-arena pilot (ticket
 e9087e13): `sandbox.sandbox_environment()` (a rebuilt `HOME`/`TMPDIR`/`PATH`/`LANG`/`LC_ALL`
