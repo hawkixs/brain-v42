@@ -81,8 +81,11 @@ this sentence claimed `037` for three days after the cutover.
 ## Catalog authorization boundary
 
 SEC1a and SEC1b remain dormant while `BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false`. In that state,
-production HTTP and dev/fallback STDIO keep their historical global contracts, and the admin
+local `shared_token` HTTP and dev/fallback STDIO keep their historical global contracts, and the admin
 principal stays global.
+Production red-base (`deploy/compose.yaml`) uses credentials mode and requires
+`MCP_HTTP_TOKEN` to be absent; the shared-bearer rollout described here belongs to the
+former workstation deployment (rollback B, retired by G14).
 SEC1b changes no public tool names, catalogs, input schemas, or signatures.
 
 When enforcement is active, FastMCP authenticates the admin bearer and a complete six-phase
@@ -670,7 +673,7 @@ Refusal contracts:
 - HTTP bodies over the cap return `413 {"detail": "Request body too large"}`.
   Malformed or negative `Content-Length` returns
   `400 {"detail": "Invalid Content-Length"}`.
-- An empty/blank HTTP bearer refuses startup with `HttpAuthConfigurationError` naming
+- In local `shared_token` mode, an empty/blank HTTP bearer refuses startup with `HttpAuthConfigurationError` naming
   `MCP_HTTP_TOKEN` and `MCP_HTTP_ALLOW_UNAUTHENTICATED`, without printing a secret.
   The guard independently returns 401 with `WWW-Authenticate: Bearer` for every
   non-`/health` request unless the development opt-out is set.

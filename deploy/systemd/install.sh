@@ -9,7 +9,7 @@
 #   ./deploy/systemd/install.sh --check-only # isolated render + mandatory verify
 #   ./deploy/systemd/install.sh --render-dir /absolute/new/path
 #   ./deploy/systemd/install.sh --uninstall # stop, disable, remove every managed unit
-# WARNING: --uninstall affects every managed unit, including production MCP HTTP and brain-metrics.
+# WARNING: --uninstall affects every managed unit, including workstation MCP HTTP and brain-metrics.
 #
 # The service template contains __REPO_ROOT__ placeholders that are
 # replaced with the absolute path of this repository at install time.
@@ -23,7 +23,7 @@
 #
 # On a normal install, brain-metrics.service and MCP HTTP units (brain-mcp-http.service,
 # brain-mcp-http-watchdog.service, brain-mcp-http-watchdog.timer) are generated
-# and validated but never auto-enabled. Their production lifecycle is
+# and validated but never auto-enabled. Their workstation lifecycle is
 # operator-managed. The explicit --uninstall path stops, disables and removes them.
 #
 # Hosts that restrict unprivileged user namespaces (the sysctl
@@ -69,7 +69,7 @@ MANAGED_UNIT_FILES=(
 # declare the service as a writer, and release preflight requires its ExecStart.
 RETIRED_TIMERS=(brain-v42-model-liveness)
 
-# The repository-managed production client and systemd path use one fixed port.
+# The former workstation deployment (rollback B, retired by G14) uses one fixed port.
 REQUESTED_MCP_HTTP_HOST="${MCP_HTTP_HOST:-127.0.0.1}"
 REQUESTED_MCP_HTTP_PORT="${MCP_HTTP_PORT:-8765}"
 MCP_HTTP_HOST=127.0.0.1
@@ -601,11 +601,11 @@ fi
 
 # --- Sanity checks ---
 if [[ "$REQUESTED_MCP_HTTP_PORT" != "$MCP_HTTP_PORT" ]]; then
-  echo "ERROR: the production systemd MCP HTTP port is fixed to 8765." >&2
+  echo "ERROR: the workstation systemd MCP HTTP port is fixed to 8765." >&2
   exit 2
 fi
 if [[ "$REQUESTED_MCP_HTTP_HOST" != "$MCP_HTTP_HOST" ]]; then
-  echo "ERROR: the production systemd MCP HTTP host is fixed to 127.0.0.1." >&2
+  echo "ERROR: the workstation systemd MCP HTTP host is fixed to 127.0.0.1." >&2
   exit 2
 fi
 [[ -x "$REPO_ROOT/.venv/bin/python" ]] || {
@@ -1177,7 +1177,7 @@ sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__MCP_PORT__|$MCP_HTTP_PORT|g" \
   "$SCRIPT_DIR/brain-mcp-http-watchdog.service.tmpl" \
   > "$RENDER_DIR/brain-mcp-http-watchdog.service"
-log "rendered brain-mcp-http-watchdog.service (fixed production port $MCP_HTTP_PORT)"
+log "rendered brain-mcp-http-watchdog.service (fixed retired workstation/systemd port $MCP_HTTP_PORT)"
 
 # Watchdog timer has no __REPO_ROOT__ or __MCP_PORT__ — straight copy.
 cp "$SCRIPT_DIR/brain-mcp-http-watchdog.timer.tmpl" \

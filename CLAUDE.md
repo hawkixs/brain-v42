@@ -8,7 +8,7 @@
 - **Stack**: Python 3.12+, FastMCP 3.x, SQLAlchemy 2.0 async, asyncpg, Alembic, pgvector, httpx, Pydantic 2, structlog
 - **Status**: in active production; maintenance, hardening and the Sol Ultra roadmap in progress
 
-**MCP transport**: production = HTTP loopback `http://127.0.0.1:8765/mcp`; configuration default and dev/fallback = `stdio`.
+**MCP transport**: production (red-base) = HTTP on the host's WireGuard address (`BIND_ADDRESS`, port 8765, path `/mcp`) in credentials mode, every call authenticated; local HTTP (workstation/dev) = loopback `http://127.0.0.1:8765/mcp` (the configuration default bind); configuration default and dev/fallback transport = `stdio`.
 
 **Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
 
@@ -299,7 +299,7 @@ it.
 
 ## Architecture
 
-MCP over HTTP loopback in production, stdio in dev/fallback → PostgreSQL 16 + pgvector + Neo4j 5.
+MCP over authenticated HTTP on `BIND_ADDRESS:8765/mcp` in production (red-base), loopback for local HTTP, stdio in dev/fallback → PostgreSQL 16 + pgvector + Neo4j 5.
 
 - **PG (5433)** — source of truth: CRUD, FTS, pgvector semantic search
 - **Neo4j (bolt 7687, browser 7474)** — relation index, traversals, invisible to the LLM
@@ -309,8 +309,10 @@ MCP over HTTP loopback in production, stdio in dev/fallback → PostgreSQL 16 + 
 - **Schema** managed by Alembic; the **repository** carries migration 068 (recovery contract v26 candidate). The **live**
   head is measured, it is not read here.
 - **Ledger/outbox** PostgreSQL → Neo4j, active in production
-- **Network model**: personal agents on a trusted LAN; MCP, PostgreSQL, Neo4j and the
-  dedicated automation runtime are constrained to loopback. Metrics are bound there by
+- **Network model**: personal agents on a trusted LAN; production MCP uses the host's
+  WireGuard address (`BIND_ADDRESS`) in credentials mode. PostgreSQL and Neo4j publish
+  no host port in production; development databases and the dedicated automation runtime
+  are constrained to loopback. Metrics are bound there by
   default but their bind stays configurable; while the legacy automation compatibility is
   active, its `/gitlab/webhook` route shares that bind. `:8003` carries **no application
   bearer** — what closes it is the bind, not authentication, and a client placed on
@@ -351,7 +353,7 @@ The three paragraphs below are **synchronised by
 a shorter summary): they cannot drift apart between documents in silence. Re-measure them
 together, or not at all.
 
-**Tracked network boundary** (replayed 2026-08-23): MCP, PostgreSQL and Neo4j bind to loopback; metrics and automation default to loopback. The versioned Compose target binds the embedding host publish to loopback and the live runtime matches it — measured `127.0.0.1:8003`, with the host's own LAN address refusing the connection. Application bearer authentication is armed and enforcing: `MCP_HTTP_TOKEN` is set and non-empty in the live server process, and `POST /mcp` answers `401` both without a bearer and with a wrong one. The dedicated Docker client network exists and carries the clients: `brain-net` holds the embedding shim and both `auto-discord` containers. Repository-managed WAN isolation remains unproven — the repository manages no firewall rule at all. What would make this paragraph false again, and is watched by no test: a host-publish override reopening `:8003`, or `MCP_HTTP_TOKEN` cleared. `METRICS_HOST` has LEFT that list: since 2026-09-03 (`6c61b63`) a fail-closed validator refuses a non-loopback bind unless `METRICS_ALLOW_NON_LOOPBACK` names the decision, and under that opt-in the three POST receivers stay unregistered and say so on `/healthz`. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
+**Tracked network boundary**: on red-base (`deploy/compose.yaml`) only two services publish a host port, MCP (`:8765`) and metrics (`:9200`), both on the host's WireGuard address (`BIND_ADDRESS`); no host publish is ever `0.0.0.0`, even though each container listens on all of its own interfaces. MCP runs in credentials mode (`BRAIN_MCP_AUTH_MODE: credentials`): the shared `MCP_HTTP_TOKEN` bearer is refused and must be absent, and `POST /mcp` answers `401` without a valid credential. Metrics opts into the non-loopback bind through `METRICS_ALLOW_NON_LOOPBACK`, which the fail-closed validator (`6c61b63`) requires, and its POST receivers are gated by credentials (`METRICS_RECEIVER_AUTH: credentials`). PostgreSQL and Neo4j publish no host port. The host firewall is the perimeter: the `DOCKER-USER` chain on `wg0` is owned by `red-watcher`, and the repository manages no firewall rule. The development `docker-compose.yml` binds to loopback, which remains the local-development default. What would make this paragraph false again: a host publish outside `BIND_ADDRESS`, or MCP leaving credentials mode. Re-measure with `ss -ltnp`, `docker port` and an unauthenticated `POST /mcp` — do not copy this line forward.
 
 **Embedding shim limits (ROLLED OUT 2026-08-21, temps 1)**: 8 MiB body, 5 s body-read timeout, 8 concurrent ingress reads, 100 embed texts, 128 rerank candidates, maximum JSON depth 64, one embedding calculation and one rerank calculation per worker. Saturation returns short `503` JSON with `Retry-After: 1`.
 

@@ -73,10 +73,10 @@ outright: the session stops at startup (`tests/database_guards.py`, tickets
 same host, port and database as your `POSTGRES_URL`. For the same reason the
 session points `POSTGRES_URL` (and `.env`) at the test database, or at an
 unreachable address when none is set, and a `BRAIN_V42_TEST_NEO4J_URL` that
-addresses the production bolt port (`127.0.0.1:7687`, or any Neo4j your
-settings name) is refused; the Neo4j fixture also refuses a target that holds a
-project key outside `integ-`/`test-`. Graph tests skip when no test Neo4j is
-configured.
+addresses the former workstation deployment's Bolt port (retired; still guarded),
+or any Neo4j your settings name, is refused; the Neo4j fixture also refuses a target
+that holds a project key outside `integ-`/`test-`. Graph tests skip when no test Neo4j
+is configured.
 
 **Without `BRAIN_V42_TEST_DB_URL` the whole suite skips and exits 0** —
 measured on 2026-09-02: `423 skipped in 1.04s`. That is green, and it proves

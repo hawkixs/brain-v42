@@ -7,7 +7,8 @@ brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's asyn
 ## Architecture
 
 ```text
-MCP clients ── HTTP loopback /mcp (production) or stdio (development)
+MCP clients ── authenticated HTTP BIND_ADDRESS:8765/mcp (production)
+               or loopback HTTP /mcp (local) or stdio (dev/fallback)
                     │
               brain-v42 / FastMCP
                ├── PostgreSQL 16 + pgvector (source of truth)
@@ -15,7 +16,7 @@ MCP clients ── HTTP loopback /mcp (production) or stdio (development)
                └── Neo4j 5 (optional relationship projection)
 ```
 
-**MCP transport**: production = HTTP loopback `http://127.0.0.1:8765/mcp`; configuration default and dev/fallback = `stdio`.
+**MCP transport**: production (red-base) = HTTP on the host's WireGuard address (`BIND_ADDRESS`, port 8765, path `/mcp`) in credentials mode, every call authenticated; local HTTP (workstation/dev) = loopback `http://127.0.0.1:8765/mcp` (the configuration default bind); configuration default and dev/fallback transport = `stdio`.
 
 PostgreSQL is the single source of truth. Neo4j is a disposable projection fed by a
 relational ledger/outbox — it can always be rebuilt from PostgreSQL, never the other
@@ -79,9 +80,10 @@ python -m brain_v42.mcp.server
 The opt-in is required only when the database name is exactly `brain`; never export it persistently.
 
 Alembic reads its URL from the environment, not directly from `.env`, and rejects DSN
-query parameters: use the plain `postgresql+asyncpg://user:password@host:port/db` form. Production HTTP
-requires bearer authentication; an empty token is refused unless the explicit
-development-only unauthenticated option is enabled. For local stdio MCP configuration:
+query parameters: use the plain `postgresql+asyncpg://user:password@host:port/db` form. Local HTTP in the
+default `shared_token` mode requires bearer authentication; an empty token is refused
+unless the explicit development-only unauthenticated option is enabled. Production
+(red-base) uses credentials mode instead, where `MCP_HTTP_TOKEN` must be absent. For local stdio MCP configuration:
 
 ```bash
 claude mcp add brain-v42 -- python -m brain_v42.mcp.server
@@ -197,7 +199,10 @@ For a no-GPU setup, point the OpenAI-compatible backend at a local endpoint such
 set `BRAIN_EMBEDDING_BACKEND=openai`, `EMBEDDING_SERVICE_URL` to its URL,
 `BRAIN_EMBEDDING_MODEL` to a model it serves, and `EMBEDDING_DIMENSION=768`.
 
-HTTP transport binds to loopback by default and requires a non-empty `MCP_HTTP_TOKEN`.
+Local HTTP binds to loopback by default; the default `shared_token` auth mode requires
+a non-empty `MCP_HTTP_TOKEN`. Production (red-base) uses
+`BRAIN_MCP_AUTH_MODE=credentials`: every MCP call needs a valid client credential,
+and `MCP_HTTP_TOKEN` must be absent.
 Never place `MCP_HTTP_TOKEN` or `MCP_HTTP_DREAM_TOKENS` in the shared `.env`; keep
 them in private, permission-restricted secret files such as `mcp-token.env`.
 `GRAPH_PROJECTOR_*`, provider API
@@ -209,8 +214,10 @@ reference.
 
 ## Network trust model
 
-The deployment targets personal agents on a trusted LAN. MCP, PostgreSQL and Neo4j
-bind to loopback; metrics and automation default to loopback.
+The deployment targets personal agents on a trusted LAN. Production (red-base)
+publishes MCP on `BIND_ADDRESS:8765` in credentials mode and metrics on
+`BIND_ADDRESS:9200`; PostgreSQL and Neo4j publish no host port. Local HTTP and
+development database publishes default to loopback, as do metrics and automation.
 
 **Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
 
@@ -331,16 +338,18 @@ release automatically.
 
 ## Roadmap
 
-Planned work moves production from a workstation to a dedicated server, deployed by
-the red-rail release rail as one Compose project: PostgreSQL, Neo4j, the MCP server,
+Production runs on red-base through `deploy/compose.yaml`, deployed by the red-rail
+release rail as one Compose project: PostgreSQL, Neo4j, the MCP server,
 metrics sidecar, delivery observer, a one-shot migration service that proves the
-recovery contract, and Compose-scheduled work. Clients are planned to reach MCP over a
-private WireGuard network with bearer authentication. The credential model is planned
-to use one scoped credential per client service (read, write, delivery, or admin), with
-admin access granted only through time-boxed operator elevation. Delivery attestation
-issuers are planned to be proven against their credential in attestation API v1.1.
-After that deployment work, priorities are search and embedding quality,
-disaster-recovery proof, and metrics. Operators can suspend Dream and re-arm it later.
+recovery contract, and Compose-scheduled work. Clients reach MCP over a private
+WireGuard network in credentials mode; `MCP_HTTP_TOKEN` must be absent. Only MCP
+(`BIND_ADDRESS:8765`) and metrics (`BIND_ADDRESS:9200`) publish host ports, and
+unauthenticated `POST /mcp` returns `401`. The former workstation systemd deployment
+is retired. Each client service uses a scoped credential (read, write, delivery, or
+admin), with admin access granted only through time-boxed operator elevation.
+Delivery attestation issuers are planned to be proven against their credential in
+attestation API v1.1. Priorities are search and embedding quality, disaster-recovery
+proof, and metrics. Operators can suspend Dream and re-arm it later.
 
 ## Versioning
 
