@@ -1,0 +1,59 @@
+{
+  "digest": "sha256:43519d2e9a56cf852fd4bca79a4b6334b9bb9fdaa340d98c7f13dddd20ed4e2f",
+  "idempotency_key": "review_verdict:aa5df28ec8d1762afac1de178331a86565f4683f:117272608552",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117272608552,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "If the BrainSession model permits started_focus as a non-null string without started_focus_revision, _started_focus_reference would render '(see session.started_focus, revision None, N chars)'. Question to check: does the model enforce focus/revision coupling, or default revision? Tests only exercis",
+          "file": "src/brain_v42/mcp/tools/session_lifecycle_tools.py",
+          "id": "F-461-1",
+          "line": 188,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Reference string assumes started_focus_revision is set"
+        },
+        {
+          "class": "note",
+          "evidence": "open_slots and to_distill are joined per entry without a count cap, relying on the final 4000-char slice for the bound. This works (length is guaranteed, marker is appended to land exactly at 4000, and the delivery count line is intentionally placed before the lists so it survives), but heavy trunca",
+          "file": "src/brain_v42/mcp/tools/session_tools.py",
+          "id": "F-461-2",
+          "line": 690,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Compact slot lists are uncapped before rendering"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 461,
+      "providers": [
+        "codex",
+        "agy"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 2,
+      "sha": "aa5df28ec8d1762afac1de178331a86565f4683f",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T01:33:48.517682Z",
+  "schema_version": 1
+}

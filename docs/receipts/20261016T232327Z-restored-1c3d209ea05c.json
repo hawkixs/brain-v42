@@ -1,0 +1,18 @@
+{
+  "digest": "sha256:1c3d209ea05cec03b9b86bef0a84f8f4e865d140019d9174faf2063918150d6e",
+  "idempotency_key": "restored:private-compose:sha256:b95f2f1e80ff12385a78b56c7af4eee0cf791c96ed03551b5b8f7cab06bdc7c4:20261016T232327Z",
+  "issuer": "agent:claude-code:66c7465f-f663-4fdb-aada-1cf5b98f3ac2",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "digest": "sha256:b95f2f1e80ff12385a78b56c7af4eee0cf791c96ed03551b5b8f7cab06bdc7c4",
+      "drill": true,
+      "recovery_seconds": 45,
+      "target": "private-compose"
+    },
+    "kind": "restored"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-16T23:23:27.005559Z",
+  "schema_version": 1
+}
