@@ -968,6 +968,79 @@ it is disabled by default and is the CLI's sole object-ACL exception, outside
 the public schema contract. Exit codes are 0 for success, 1 for refusal/failure,
 and 2 for invalid CLI usage.
 
+### Rotate the Compose PostgreSQL passwords
+
+On the Compose host, run as root from the repository:
+
+```bash
+sudo python3 scripts/rotate_postgres_role_passwords.py
+```
+
+This rotates `brain` and `brain_app` together, then atomically replaces the two
+value-only password files, both PostgreSQL env files and the observer DSN under
+`/etc/brain-v42`, preserving ownership, mode 0600 and unrelated observer lines.
+Before changing PostgreSQL it saves the original five files in
+`/root/pg-rotation-<UTC_TIMESTAMP>/` (mode 0700). Output contains only `ok`, the
+rewritten paths and that backup directory. Rotation, restore and dry-run hold an
+exclusive, non-blocking `.pg-rotation.lock` in the first credential file's directory
+through preflight, backup, database update and file replacements. The lock is opened
+without following symlinks, kept at mode 0600 and released on exit; its file remains.
+A concurrent invocation refuses before calling PostgreSQL or changing credentials.
+`--dry-run` validates without changing credentials or creating backups;
+it also checks connectivity with the same `docker exec -i ... psql -X` command,
+sending only `SELECT 1;` on stdin. A failed connection returns non-zero without
+generating passwords or writing files. Each file path, `--container` and
+`--backup-root` can be overridden. Every `psql` invocation uses `-X` to ignore startup
+files that could alter the session or expose credentials.
+
+For rotation and restore, the script computes SCRAM-SHA-256 verifiers locally
+(RFC 5802 / RFC 7677, 4096 PBKDF2-HMAC-SHA-256 iterations, fresh 16-byte random
+salt for each password). Passwords must be ASCII: until SASLprep is supported
+(brain ticket `4837bc35`), preflight refuses non-ASCII passwords in value files
+or decoded DSNs, including backups, before calling PostgreSQL or replacing any
+credential files. This restriction also applies to `--dry-run`.
+It sends only verifiers in `ALTER ROLE ... PASSWORD`;
+plaintext passwords and their URL-encoded forms never reach the PostgreSQL server.
+PostgreSQL stores these pre-hashed verifiers as supplied. Before `BEGIN`, the
+same owner-superuser session also runs all four settings:
+
+```sql
+SET log_statement = 'none';
+SET pg_stat_statements.track_utility = off;
+SET log_min_duration_statement = -1;
+SET log_min_error_statement = panic;
+```
+
+These suppress utility tracking and statement logging for the rotation session:
+`pg_stat_statements.track=all` would otherwise retain `ALTER ROLE` literals.
+Neither passwords nor verifiers are placed in process arguments or the child
+environment, and echoed credentials are redacted from failure diagnostics.
+
+Immediately restart consumers through `rail deploy`, explicitly recreating
+`delivery-observer`: its mounted secret does not participate in Compose's recreate
+hash. Verify authenticated connections as both roles using the installed files
+without displaying their contents, MCP readiness, consumer/container health,
+observer heartbeat freshness and absence of authentication failures in logs.
+Confirm all five files still have their original uid/gid and mode 0600.
+
+For rollback, run `sudo python3 scripts/rotate_postgres_role_passwords.py --restore
+<UTC_TIMESTAMP>` with the timestamp from the backup directory (and the same path
+overrides, if used), then repeat `rail deploy`, explicit observer recreation and
+the verification list. Restore reapplies the backed-up passwords before restoring
+the files. Backups remain after failures; use restore if a filesystem failure or
+interruption left only some files replaced. File replacements are individually
+atomic; the database transaction and five replacements are separate steps.
+Once a backup is available, any password-update `psql` failure (including an
+exception, timeout or non-zero exit) prints the backup directory and the exact
+`--restore <UTC_TIMESTAMP>` command. This applies to rotation and restore: the
+database may or may not hold the new passwords, since the client failure does not
+prove whether PostgreSQL committed. Diagnostics disclose neither passwords nor
+verifiers. Reuse the same path overrides when recovering.
+If a file write fails after the database commit, the error explicitly states
+that PostgreSQL already holds the new passwords and prints the backup directory
+and the exact `--restore <UTC_TIMESTAMP>` command to recover. A failed restore
+file write similarly reports that the database already holds the restored passwords.
+
 Recovery contract v20 is the recovery asset for the schema through 062. It includes
 the session connection ledger from 061 and the 062 monitoring extension inventory
 (`pg_stat_statements`, `plpgsql`, and `vector`), along with the expected database
