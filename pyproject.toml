@@ -82,6 +82,10 @@ brain-v42-migrate = "brain_v42.scripts.migrate_cli:main"
 brain-v42-restore = "brain_v42.scripts.restore_cli:main"
 
 [project.optional-dependencies]
+dream = [
+    # Acceptance pins both this SDK and its bundled runtime (2.1.301).
+    "claude-agent-sdk==0.2.168",
+]
 lifecycle = [
     "anthropic>=1.13,<2",
 ]
@@ -154,6 +158,7 @@ filterwarnings = [
     "error::pytest.PytestUnraisableExceptionWarning",
 ]
 markers = [
+    "sdk_socket: local fake-upstream sockets or the real optional Dream SDK runtime; run outside restricted sandboxes with the dream extra",
     "bench_docker: spins disposable Docker containers; excluded by default, run with -m bench_docker",
     # Reads THIS host: listening sockets, published ports, a live bearer refusal.
     # Hosted CI has none of that and `red-ci` measures only at push, so wiring it
