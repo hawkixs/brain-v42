@@ -7,8 +7,12 @@ a cutover has taken place.
 
 The installer also renders and verifies `brain-metrics.service` from its versioned
 template. Its enable/start state remains operator-managed, and host-local drop-ins
-under `brain-metrics.service.d/`, including `90-immutable-release.conf`, survive
+under `brain-metrics.service.d/` survive
 installation and removal of the unit fragment.
+
+These templates support optional host installations. Production Brain runs on
+red-base from the rail-built OCI image through `deploy/compose.yaml`; the
+workstation host stack is retired.
 
 The target topology separates responsibilities:
 

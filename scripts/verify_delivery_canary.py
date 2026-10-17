@@ -5,12 +5,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import importlib.util
 import json
 import ssl
-import sys
 from collections.abc import AsyncIterator, Callable, Mapping
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, NoReturn, cast
@@ -51,6 +48,7 @@ _PHASES = ("missing-proof", "observed", "verified", "integrated", "accepted")
 _MAX_RESPONSE_BYTES = 256 * 1024
 _CALL_TIMEOUT_SECONDS = 5
 _OVERALL_TIMEOUT_SECONDS = 10
+_FACT_CLOCK_SKEW_SECONDS = 5
 _SHA = set("0123456789abcdef")
 _MCP_HEADERS = {
     "x-brain-tool-profile": "native",
@@ -114,23 +112,16 @@ class CanaryScope(_Strict):
 
 
 class CanaryConfig(CanaryScope):
-    deployment_config: Path
+    observer_env_file: Path
     mcp_url: str = Field(min_length=1, max_length=2048)
     mcp_token_file: Path
 
-    @field_validator("deployment_config", "mcp_token_file")
+    @field_validator("observer_env_file", "mcp_token_file")
     @classmethod
     def _absolute_path(cls, value: Path) -> Path:
         if not value.is_absolute():
             raise ValueError("absolute path required")
         return value
-
-
-@dataclass(frozen=True, slots=True)
-class PreflightReceipt:
-    source_sha: str
-    schema_revision: str
-    observer_env: Path
 
 
 class _BoundedStream(httpx.AsyncByteStream):
@@ -258,18 +249,6 @@ def _private_token(path: Path) -> str:
         _fail("brain_transport_or_shape_invalid")
 
 
-def _private_json(path: Path) -> dict[str, object]:
-    try:
-        if not path.is_absolute():
-            raise ValueError
-        value = json.loads(read_private_file(path))
-        if not isinstance(value, dict):
-            raise ValueError
-        return value
-    except (ProviderError, OSError, UnicodeError, ValueError, json.JSONDecodeError):
-        _fail("brain_transport_or_shape_invalid")
-
-
 def _load_config(path: Path) -> CanaryConfig:
     try:
         if not path.is_absolute():
@@ -283,65 +262,58 @@ def _load_config(path: Path) -> CanaryConfig:
         _fail("brain_transport_or_shape_invalid")
 
 
-def _load_preflight_checker() -> Callable[[Path], dict[str, str]]:
-    checker_path = Path(__file__).with_name("check_delivery_deployment.py")
-    spec = importlib.util.spec_from_file_location("delivery_preflight_9b1", checker_path)
-    if spec is None or spec.loader is None:
-        raise ValueError("9B1 preflight helper unavailable")
-    checker = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = checker
-    try:
-        spec.loader.exec_module(checker)
-    except Exception:
-        if sys.modules.get(spec.name) is checker:
-            del sys.modules[spec.name]
-        raise
-    check = getattr(checker, "check", None)
-    if not callable(check):
-        raise ValueError("9B1 preflight helper unavailable")
-    return cast(Callable[[Path], dict[str, str]], check)
+def _structured_payload(result: Any) -> dict[str, object]:
+    payload = result.structured_content
+    if result.is_error or not isinstance(payload, dict):
+        raise ValueError
+    encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
+    if len(encoded) > _MAX_RESPONSE_BYTES:
+        raise ValueError
+    return payload
 
 
-def _deployment_canary(path: Path) -> PreflightReceipt:
-    """Rerun the accepted 9B1 checker and retain only its public identity."""
+async def _read_live_identity(client: Client, *, clock: Callable[[], datetime]) -> dict[str, str]:
+    """Trust only fresh measured facts from the same server as the delivery view."""
     try:
-        deployment = _private_json(path)
-        writers = deployment.get("writers")
-        observer = (
-            writers.get("brain-v42-delivery-observer.service")
-            if isinstance(writers, dict)
-            else None
-        )
-        observer_env_value = deployment.get("observer_env_file")
-        if (
-            deployment.get("mode") != "canary"
-            or not isinstance(observer, dict)
-            or observer.get("must_be_active") is not True
-            or not isinstance(observer_env_value, str)
-        ):
-            raise ValueError
-        observer_env = Path(observer_env_value)
-        if not observer_env.is_absolute():
-            raise ValueError
-        result = _load_preflight_checker()(path)
-        if not isinstance(result, dict) or set(result) != {"source_sha", "schema_revision"}:
-            raise ValueError
-        source_sha, schema_revision = result["source_sha"], result["schema_revision"]
+        values: dict[str, dict[str, object]] = {}
+        for name, target in (("live_release_sha", "live_release"), ("alembic_head", "production")):
+            result = await client.call_tool(
+                "brain_fact_get", {"name": name}, timeout=_CALL_TIMEOUT_SECONDS
+            )
+            fact = _structured_payload(result)
+            ttl = fact.get("ttl_seconds")
+            value = fact.get("value")
+            measured_at = datetime.fromisoformat(cast(str, fact["measured_at"]))
+            if (
+                fact.get("status") != "measured"
+                or fact.get("fact") != name
+                or fact.get("target") != target
+                or measured_at.utcoffset() is None
+                or type(ttl) is not int
+                or ttl < 0
+                or not -_FACT_CLOCK_SKEW_SECONDS <= (clock() - measured_at).total_seconds() <= ttl
+                or not isinstance(value, dict)
+            ):
+                raise ValueError
+            values[name] = value
+        source_sha = values["live_release_sha"].get("release_sha")
+        schema_revision = values["alembic_head"].get("revision")
         if (
             not isinstance(source_sha, str)
             or len(source_sha) != 40
             or set(source_sha) - _SHA
+            or not isinstance(schema_revision, str)
             or schema_revision != shipped_alembic_head()
         ):
             raise ValueError
-        return PreflightReceipt(source_sha, schema_revision, observer_env)
-    except CanaryFailure:
-        raise
+        return {"source_sha": source_sha, "schema_revision": schema_revision}
     except Exception:
         _fail("running_artifact_unverified")
 
 
-async def _read_view(config: CanaryConfig) -> dict[str, object]:
+async def _read_view(
+    config: CanaryConfig, *, clock: Callable[[], datetime] | None = None
+) -> tuple[dict[str, object], dict[str, str]]:
     token = _private_token(config.mcp_token_file)
     try:
         transport = StreamableHttpTransport(
@@ -356,6 +328,9 @@ async def _read_view(config: CanaryConfig) -> dict[str, object]:
                 timeout=_CALL_TIMEOUT_SECONDS,
                 init_timeout=_CALL_TIMEOUT_SECONDS,
             ) as client:
+                identity = await _read_live_identity(
+                    client, clock=clock or (lambda: datetime.now(UTC))
+                )
                 result = await client.call_tool(
                     "brain_delivery_get",
                     {
@@ -366,13 +341,7 @@ async def _read_view(config: CanaryConfig) -> dict[str, object]:
                     },
                     timeout=_CALL_TIMEOUT_SECONDS,
                 )
-        payload = result.structured_content
-        if not isinstance(payload, dict):
-            raise ValueError
-        encoded = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
-        if len(encoded) > _MAX_RESPONSE_BYTES:
-            raise ValueError
-        return payload
+        return _structured_payload(result), identity
     except CanaryFailure:
         raise
     except (TimeoutError, ValueError, TypeError, httpx.HTTPError, OSError):
@@ -993,8 +962,7 @@ async def _run(
     clock: Callable[[], datetime] | None = None,
 ) -> dict[str, object]:
     time_source = clock or (lambda: datetime.now(UTC))
-    preflight = await asyncio.to_thread(_deployment_canary, config.deployment_config)
-    raw = await _read_view(config)
+    raw, identity = await _read_view(config, clock=time_source)
     brain_observed_at = time_source()
     if brain_observed_at.utcoffset() is None:
         _fail("current_generation_unverified")
@@ -1007,7 +975,7 @@ async def _run(
         if item.confirmation is None or item.confirmation.evidence is None:
             _fail("current_generation_unverified")
         live = await _collect_github(
-            preflight.observer_env,
+            config.observer_env_file,
             item.binding,
             view.contract,
             item.confirmation.evidence,
@@ -1024,9 +992,8 @@ async def _run(
         now=validation_time.astimezone(UTC),
     )
     return receipt | {
-        "source": "deployment_preflight_rerun",
-        "source_sha": preflight.source_sha,
-        "schema_revision": preflight.schema_revision,
+        "source": "measured_live_facts",
+        **identity,
     }
 
 

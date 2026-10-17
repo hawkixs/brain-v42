@@ -27,13 +27,6 @@ if ((${#TARGETS[@]} == 0)) && [[ -n "${BRAIN_LOGS_ROTATE_TARGETS:-}" ]]; then
   IFS=: read -r -a TARGETS <<< "$BRAIN_LOGS_ROTATE_TARGETS"
 elif ((${#TARGETS[@]} == 0)); then
   [[ -d "$REPO_ROOT/logs" ]] && TARGETS+=("$REPO_ROOT/logs")
-  RELEASE_ROOT="${HOME:?HOME must be set}/.local/share/brain-v42/releases"
-  if [[ -d "$RELEASE_ROOT" ]]; then
-    shopt -s nullglob
-    for logs in "$RELEASE_ROOT"/*/brain-v42/logs; do
-      [[ -d "$logs" ]] && TARGETS+=("$logs")
-    done
-  fi
 fi
 
 printf '=== logs-rotate run at %s ===\n' "$(date --iso-8601=seconds)"

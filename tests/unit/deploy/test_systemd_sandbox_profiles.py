@@ -115,7 +115,7 @@ EXPECTED_PROFILES = {
         "PrivateTmp=true",
         "ProtectSystem=strict",
         "ProtectHome=read-only",
-        "ReadWritePaths=-__REPO_ROOT__/logs -%h/.local/share/brain-v42/releases",
+        "ReadWritePaths=-__REPO_ROOT__/logs",
     ),
     "brain-mcp-http.service.tmpl": MCP_HTTP_PROFILE,
     "brain-v42-dream.service.tmpl": REDUCED_PROFILE,

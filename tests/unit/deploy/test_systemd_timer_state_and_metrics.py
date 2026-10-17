@@ -114,9 +114,9 @@ def test_metrics_install_renders_without_mutating_lifecycle(tmp_path: Path) -> N
 def test_metrics_host_dropins_survive(tmp_path: Path, mode: tuple[str, ...]) -> None:
     environment, _, unit_dir = _fake_systemd_environment(tmp_path)
     dropin_dir = make_directory(unit_dir / "brain-metrics.service.d", parents=True)
-    dropin = dropin_dir / "90-immutable-release.conf"
+    dropin = dropin_dir / "90-local-python.conf"
     dropin.write_text(
-        "[Service]\nExecStart=\nExecStart=/example/release/bin/python -m brain_v42.metrics\n"
+        "[Service]\nExecStart=\nExecStart=/example/venv/bin/python -m brain_v42.metrics\n"
     )
     (unit_dir / "brain-metrics.service").write_text("existing metrics\n")
     previous = dropin.read_bytes()

@@ -11,7 +11,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 from uuid import UUID
 
@@ -516,8 +516,10 @@ async def test_bounded_transport_closes_a_rejected_encoded_response(canary: Modu
     assert encoded.closed
 
 
-def test_actual_9b1_helper_can_be_loaded_with_its_dataclass_context(canary: ModuleType) -> None:
-    assert callable(canary._load_preflight_checker())
+def test_config_needs_only_observer_env_and_mcp_paths(canary: ModuleType, tmp_path: Path) -> None:
+    config = _canary_config(canary, tmp_path / "mcp.token", "http://127.0.0.1:1/mcp", tmp_path)
+    assert config.observer_env_file == tmp_path / "observer.env"
+    assert "deployment_config" not in config.model_dump()
 
 
 @pytest.mark.asyncio
@@ -526,7 +528,16 @@ async def test_real_fastmcp_http_returns_structured_content_with_exact_auth_and_
 ) -> None:
     view = _view()
     calls: list[dict[str, Any]] = []
+    fact_calls: list[str] = []
     server = FastMCP("delivery-canary-fixture")
+
+    @server.tool(name="brain_fact_get")
+    async def fact_get(name: str) -> dict[str, Any]:
+        fact_calls.append(name)
+        assert get_http_headers(include={"authorization"})["authorization"] == (
+            "Bearer mcp-fixture-token"
+        )
+        return _fact(name, measured_at=datetime.now(UTC))
 
     @server.tool(name="brain_delivery_get")
     async def delivery_get(
@@ -555,9 +566,11 @@ async def test_real_fastmcp_http_returns_structured_content_with_exact_auth_and_
     token = _private(tmp_path / "mcp.token", "mcp-fixture-token")
     async with _serve_loopback(app) as base_url:
         config = _canary_config(canary, token, f"{base_url}/mcp", tmp_path)
-        raw = await canary._read_view(config)
+        raw, identity = await canary._read_view(config)
 
     assert raw == view
+    assert identity == {"source_sha": "7" * 40, "schema_revision": SCHEMA_HEAD}
+    assert fact_calls == ["live_release_sha", "alembic_head"]
     assert len(calls) == 1
     assert calls[0]["ticket_id"] == str(TICKET)
     assert calls[0]["actor_project"] == "brain-v42"
@@ -593,6 +606,10 @@ async def test_mcp_overall_timeout_is_a_safe_failure(
     canary: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     server = FastMCP("delivery-canary-timeout")
+
+    @server.tool(name="brain_fact_get")
+    async def fact_get(name: str) -> dict[str, Any]:
+        return _fact(name, measured_at=datetime.now(UTC))
 
     @server.tool(name="brain_delivery_get")
     async def delivery_get(
@@ -670,33 +687,28 @@ async def test_real_github_client_reuses_retained_synthetic_proof_and_emits_safe
 
 
 @pytest.mark.asyncio
-async def test_each_phase_reruns_preflight_and_positive_phases_collect_github(
+async def test_each_phase_reads_live_facts_and_positive_phases_collect_github(
     canary: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     positive = _view(stage="integrated", accepted=True, receipts=True)
     missing = _view(missing=True)
     token = _private(tmp_path / "mcp.token", "fixture")
     config = _canary_config(canary, token, "http://127.0.0.1:1/mcp", tmp_path)
-    calls = {"preflight": 0, "read": 0, "github": 0}
+    calls = {"read": 0, "github": 0}
     selected_phase = "missing-proof"
 
-    def preflight(_path: Path) -> Any:
-        calls["preflight"] += 1
-        return canary.PreflightReceipt(
-            source_sha="7" * 40,
-            schema_revision=SCHEMA_HEAD,
-            observer_env=tmp_path / "observer.env",
-        )
-
-    async def read(_config: Any) -> dict[str, Any]:
+    async def read(_config: Any, **_kwargs: Any) -> tuple[dict[str, Any], dict[str, str]]:
         calls["read"] += 1
-        return missing if selected_phase == "missing-proof" else positive
+        return (
+            missing if selected_phase == "missing-proof" else positive,
+            {"source_sha": "7" * 40, "schema_revision": SCHEMA_HEAD},
+        )
 
     async def github(*_args: Any, **_kwargs: Any) -> PullRequestEvidence:
         calls["github"] += 1
+        assert _args[0] == config.observer_env_file
         return _evidence(positive)
 
-    monkeypatch.setattr(canary, "_deployment_canary", preflight)
     monkeypatch.setattr(canary, "_read_view", read)
     monkeypatch.setattr(canary, "_collect_github", github)
     for phase in ("missing-proof", "observed", "verified", "integrated", "accepted"):
@@ -704,85 +716,173 @@ async def test_each_phase_reruns_preflight_and_positive_phases_collect_github(
         receipt = await canary._run(config, phase, clock=lambda: NOW)
         assert receipt["source_sha"] == "7" * 40
         assert receipt["schema_revision"] == SCHEMA_HEAD
-        assert receipt["source"] == "deployment_preflight_rerun"
-    assert calls == {"preflight": 5, "read": 5, "github": 4}
+        assert receipt["source"] == "measured_live_facts"
+    assert calls == {"read": 5, "github": 4}
 
 
 @pytest.mark.asyncio
-async def test_run_executes_sync_preflight_checker_outside_its_event_loop(
+async def test_run_gets_identity_from_facts_on_the_existing_mcp_client(
     canary: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    deployment = _private(
-        tmp_path / "deployment.json",
-        json.dumps(
-            {
-                "mode": "canary",
-                "observer_env_file": str(tmp_path / "observer.env"),
-                "writers": {"brain-v42-delivery-observer.service": {"must_be_active": True}},
-            }
-        ),
-    )
     token = _private(tmp_path / "mcp.token", "fixture")
     config = _canary_config(canary, token, "http://127.0.0.1:1/mcp", tmp_path)
-    calls = {"preflight": 0, "read": 0}
-
-    def check(_path: Path) -> dict[str, str]:
-        async def schema_probe() -> str:
-            return SCHEMA_HEAD
-
-        calls["preflight"] += 1
-        assert asyncio.run(schema_probe()) == SCHEMA_HEAD
-        return {"source_sha": "7" * 40, "schema_revision": SCHEMA_HEAD}
-
-    async def read(_config: Any) -> dict[str, Any]:
-        calls["read"] += 1
-        return _view(missing=True)
-
-    monkeypatch.setattr(canary, "_load_preflight_checker", lambda: check)
-    monkeypatch.setattr(canary, "_read_view", read)
+    calls = _mock_mcp(canary, monkeypatch)
     result = await canary._run(config, "missing-proof", clock=lambda: NOW)
 
-    assert deployment == config.deployment_config
     assert result["outcome"] == "expected_missing_proof"
-    assert result["source"] == "deployment_preflight_rerun"
-    assert calls == {"preflight": 1, "read": 1}
+    assert result["source"] == "measured_live_facts"
+    assert result["source_sha"] == "7" * 40
+    assert result["schema_revision"] == SCHEMA_HEAD
+    assert calls == ["connect", "live_release_sha", "alembic_head", "brain_delivery_get"]
 
 
 @pytest.mark.asyncio
-async def test_run_stops_before_mcp_or_github_when_real_preflight_fails(
-    canary: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("name", ["live_release_sha", "alembic_head"])
+@pytest.mark.parametrize("future_seconds", [2, 5])
+async def test_live_fact_accepts_bounded_future_clock_skew(
+    canary: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+    future_seconds: int,
 ) -> None:
-    _private(
-        tmp_path / "deployment.json",
-        json.dumps(
-            {
-                "mode": "canary",
-                "observer_env_file": str(tmp_path / "observer.env"),
-                "writers": {"brain-v42-delivery-observer.service": {"must_be_active": True}},
-            }
-        ),
-    )
     token = _private(tmp_path / "mcp.token", "fixture")
     config = _canary_config(canary, token, "http://127.0.0.1:1/mcp", tmp_path)
-    calls = {"read": 0, "github": 0}
+    payload = _fact(name) | {"measured_at": (NOW + timedelta(seconds=future_seconds)).isoformat()}
+    calls = _mock_mcp(canary, monkeypatch, facts={name: payload})
 
-    def check(_path: Path) -> dict[str, str]:
-        raise RuntimeError("preflight fixture failure")
+    result = await canary._run(config, "missing-proof", clock=lambda: NOW)
 
-    async def read(_config: Any) -> dict[str, Any]:
-        calls["read"] += 1
-        return _view()
+    assert result["outcome"] == "expected_missing_proof"
+    assert calls == ["connect", "live_release_sha", "alembic_head", "brain_delivery_get"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["live_release_sha", "alembic_head"])
+async def test_live_fact_rejects_six_seconds_of_future_clock_skew(
+    canary: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
+) -> None:
+    token = _private(tmp_path / "mcp.token", "fixture")
+    config = _canary_config(canary, token, "http://127.0.0.1:1/mcp", tmp_path)
+    payload = _fact(name) | {"measured_at": (NOW + timedelta(seconds=6)).isoformat()}
+    calls = _mock_mcp(canary, monkeypatch, facts={name: payload})
+
+    with pytest.raises(canary.CanaryFailure, match="^running_artifact_unverified$"):
+        await canary._run(config, "missing-proof", clock=lambda: NOW)
+    assert "brain_delivery_get" not in calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["live_release_sha", "alembic_head"])
+@pytest.mark.parametrize("age_seconds", [30, 61])
+async def test_live_fact_freshness_uses_the_injected_clock(
+    canary: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+    age_seconds: int,
+) -> None:
+    token = _private(tmp_path / "mcp.token", "fixture")
+    config = _canary_config(canary, token, "http://127.0.0.1:1/mcp", tmp_path)
+    payload = _fact(name) | {"measured_at": (NOW - timedelta(seconds=age_seconds)).isoformat()}
+    calls = _mock_mcp(canary, monkeypatch, facts={name: payload})
+
+    if age_seconds <= payload["ttl_seconds"]:
+        result = await canary._run(config, "missing-proof", clock=lambda: NOW)
+        assert result["outcome"] == "expected_missing_proof"
+        assert "brain_delivery_get" in calls
+    else:
+        with pytest.raises(canary.CanaryFailure, match="^running_artifact_unverified$"):
+            await canary._run(config, "missing-proof", clock=lambda: NOW)
+        assert "brain_delivery_get" not in calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["live_release_sha", "alembic_head"])
+async def test_fact_tool_error_stops_before_delivery(
+    canary: ModuleType, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, name: str
+) -> None:
+    token = _private(tmp_path / "mcp.token", "fixture")
+    config = _canary_config(canary, token, "http://127.0.0.1:1/mcp", tmp_path)
+    payload = _fact(name)
+    result = SimpleNamespace(structured_content=payload, is_error=True)
+    calls = _mock_mcp(canary, monkeypatch, facts={name: result})
+
+    with pytest.raises(canary.CanaryFailure, match="^running_artifact_unverified$"):
+        await canary._run(config, "missing-proof", clock=lambda: NOW)
+    assert "brain_delivery_get" not in calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["live_release_sha", "alembic_head"])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        None,
+        {"status": "unreadable", "error_code": "no_observation"},
+        {"status": "stale"},
+        {"fact": "other_fact"},
+        {"target": "brain_test"},
+        {"measured_at": (NOW - timedelta(days=1)).isoformat()},
+        {"measured_at": (NOW + timedelta(days=1)).isoformat()},
+        {"measured_at": NOW.replace(tzinfo=None).isoformat()},
+        {"measured_at": "invalid"},
+        {"measured_at": None},
+        {"ttl_seconds": -1},
+        {"ttl_seconds": True},
+        {"ttl_seconds": "60"},
+        {"ttl_seconds": None},
+        {"value": {}},
+        {"value": None},
+        {"value": {"release_sha": "A" * 40, "revision": SCHEMA_HEAD + "wrong"}},
+        {"value": {"release_sha": "7" * 39, "revision": None}},
+        {"value": {"release_sha": "7" * 64, "revision": 68}},
+        {"value": {"release_sha": 7, "revision": True}},
+        {"value": {"release_sha": "g" * 40, "revision": ""}},
+        {"padding": "x" * (256 * 1024)},
+    ],
+)
+async def test_invalid_live_fact_stops_before_delivery_or_github(
+    canary: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+    mutation: dict[str, Any] | None,
+) -> None:
+    token = _private(tmp_path / "mcp.token", "fixture")
+    config = _canary_config(canary, token, "http://127.0.0.1:1/mcp", tmp_path)
+    _mock_mcp(canary, monkeypatch, facts={name: _fact(name)})
+    _, identity = await canary._read_view(config, clock=lambda: NOW)
+    assert identity == {"source_sha": "7" * 40, "schema_revision": SCHEMA_HEAD}
+
+    payload = None if mutation is None else _fact(name) | mutation
+    calls = _mock_mcp(canary, monkeypatch, facts={name: payload})
 
     async def github(*_args: Any, **_kwargs: Any) -> PullRequestEvidence:
-        calls["github"] += 1
-        return _evidence(_view())
+        pytest.fail("unverified release reached GitHub")
 
-    monkeypatch.setattr(canary, "_load_preflight_checker", lambda: check)
-    monkeypatch.setattr(canary, "_read_view", read)
     monkeypatch.setattr(canary, "_collect_github", github)
     with pytest.raises(canary.CanaryFailure, match="running_artifact_unverified"):
         await canary._run(config, "observed", clock=lambda: NOW)
-    assert calls == {"read": 0, "github": 0}
+    assert "brain_delivery_get" not in calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name", ["live_release_sha", "alembic_head"])
+@pytest.mark.parametrize("error", [TimeoutError(), RuntimeError("private fixture detail")])
+async def test_fact_call_failure_is_a_safe_artifact_refusal(
+    canary: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    name: str,
+    error: Exception,
+) -> None:
+    token = _private(tmp_path / "mcp.token", "fixture")
+    config = _canary_config(canary, token, "http://127.0.0.1:1/mcp", tmp_path)
+    calls = _mock_mcp(canary, monkeypatch, facts={name: error})
+    with pytest.raises(canary.CanaryFailure, match="^running_artifact_unverified$"):
+        await canary._run(config, "missing-proof", clock=lambda: NOW)
+    assert "brain_delivery_get" not in calls
 
 
 @pytest.mark.asyncio
@@ -811,18 +911,8 @@ async def test_run_samples_time_after_brain_and_github_acquisitions(
         sampled.append(value)
         return value
 
-    monkeypatch.setattr(
-        canary,
-        "_deployment_canary",
-        lambda _path: canary.PreflightReceipt(
-            source_sha="7" * 40,
-            schema_revision=SCHEMA_HEAD,
-            observer_env=tmp_path / "observer.env",
-        ),
-    )
-
-    async def read(_config: Any) -> dict[str, Any]:
-        return view
+    async def read(_config: Any, **_kwargs: Any) -> tuple[dict[str, Any], dict[str, str]]:
+        return view, {"source_sha": "7" * 40, "schema_revision": SCHEMA_HEAD}
 
     async def github(*_args: Any, **kwargs: Any) -> PullRequestEvidence:
         collected_at = kwargs["now"]()
@@ -840,28 +930,11 @@ async def test_run_samples_time_after_brain_and_github_acquisitions(
     ]
 
 
-def test_dormant_observer_is_refused_before_the_9b1_checker(
-    canary: ModuleType, tmp_path: Path
-) -> None:
-    deployment = _private(
-        tmp_path / "deployment.json",
-        json.dumps(
-            {
-                "mode": "dormant",
-                "observer_env_file": str(tmp_path / "observer.env"),
-                "writers": {"brain-v42-delivery-observer.service": {"must_be_active": False}},
-            }
-        ),
-    )
-    with pytest.raises(canary.CanaryFailure, match="running_artifact_unverified"):
-        canary._deployment_canary(deployment)
-
-
 def test_private_config_requires_absolute_paths_aware_time_and_no_extra_fields(
     canary: ModuleType, tmp_path: Path
 ) -> None:
     raw = {
-        "deployment_config": str(tmp_path / "deployment.json"),
+        "observer_env_file": str(tmp_path / "observer.env"),
         "mcp_url": "http://127.0.0.1:18743/mcp",
         "mcp_token_file": str(tmp_path / "mcp.token"),
         **_scope(_view()),
@@ -869,7 +942,9 @@ def test_private_config_requires_absolute_paths_aware_time_and_no_extra_fields(
     path = _private(tmp_path / "canary.json", json.dumps(raw))
     assert canary._load_config(path).not_before is None
     for mutation in (
-        {"deployment_config": "relative.json"},
+        {"observer_env_file": "relative.env"},
+        {"mcp_token_file": "relative.token"},
+        {"deployment_config": str(tmp_path / "deployment.json")},
         {"not_before": "2026-09-08T12:00:00"},
         {"unexpected": "secret"},
     ):
@@ -892,7 +967,7 @@ def test_cli_emits_one_utc_json_without_private_paths_or_tokens(
         assert phase == "observed"
         return {
             "outcome": "observed",
-            "source": "deployment_preflight_rerun",
+            "source": "measured_live_facts",
             "source_sha": "7" * 40,
             "schema_revision": SCHEMA_HEAD,
         }
@@ -1252,11 +1327,81 @@ def _private(path: Path, contents: str) -> Path:
     return path
 
 
+def _fact(name: str, measured_at: datetime = NOW) -> dict[str, Any]:
+    release = name == "live_release_sha"
+    return {
+        "fact": name,
+        "status": "measured",
+        "definition_version": 1,
+        "target": "live_release" if release else "production",
+        "observation_id": str(CURRENT_SNAPSHOT),
+        "measured_at": measured_at.isoformat(),
+        "duration_ms": 1,
+        "ttl_seconds": 60,
+        "source_kind": "probe",
+        "source": (
+            {"release_sha": "7" * 40, "package_version": "0.6.9"}
+            if release
+            else {
+                "system_identifier": "123",
+                "database": "brain",
+                "server_addr": "127.0.0.1",
+                "server_port": 5432,
+            }
+        ),
+        "value": (
+            {"release_sha": "7" * 40, "package_version": "0.6.9"}
+            if release
+            else {"revision": SCHEMA_HEAD}
+        ),
+        "digest": "a" * 64,
+    }
+
+
+def _mock_mcp(
+    canary: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    facts: dict[str, Any] | None = None,
+) -> list[str]:
+    calls: list[str] = []
+    overrides = facts or {}
+
+    class Client:
+        async def __aenter__(self) -> Client:
+            calls.append("connect")
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            pass
+
+        async def call_tool(
+            self, tool: str, arguments: dict[str, Any], *, timeout: int
+        ) -> SimpleNamespace:
+            assert timeout == canary._CALL_TIMEOUT_SECONDS
+            if tool == "brain_fact_get":
+                name = arguments["name"]
+                calls.append(name)
+                payload = overrides.get(name, _fact(name))
+                if isinstance(payload, Exception):
+                    raise payload
+                if isinstance(payload, SimpleNamespace):
+                    return payload
+            else:
+                assert tool == "brain_delivery_get"
+                calls.append(tool)
+                payload = _view(missing=True)
+            return SimpleNamespace(structured_content=payload, is_error=False)
+
+    monkeypatch.setattr(canary, "Client", lambda *_args, **_kwargs: Client())
+    return calls
+
+
 def _canary_config(canary: ModuleType, token: Path, url: str, tmp_path: Path) -> Any:
     view = _view()
     return canary.CanaryConfig.model_validate(
         {
-            "deployment_config": tmp_path / "deployment.json",
+            "observer_env_file": tmp_path / "observer.env",
             "mcp_url": url,
             "mcp_token_file": token,
             **_scope(view),

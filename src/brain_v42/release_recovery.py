@@ -80,10 +80,8 @@ class RecoveryBindingError(RuntimeError):
 def is_safe_asset_filename(name: str) -> bool:
     """Whether `name` is safe to publish as a `recovery/` asset file name.
 
-    Shared by `publish_recovery_binding` and the deployment preflight
-    (`scripts/check_delivery_deployment.py`), which reuses this function
-    rather than a second copy of the regex, so the two sides can never drift
-    apart on what "safe" means.
+    Keep asset validation in one place for recovery binding publication so
+    reserved binding names cannot be mistaken for recovery assets.
     """
     return bool(ASSET_FILENAME_RE.match(name)) and name != BINDING_FILENAME
 
