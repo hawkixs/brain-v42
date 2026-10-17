@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import os
+import re
 import stat
 import subprocess
 from pathlib import Path
@@ -32,10 +36,14 @@ FLAGS = (
 )
 OBSERVER_PREFIX = b"# Keep these bytes\r\nBRAIN_DELIVERY_ENABLED=true\r\n\r\n"
 OBSERVER_SUFFIX = b"BRAIN_DELIVERY_GITHUB_APP_ID=123\r\nOTHER='untouched'  "
+SCRAM_PATTERN = (
+    r"SCRAM-SHA-256\$4096:([A-Za-z0-9+/]{22}==)\$"
+    r"([A-Za-z0-9+/]{43}=):([A-Za-z0-9+/]{43}=)"
+)
 
 
 class FakeRunner:
-    """Record the only boundary allowed to receive plaintext SQL."""
+    """Record SQL at the Docker boundary without contacting PostgreSQL."""
 
     def __init__(self, returncode: int = 0) -> None:
         self.returncode = returncode
@@ -100,6 +108,60 @@ def _assert_no_secrets(text: str) -> None:
         assert secret.replace("'", "''") not in text
 
 
+def _expected_verifier(password: str, salt: bytes) -> str:
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, 4096)
+    client_key = hmac.digest(salted, b"Client Key", "sha256")
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = hmac.digest(salted, b"Server Key", "sha256")
+    encoded = [base64.b64encode(value).decode("ascii") for value in (salt, stored_key, server_key)]
+    return f"SCRAM-SHA-256$4096:{encoded[0]}${encoded[1]}:{encoded[2]}"
+
+
+def _assert_sql_verifiers(sql: bytes, passwords: tuple[str, str]) -> None:
+    text = sql.decode("ascii")
+    _assert_no_secrets(text)
+    for role, password in zip(("brain", "brain_app"), passwords, strict=True):
+        match = re.search(rf"ALTER ROLE {role} PASSWORD '({SCRAM_PATTERN})';", text)
+        assert match is not None
+        salt = base64.b64decode(match[2], validate=True)
+        assert len(salt) == 16
+        assert match[1] == _expected_verifier(password, salt)
+    settings = (
+        b"SET pg_stat_statements.track_utility = off;",
+        b"SET log_statement = 'none';",
+        b"SET log_min_duration_statement = -1;",
+        b"SET log_min_error_statement = panic;",
+    )
+    for setting in settings:
+        assert sql.index(setting) < sql.index(b"BEGIN;")
+
+
+def test_scram_verifier_matches_independent_fixed_salt_vector(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    salt = bytes(range(16))
+    sizes: list[int] = []
+
+    def fixed_salt(size: int) -> bytes:
+        sizes.append(size)
+        return salt
+
+    monkeypatch.setattr(rotation.secrets, "token_bytes", fixed_salt)
+    verifier = rotation._scram_verifier(NEW_OWNER)
+    assert verifier == _expected_verifier(NEW_OWNER, salt)
+    assert re.fullmatch(SCRAM_PATTERN, verifier)
+    assert sizes == [16]
+    _assert_no_secrets(verifier)
+
+
+def test_scram_verifier_uses_fresh_salts() -> None:
+    first = rotation._scram_verifier(NEW_OWNER)
+    second = rotation._scram_verifier(NEW_OWNER)
+    assert re.fullmatch(SCRAM_PATTERN, first)
+    assert re.fullmatch(SCRAM_PATTERN, second)
+    assert first.split("$")[1] != second.split("$")[1]
+
+
 def test_rotation_outputs_only_paths_and_sends_secrets_only_on_stdin(
     argv: list[str], files: list[Path], generated: list[int], capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -130,8 +192,7 @@ def test_rotation_outputs_only_paths_and_sends_secrets_only_on_stdin(
     assert sql.startswith(b"SET log_statement = 'none';\n")
     assert sql.index(b"BEGIN;") < sql.index(b"ALTER ROLE brain PASSWORD")
     assert sql.index(b"ALTER ROLE brain_app PASSWORD") < sql.index(b"COMMIT;")
-    assert b"new-owner''quote/@:percent%" in sql
-    assert NEW_APP.encode() in sql
+    _assert_sql_verifiers(sql, (NEW_OWNER, NEW_APP))
 
 
 def test_rewrites_matching_dsn_users_and_preserves_other_bytes_and_newlines(
@@ -241,6 +302,7 @@ def test_runner_failure_keeps_files_unchanged_and_redacts_echoed_sql(
     assert output.out == ""
     assert "7" in output.err
     _assert_no_secrets(output.out + output.err)
+    assert "SCRAM-SHA-256$" not in output.err
     for path, (content, inode) in originals.items():
         assert path.read_bytes() == content
         assert path.stat().st_ino == inode
@@ -323,8 +385,7 @@ def test_restore_reapplies_old_passwords_and_original_file_metadata(
     assert rotation.main([*argv, "--restore", timestamp], runner=runner) == 0
     sql = runner.calls[0][1]
     assert sql.startswith(b"SET log_statement = 'none';\n")
-    assert OLD_OWNER.replace("'", "''").encode() in sql
-    assert OLD_APP.encode() in sql
+    _assert_sql_verifiers(sql, (OLD_OWNER, OLD_APP))
     for path, (content, original) in zip(files, originals, strict=True):
         assert path.read_bytes() == content
         assert (path.stat().st_uid, path.stat().st_gid) == (original.st_uid, original.st_gid)
@@ -346,7 +407,7 @@ def test_restore_can_recover_a_partially_rewritten_generation(
     assert [path.read_bytes() for path in files] == originals
 
 
-def test_dry_run_does_not_generate_call_runner_or_write(
+def test_dry_run_checks_connectivity_without_generating_or_writing(
     argv: list[str],
     files: list[Path],
     monkeypatch: pytest.MonkeyPatch,
@@ -360,12 +421,81 @@ def test_dry_run_does_not_generate_call_runner_or_write(
     monkeypatch.setattr(rotation.secrets, "token_urlsafe", fail_generation)
     runner = FakeRunner()
     assert rotation.main([*argv, "--dry-run"], runner=runner) == 0
-    assert not runner.calls
+    assert len(runner.calls) == 1
+    command, sql = runner.calls[0]
+    assert command == [
+        "docker",
+        "exec",
+        "-i",
+        "test-postgres",
+        "psql",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-U",
+        "brain",
+        "-d",
+        "brain",
+    ]
+    assert sql == b"SELECT 1;"
+    _assert_no_secrets(" ".join(command) + sql.decode())
     assert not (files[0].parent / "backups").exists()
     assert [(path.read_bytes(), path.stat().st_ino) for path in files] == originals
     output = capsys.readouterr()
     assert output.out.splitlines() == ["ok (dry run)", *(str(path) for path in files)]
     assert output.err == ""
+
+
+def test_dry_run_connectivity_failure_does_not_write(
+    argv: list[str], files: list[Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    originals = [(path.read_bytes(), path.stat().st_ino) for path in files]
+    runner = FakeRunner(7)
+    assert rotation.main([*argv, "--dry-run"], runner=runner) != 0
+    assert len(runner.calls) == 1
+    assert runner.calls[0][1] == b"SELECT 1;"
+    assert not (files[0].parent / "backups").exists()
+    assert [(path.read_bytes(), path.stat().st_ino) for path in files] == originals
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "connectivity" in output.err.lower()
+    assert "7" in output.err
+    _assert_no_secrets(output.out + output.err)
+
+
+@pytest.mark.parametrize("failed_index", (0, 2))
+def test_file_write_failure_after_database_commit_reports_restore_command(
+    argv: list[str],
+    files: list[Path],
+    generated: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failed_index: int,
+) -> None:
+    originals = [path.read_bytes() for path in files]
+    runner = FakeRunner()
+    real_write = rotation._atomic_write
+
+    def fail_after_commit(target: Path, payload: bytes, snapshot: rotation.FileSnapshot) -> None:
+        if target == files[failed_index]:
+            assert len(runner.calls) == 1
+            raise OSError(NEW_OWNER)
+        real_write(target, payload, snapshot)
+
+    monkeypatch.setattr(rotation, "_atomic_write", fail_after_commit)
+    assert rotation.main(argv, runner=runner) != 0
+    assert len(runner.calls) == 1
+    backup = next((files[0].parent / "backups").iterdir())
+    timestamp = backup.name.removeprefix("pg-rotation-")
+    assert [(backup / name).read_bytes() for name in NAMES] == originals
+    assert [path.read_bytes() for path in files[failed_index:]] == originals[failed_index:]
+    if failed_index:
+        assert files[0].read_bytes() != originals[0]
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "database already holds the NEW passwords" in output.err
+    assert str(backup) in output.err
+    assert f"scripts/rotate_postgres_role_passwords.py --restore {timestamp}" in output.err
+    _assert_no_secrets(output.out + output.err)
 
 
 def test_backup_failure_prevents_database_change(

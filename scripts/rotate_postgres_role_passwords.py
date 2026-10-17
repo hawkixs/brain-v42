@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import hashlib
+import hmac
 import os
 import re
 import secrets
@@ -257,20 +260,29 @@ def _redacted_tail(result: subprocess.CompletedProcess[bytes], passwords: tuple[
     return content[-1024:].decode("utf-8", errors="replace").strip()
 
 
-def _apply_passwords(
-    container: str, passwords: tuple[str, str], known_passwords: tuple[str, ...], runner: Runner
+def _scram_verifier(password: str) -> str:
+    """Hash locally so PostgreSQL never receives a plaintext password in SQL."""
+    iterations = 4096
+    salt = secrets.token_bytes(16)
+    # Generated token_urlsafe passwords are ASCII and need no SASLprep.
+    salted = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    client_key = hmac.new(salted, b"Client Key", hashlib.sha256).digest()
+    stored_key = hashlib.sha256(client_key).digest()
+    server_key = hmac.new(salted, b"Server Key", hashlib.sha256).digest()
+    encoded_salt, encoded_stored, encoded_server = (
+        base64.b64encode(value).decode("ascii") for value in (salt, stored_key, server_key)
+    )
+    return f"SCRAM-SHA-256${iterations}:{encoded_salt}${encoded_stored}:{encoded_server}"
+
+
+def _run_psql(
+    container: str,
+    sql: bytes,
+    known_passwords: tuple[str, ...],
+    runner: Runner,
+    *,
+    operation: str,
 ) -> None:
-    # Pin standard strings so even an old password containing backslashes is a
-    # literal during restore. No secret ever enters argv or the child environment.
-    literals = ["'" + password.replace("'", "''") + "'" for password in passwords]
-    sql = (
-        "SET log_statement = 'none';\n"
-        "BEGIN;\n"
-        "SET LOCAL standard_conforming_strings = on;\n"
-        f"ALTER ROLE brain PASSWORD {literals[0]};\n"
-        f"ALTER ROLE brain_app PASSWORD {literals[1]};\n"
-        "COMMIT;\n"
-    ).encode()
     argv = [
         "docker",
         "exec",
@@ -287,11 +299,37 @@ def _apply_passwords(
     try:
         result = runner(argv, sql)
     except Exception:
-        raise RotationError("PostgreSQL password update failed; child output suppressed") from None
+        raise RotationError(f"PostgreSQL {operation} failed; child output suppressed") from None
     if result.returncode != 0:
         tail = _redacted_tail(result, known_passwords)
-        message = f"PostgreSQL password update failed (return code {result.returncode})"
+        message = f"PostgreSQL {operation} failed (return code {result.returncode})"
         raise RotationError(message + ("\n" + tail if tail else ""))
+
+
+def _apply_passwords(
+    container: str, passwords: tuple[str, str], known_passwords: tuple[str, ...], runner: Runner
+) -> None:
+    verifiers = tuple(_scram_verifier(password) for password in passwords)
+    # Only locally generated SCRAM verifiers enter SQL. Disable utility tracking
+    # and statement logging in this superuser session before starting the transaction.
+    sql = (
+        "SET log_statement = 'none';\n"
+        "SET pg_stat_statements.track_utility = off;\n"
+        "SET log_min_duration_statement = -1;\n"
+        "SET log_min_error_statement = panic;\n"
+        "BEGIN;\n"
+        "SET LOCAL standard_conforming_strings = on;\n"
+        f"ALTER ROLE brain PASSWORD '{verifiers[0]}';\n"
+        f"ALTER ROLE brain_app PASSWORD '{verifiers[1]}';\n"
+        "COMMIT;\n"
+    ).encode("ascii")
+    _run_psql(
+        container,
+        sql,
+        (*known_passwords, *verifiers),
+        runner,
+        operation="password update",
+    )
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -324,6 +362,13 @@ def main(argv: list[str] | None = None, *, runner: Runner | None = None) -> int:
         if args.restore:
             backup, snapshots = _restore_snapshots(args.backup_root, args.restore, paths)
         if args.dry_run:
+            _run_psql(
+                args.container,
+                b"SELECT 1;",
+                old_passwords,
+                runner or _docker_runner,
+                operation="connectivity check",
+            )
             print("ok (dry run)")
             for path in paths:
                 print(path)
@@ -335,11 +380,22 @@ def main(argv: list[str] | None = None, *, runner: Runner | None = None) -> int:
             passwords = (secrets.token_urlsafe(32), secrets.token_urlsafe(32))
             payloads = _generation_payloads(snapshots, passwords)
             backup = _backup(args.backup_root, snapshots)
+        assert backup is not None
         _apply_passwords(
             args.container, passwords, (*old_passwords, *passwords), runner or _docker_runner
         )
-        for snapshot, payload in zip(snapshots, payloads, strict=True):
-            _atomic_write(snapshot.path, payload, snapshot)
+        try:
+            for snapshot, payload in zip(snapshots, payloads, strict=True):
+                _atomic_write(snapshot.path, payload, snapshot)
+        except Exception:
+            timestamp = backup.name.removeprefix("pg-rotation-")
+            generation = "RESTORED" if args.restore else "NEW"
+            raise RotationError(
+                f"Credential file update failed; the database already holds the {generation} "
+                f"passwords. Backup directory: {backup}\n"
+                "Run: sudo python3 scripts/rotate_postgres_role_passwords.py "
+                f"--restore {timestamp} (with the same path overrides, if used)"
+            ) from None
     except RotationError as error:
         print(str(error), file=sys.stderr)
         return 1

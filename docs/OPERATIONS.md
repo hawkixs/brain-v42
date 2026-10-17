@@ -975,7 +975,29 @@ value-only password files, both PostgreSQL env files and the observer DSN under
 Before changing PostgreSQL it saves the original five files in
 `/root/pg-rotation-<UTC_TIMESTAMP>/` (mode 0700). Output contains only `ok`, the
 rewritten paths and that backup directory. `--dry-run` validates without writing;
-each file path, `--container` and `--backup-root` can be overridden.
+it also checks connectivity with the same `docker exec -i ... psql` command,
+sending only `SELECT 1;` on stdin. A failed connection returns non-zero without
+generating passwords or writing files. Each file path, `--container` and
+`--backup-root` can be overridden.
+
+For rotation and restore, the script computes SCRAM-SHA-256 verifiers locally
+(RFC 5802 / RFC 7677, 4096 PBKDF2-HMAC-SHA-256 iterations, fresh 16-byte random
+salt for each password). It sends only verifiers in `ALTER ROLE ... PASSWORD`;
+plaintext passwords and their URL-encoded forms never reach the PostgreSQL server.
+PostgreSQL stores these pre-hashed verifiers as supplied. Before `BEGIN`, the
+same owner-superuser session also runs all four settings:
+
+```sql
+SET log_statement = 'none';
+SET pg_stat_statements.track_utility = off;
+SET log_min_duration_statement = -1;
+SET log_min_error_statement = panic;
+```
+
+These suppress utility tracking and statement logging for the rotation session:
+`pg_stat_statements.track=all` would otherwise retain `ALTER ROLE` literals.
+Neither passwords nor verifiers are placed in process arguments or the child
+environment, and echoed credentials are redacted from failure diagnostics.
 
 Immediately restart consumers through `rail deploy`, explicitly recreating
 `delivery-observer`: its mounted secret does not participate in Compose's recreate
@@ -991,6 +1013,10 @@ the verification list. Restore reapplies the backed-up passwords before restorin
 the files. Backups remain after failures; use restore if a filesystem failure or
 interruption left only some files replaced. File replacements are individually
 atomic; the database transaction and five replacements are separate steps.
+If a file write fails after the database commit, the error explicitly states
+that PostgreSQL already holds the new passwords and prints the backup directory
+and the exact `--restore <UTC_TIMESTAMP>` command to recover. A failed restore
+file write similarly reports that the database already holds the restored passwords.
 
 Recovery contract v20 is the recovery asset for the schema through 062. It includes
 the session connection ledger from 061 and the 062 monitoring extension inventory
