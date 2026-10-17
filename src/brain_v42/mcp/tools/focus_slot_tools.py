@@ -13,6 +13,7 @@ from uuid import UUID
 from fastmcp import FastMCP
 from pydantic import Field
 
+from brain_v42.mcp.client_principal import current_author_client_id
 from brain_v42.mcp.tools.session_lifecycle_tools import ProjectKeyArg, SlotBodyArg
 from brain_v42.mcp.tools.tool_annotations import (
     _DESTRUCTIVE_ANNOTATIONS,
@@ -72,7 +73,11 @@ def register_focus_slot_tools(mcp: FastMCP, focus_slot_svc: FocusSlotService) ->
         `slot_title_conflict`, `project_not_found`.
         """
         return await focus_slot_svc.open(
-            project_key=project_key, title=title, body=body, anchors=anchors
+            project_key=project_key,
+            title=title,
+            body=body,
+            anchors=anchors,
+            author_client_id=current_author_client_id(),
         )
 
     @mcp.tool(annotations=_READ_ANNOTATIONS)

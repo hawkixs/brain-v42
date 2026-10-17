@@ -30,7 +30,13 @@ from brain_v42.models.project_key import canonicalize_project_key
 
 class FocusSlotRepository(Protocol):
     async def open(
-        self, project_key: str, title: str, body: str, anchors: Sequence[SlotAnchor]
+        self,
+        project_key: str,
+        title: str,
+        body: str,
+        anchors: Sequence[SlotAnchor],
+        *,
+        author_client_id: str | None = None,
     ) -> FocusSlotOpenResult: ...
 
     async def list(
@@ -49,7 +55,13 @@ class FocusSlotService:
         self.repo = repo
 
     async def open(
-        self, project_key: str, title: str, body: str, anchors: Sequence[SlotAnchor]
+        self,
+        project_key: str,
+        title: str,
+        body: str,
+        anchors: Sequence[SlotAnchor],
+        *,
+        author_client_id: str | None = None,
     ) -> FocusSlotOpenResult:
         canonical = _project(project_key)
         normalized_title = _text(title, "title", SLOT_TITLE_MAX_LENGTH)
@@ -65,7 +77,13 @@ class FocusSlotService:
         validated = [validate_anchor_shape(anchor) for anchor in anchors]
         if len({anchor.key() for anchor in validated}) != len(validated):
             raise FocusSlotError("anchor_invalid", "duplicate anchor in the anchor list")
-        return await self.repo.open(canonical, normalized_title, normalized_body, validated)
+        return await self.repo.open(
+            canonical,
+            normalized_title,
+            normalized_body,
+            validated,
+            author_client_id=author_client_id,
+        )
 
     async def list(
         self,

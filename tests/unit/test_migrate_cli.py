@@ -671,7 +671,7 @@ def test_upgrade_across_the_merge_chain_guard_refuses_on_residue_before_any_writ
 ) -> None:
     """rail renders this line as a preflight failure (red-rail c14acfea contract)."""
     database, arguments, _, _ = runtime
-    database.heads = (PREVIOUS_HEAD,)
+    database.heads = ("067",)
     database.chain_residue = "features,learnings"
     assert migrate_cli.main(arguments) == 1
     output = capsys.readouterr()
@@ -685,7 +685,7 @@ def test_upgrade_across_the_merge_chain_guard_refuses_on_residue_before_any_writ
 
 def test_upgrade_across_the_merge_chain_guard_proceeds_without_residue(runtime) -> None:
     database, arguments, _, _ = runtime
-    database.heads = (PREVIOUS_HEAD,)
+    database.heads = ("067",)
     assert migrate_cli.main(arguments) == 0
     sql = [call[0] for call in database.calls]
     preflight = next(i for i, text in enumerate(sql) if "merge_chain_preflight" in text)
@@ -695,6 +695,14 @@ def test_upgrade_across_the_merge_chain_guard_proceeds_without_residue(runtime) 
 def test_equal_head_runs_no_merge_chain_preflight(runtime) -> None:
     database, arguments, _, _ = runtime
     assert migrate_cli.main(arguments) == 0
+    assert not any("merge_chain_preflight" in sql for sql, _ in database.calls)
+
+
+def test_author_column_upgrade_does_not_recheck_the_installed_merge_guard(runtime) -> None:
+    database, arguments, _, _ = runtime
+    database.heads = ("068",)
+    assert migrate_cli.main(arguments) == 0
+    assert "upgrade" in [sql for sql, _ in database.calls]
     assert not any("merge_chain_preflight" in sql for sql, _ in database.calls)
 
 

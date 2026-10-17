@@ -321,7 +321,10 @@ def test_historic_contract_remains_pinned_to_revision_031() -> None:
     # footprint is unchanged.
     # Re-read at 068: six deferred constraint triggers, six partial indexes and one
     # function on existing tables; no new table, column or CHECK.
-    assert script.get_heads() == ["068"]
+    # Re-read at 069: six nullable author columns and their format CHECKs on
+    # decisions, learnings, snippets, runbooks, adrs and focus_slots; no table,
+    # vector typmod, index or catalog count pinned by this 031 contract changes.
+    assert script.get_heads() == ["069"]
     post_contract_tables = {
         # 050's table. `table_set` is DERIVED from live METADATA, so any new
         # table moves it, and a contract describing revision 031 must not claim

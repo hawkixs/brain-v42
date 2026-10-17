@@ -13,6 +13,7 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+from pydantic.json_schema import SkipJsonSchema
 
 from brain_v42.models.brain_session import (
     AUTO_STALE_AFTER,
@@ -120,6 +121,8 @@ def slot_is_stale(
 
 
 class FocusSlot(BaseModel):
+    # Stored attribution stays available internally; MCP schemas and results omit it.
+    author_client_id: SkipJsonSchema[str | None] = Field(default=None, exclude=True)
     id: UUID
     project_key: str
     title: str

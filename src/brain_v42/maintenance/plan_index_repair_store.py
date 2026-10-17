@@ -302,7 +302,10 @@ if TYPE_CHECKING:
 # decisions, snippets, runbooks, adrs and features share refuse_merge_chain().
 # No trigger, column, constraint, index or grant changes on indexed_plans,
 # indexed_plan_chunks or project_contexts; the repair's statements are unaffected.
-_REQUIRED_ALEMBIC_HEAD = "068"
+# Bumped to 069 after reviewing its six nullable author columns and format CHECKs
+# on decisions, learnings, snippets, runbooks, adrs and focus_slots. It changes no
+# table, trigger, constraint or statement used by the plan index repair.
+_REQUIRED_ALEMBIC_HEAD = "069"
 
 
 class RepairStore:
