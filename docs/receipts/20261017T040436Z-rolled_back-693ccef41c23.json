@@ -1,0 +1,21 @@
+{
+  "digest": "sha256:693ccef41c23bb768019dbdfad40958447d9bead9a64ddec7e99dc0211057d97",
+  "idempotency_key": "rolled_back:private-compose:-:20261017T040436Z",
+  "issuer": "agent:claude-code:66c7465f-f663-4fdb-aada-1cf5b98f3ac2",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "automatic": false,
+      "drill": true,
+      "from_digest": "sha256:00646022d919dc30a679d86c21afff8c1bdd1101ca9e0463472863f7843ba9ac",
+      "reason": "drill",
+      "target": "private-compose",
+      "to_digest": "sha256:c329b8307893f8bf2e1f55e5190a8dd091efc557a10af3cff865a0af5aacc737",
+      "version": "0.7.2"
+    },
+    "kind": "rolled_back"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T04:04:36.793324Z",
+  "schema_version": 1
+}
