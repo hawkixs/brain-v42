@@ -30,7 +30,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.tables import decisions
 from brain_v42.models.decision import Decision, DecisionCreate, DecisionUpdate
+from brain_v42.provenance import get_checked_project
 from brain_v42.repositories.capture_guard import refuse_if_captured
+from brain_v42.repositories.checked_project import checked_project_clause, lock_checked_owner
 from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, Row, project_scope
 
 logger = structlog.get_logger(__name__)
@@ -204,6 +206,13 @@ class PgDecisionRepo(BasePgRepository):
         client-side via datetime.now(UTC) instead of server-side NOW().
         Returns None when the decision_id doesn't exist.
         """
+        if get_checked_project() is not None:
+            if session is None:
+                async with self._maybe_session(None, write=True) as owned:
+                    return await self.update(
+                        decision_id, data, embedding, project_key=project_key, session=owned
+                    )
+            await lock_checked_owner(session, decisions, decision_id)
         values: dict[str, Any] = data.model_dump(exclude_none=True)
         if embedding is not None:
             values["embedding"] = embedding
@@ -221,6 +230,7 @@ class PgDecisionRepo(BasePgRepository):
         else:
             stmt = (
                 decisions.update()
+                .where(checked_project_clause(decisions.c.project_key))
                 .where(
                     decisions.c.id == decision_id,
                     decisions.c.project_key == project_key,
@@ -561,10 +571,9 @@ class PgDecisionRepo(BasePgRepository):
         1. INSERT new decision row via super().create(session=s)
         2. UPDATE exactly one old decision that is not already superseded:
            status='superseded', superseded_by=new_id; otherwise roll back.
-           Operator ruling 5da112d1, option (a), forbids cross-project supersession:
-           SEC1b requires that project B cannot rewrite project A's decision.
-           Both decisions must belong to the same project or both be unscoped;
-           the two historical cross-project supersessions remain unchanged.
+           A checked caller has independently authorized the old and new projects;
+           its ownership fence applies to the old row. Other callers retain the
+           same-project requirement (including two unscoped decisions).
         3. COMMIT once (via transaction() context manager exit)
 
         With a caller-owned ``session`` both writes run in a savepoint of the
@@ -575,12 +584,18 @@ class PgDecisionRepo(BasePgRepository):
         """
         new_id = uuid.uuid4()
         payload = self._create_payload(new_data, new_embedding, id=new_id)
+        owner_clause = (
+            decisions.c.project_key.is_not_distinct_from(new_data.project_key)
+            if get_checked_project() is None
+            else sa.true()
+        )
         update_stmt = (
             decisions.update()
+            .where(checked_project_clause(decisions.c.project_key))
             .where(
                 decisions.c.id == old_id,
                 decisions.c.status != "superseded",
-                decisions.c.project_key.is_not_distinct_from(new_data.project_key),
+                owner_clause,
             )
             .values(
                 status="superseded",
@@ -590,6 +605,7 @@ class PgDecisionRepo(BasePgRepository):
             .returning(decisions.c.id)
         )
         async with self.transaction(session) as sess:
+            await lock_checked_owner(sess, decisions, old_id)
             row = await super().create(payload, session=sess)
             updated = await sess.execute(update_stmt)
             if len(updated.scalars().all()) != 1:

@@ -30,9 +30,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from brain_v42.db.tables import decisions
 from brain_v42.models.decision import Decision, DecisionCreate, DecisionUpdate
 from brain_v42.models.project_context import ProjectContext
+from brain_v42.provenance import checked_project, get_checked_project
 from brain_v42.repositories import pg_decision
+from brain_v42.repositories.checked_project import lock_checked_owner
 from brain_v42.repositories.pg_project_context import PgProjectContextRepo
 from brain_v42.services.decision_service import DecisionService
 from brain_v42.services.gpu_embedding_service import EmbeddingUnavailable
@@ -128,6 +131,45 @@ async def test_cross_project_supersede_refusal_skips_graph_enrichment(caller_own
     assert raised.value is error
     graph.upsert_node.assert_not_awaited()
     graph.create_relation.assert_not_awaited()
+
+
+@pytest.mark.parametrize("caller_owned", [False, True])
+async def test_committed_cross_project_supersession_locks_the_new_source(caller_owned):
+    svc, repo, _ = _make_service()
+    replacement = _make_decision(project_key="new-project")
+    relations = []
+
+    async def supersede(*args, **kwargs):
+        assert get_checked_project() == "old-project"
+        return replacement
+
+    async def create_relation(source, target, kind):
+        session = AsyncMock()
+        session.execute.return_value = MagicMock(one_or_none=lambda: ("new-project",))
+        await lock_checked_owner(session, decisions, source)
+        relations.append((source, target, kind))
+        return "created"
+
+    repo.supersede = AsyncMock(side_effect=supersede)
+    svc._graph = MagicMock(
+        upsert_node=AsyncMock(), create_relation=AsyncMock(side_effect=create_relation)
+    )
+    data = DecisionCreate(
+        title="Replacement", description="Context", reasoning="Reason", project_key="new-project"
+    )
+    with checked_project("old-project"):
+        if caller_owned:
+            result = await svc.supersede(
+                OLD_UUID, data, session=MagicMock(spec=AsyncSession), new_embedding=FAKE_EMBEDDING
+            )
+            assert get_checked_project() == "old-project"
+            assert not relations
+            await svc.enrich_superseded(OLD_UUID, result, data)
+        else:
+            result = await svc.supersede(OLD_UUID, data)
+    assert result is replacement
+    assert relations == [(replacement.id, OLD_UUID, "SUPERSEDES")]
+    assert get_checked_project() is None
 
 
 class TestCreate:

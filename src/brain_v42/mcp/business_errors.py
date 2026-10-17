@@ -61,11 +61,13 @@ import functools
 from typing import Any
 
 from fastmcp import FastMCP
-from fastmcp.exceptions import FastMCPError, ToolError
+from fastmcp.exceptions import AuthorizationError, FastMCPError, ToolError
 from fastmcp.tools.function_tool import FunctionTool
 from pydantic import ValidationError
 
+from brain_v42.credentials.author_binding import count_author_binding
 from brain_v42.mcp.fact_errors import FactToolError
+from brain_v42.mcp.scope_refusal import emit_scope_refusal
 from brain_v42.mcp.tools.formatters import (
     format_error,
     format_internal_error,
@@ -75,6 +77,7 @@ from brain_v42.models.brain_session import BrainSessionError
 from brain_v42.models.claim_verdict import ClaimVerificationError
 from brain_v42.models.delivery import DeliveryError
 from brain_v42.models.programme import ProgrammeError
+from brain_v42.repositories.checked_project import CheckedProjectMismatch
 from brain_v42.services.claim_read_service import ClaimReadError
 from brain_v42.services.consolidation import ConsolidationEntityNotFoundError
 from brain_v42.services.entity_maintenance_service import UnknownEntityTypeError
@@ -119,6 +122,10 @@ def _wrap(fn: Any, *, report_internal_errors: bool = True) -> Any:
     async def surfaced(*args: Any, **kwargs: Any) -> Any:
         try:
             return await fn(*args, **kwargs)
+        except CheckedProjectMismatch as exc:
+            count_author_binding(f"{fn.__name__}:scope_mismatch")
+            emit_scope_refusal(tool=fn.__name__, reason="scope_denied")
+            raise AuthorizationError("scope_denied") from exc
         except ValidationError as exc:
             return format_error(format_validation_errors(exc))
         except SURFACED_BUSINESS_ERRORS as exc:

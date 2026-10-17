@@ -33,11 +33,25 @@ credential principals on write/delivery calls increment `scope_unauthenticated` 
 and enforce; their refusal remains `family_denied`.
 
 Scope is a write boundary: reads, including `brain_session_list` and delivery lists/get,
-remain exempt. The compact gateway checks the inner tool and arguments once. PR4 must
-still resolve stored ownership for session lifecycle calls after start, slot close,
-claim verification and entity-addressed writes. For those deferred tools PR3 checks only
-a resolved actor; a NULL actor is not refused yet. Enforce therefore does not yet provide
-complete project isolation for those operations.
+remain exempt. The compact gateway checks the inner tool and arguments once. Enforce
+also checks persisted ownership for session lifecycle calls after start, slot close,
+claim verification and entity-addressed writes. Claims require both the claim project
+and its concrete source row's project in scope. Missing rows, invalid ids and NULL row
+ownership all return `scope_denied`. Runbook execution accepts the same unique hexadecimal
+id prefixes as its handler. Updates also check a supplied `fields.project_key`; supersession
+requires the old row and the replacement's project, with an omitted replacement project
+refused as `null_project_refused` because it would store NULL.
+
+In enforce only, knowledge mutations lock and recheck the authorized owner in every
+writing transaction, including empty updates followed by claim or relation writes.
+An authorized project move advances the checked owner after commit. A concurrent owner
+change returns `scope_denied` once; earlier transactions may already have committed while
+the entity was in scope. Claim verification acquires its shared admission gate, then locks
+the source before the claim. Deferred snippet/runbook access events only update counters
+and freshness of the row authorized at request time; they carry no caller content.
+Scoped relay calls with `initiator='operator'` or `allow_focus_shrink=true` return
+`relay_override_refused` before handler side effects. Observe counts the candidate and
+continues; off and unscoped calls preserve existing behavior.
 
 ### Catalog gateways (`compact` profile)
 

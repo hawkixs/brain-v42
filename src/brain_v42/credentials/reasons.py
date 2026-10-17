@@ -27,6 +27,7 @@ TOOL_STATUSES = MappingProxyType(
         "focus_side_effect_refused": 403,
         "scope_denied": 403,
         "null_project_refused": 403,
+        "relay_override_refused": 403,
     }
 )
 REFUSAL_STATUSES = MappingProxyType({**TRANSPORT_STATUSES, **TOOL_STATUSES})

@@ -39,7 +39,12 @@ from brain_v42.models.claim_verdict import (
     validate_caller_string,
 )
 from brain_v42.models.project_key import canonicalize_project_key
-from brain_v42.provenance import UNEXPANDED_ACTOR, UNKNOWN_ACTOR, get_current_actor
+from brain_v42.provenance import (
+    UNEXPANDED_ACTOR,
+    UNKNOWN_ACTOR,
+    get_checked_claim_source,
+    get_current_actor,
+)
 from brain_v42.services.claim_read_service import ClaimReadError
 from brain_v42.services.dream_project_scope import get_dream_project_scope
 
@@ -174,13 +179,24 @@ def register_claim_tools(
         key = validate_caller_string(idempotency_key)
         issuer = _issuer()
         scope = get_dream_project_scope()
-        verdict = await verifier.verify(
-            checked_id,
-            issuer,
-            "robot",
-            key,
-            project_key=scope.project_key if scope is not None else None,
-        )
+        checked = get_checked_claim_source()
+        if checked is None:
+            verdict = await verifier.verify(
+                checked_id,
+                issuer,
+                "robot",
+                key,
+                project_key=scope.project_key if scope is not None else None,
+            )
+        else:
+            verdict = await verifier.verify_checked_source(
+                checked_id,
+                issuer,
+                "robot",
+                key,
+                source_project_key=checked,
+                project_key=scope.project_key if scope is not None else None,
+            )
         return _verdict_json(verdict)
 
     @claims.tool(version="1.0", annotations=_READ_ANNOTATIONS)

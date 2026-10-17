@@ -17,7 +17,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.tables import snippets
 from brain_v42.models.snippet import Snippet, SnippetCreate, SnippetUpdate
+from brain_v42.provenance import get_checked_project
 from brain_v42.repositories.capture_guard import lock_unless_captured
+from brain_v42.repositories.checked_project import checked_project_clause, lock_checked_owner
 from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, Row
 
 logger = structlog.get_logger(__name__)
@@ -103,6 +105,13 @@ class PgSnippetRepo(BasePgRepository):
         session: AsyncSession | None = None,
     ) -> Snippet | None:
         """Partial update on a snippet. Returns updated Snippet or None if not found."""
+        if get_checked_project() is not None:
+            if session is None:
+                async with self._maybe_session(None, write=True) as owned:
+                    return await self.update(
+                        id, data, embedding, project_key=project_key, session=owned
+                    )
+            await lock_checked_owner(session, snippets, id)
         payload = self._update_data_to_dict(data, embedding)
         if not payload:
             # Nothing to update — just return the current row
@@ -118,6 +127,7 @@ class PgSnippetRepo(BasePgRepository):
         else:
             stmt = (
                 snippets.update()
+                .where(checked_project_clause(snippets.c.project_key))
                 .where(
                     snippets.c.id == id,
                     snippets.c.project_key == project_key,
@@ -288,8 +298,10 @@ class PgSnippetRepo(BasePgRepository):
         """
 
         async def _execute(sess: AsyncSession) -> Snippet | None:
+            await lock_checked_owner(sess, self.table, id)
             stmt = (
                 self.table.update()
+                .where(checked_project_clause(self.table.c.project_key))
                 .where(self.table.c.id == id)
                 .values(
                     use_count=self.table.c.use_count + sa.literal(1),

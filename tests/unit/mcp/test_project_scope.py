@@ -9,7 +9,7 @@ from brain_v42.mcp import server
 from brain_v42.mcp.client_principal import ClientPrincipal
 from brain_v42.mcp.project_scope import (
     ACTOR_REQUIRED,
-    DEFERRED_TO_PR4,
+    ROW_SOURCES,
     SCOPE_ARGUMENTS,
     SCOPE_EXEMPT,
     scope_decision,
@@ -23,7 +23,7 @@ def principal(projects: tuple[str, ...] | None = ("brain-v42",)) -> ClientPrinci
 
 def test_every_write_and_delivery_tool_has_exactly_one_scope_classification() -> None:
     direct = set(SCOPE_ARGUMENTS) | ACTOR_REQUIRED
-    categories = (direct, DEFERRED_TO_PR4, SCOPE_EXEMPT)
+    categories = (direct, ROW_SOURCES, SCOPE_EXEMPT)
     writes = {name for name, family in TOOL_FAMILIES.items() if family in {"write", "delivery"}}
     assert set.union(*(set(category) for category in categories)) == writes
     for name in writes:
@@ -65,7 +65,7 @@ async def test_allowlisted_parameters_exist_in_registered_tool_schemas() -> None
         assert set(arguments) <= tools[name].parameters["properties"].keys(), name
     registered_writes = {name for name in tools if TOOL_FAMILIES.get(name) in {"write", "delivery"}}
     assert (
-        registered_writes == set(SCOPE_ARGUMENTS) | ACTOR_REQUIRED | DEFERRED_TO_PR4 | SCOPE_EXEMPT
+        registered_writes == set(SCOPE_ARGUMENTS) | ACTOR_REQUIRED | set(ROW_SOURCES) | SCOPE_EXEMPT
     )
 
 
@@ -162,10 +162,12 @@ def test_gate_owner_is_optional_and_independent(owner: str | None) -> None:
     assert scope_decision("brain_programme_gate_upsert", {}, principal(), "brain-v42") is None
 
 
-@pytest.mark.parametrize("tool", sorted(DEFERRED_TO_PR4))
+@pytest.mark.parametrize("tool", sorted(ROW_SOURCES))
 @pytest.mark.parametrize("actor", [None, "brain-v42", "outside"])
-def test_deferred_tools_check_only_a_resolved_actor(tool: str, actor: str | None) -> None:
-    decision = scope_decision(tool, {}, principal(), actor)
+def test_row_tools_also_check_a_resolved_actor(tool: str, actor: str | None) -> None:
+    arguments = {"project_key": "brain-v42"} if tool == "brain_supersede_decision" else {}
+    rows = ["brain-v42"] * (2 if tool == "brain_claim_verify" else 1)
+    decision = scope_decision(tool, arguments, principal(), actor, rows)
     if actor == "outside":
         assert decision is not None and decision.reason == "scope_denied"
     else:

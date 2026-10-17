@@ -924,9 +924,18 @@ def _configure_http_security(
                 connection_id, client_id, datetime.now(UTC)
             )
 
+        from brain_v42.repositories.pg_scope_lookup import Missing, PgScopeLookup
+
+        async def row_project_resolver(kind: str, entity_id: object) -> str | None | Missing:
+            if not isinstance(entity_id, str):
+                return None
+            return await PgScopeLookup(get_session_factory())(kind, entity_id)
+
         mcp.add_middleware(
             FamilyAuthorizationMiddleware(
-                elevation_checker=elevation_checker, scope_mode=scope_mode
+                elevation_checker=elevation_checker,
+                scope_mode=scope_mode,
+                row_project_resolver=row_project_resolver,
             )
         )
         _http_security_configured_servers.add(mcp)

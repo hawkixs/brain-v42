@@ -39,7 +39,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from brain_v42.db.tables import adrs
 from brain_v42.models.adr import ADR, ADRCreate, ADRUpdate
+from brain_v42.provenance import get_checked_project
 from brain_v42.repositories.capture_guard import lock_unless_captured
+from brain_v42.repositories.checked_project import checked_project_clause, lock_checked_owner
 from brain_v42.repositories.pg_base import BasePgRepository, ExtraClauses, project_scope
 from brain_v42.repositories.promotion import (
     SourceLearningNotFound,
@@ -243,6 +245,13 @@ class PgADRRepo(BasePgRepository):
         Returns:
             Updated ADR model or None if not found.
         """
+        if get_checked_project() is not None:
+            if session is None:
+                async with self._maybe_session(None, write=True) as owned:
+                    return await self.update(
+                        adr_id, data, embedding, project_key=project_key, session=owned
+                    )
+            await lock_checked_owner(session, adrs, adr_id)
         payload: dict[str, Any] = {k: v for k, v in data.model_dump().items() if v is not None}
         if embedding is not None:
             payload["embedding"] = embedding
@@ -257,6 +266,7 @@ class PgADRRepo(BasePgRepository):
         else:
             stmt = (
                 adrs.update()
+                .where(checked_project_clause(adrs.c.project_key))
                 .where(
                     adrs.c.id == adr_id,
                     adrs.c.project_key == project_key,

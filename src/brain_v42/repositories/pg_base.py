@@ -39,6 +39,7 @@ from brain_v42.db.engine import get_session_factory
 from brain_v42.db.session_derived_capture import derive_capture
 from brain_v42.db.tables import MIN_COMPARABLE_EMBEDDING_NORM
 from brain_v42.repositories.capture_guard import lock_unless_captured
+from brain_v42.repositories.checked_project import checked_project_clause, lock_checked_owner
 
 logger = structlog.get_logger(__name__)
 
@@ -377,10 +378,12 @@ class BasePgRepository:
         """Update a row by id (partial update). Always sets updated_at = NOW()."""
 
         async def _execute(sess: AsyncSession) -> Row | None:
+            await lock_checked_owner(sess, self.table, id)
             payload = {**data, "updated_at": datetime.now(UTC)}
             stmt = (
                 self.table.update()
                 .where(self.table.c.id == id)
+                .where(checked_project_clause(self.table.c.get("project_key")))
                 .values(**payload)
                 .returning(self.table)
             )

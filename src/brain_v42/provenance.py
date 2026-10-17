@@ -16,7 +16,54 @@ from __future__ import annotations
 import os
 import re
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar, Token
+from dataclasses import dataclass
+
+
+@dataclass
+class _CheckedOwner:
+    project: str
+
+
+_checked_project: ContextVar[_CheckedOwner | None] = ContextVar("checked_project", default=None)
+_checked_claim_source: ContextVar[str | None] = ContextVar("checked_claim_source", default=None)
+
+
+def get_checked_project() -> str | None:
+    owner = _checked_project.get()
+    return None if owner is None else owner.project
+
+
+def advance_checked_project(key: str) -> None:
+    """Advance only after the authorized move transaction has committed."""
+    owner = _checked_project.get()
+    if owner is not None:
+        owner.project = key
+
+
+@contextmanager
+def checked_project(key: str) -> Iterator[None]:
+    token = _checked_project.set(_CheckedOwner(key))
+    try:
+        yield
+    finally:
+        _checked_project.reset(token)
+
+
+def get_checked_claim_source() -> str | None:
+    return _checked_claim_source.get()
+
+
+@contextmanager
+def checked_claim_source(key: str) -> Iterator[None]:
+    token = _checked_claim_source.set(key)
+    try:
+        yield
+    finally:
+        _checked_claim_source.reset(token)
+
 
 UNKNOWN_ACTOR = "unknown"
 UNEXPANDED_ACTOR = "_unexpanded"
