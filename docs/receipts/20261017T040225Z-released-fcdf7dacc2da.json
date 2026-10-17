@@ -1,0 +1,26 @@
+{
+  "digest": "sha256:fcdf7dacc2da406eb040a7b2a2e1d1315ed0e063f26cdc4dcf4d9d4b683aaebc",
+  "idempotency_key": "released:0.7.3",
+  "issuer": "agent:claude-code:66c7465f-f663-4fdb-aada-1cf5b98f3ac2",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "changelog": [
+        "\ud83d\udd16 chore(release): 0.7.3",
+        "\ud83d\udc1b fix(sessions): collect the focus-once tests in CI and document briefing",
+        "\ud83d\udc1b fix(sessions): return the focus once and add a compact briefing",
+        "\ud83d\udd16 chore(receipts): record the release and deployment of 0.7.2"
+      ],
+      "digest": "sha256:00646022d919dc30a679d86c21afff8c1bdd1101ca9e0463472863f7843ba9ac",
+      "image": "ghcr.io/hawkixs/brain-v42@sha256:00646022d919dc30a679d86c21afff8c1bdd1101ca9e0463472863f7843ba9ac",
+      "platform": "linux/amd64",
+      "sha": "e76f4f6b4e8f70c8e60e2d7fde08f568b18ec7ed",
+      "tag": "v0.7.3",
+      "version": "0.7.3"
+    },
+    "kind": "released"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T04:02:25.393629Z",
+  "schema_version": 1
+}

@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:03b949e2133d4b970b028f2c2b66bc6f64de34bcc845ac3a8e24ecd842b5f25d",
+  "idempotency_key": "review_verdict:b48256dc8cb63b921afe5ddf4c7ca8bf8ac94171:117302544094",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117302544094,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The description claims the brain-v42 entry of uv.lock is bumped (one line, `uv lock --check` clean), but the provided diff contains only pyproject.toml and README.md \u2014 check that the lock entry now reads 0.7.3 and that `uv lock --check` passes.",
+          "file": "uv.lock",
+          "id": "F-462-1",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "Lockfile bump not visible in shown diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 462,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "b48256dc8cb63b921afe5ddf4c7ca8bf8ac94171",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T03:55:48.303334Z",
+  "schema_version": 1
+}
