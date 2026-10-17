@@ -1961,7 +1961,8 @@ def test_documented_transport_matches_default_and_production_client() -> None:
 
 
 def test_documented_mcp_transport_rejects_stale_loopback_production_claims() -> None:
-    for document in (README, SECURITY, CLAUDE, ARCHITECTURE, OPERATIONS):
+    workstation_runbook = (REPO_ROOT / "deploy" / "systemd" / "MCP_HTTP_RUNBOOK.md").read_text()
+    for document in (README, SECURITY, CLAUDE, ARCHITECTURE, OPERATIONS, workstation_runbook):
         normalized = " ".join(document.split())
         for stale_claim in (
             "production = HTTP loopback",
@@ -1970,6 +1971,9 @@ def test_documented_mcp_transport_rejects_stale_loopback_production_claims() -> 
             "MCP, PostgreSQL and Neo4j bind to loopback",
             "MCP over HTTP loopback in production",
             "HTTP loopback /mcp (production)",
+            "production systemd path requires",
+            "The production systemd contract",
+            "production systemd unit",
         ):
             assert stale_claim not in normalized
 

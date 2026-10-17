@@ -1,13 +1,15 @@
 # MCP HTTP systemd — operator runbook
 
+Production is red-base (`deploy/compose.yaml`); this workstation systemd deployment (rollback B) was retired by G14.
+
 This runbook covers the shared service `brain-mcp-http.service` and its watchdog. The normal
 installation path generates and validates the units without changing their state. Starting
 them, enabling them at boot, and stopping them remain operator decisions.
 
-The production systemd contract is fixed to `127.0.0.1:8765`, like the operator's user-scope
+The workstation systemd contract is fixed to `127.0.0.1:8765`, like the operator's user-scope
 Claude Code client (the repository's `.mcp.json` declares no server).
 An override of `Settings.mcp_http_port` remains possible for development outside this path,
-but the installer and the production service refuse any other value so that server,
+but the installer and the workstation service refuse any other value so that server,
 clients, healthchecks, and watchdog cannot diverge.
 
 The watchdog leaves an `inactive` service stopped because that state represents an operator
@@ -22,7 +24,7 @@ restarting the service. An operator stop that ends in `failed` (for example, SIG
 > watchdog, Dream, graph-recon, and automation. Do not use it as a simple MCP rollback.
 > The combination `--dry-run --uninstall` is rejected with no side effect.
 
-The commands below run from the root of the checkout intended for production.
+The commands below run from the root of the checkout intended for the workstation rollback.
 Never copy a secret value into a log or a shared piece of evidence.
 
 ### Render path terminology

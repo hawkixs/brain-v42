@@ -1,24 +1,23 @@
-"""Replay the tracked network boundary against THIS host, claim by claim.
+"""Probe the local or workstation loopback/shared_token deployment on THIS host.
 
-Ticket `0234938d`. The boundary paragraph lives identically in
-`docs/ARCHITECTURE.md`, `docs/OPERATIONS.md` and `CLAUDE.md`, and
-`test_documentation_contract.py` pins it -- but that pin compares STRINGS across
-four files and is indifferent to whether they are true. It stayed green on
-2026-09-03 while one clause had become false, which is the defect this module
-answers: the paragraph says "watched by no test", and until now that was exact.
+Tickets `0234938d` and `d1d87ff3`. This opt-in probe measures a local or workstation
+host running the loopback deployment in `shared_token` mode, including the former
+workstation systemd deployment (rollback B, retired by G14). Production red-base
+(`deploy/compose.yaml`) is pinned instead by `tests/unit/test_red_base_compose.py`
+and `tests/unit/test_documentation_contract.py`. These workstation claims do not
+describe the current production network boundary.
 
 WHY IT IS OPT-IN, and what that costs. Every assertion below reads the machine it
 runs on: listening sockets, published container ports, a live bearer refusal.
-Hosted CI has none of that, and `red-ci` measures only at push, so a boundary
-probe wired into the default run would be GREEN BY ABSENCE everywhere it matters
--- the same shape of false comfort the string pin already provides. It therefore
+Hosted CI has no workstation deployment, so a boundary probe wired into the default
+run would be GREEN BY ABSENCE rather than measure the intended host. It therefore
 carries the `boundary_host` marker, excluded by `addopts`, and is run
 deliberately:
 
     .venv/bin/pytest -m boundary_host -q
 
 WHAT IT PROVES, AND WHEN. It proves the boundary at the instant it runs, on one
-host. It does not watch. Three of the falsifiers the paragraph names are one
+workstation host. It does not watch. Three ways to reopen that boundary are one
 command away -- a publish override, an env var, an `unset` -- and nothing here
 notices them between two runs. Running it after a compose change or a restart is
 the whole point; treating a past green as a current fact is the error it exists
@@ -43,7 +42,7 @@ pytestmark = pytest.mark.boundary_host
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-#: The four services the paragraph names as loopback-bound, with the port each
+#: The four workstation services expected to be loopback-bound, with the port each
 #: is published on. Enumerated rather than discovered: a service dropping off the
 #: host would otherwise pass by having nothing to check.
 LOOPBACK_PORTS = {
@@ -78,7 +77,7 @@ def _listening() -> dict[int, set[str]]:
 
 
 def _lan_address() -> str:
-    """The host's own LAN address — the one the paragraph says refuses."""
+    """The workstation's own LAN address, expected to refuse MCP and shim connections."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
         probe.connect(("192.168.1.1", 1))
         return probe.getsockname()[0]
@@ -103,7 +102,7 @@ def listening() -> dict[int, set[str]]:
 def test_claim_1_the_named_services_bind_to_loopback(
     service: str, port: int, listening: dict[int, set[str]]
 ) -> None:
-    """« MCP, PostgreSQL and Neo4j bind to loopback »."""
+    """Workstation MCP, PostgreSQL and Neo4j listen only on loopback."""
     addresses = listening.get(port, set())
     assert addresses, f"{service} n'écoute pas sur :{port} — l'affirmation n'est pas vérifiable"
     assert addresses <= {"127.0.0.1", "::1"}, (
@@ -112,7 +111,7 @@ def test_claim_1_the_named_services_bind_to_loopback(
 
 
 def test_claim_2_the_embedding_publish_is_loopback_only() -> None:
-    """« The versioned Compose target binds the embedding host publish to loopback »."""
+    """The workstation Compose target publishes the embedding shim only on loopback."""
     published = _run("docker", "port", "brain_v42_embedding_shim")
 
     assert published.strip(), "le conteneur du shim ne publie rien — mesure impossible"
@@ -123,7 +122,7 @@ def test_claim_2_the_embedding_publish_is_loopback_only() -> None:
 
 
 def test_claim_3_the_hosts_own_lan_address_refuses() -> None:
-    """« with the host's own LAN address refusing the connection »."""
+    """The workstation's own LAN address refuses MCP and embedding shim connections."""
     lan = _lan_address()
     assert not lan.startswith("127."), f"adresse LAN non trouvée (obtenu {lan})"
 
@@ -136,7 +135,7 @@ def test_claim_3_the_hosts_own_lan_address_refuses() -> None:
 
 
 def test_claim_4_the_bearer_is_set_in_the_live_process() -> None:
-    """« `MCP_HTTP_TOKEN` is set and non-empty in the live server process ».
+    """The workstation shared_token server process has a non-empty `MCP_HTTP_TOKEN`.
 
     Presence only. The value is never read, never compared, never printed.
     """
@@ -159,14 +158,14 @@ def test_claim_4_the_bearer_is_set_in_the_live_process() -> None:
     [("sans bearer", None), ("avec un mauvais bearer", "Authorization: Bearer wrong-on-purpose")],
 )
 def test_claim_5_post_mcp_answers_401(label: str, header: str | None) -> None:
-    """« `POST /mcp` answers `401` both without a bearer and with a wrong one »."""
+    """Workstation `POST /mcp` returns `401` for missing or incorrect shared bearers."""
     assert _http_status(f"http://127.0.0.1:{MCP_PORT}/mcp", header=header) == "401", (
         f"POST /mcp {label} n'a pas répondu 401"
     )
 
 
 def test_claim_6_brain_net_carries_the_shim_and_both_auto_discord() -> None:
-    """« `brain-net` holds the embedding shim and both `auto-discord` containers »."""
+    """Workstation `brain-net` holds the embedding shim and both `auto-discord` containers."""
     names = _run(
         "docker",
         "network",
@@ -182,7 +181,7 @@ def test_claim_6_brain_net_carries_the_shim_and_both_auto_discord() -> None:
 
 
 def test_claim_7_the_repository_manages_no_firewall_rule() -> None:
-    """« the repository manages no firewall rule at all »."""
+    """The workstation deployment's repository manages no firewall rule."""
     hits = _run(
         "git",
         "-C",
@@ -204,7 +203,7 @@ def test_claim_7_the_repository_manages_no_firewall_rule() -> None:
 
 
 def test_claim_8_no_publish_override_reopens_the_shim() -> None:
-    """First named falsifier: « a host-publish override reopening `:8003` »."""
+    """No workstation Compose override can reopen the embedding shim host publish."""
     assert not (REPO_ROOT / "docker-compose.override.yml").exists(), (
         "docker-compose.override.yml est de retour : le publish hôte peut avoir été rouvert"
     )
@@ -214,11 +213,9 @@ def test_claim_8_no_publish_override_reopens_the_shim() -> None:
 def test_claim_9_the_metrics_bind_is_loopback_and_now_guarded(
     listening: dict[int, set[str]],
 ) -> None:
-    """Second falsifier, DISARMED on 2026-09-03: the validator exists (`6c61b63`).
+    """Workstation metrics binds to loopback and refuses an unapproved non-loopback bind.
 
-    Two halves, and the second is the one the paragraph got wrong for a morning:
-    the bind is loopback, AND a non-loopback bind is now refused rather than
-    silently accepted.
+    The fail-closed validator (`6c61b63`) requires explicit non-loopback opt-in.
     """
     from brain_v42.config import Settings
 
@@ -282,7 +279,7 @@ def _systemctl_show(unit: str, prop: str) -> str:
 
 
 def test_claim_10_the_server_holding_8765_enforces_the_capability_scope() -> None:
-    """The dream capability scope is ARMED in the process that actually serves.
+    """The workstation Dream capability scope is ARMED in the process that serves MCP.
 
     Learning `f5686a04`: `systemctl show -p Environment` renders ONLY `Environment=`
     directives, never the contents of an `EnvironmentFile=`. Measured on
@@ -310,7 +307,7 @@ def test_claim_10_the_server_holding_8765_enforces_the_capability_scope() -> Non
 
 
 def test_claim_10b_the_dream_unit_reads_the_same_environment_file() -> None:
-    """The two units must share the file that DEFINES the flag.
+    """The workstation MCP and Dream units share the file that DEFINES the flag.
 
     The MCP server enforces the scope; the dream phases pick their per-phase
     token. They agree only because ONE file is listed by both. Moving the key to

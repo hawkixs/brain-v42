@@ -46,8 +46,8 @@ class Claim:
     id: str
     expected: str
     #: Compare against whitespace-normalized text. The boundary paragraph is
-    #: wrapped differently in each document it appears in; the wrapping is not
-    #: the contract.
+    #: one identical line in each document; normalization keeps incidental
+    #: whitespace outside the contract.
     normalized: bool = False
 
     def holds(self, text: str) -> bool:

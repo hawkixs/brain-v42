@@ -683,6 +683,10 @@ the cockpit endpoint themselves remain available on `:9200`.
 
 ## Dream Mode (nightly maintenance)
 
+The loopback MCP runner and systemd procedures in this section describe the former
+workstation deployment (rollback B, retired by G14), using local HTTP in `shared_token`
+mode. Production MCP runs on red-base through `deploy/compose.yaml` in credentials mode.
+
 `scripts/dream.sh` orchestrates six headless agent phases: **SCAN / CLEAN / CONNECT / SYNTH / PROMOTE / REORG**. Codex is the default provider and authenticates through the active ChatGPT login. The fast tier (phase 1: SCAN, CLEAN, CONNECT) uses `gpt-5.6-luna` with high reasoning; the deep tier (phase 2: SYNTH, PROMOTE, REORG) uses `gpt-6-astra` with max reasoning. Both defaults were canaried through the live Codex binary on 2026-09-12; `max` requires the runner that accepts it (same day).
 
 The Codex adapter exposes only the Brain MCP tools required by each phase:
@@ -716,7 +720,7 @@ Codex keeps the final report, JSONL events, and stderr in separate logs. `codex_
 
 ROADMAP and EXTRACT are separate Python jobs after the six agent phases. They continue to call the NVIDIA API with strict JSON and no MCP tools, retain their own killswitches and timeouts, and are outside the Codex migration.
 
-The repository systemd timer targets 06:00 local time with `RandomizedDelaySec=120` and persistent catch-up. Dream and HTTP both require `%h/.config/brain-v42/mcp-token.env`; the HTTP unit refuses a missing, symlinked, wrongly owned, non-`0600`, empty or effectively overridden admin token. That private file accepts only `MCP_HTTP_TOKEN`, `MCP_HTTP_DREAM_TOKENS`, and `BRAIN_DREAM_CAPABILITY_ENFORCEMENT`. The repository `.env` is attested separately and must contain no MCP bearer. The Dream unit applies `UMask=0077`, waits up to 30 seconds for the auth-exempt Brain MCP `/health` route, and has a three-hour worst-case cap. The independently managed `brain-mcp-http.service` must therefore already be active; the installer generates and validates it but leaves its lifecycle operator-managed. The orchestrator itself defaults to Codex.
+The workstation systemd timer targets 06:00 local time with `RandomizedDelaySec=120` and persistent catch-up. Dream and HTTP both require `%h/.config/brain-v42/mcp-token.env`; the HTTP unit refuses a missing, symlinked, wrongly owned, non-`0600`, empty or effectively overridden admin token. That private file accepts only `MCP_HTTP_TOKEN`, `MCP_HTTP_DREAM_TOKENS`, and `BRAIN_DREAM_CAPABILITY_ENFORCEMENT`. The repository `.env` is attested separately and must contain no MCP bearer. The Dream unit applies `UMask=0077`, waits up to 30 seconds for the auth-exempt Brain MCP `/health` route, and has a three-hour worst-case cap. The independently managed `brain-mcp-http.service` must therefore already be active; the installer generates and validates it but leaves its lifecycle operator-managed. The orchestrator itself defaults to Codex.
 
 The versioned user-unit profiles are workload-specific. Automation and the graph ledger inventory
 use the strong integrity profile with `PrivateUsers=true`, read-only HOME/system paths, empty
@@ -885,7 +889,7 @@ its closing summary.
 ### Future capability firewall rollout
 
 The repository ships SEC1a and SEC1b dormant. While
-`BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false`, production HTTP and dev/fallback STDIO keep their
+`BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false`, local `shared_token` HTTP and dev/fallback STDIO keep their
 historical capability contracts, and the admin principal remains global. A separate, operator-authorized rollout
 must enable the boundary. Enabled mode parses
 `MCP_HTTP_DREAM_TOKENS` as a `SecretStr` JSON registry keyed by canonical
@@ -920,7 +924,8 @@ Denials and logs may identify only the principal, phase, project, safe tool name
 reason code. They never include UUIDs, arguments, content, bearer or registry material, SQL,
 or tracebacks. Filesystem and root enforcement remain SEC1c.
 
-An authorized operator can activate the dormant boundary with this quiescent sequence:
+For the former workstation deployment (retired), an authorized operator can activate
+the dormant boundary with this quiescent sequence:
 
 1. Run `systemctl --user disable --now brain-v42-dream.timer`. Wait until
    `systemctl --user show brain-v42-dream.service -p ActiveState --value` reports `inactive`.
@@ -1031,10 +1036,12 @@ BRAIN_DREAM_CAPABILITY_ENFORCEMENT=false                              # dormant 
 ```
 
 `MCP_HTTP_TOKEN` and `MCP_HTTP_DREAM_TOKENS` never belong in the shared `.env`.
-HTTP startup refuses an empty or blank token unless the development-only
+In local `shared_token` mode, HTTP startup refuses an empty or blank token unless the development-only
 `MCP_HTTP_ALLOW_UNAUTHENTICATED=true` opt-out is set. The opt-out is refused with a
-non-empty token or under capability enforcement. The production systemd path requires a
-non-empty `MCP_HTTP_TOKEN` in `~/.config/brain-v42/mcp-token.env` in mode `0600`.
+non-empty token or under capability enforcement. The workstation systemd path (the former
+workstation deployment, retired by G14) requires a non-empty `MCP_HTTP_TOKEN` in
+`~/.config/brain-v42/mcp-token.env` in mode `0600`. Production red-base uses credentials
+mode and requires `MCP_HTTP_TOKEN` to be absent.
 `MCP_HTTP_MAX_BODY_BYTES` defaults to 2,097,152 bytes; middleware refuses oversized
 bodies before the MCP request handler. Tool input bounds count characters.
 

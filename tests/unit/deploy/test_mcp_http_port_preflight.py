@@ -1,4 +1,4 @@
-"""Fail-closed contract for the production MCP HTTP systemd port."""
+"""Fail-closed port contract for the former workstation MCP HTTP systemd deployment."""
 
 import os
 import subprocess
