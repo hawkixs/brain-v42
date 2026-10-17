@@ -1,0 +1,48 @@
+{
+  "digest": "sha256:c5ec5e56e15def7f175dc4530070f4e654e84ac72bfa76d6dfa5702d024b29bc",
+  "idempotency_key": "review_verdict:8c505085010d14e41286b2d6f324b8cbc806c45e:117305159973",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117305159973,
+      "diff_truncated": false,
+      "finding_count": 1,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The contract states the MCP listener never binds 0.0.0.0, but deploy/compose.yaml (outside the diff) only publishes \"${BIND_ADDRESS}:8765:8765\"; nothing in the diff shows a validator forbidding BIND_ADDRESS=0.0.0.0, analogous to the METRICS_HOST validator at 6c61b63. Check tests/unit/test_red_base_c",
+          "file": "src/brain_v42/documentation/claude_md_claims.py",
+          "id": "F-465-1",
+          "line": 110,
+          "severity": "minor",
+          "status": "new",
+          "title": "'never 0.0.0.0' depends on the host-supplied BIND_ADDRESS value, not guarded in the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 465,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "8c505085010d14e41286b2d6f324b8cbc806c45e",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T04:10:30.448130Z",
+  "schema_version": 1
+}

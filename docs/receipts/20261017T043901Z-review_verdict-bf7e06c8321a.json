@@ -1,0 +1,68 @@
+{
+  "digest": "sha256:bf7e06c8321a854d600913b2d859ca765fb89ac43629f58e10287a49cf039131",
+  "idempotency_key": "review_verdict:dfaaf0e013ff5fb01debc0cdb3191c7cd7771c7b:117309366630",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117309366630,
+      "diff_truncated": false,
+      "finding_count": 3,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The paragraph cites accepted option (a) recorded on 2026-10-05 (decision `8247fa5c`); no decision record is visible in the diff, so check that a record with that id and date exists elsewhere before relying on the citation.",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-464-1",
+          "line": 1401,
+          "severity": "minor",
+          "status": "still_open",
+          "title": "Decision reference not verifiable from the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The added paragraph asserts the delivery observer and the red-lab Factory run under the same uid and can read each other's PEM files and credentials; the diff adds prose only and no service or deployment configuration is visible, so check the service definitions to confirm both processes actually sh",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-464-2",
+          "line": 1398,
+          "severity": "minor",
+          "status": "fixed",
+          "title": "Shared-uid deployment claim not verifiable from the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "The rewritten paragraph (head lines 1401-1404) asserts the observer runs in its own container under uid `1000:1000` and that its two file secrets (the 0600 configuration env and the GitHub App key PEM) are \"mounted only in that container\", citing `deploy/compose.yaml`; that file is not part of the d",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-464-3",
+          "line": 1401,
+          "severity": "minor",
+          "status": "new",
+          "title": "Deployment facts rest on deploy/compose.yaml, outside the diff"
+        }
+      ],
+      "independent": true,
+      "mode": "incremental",
+      "not_reviewed": [],
+      "pr": 464,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 3,
+      "sha": "dfaaf0e013ff5fb01debc0cdb3191c7cd7771c7b",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T04:39:01.569663Z",
+  "schema_version": 1
+}

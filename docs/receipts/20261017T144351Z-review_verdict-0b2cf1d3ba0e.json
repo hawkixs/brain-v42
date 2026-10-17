@@ -1,0 +1,58 @@
+{
+  "digest": "sha256:0b2cf1d3ba0eb795fd7692a4ad03ff977da02116c0381cc40f4cb526b6239be1",
+  "idempotency_key": "review_verdict:44e6492e5f96662e68e64dec408ad8eb9230da7a:117422353733",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117422353733,
+      "diff_truncated": false,
+      "finding_count": 2,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The response body {\"jsonrpc\":\"2.0\",\"id\":\"server-error\",\"error\":{\"code\":-32600,\"message\":\"Session not found\"}} is claimed to be the SDK's own session-not-found body and is asserted verbatim in tests; the SDK source is outside the diff, so confirm the shape matches. Since MCP clients re-initialize bas",
+          "file": "src/brain_v42/mcp/credentials_http.py",
+          "id": "F-469-1",
+          "line": 251,
+          "severity": "minor",
+          "status": "new",
+          "title": "Handcrafted 404 body's fidelity to the MCP SDK is unverifiable from the diff"
+        },
+        {
+          "class": "note",
+          "evidence": "Orphaned bindings from clients that vanish without DELETE still occupy quota and can evict live bindings, yielding the documented recoverable 404. The settings definition is outside the diff; check that settings.mcp_http_max_sessions is the per-client live-transport bound the PR summary claims, so t",
+          "file": "src/brain_v42/mcp/credentials_http.py",
+          "id": "F-469-2",
+          "line": 284,
+          "severity": "minor",
+          "status": "new",
+          "title": "Residual self-eviction depends on settings.mcp_http_max_sessions semantics"
+        }
+      ],
+      "independent": true,
+      "mode": "light",
+      "not_reviewed": [],
+      "pr": 469,
+      "providers": [
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "44e6492e5f96662e68e64dec408ad8eb9230da7a",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T14:43:51.645938Z",
+  "schema_version": 1
+}

@@ -1,0 +1,109 @@
+{
+  "digest": "sha256:6cf4c0c69ac25d549e91f66a55e699ceb3e61bae76751a599b7285c04820c5f4",
+  "idempotency_key": "review_verdict:07f33813520f442f5a14b90a20cd976d4352fb05:117354989018",
+  "issuer": "red-rail-reviewer",
+  "kind": "attestation",
+  "payload": {
+    "data": {
+      "artifact": "code",
+      "blocking": false,
+      "carry_forwards": {
+        "addressed": [],
+        "deferred": []
+      },
+      "check_run_id": 117354989018,
+      "diff_truncated": false,
+      "finding_count": 7,
+      "findings": [
+        {
+          "class": "note",
+          "evidence": "The freshness check requires only `type(ttl) is int and ttl >= 0`; an arbitrarily large self-declared ttl keeps an old `measured_at` inside the window. Question to check: whether the facts schema elsewhere bounds `ttl_seconds` per fact (code outside this diff); otherwise this is at most a hardening ",
+          "file": "scripts/verify_delivery_canary.py",
+          "id": "F-468-1",
+          "line": 292,
+          "severity": "minor",
+          "status": "new",
+          "title": "Self-declared ttl_seconds is unbounded above"
+        },
+        {
+          "class": "note",
+          "evidence": "`_read_live_identity` reads facts from the same client used for `brain_delivery_get`, so the only cross-checks are fact shape/freshness and `schema_revision == shipped_alembic_head()`; the independent host-side preflight attestation is gone. This matches the ticket's stated image model and the updat",
+          "file": "scripts/verify_delivery_canary.py",
+          "id": "F-468-2",
+          "line": 275,
+          "severity": "minor",
+          "status": "new",
+          "title": "Release identity is now self-attested by the serving MCP server"
+        },
+        {
+          "class": "note",
+          "evidence": "The new text references `release_recovery publish-image`, `image_release_sha()` and `running_release_identity`, none of which are introduced by the visible hunks of `release_recovery.py` (docstring-only). Question to check: that these already exist on main (Dockerfile, release_recovery module); the ",
+          "file": "docs/OPERATIONS.md",
+          "id": "F-468-3",
+          "line": 1618,
+          "severity": "minor",
+          "status": "new",
+          "title": "Docs cite symbols not added in this diff part"
+        },
+        {
+          "class": "note",
+          "evidence": "Description states `ReleaseCheck` (nightly.py) still reads a `releases/<sha>` path and skips on the image, explicitly deferred to a follow-up ticket; carry forward so the gap is not lost.",
+          "file": "src/brain_v42/facts/nightly.py",
+          "id": "F-468-4",
+          "line": null,
+          "severity": "minor",
+          "status": "new",
+          "title": "ReleaseCheck still reads the retired releases path"
+        },
+        {
+          "class": "note",
+          "evidence": "The module defines a `requires_claude` skipif and a `_docs_including_claude` helper that adds CLAUDE.md 'only when it exists' (kept context just below the new block), but the new parametrized test (line 67) unconditionally executes (REPO_ROOT / \"CLAUDE.md\").read_text() and test_merge_is_live_only_af",
+          "file": "tests/unit/test_documentation_contract.py",
+          "id": "F-468-5",
+          "line": 67,
+          "severity": "minor",
+          "status": "new",
+          "title": "New doc-contract tests read CLAUDE.md without the established absence guard"
+        },
+        {
+          "class": "note",
+          "evidence": "The rewritten test drops `--dry-run` (`[str(SCRIPT)]`) and asserts old_repository_log is gone plus \"files deleted: 1\"; it redirects HOME and BRAIN_LOGS_REPO_ROOT to tmp_path within the diff, but whether every default target derives solely from those two variables depends on scripts/logs-rotate.sh, w",
+          "file": "tests/unit/test_logs_rotate_script.py",
+          "id": "F-468-6",
+          "line": 146,
+          "severity": "minor",
+          "status": "new",
+          "title": "Renamed logs-rotate test now deletes files for real instead of dry-running"
+        },
+        {
+          "class": "note",
+          "evidence": "The PR description states ReleaseCheck (nightly.py) still reads a `releases/<sha>` path and skips on the image, declared out of scope of the host-release retirement with a follow-up ticket; nightly.py is outside the part of the diff I read, so this is a tracking note only \u2014 verify the follow-up tick",
+          "file": "src/brain_v42/facts/nightly.py",
+          "id": "F-468-7",
+          "line": null,
+          "severity": "important",
+          "status": "new",
+          "title": "ReleaseCheck retains a releases/<sha> path (disclosed follow-up)"
+        }
+      ],
+      "independent": true,
+      "mode": "deep",
+      "not_reviewed": [],
+      "pr": 468,
+      "providers": [
+        "glm",
+        "glm"
+      ],
+      "repository": "hawkixs/brain-v42",
+      "round": 1,
+      "sha": "07f33813520f442f5a14b90a20cd976d4352fb05",
+      "unseen_count": 0,
+      "unseen_files": [],
+      "verdict": "approve"
+    },
+    "kind": "review_verdict"
+  },
+  "project": "brain-v42",
+  "recorded_at": "2026-10-17T08:48:57.162305Z",
+  "schema_version": 1
+}
