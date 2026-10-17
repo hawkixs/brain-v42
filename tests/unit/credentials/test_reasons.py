@@ -24,6 +24,8 @@ PAIRS = [
     ("registry_unavailable", 503),
     ("family_denied", 403),
     ("issuer_not_allowed", 403),
+    ("scope_denied", 403),
+    ("null_project_refused", 403),
 ]
 
 

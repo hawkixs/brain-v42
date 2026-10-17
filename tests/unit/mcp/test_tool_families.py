@@ -26,10 +26,292 @@ from brain_v42.mcp.tool_families import (
 from tests.unit.mcp.test_credentials_http_wiring import settings
 
 
+@pytest.fixture
+def scope_counts() -> Iterator[None]:
+    from brain_v42.credentials.author_binding import reset_author_binding_counts
+
+    reset_author_binding_counts()
+    yield
+    reset_author_binding_counts()
+
+
+def _scope_context(name: str, arguments: dict[str, object] | None = None):
+    import mcp.types as mt
+    from fastmcp.server.middleware import MiddlewareContext
+
+    return MiddlewareContext(
+        message=mt.CallToolRequestParams(name=name, arguments=arguments or {}),
+        method="tools/call",
+    )
+
+
+@pytest.mark.usefixtures("scope_counts")
+@pytest.mark.parametrize("mode", ["off", "observe", "enforce"])
+@pytest.mark.parametrize("target", ["brain-v42", "outside"])
+async def test_scope_modes_count_once_and_enforce_before_handler(
+    monkeypatch: pytest.MonkeyPatch, mode: str, target: str
+) -> None:
+    from brain_v42.credentials.author_binding import author_binding_counts
+
+    monkeypatch.setattr(
+        tool_families, "get_access_token", lambda: _scoped_access("write", projects=["brain-v42"])
+    )
+    middleware = FamilyAuthorizationMiddleware(scope_mode=mode)
+    handler = AsyncMock(return_value="written")
+    with capture_logs() as logs:
+        if mode == "enforce" and target == "outside":
+            with pytest.raises(AuthorizationError, match="^scope_denied$"):
+                await middleware.on_call_tool(
+                    _scope_context("brain_learn", {"project_key": target}), handler
+                )
+            handler.assert_not_awaited()
+            assert refusal_counts() == {"scope_denied": 1}
+        else:
+            await middleware.on_call_tool(
+                _scope_context("brain_learn", {"project_key": target}), handler
+            )
+            handler.assert_awaited_once()
+    expected = {"brain_learn:scope_mismatch": 1} if mode != "off" and target == "outside" else {}
+    assert author_binding_counts() == expected
+    candidates = [entry for entry in logs if entry["event"] == "credential_scope.candidate"]
+    assert len(candidates) == (1 if mode == "observe" and target == "outside" else 0)
+    if candidates:
+        assert candidates[0] == {
+            "event": "credential_scope.candidate",
+            "log_level": "info",
+            "tool": "brain_learn",
+            "cause": "scope_mismatch",
+            "client_id": "reader",
+        }
+
+
+@pytest.mark.usefixtures("scope_counts")
+@pytest.mark.parametrize("mode", ["observe", "enforce"])
+@pytest.mark.parametrize("missing", [True, False])
+async def test_null_targets_are_counted_or_refused_for_every_required_argument(
+    monkeypatch: pytest.MonkeyPatch, mode: str, missing: bool
+) -> None:
+    from brain_v42.credentials.author_binding import (
+        author_binding_counts,
+        reset_author_binding_counts,
+    )
+    from brain_v42.mcp.project_scope import SCOPE_ARGUMENTS
+
+    monkeypatch.setattr(
+        tool_families,
+        "get_access_token",
+        lambda: _scoped_access("write", "delivery", projects=["brain-v42"]),
+    )
+    monkeypatch.setattr(tool_families, "get_current_actor_project", lambda: "brain-v42")
+    for name, arguments in SCOPE_ARGUMENTS.items():
+        if name == "brain_programme_gate_upsert":
+            continue
+        reset_author_binding_counts()
+        handler = AsyncMock()
+        context = _scope_context(name, {} if missing else dict.fromkeys(arguments))
+        middleware = FamilyAuthorizationMiddleware(scope_mode=mode)
+        if mode == "enforce":
+            with pytest.raises(AuthorizationError, match="^null_project_refused$"):
+                await middleware.on_call_tool(context, handler)
+            handler.assert_not_awaited()
+        else:
+            await middleware.on_call_tool(context, handler)
+            handler.assert_awaited_once()
+        assert author_binding_counts() == {f"{name}:scope_unresolved": 1}
+
+
+@pytest.mark.usefixtures("scope_counts")
+@pytest.mark.parametrize("mode", ["off", "observe", "enforce"])
+async def test_missing_principal_keeps_family_denial_and_counts_once(
+    monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    from brain_v42.credentials.author_binding import author_binding_counts
+
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: None)
+    handler = AsyncMock()
+    with pytest.raises(AuthorizationError, match="^family_denied$"):
+        await FamilyAuthorizationMiddleware(scope_mode=mode).on_call_tool(
+            _scope_context("brain_learn"), handler
+        )
+    handler.assert_not_awaited()
+    assert refusal_counts() == {"family_denied": 1}
+    assert author_binding_counts() == (
+        {} if mode == "off" else {"brain_learn:scope_unauthenticated": 1}
+    )
+
+
+@pytest.mark.usefixtures("scope_counts")
+async def test_family_denial_precedes_scope_denial(monkeypatch: pytest.MonkeyPatch) -> None:
+    from brain_v42.credentials.author_binding import author_binding_counts
+
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: _scoped_access("read"))
+    handler = AsyncMock()
+    with pytest.raises(AuthorizationError, match="^family_denied$"):
+        await FamilyAuthorizationMiddleware(scope_mode="enforce").on_call_tool(
+            _scope_context("brain_learn", {"project_key": "outside"}), handler
+        )
+    assert author_binding_counts() == {}
+    assert refusal_counts() == {"family_denied": 1}
+    handler.assert_not_awaited()
+
+
+@pytest.mark.usefixtures("scope_counts")
+@pytest.mark.parametrize("profile", ["native", "compact"])
+@pytest.mark.parametrize("mode", ["off", "observe", "enforce"])
+@pytest.mark.parametrize("name", ["brain_learn", "brain_session_heartbeat", "brain_update"])
+async def test_scope_checks_real_inner_dispatch_and_provenance(
+    monkeypatch: pytest.MonkeyPatch, profile: ToolCatalogProfile, mode: str, name: str
+) -> None:
+    from brain_v42.credentials.author_binding import author_binding_counts
+    from brain_v42.mcp import provenance_middleware
+
+    monkeypatch.setattr(
+        tool_families,
+        "get_access_token",
+        lambda: _scoped_access("read", "write", projects=["brain-v42"]),
+    )
+    monkeypatch.setattr(
+        provenance_middleware,
+        "get_http_request",
+        lambda: SimpleNamespace(
+            scope={
+                "state": {
+                    "brain_principal": "reader",
+                    "brain_actor": "outside",
+                    "brain_actor_project": "outside",
+                }
+            },
+            client=None,
+        ),
+    )
+    mcp = server.create_mcp_instance()
+    config = settings()
+    config.brain_credential_project_scope_mode = mode
+    server.plan_http_transport(mcp, config, credential_verifier=MagicMock())
+    invoked = []
+
+    @mcp.tool(name=name)
+    async def write(project_key: str | None = None) -> str:
+        """Write a project-scoped record."""
+        invoked.append(project_key)
+        return "written"
+
+    apply_tool_catalog_profile(mcp, profile)
+    arguments = {"project_key": "outside" if name == "brain_learn" else "brain-v42"}
+    outer = name
+    if profile == "compact":
+        outer, arguments = "brain_call_tool", {"name": name, "arguments": arguments}
+    async with Client(mcp) as client:
+        result = await client.call_tool(outer, arguments, raise_on_error=False)
+    assert result.is_error == (mode == "enforce")
+    assert len(invoked) == (0 if mode == "enforce" else 1)
+    assert author_binding_counts() == ({} if mode == "off" else {f"{name}:scope_mismatch": 1})
+    if mode == "enforce":
+        assert "scope_denied" in str(result.content)
+
+
+@pytest.mark.usefixtures("scope_counts")
+@pytest.mark.parametrize("profile", ["native", "compact"])
+@pytest.mark.parametrize("alias", ["author_project", "target_project", "project"])
+async def test_guidance_aliases_cannot_bypass_project_authorization(
+    monkeypatch: pytest.MonkeyPatch, profile: ToolCatalogProfile, alias: str
+) -> None:
+    from brain_v42.credentials.author_binding import author_binding_counts
+
+    monkeypatch.setattr(
+        tool_families, "get_access_token", lambda: _scoped_access("write", projects=["brain-v42"])
+    )
+    mcp = server.create_mcp_instance()
+    mcp.add_middleware(FamilyAuthorizationMiddleware(scope_mode="enforce"))
+    invoked = []
+
+    @mcp.tool
+    async def brain_ticket_create(from_project: str, to_project: str) -> str:
+        """Create a ticket across projects."""
+        invoked.append(from_project)
+        return to_project
+
+    apply_tool_catalog_profile(mcp, profile)
+    arguments = {alias: "outside", "to_project": "brain-v42"}
+    if alias == "target_project":
+        arguments = {"from_project": "brain-v42", alias: "outside"}
+    name = "brain_ticket_create"
+    if profile == "compact":
+        name, arguments = "brain_call_tool", {"name": name, "arguments": arguments}
+    async with Client(mcp) as client:
+        result = await client.call_tool(name, arguments, raise_on_error=False)
+    assert result.is_error == (alias != "target_project")
+    assert invoked == (["brain-v42"] if alias == "target_project" else [])
+    cause = "scope_unresolved" if alias == "project" else "scope_mismatch"
+    assert author_binding_counts() == (
+        {} if alias == "target_project" else {f"brain_ticket_create:{cause}": 1}
+    )
+
+
+@pytest.mark.usefixtures("scope_counts")
+@pytest.mark.parametrize("failed_refresh", [False, True])
+async def test_next_authorization_uses_notified_scope_snapshot(
+    monkeypatch: pytest.MonkeyPatch, failed_refresh: bool
+) -> None:
+    from dataclasses import replace
+
+    from brain_v42.credentials.author_binding import author_binding_counts
+    from brain_v42.mcp.credentials_http import CredentialTokenVerifier
+    from tests.unit.credentials.test_verifier import Clock, Repo, row, verifier
+
+    repo, clock = Repo(), Clock()
+    original = replace(row("scope-fixture"), allowed_projects=["brain-v42"])
+    repo.rows = [original]
+    core = verifier(repo, clock)
+    assert await core.refresh()
+    adapter = CredentialTokenVerifier(core)
+    access = await adapter.verify_token("scope-fixture")
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: access)
+    middleware = FamilyAuthorizationMiddleware(scope_mode="enforce")
+    context = _scope_context("brain_learn", {"project_key": "brain-v42"})
+    await middleware.on_call_tool(context, AsyncMock())
+    repo.rows = [replace(original, allowed_projects=["outside"])]
+    repo.project_fail = failed_refresh
+    assert await core.notify() is not failed_refresh
+    access = await adapter.verify_token("scope-fixture")
+    handler = AsyncMock()
+    if failed_refresh:
+        await middleware.on_call_tool(context, handler)
+        handler.assert_awaited_once()
+        assert author_binding_counts() == {}
+    else:
+        with pytest.raises(AuthorizationError, match="^scope_denied$"):
+            await middleware.on_call_tool(context, handler)
+        handler.assert_not_awaited()
+        assert author_binding_counts() == {"brain_learn:scope_mismatch": 1}
+
+
 def _scoped_access(*families: str, projects: object = ("red-shrik:agent-a",)) -> AccessToken:
     access = _access(*families)
     access.claims["allowed_projects"] = projects
     return access
+
+
+@pytest.mark.usefixtures("scope_counts")
+async def test_scope_candidate_labels_are_bounded_and_arguments_are_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    access = _scoped_access("write", projects=["brain-v42"])
+    access.client_id = "CLIENT\n" + "x" * 1000
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: access)
+    with capture_logs() as logs:
+        await FamilyAuthorizationMiddleware(scope_mode="observe").on_call_tool(
+            _scope_context(
+                "brain_learn", {"project_key": "private-project", "insight": "private-content"}
+            ),
+            AsyncMock(),
+        )
+    candidate = next(entry for entry in logs if entry["event"] == "credential_scope.candidate")
+    assert set(candidate) == {"event", "log_level", "tool", "cause", "client_id"}
+    assert len(candidate["client_id"]) == 64
+    assert "\n" not in candidate["client_id"]
+    assert "private-project" not in str(logs)
+    assert "private-content" not in str(logs)
 
 
 @pytest.mark.parametrize("projects", [None, ["brain-v42", "red-shrik:agent-a"]])

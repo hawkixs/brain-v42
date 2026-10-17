@@ -4,6 +4,7 @@ from collections.abc import Awaitable, Callable, Sequence
 from contextvars import ContextVar
 
 import mcp.types as mt
+import structlog
 from fastmcp import FastMCP
 from fastmcp.exceptions import AuthorizationError
 from fastmcp.prompts.base import Prompt, PromptResult
@@ -13,11 +14,16 @@ from fastmcp.server.dependencies import get_access_token, get_http_headers
 from fastmcp.server.middleware import CallNext, Middleware, MiddlewareContext
 from fastmcp.tools.base import Tool, ToolResult
 
+from brain_v42.credentials.author_binding import count_author_binding
 from brain_v42.credentials.families import ELEVATION_FAMILY
 from brain_v42.credentials.reasons import emit_refusal
+from brain_v42.credentials.redact import sanitize_label
 from brain_v42.mcp.client_principal import ClientPrincipal, resolve_client_principal
+from brain_v42.mcp.project_scope import scope_decision
 from brain_v42.models.project_key import canonicalize_project_key
-from brain_v42.provenance import get_current_actor, get_current_peer
+from brain_v42.provenance import get_current_actor, get_current_actor_project, get_current_peer
+
+logger = structlog.get_logger(__name__)
 
 NEUTRAL_TOOLS = frozenset({"brain_find_tool", "brain_call_tool"})
 
@@ -131,8 +137,10 @@ class FamilyAuthorizationMiddleware(Middleware):
     def __init__(
         self,
         elevation_checker: Callable[[str, str], Awaitable[bool]] | None = None,
+        scope_mode: str = "observe",
     ) -> None:
         self._elevation_checker = elevation_checker
+        self._scope_mode = scope_mode
         self._catalog_elevations: ContextVar[dict[tuple[str, str], bool] | None] = ContextVar(
             "brain_v42_catalog_elevations", default=None
         )
@@ -258,8 +266,34 @@ class FamilyAuthorizationMiddleware(Middleware):
                     self._refuse(tool=name, reason="focus_side_effect_refused")
                     raise AuthorizationError("focus_side_effect_refused")
         if not await self.allows_current_tool(name):
+            if (
+                principal is None
+                and self._scope_mode != "off"
+                and family_of(name) in {"write", "delivery"}
+            ):
+                count_author_binding(f"{name}:scope_unauthenticated")
             self._refuse(tool=name)
             raise AuthorizationError("family_denied")
+        if (
+            self._scope_mode != "off"
+            and principal is not None
+            and principal.allowed_projects is not None
+            and family_of(name) in {"write", "delivery"}
+        ):
+            decision = scope_decision(
+                name, context.message.arguments or {}, principal, get_current_actor_project()
+            )
+            if decision is not None:
+                count_author_binding(f"{name}:{decision.cause}")
+                if self._scope_mode == "enforce":
+                    self._refuse(tool=name, reason=decision.reason)
+                    raise AuthorizationError(decision.reason)
+                logger.info(
+                    "credential_scope.candidate",
+                    tool=sanitize_label(name),
+                    cause=sanitize_label(decision.cause),
+                    client_id=sanitize_label(None if principal is None else principal.client_id),
+                )
         return await call_next(context)
 
     async def on_list_resources(
