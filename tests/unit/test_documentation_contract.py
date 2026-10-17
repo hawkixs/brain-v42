@@ -3087,6 +3087,24 @@ def test_operations_documents_the_tag_pass_and_its_budget() -> None:
     assert "deployed" in text and "brain-v42 only" in text
 
 
+def test_operations_documents_the_observer_shared_uid_trust_boundary() -> None:
+    text = " ".join(
+        _section(OPERATIONS, "## Delivery observer: releases and deployments").split()
+    )
+    assert (
+        "The delivery observer and the red-lab Factory run under the same uid, "
+        "so each service can read the other's PEM files and credentials."
+    ) in text
+    assert (
+        "The issuer label is a declaration inside the MCP bearer's trust boundary, "
+        "not key isolation on the host."
+    ) in text
+    assert "accepted option (a), recorded on 2026-10-05 (decision `8247fa5c`)" in text
+    assert (
+        "separating the uids is the recorded alternative if that threat model changes."
+    ) in text
+
+
 def test_mcp_tools_documents_the_release_line_and_the_lot_header() -> None:
     text = (REPO_ROOT / "docs" / "MCP_TOOLS.md").read_text()
     assert "planned, not shipped" in text

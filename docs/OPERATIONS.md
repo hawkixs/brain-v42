@@ -1395,6 +1395,12 @@ same kind is stored but is not a measurement. The identity is a declared label,
 like every attestation issuer, not a proof of origin: it holds inside the same
 trust boundary as the MCP bearer.
 
+The delivery observer and the red-lab Factory run under the same uid, so each
+service can read the other's PEM files and credentials. The issuer label is a
+declaration inside the MCP bearer's trust boundary, not key isolation on the host.
+This is the accepted option (a), recorded on 2026-10-05 (decision `8247fa5c`);
+separating the uids is the recorded alternative if that threat model changes.
+
 **Reopened tickets.** A reopen deactivates the bindings; the next attempt binds a
 new merge under the same deliverable. Both passes then treat that merge as new work:
 a row counts as "already recorded" only when it carries the binding's
