@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import fcntl
 import hashlib
 import hmac
 import os
@@ -181,6 +182,7 @@ def test_rotation_outputs_only_paths_and_sends_secrets_only_on_stdin(
         "-i",
         "test-postgres",
         "psql",
+        "-X",
         "-v",
         "ON_ERROR_STOP=1",
         "-U",
@@ -260,7 +262,7 @@ def test_atomic_replacement_preserves_ownership_and_mode(
         assert (current.st_uid, current.st_gid) == (original.st_uid, original.st_gid)
         assert stat.S_IMODE(current.st_mode) == 0o600
         assert current.st_ino != original.st_ino
-    assert not [path for path in files[0].parent.iterdir() if path.name.startswith(".")]
+    assert {path.name for path in files[0].parent.glob(".*")} == {".pg-rotation.lock"}
 
 
 def test_default_runner_does_not_inherit_secret_environment(
@@ -383,6 +385,7 @@ def test_restore_reapplies_old_passwords_and_original_file_metadata(
     timestamp = backup.name.removeprefix("pg-rotation-")
     runner = FakeRunner()
     assert rotation.main([*argv, "--restore", timestamp], runner=runner) == 0
+    assert "-X" in runner.calls[0][0]
     sql = runner.calls[0][1]
     assert sql.startswith(b"SET log_statement = 'none';\n")
     _assert_sql_verifiers(sql, (OLD_OWNER, OLD_APP))
@@ -429,6 +432,7 @@ def test_dry_run_checks_connectivity_without_generating_or_writing(
         "-i",
         "test-postgres",
         "psql",
+        "-X",
         "-v",
         "ON_ERROR_STOP=1",
         "-U",
@@ -593,3 +597,175 @@ def test_cli_defaults_match_compose_paths() -> None:
         assert getattr(args, name.replace(".", "_").replace("-", "_")) == (
             Path("/etc/brain-v42") / name
         )
+
+
+@pytest.mark.parametrize("restore", (False, True))
+def test_concurrent_rotation_is_refused_before_runner_or_file_changes(
+    argv: list[str],
+    files: list[Path],
+    generated: list[int],
+    capsys: pytest.CaptureFixture[str],
+    restore: bool,
+) -> None:
+    if restore:
+        assert rotation.main(argv, runner=FakeRunner()) == 0
+        backup = next((files[0].parent / "backups").iterdir())
+        argv = [*argv, "--restore", backup.name.removeprefix("pg-rotation-")]
+    lock = files[0].parent / ".pg-rotation.lock"
+    with lock.open("a+b") as holder:
+        lock.chmod(0o600)
+        fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        originals = {
+            path: (path.read_bytes(), path.stat().st_ino)
+            for path in files[0].parent.rglob("*")
+            if path.is_file()
+        }
+        capsys.readouterr()
+        runner = FakeRunner()
+        assert rotation.main(argv, runner=runner) == 1
+        assert not runner.calls
+        assert {
+            path: (path.read_bytes(), path.stat().st_ino)
+            for path in files[0].parent.rglob("*")
+            if path.is_file()
+        } == originals
+    output = capsys.readouterr()
+    assert "another credential rotation is already active" in output.err
+    _assert_no_secrets(output.out + output.err)
+
+
+@pytest.mark.parametrize("restore", (False, True))
+def test_lock_is_private_and_held_through_database_and_file_updates(
+    argv: list[str],
+    files: list[Path],
+    generated: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+    restore: bool,
+) -> None:
+    if restore:
+        assert rotation.main(argv, runner=FakeRunner()) == 0
+        backup = next((files[0].parent / "backups").iterdir())
+        argv = [*argv, "--restore", backup.name.removeprefix("pg-rotation-")]
+    lock = files[0].parent / ".pg-rotation.lock"
+    lock.touch(mode=0o644)
+    lock.chmod(0o644)
+    checked: list[str] = []
+
+    def check_locked(stage: str) -> None:
+        assert stat.S_IMODE(lock.stat().st_mode) == 0o600
+        with lock.open("rb") as contender:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        checked.append(stage)
+
+    real_write = rotation._atomic_write
+
+    def write(target: Path, payload: bytes, snapshot: rotation.FileSnapshot) -> None:
+        check_locked("write")
+        real_write(target, payload, snapshot)
+
+    def runner(command: list[str], sql: bytes) -> subprocess.CompletedProcess[bytes]:
+        check_locked("database")
+        return subprocess.CompletedProcess(command, 0, b"", b"")
+
+    monkeypatch.setattr(rotation, "_atomic_write", write)
+    assert rotation.main(argv, runner=runner) == 0
+    assert checked.count("database") == 1
+    assert checked.count("write") == (5 if restore else 10)
+    with lock.open("rb") as contender:
+        fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_lock_symlink_is_refused_without_changing_target_or_credentials(
+    argv: list[str], files: list[Path], generated: list[int]
+) -> None:
+    lock = files[0].parent / ".pg-rotation.lock"
+    lock.symlink_to(files[0])
+    originals = [(path.read_bytes(), path.stat()) for path in files]
+    runner = FakeRunner()
+    assert rotation.main(argv, runner=runner) == 1
+    assert not runner.calls
+    assert [(path.read_bytes(), path.stat()) for path in files] == originals
+    assert not (files[0].parent / "backups").exists()
+
+
+@pytest.mark.parametrize("restore", (False, True))
+@pytest.mark.parametrize("failure", ("exception", "timeout", "nonzero"))
+def test_password_update_failure_reports_uncertain_database_and_recovery(
+    argv: list[str],
+    files: list[Path],
+    generated: list[int],
+    capsys: pytest.CaptureFixture[str],
+    restore: bool,
+    failure: str,
+) -> None:
+    if restore:
+        assert rotation.main(argv, runner=FakeRunner()) == 0
+        backup = next((files[0].parent / "backups").iterdir())
+        argv = [*argv, "--restore", backup.name.removeprefix("pg-rotation-")]
+    originals = [(path.read_bytes(), path.stat().st_ino) for path in files]
+    capsys.readouterr()
+
+    def runner(command: list[str], sql: bytes) -> subprocess.CompletedProcess[bytes]:
+        if failure == "exception":
+            raise RuntimeError(sql.decode())
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(command, 60, output=sql, stderr=sql)
+        return subprocess.CompletedProcess(command, 7, sql, sql)
+
+    assert rotation.main(argv, runner=runner) == 1
+    backup = next((files[0].parent / "backups").iterdir())
+    timestamp = backup.name.removeprefix("pg-rotation-")
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "database may or may not hold the new passwords" in output.err
+    assert str(backup) in output.err
+    assert f"sudo python3 scripts/rotate_postgres_role_passwords.py --restore {timestamp}" in (
+        output.err
+    )
+    assert "SCRAM-SHA-256$" not in output.err
+    _assert_no_secrets(output.out + output.err)
+    assert [(path.read_bytes(), path.stat().st_ino) for path in files] == originals
+    # Recovery must be possible immediately after a failed update (lock released).
+    assert rotation.main([*argv, "--restore", timestamp], runner=FakeRunner()) == 0
+    assert [path.read_bytes() for path in files] == [(backup / name).read_bytes() for name in NAMES]
+
+
+@pytest.mark.parametrize("failed_index", (0, 2))
+def test_restore_file_failure_after_commit_reports_restored_passwords_and_recovery(
+    argv: list[str],
+    files: list[Path],
+    generated: list[int],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    failed_index: int,
+) -> None:
+    assert rotation.main(argv, runner=FakeRunner()) == 0
+    capsys.readouterr()
+    backup = next((files[0].parent / "backups").iterdir())
+    timestamp = backup.name.removeprefix("pg-rotation-")
+    current = [path.read_bytes() for path in files]
+    runner = FakeRunner()
+    real_write = rotation._atomic_write
+
+    def fail_after_commit(target: Path, payload: bytes, snapshot: rotation.FileSnapshot) -> None:
+        if target == files[failed_index]:
+            assert len(runner.calls) == 1
+            raise OSError(OLD_OWNER)
+        real_write(target, payload, snapshot)
+
+    monkeypatch.setattr(rotation, "_atomic_write", fail_after_commit)
+    assert rotation.main([*argv, "--restore", timestamp], runner=runner) == 1
+    assert len(runner.calls) == 1
+    _assert_sql_verifiers(runner.calls[0][1], (OLD_OWNER, OLD_APP))
+    assert [path.read_bytes() for path in files[failed_index:]] == current[failed_index:]
+    assert [path.read_bytes() for path in files[:failed_index]] == [
+        (backup / name).read_bytes() for name in NAMES[:failed_index]
+    ]
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "database already holds the RESTORED passwords" in output.err
+    assert str(backup) in output.err
+    assert f"scripts/rotate_postgres_role_passwords.py --restore {timestamp}" in output.err
+    assert "SCRAM-SHA-256$" not in output.err
+    _assert_no_secrets(output.out + output.err)

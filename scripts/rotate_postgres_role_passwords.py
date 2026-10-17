@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import fcntl
 import hashlib
 import hmac
 import os
@@ -14,7 +15,8 @@ import stat
 import subprocess
 import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -52,6 +54,33 @@ class FileSnapshot:
     uid: int
     gid: int
     mode: int
+
+
+@contextmanager
+def _exclusive_lock(lock_path: Path) -> Iterator[None]:
+    """Hold a non-blocking process lock for the entire mutating workflow."""
+    lock_fd = -1
+    try:
+        lock_fd = os.open(
+            lock_path,
+            os.O_CREAT | os.O_RDWR | os.O_CLOEXEC | os.O_NOFOLLOW,
+            0o600,
+        )
+        os.fchmod(lock_fd, 0o600)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        if lock_fd >= 0:
+            os.close(lock_fd)
+        raise RotationError(
+            "another credential rotation is already active or lock is unsafe"
+        ) from None
+    try:
+        yield
+    finally:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        finally:
+            os.close(lock_fd)
 
 
 def _fsync_directory(path: Path) -> None:
@@ -289,6 +318,7 @@ def _run_psql(
         "-i",
         container,
         "psql",
+        "-X",
         "-v",
         "ON_ERROR_STOP=1",
         "-U",
@@ -345,6 +375,15 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _recovery_instructions(backup: Path) -> str:
+    timestamp = backup.name.removeprefix("pg-rotation-")
+    return (
+        f"Backup directory: {backup}\n"
+        "Run: sudo python3 scripts/rotate_postgres_role_passwords.py "
+        f"--restore {timestamp} (with the same path overrides, if used)"
+    )
+
+
 def main(argv: list[str] | None = None, *, runner: Runner | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
@@ -355,47 +394,54 @@ def main(argv: list[str] | None = None, *, runner: Runner | None = None) -> int:
             raise RotationError("credential paths must be distinct and backup root absolute")
         if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]*", args.container):
             raise RotationError("invalid PostgreSQL container name")
-        current = [_read_snapshot(path) for path in paths]
-        old_passwords = _preflight(current, consistent=not bool(args.restore))
-        backup = None
-        snapshots = current
-        if args.restore:
-            backup, snapshots = _restore_snapshots(args.backup_root, args.restore, paths)
-        if args.dry_run:
-            _run_psql(
-                args.container,
-                b"SELECT 1;",
-                old_passwords,
-                runner or _docker_runner,
-                operation="connectivity check",
-            )
-            print("ok (dry run)")
-            for path in paths:
-                print(path)
-            return 0
-        if args.restore:
-            passwords = _preflight(snapshots, consistent=True)
-            payloads = [snapshot.content for snapshot in snapshots]
-        else:
-            passwords = (secrets.token_urlsafe(32), secrets.token_urlsafe(32))
-            payloads = _generation_payloads(snapshots, passwords)
-            backup = _backup(args.backup_root, snapshots)
-        assert backup is not None
-        _apply_passwords(
-            args.container, passwords, (*old_passwords, *passwords), runner or _docker_runner
-        )
-        try:
-            for snapshot, payload in zip(snapshots, payloads, strict=True):
-                _atomic_write(snapshot.path, payload, snapshot)
-        except Exception:
-            timestamp = backup.name.removeprefix("pg-rotation-")
-            generation = "RESTORED" if args.restore else "NEW"
-            raise RotationError(
-                f"Credential file update failed; the database already holds the {generation} "
-                f"passwords. Backup directory: {backup}\n"
-                "Run: sudo python3 scripts/rotate_postgres_role_passwords.py "
-                f"--restore {timestamp} (with the same path overrides, if used)"
-            ) from None
+        with _exclusive_lock(paths[0].parent / ".pg-rotation.lock"):
+            current = [_read_snapshot(path) for path in paths]
+            old_passwords = _preflight(current, consistent=not bool(args.restore))
+            backup = None
+            snapshots = current
+            if args.restore:
+                backup, snapshots = _restore_snapshots(args.backup_root, args.restore, paths)
+            if args.dry_run:
+                _run_psql(
+                    args.container,
+                    b"SELECT 1;",
+                    old_passwords,
+                    runner or _docker_runner,
+                    operation="connectivity check",
+                )
+                print("ok (dry run)")
+                for path in paths:
+                    print(path)
+                return 0
+            if args.restore:
+                passwords = _preflight(snapshots, consistent=True)
+                payloads = [snapshot.content for snapshot in snapshots]
+            else:
+                passwords = (secrets.token_urlsafe(32), secrets.token_urlsafe(32))
+                payloads = _generation_payloads(snapshots, passwords)
+                backup = _backup(args.backup_root, snapshots)
+            assert backup is not None
+            try:
+                _apply_passwords(
+                    args.container,
+                    passwords,
+                    (*old_passwords, *passwords),
+                    runner or _docker_runner,
+                )
+            except RotationError as error:
+                raise RotationError(
+                    f"{error}\nThe database may or may not hold the new passwords. "
+                    + _recovery_instructions(backup)
+                ) from None
+            try:
+                for snapshot, payload in zip(snapshots, payloads, strict=True):
+                    _atomic_write(snapshot.path, payload, snapshot)
+            except Exception:
+                generation = "RESTORED" if args.restore else "NEW"
+                raise RotationError(
+                    f"Credential file update failed; the database already holds the {generation} "
+                    "passwords. " + _recovery_instructions(backup)
+                ) from None
     except RotationError as error:
         print(str(error), file=sys.stderr)
         return 1

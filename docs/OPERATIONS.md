@@ -974,11 +974,17 @@ value-only password files, both PostgreSQL env files and the observer DSN under
 `/etc/brain-v42`, preserving ownership, mode 0600 and unrelated observer lines.
 Before changing PostgreSQL it saves the original five files in
 `/root/pg-rotation-<UTC_TIMESTAMP>/` (mode 0700). Output contains only `ok`, the
-rewritten paths and that backup directory. `--dry-run` validates without writing;
-it also checks connectivity with the same `docker exec -i ... psql` command,
+rewritten paths and that backup directory. Rotation, restore and dry-run hold an
+exclusive, non-blocking `.pg-rotation.lock` in the first credential file's directory
+through preflight, backup, database update and file replacements. The lock is opened
+without following symlinks, kept at mode 0600 and released on exit; its file remains.
+A concurrent invocation refuses before calling PostgreSQL or changing credentials.
+`--dry-run` validates without changing credentials or creating backups;
+it also checks connectivity with the same `docker exec -i ... psql -X` command,
 sending only `SELECT 1;` on stdin. A failed connection returns non-zero without
 generating passwords or writing files. Each file path, `--container` and
-`--backup-root` can be overridden.
+`--backup-root` can be overridden. Every `psql` invocation uses `-X` to ignore startup
+files that could alter the session or expose credentials.
 
 For rotation and restore, the script computes SCRAM-SHA-256 verifiers locally
 (RFC 5802 / RFC 7677, 4096 PBKDF2-HMAC-SHA-256 iterations, fresh 16-byte random
@@ -1013,6 +1019,12 @@ the verification list. Restore reapplies the backed-up passwords before restorin
 the files. Backups remain after failures; use restore if a filesystem failure or
 interruption left only some files replaced. File replacements are individually
 atomic; the database transaction and five replacements are separate steps.
+Once a backup is available, any password-update `psql` failure (including an
+exception, timeout or non-zero exit) prints the backup directory and the exact
+`--restore <UTC_TIMESTAMP>` command. This applies to rotation and restore: the
+database may or may not hold the new passwords, since the client failure does not
+prove whether PostgreSQL committed. Diagnostics disclose neither passwords nor
+verifiers. Reuse the same path overrides when recovering.
 If a file write fails after the database commit, the error explicitly states
 that PostgreSQL already holds the new passwords and prints the backup directory
 and the exact `--restore <UTC_TIMESTAMP>` command to recover. A failed restore
