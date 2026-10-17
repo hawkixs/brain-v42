@@ -109,6 +109,13 @@ def test_rendered_auth_and_audit_lines_match_the_native_json_contract(
             owner_client_id="workstation-claude",
             peer="127.0.0.1",
         )
+        emit_refusal(
+            "unknown_session",
+            status=404,
+            requesting_client_id="red-rail-reviewer",
+            session_id=SESSION_ID,
+            peer="127.0.0.1",
+        )
         emit_refusal("registry_unavailable", status=503, peer="127.0.0.1", path="/mcp")
         for row in representative_rows():
             fields = render_event(row)
@@ -126,7 +133,7 @@ def test_rendered_auth_and_audit_lines_match_the_native_json_contract(
         reset_elevation_refusal_counts()
         reset_agent_unresolved_counts()
     lines = [json.loads(line) for line in output.getvalue().splitlines()]
-    assert len(lines) == 10
+    assert len(lines) == 11
     for line in lines:
         assert line["level"] == "warning"
         assert line["timestamp"].endswith("Z")
@@ -142,13 +149,20 @@ def test_rendered_auth_and_audit_lines_match_the_native_json_contract(
         "session_id",
         "owner_client_id",
     }
-    assert lines[3].keys() == ENVELOPE | refusal_keys
-    assert all(type(line["status"]) is int for line in lines[:4])
+    assert lines[3].keys() == ENVELOPE | {
+        "reason",
+        "status",
+        "requesting_client_id",
+        "session_id",
+        "peer",
+    }
+    assert lines[4].keys() == ENVELOPE | refusal_keys
+    assert all(type(line["status"]) is int for line in lines[:5])
     credential_keys = {"credential_id", "client_id", "families", "author"}
-    assert lines[4].keys() == ENVELOPE | credential_keys
-    assert lines[5].keys() == ENVELOPE | credential_keys | {"reason"}
-    assert lines[4]["families"] == lines[5]["families"] == ["read"]
-    for line in lines[6:9]:
+    assert lines[5].keys() == ENVELOPE | credential_keys
+    assert lines[6].keys() == ENVELOPE | credential_keys | {"reason"}
+    assert lines[5]["families"] == lines[6]["families"] == ["read"]
+    for line in lines[7:10]:
         assert line.keys() == ENVELOPE | ELEVATION_KEYS
         assert line["excluded_client_ids"] == ["auto-discord", "red-rail"]
         assert line["session_label"] is None
@@ -160,15 +174,15 @@ def test_rendered_auth_and_audit_lines_match_the_native_json_contract(
                 "ttl_seconds",
             )
         )
-    assert lines[9].keys() == ENVELOPE | {
+    assert lines[10].keys() == ENVELOPE | {
         "reason",
         "status",
         "session_id",
         "requesting_client_id",
         "peer",
     }
-    assert lines[9]["event"] == "elevation.refused"
-    assert type(lines[9]["status"]) is int
+    assert lines[10]["event"] == "elevation.refused"
+    assert type(lines[10]["status"]) is int
     expected = [json.loads(line) for line in GOLDEN.read_text().splitlines()]
     # Every field except the wall-clock timestamp must match, including key sets.
     assert [{k: v for k, v in line.items() if k != "timestamp"} for line in lines] == [

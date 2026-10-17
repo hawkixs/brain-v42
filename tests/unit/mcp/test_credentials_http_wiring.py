@@ -71,6 +71,7 @@ def test_credentials_plan_uses_one_verifier_and_no_shared_token_guard() -> None:
         RequestBodyLimitGuard,
     ]
     assert plan.middleware[1].kwargs["verifier"] is verifier
+    assert plan.middleware[1].kwargs["session_limit_per_client"] == settings().mcp_http_max_sessions
     assert plan.stateless_http is False
 
 
@@ -98,6 +99,7 @@ async def test_run_mcp_passes_the_injected_registry_to_the_shared_plan(
         entry for entry in run_http.call_args.kwargs["middleware"] if entry.cls is CredentialGuard
     )
     assert guard.kwargs["verifier"] is registry
+    assert guard.kwargs["session_limit_per_client"] == settings().mcp_http_max_sessions
 
 
 @pytest.mark.parametrize(
