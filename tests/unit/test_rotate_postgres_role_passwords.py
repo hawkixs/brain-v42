@@ -375,6 +375,82 @@ def test_preflight_refuses_invalid_environment_without_writes(
     _assert_no_secrets(output.out + output.err)
 
 
+@pytest.mark.parametrize("index", range(5))
+def test_rotation_refuses_non_ascii_passwords_without_runner_or_file_changes(
+    argv: list[str], files: list[Path], index: int, capsys: pytest.CaptureFixture[str]
+) -> None:
+    password = (OLD_OWNER if index in (0, 2) else OLD_APP) + chr(0xE9)
+    original = OLD_OWNER if index in (0, 2) else OLD_APP
+    files[index].write_bytes(
+        files[index]
+        .read_bytes()
+        .replace(
+            (original if index < 2 else quote(original, safe="")).encode(),
+            (password if index < 2 else quote(password, safe="")).encode(),
+        )
+    )
+    originals = [(path.read_bytes(), path.stat().st_ino) for path in files]
+    runner = FakeRunner()
+
+    assert rotation.main(argv, runner=runner) == 1
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "non-ASCII" in output.err
+    assert "4837bc35" in output.err
+    assert not runner.calls
+    assert not (files[0].parent / "backups").exists()
+    assert [(path.read_bytes(), path.stat().st_ino) for path in files] == originals
+    _assert_no_secrets(output.out + output.err)
+    assert password not in output.err
+    assert quote(password, safe="") not in output.err
+
+
+@pytest.mark.parametrize("index", range(5))
+def test_restore_refuses_non_ascii_backup_passwords_without_runner_or_file_changes(
+    argv: list[str],
+    files: list[Path],
+    generated: list[int],
+    index: int,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert rotation.main(argv, runner=FakeRunner()) == 0
+    capsys.readouterr()
+    backup = next((files[0].parent / "backups").iterdir())
+    timestamp = backup.name.removeprefix("pg-rotation-")
+    saved = backup / NAMES[index]
+    original = OLD_OWNER if index in (0, 2) else OLD_APP
+    password = original + chr(0xE9)
+    saved.write_bytes(
+        saved.read_bytes().replace(
+            (original if index < 2 else quote(original, safe="")).encode(),
+            (password if index < 2 else quote(password, safe="")).encode(),
+        )
+    )
+    originals = {
+        path: (path.read_bytes(), path.stat().st_ino)
+        for path in files[0].parent.rglob("*")
+        if path.is_file()
+    }
+    runner = FakeRunner()
+
+    assert rotation.main([*argv, "--restore", timestamp], runner=runner) == 1
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "non-ASCII" in output.err
+    assert "4837bc35" in output.err
+    assert not runner.calls
+    assert {
+        path: (path.read_bytes(), path.stat().st_ino)
+        for path in files[0].parent.rglob("*")
+        if path.is_file()
+    } == originals
+    _assert_no_secrets(output.out + output.err)
+    assert password not in output.err
+    assert quote(password, safe="") not in output.err
+
+
 def test_restore_reapplies_old_passwords_and_original_file_metadata(
     argv: list[str], files: list[Path], generated: list[int], capsys: pytest.CaptureFixture[str]
 ) -> None:

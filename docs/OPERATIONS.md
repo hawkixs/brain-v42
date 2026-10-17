@@ -988,7 +988,11 @@ files that could alter the session or expose credentials.
 
 For rotation and restore, the script computes SCRAM-SHA-256 verifiers locally
 (RFC 5802 / RFC 7677, 4096 PBKDF2-HMAC-SHA-256 iterations, fresh 16-byte random
-salt for each password). It sends only verifiers in `ALTER ROLE ... PASSWORD`;
+salt for each password). Passwords must be ASCII: until SASLprep is supported
+(brain ticket `4837bc35`), preflight refuses non-ASCII passwords in value files
+or decoded DSNs, including backups, before calling PostgreSQL or replacing any
+credential files. This restriction also applies to `--dry-run`.
+It sends only verifiers in `ALTER ROLE ... PASSWORD`;
 plaintext passwords and their URL-encoded forms never reach the PostgreSQL server.
 PostgreSQL stores these pre-hashed verifiers as supplied. Before `BEGIN`, the
 same owner-superuser session also runs all four settings:

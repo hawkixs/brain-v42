@@ -23,6 +23,9 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
 Runner = Callable[[list[str], bytes], subprocess.CompletedProcess[bytes]]
+_NON_ASCII_PASSWORD_ERROR = (
+    "non-ASCII PostgreSQL passwords are refused until SASLprep is supported (brain ticket 4837bc35)"
+)
 _FILES = (
     ("postgres-password", None, "brain"),
     ("brain-app-password", None, "brain_app"),
@@ -189,10 +192,14 @@ def _validated_dsn(value: str, role: str) -> str:
 
 def _preflight(snapshots: list[FileSnapshot], *, consistent: bool) -> tuple[str, str]:
     owner, app = (_password(snapshot.content) for snapshot in snapshots[:2])
+    if not owner.isascii() or not app.isascii():
+        raise RotationError(_NON_ASCII_PASSWORD_ERROR)
     for snapshot, (_name, key, role) in zip(snapshots[2:], _FILES[2:], strict=True):
         assert key is not None
         _index, dsn = _environment_dsn(snapshot.content, key)
         password = _validated_dsn(dsn, role)
+        if not password.isascii():
+            raise RotationError(_NON_ASCII_PASSWORD_ERROR)
         if consistent and password != (owner if role == "brain" else app):
             raise RotationError("password files and managed DSNs disagree")
     return owner, app
@@ -290,7 +297,11 @@ def _redacted_tail(result: subprocess.CompletedProcess[bytes], passwords: tuple[
 
 
 def _scram_verifier(password: str) -> str:
-    """Hash locally so PostgreSQL never receives a plaintext password in SQL."""
+    """Hash locally so PostgreSQL never receives a plaintext password in SQL.
+
+    Passwords must be ASCII: preflight refuses non-ASCII inputs until SASLprep
+    is supported (brain ticket 4837bc35).
+    """
     iterations = 4096
     salt = secrets.token_bytes(16)
     # Generated token_urlsafe passwords are ASCII and need no SASLprep.
