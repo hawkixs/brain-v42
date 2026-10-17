@@ -3088,21 +3088,18 @@ def test_operations_documents_the_tag_pass_and_its_budget() -> None:
 
 
 def test_operations_documents_the_observer_shared_uid_trust_boundary() -> None:
-    text = " ".join(
-        _section(OPERATIONS, "## Delivery observer: releases and deployments").split()
-    )
-    assert (
-        "The delivery observer and the red-lab Factory run under the same uid, "
-        "so each service can read the other's PEM files and credentials."
-    ) in text
-    assert (
-        "The issuer label is a declaration inside the MCP bearer's trust boundary, "
-        "not key isolation on the host."
-    ) in text
-    assert "accepted option (a), recorded on 2026-10-05 (decision `8247fa5c`)" in text
-    assert (
-        "separating the uids is the recorded alternative if that threat model changes."
-    ) in text
+    text = " ".join(_section(OPERATIONS, "## Delivery observer: releases and deployments").split())
+    for statement in (
+        "Observable delivery proves the independence of the source (GitHub) and of the "
+        "issuer identity, not the isolation of keys on the host",
+        "option (a) of ticket `fd0df7d6`",
+        "the observer runs in its own container under the uid every brain-v42 service "
+        "uses (`1000:1000`)",
+        "mounted only in that container",
+        "not something the proof depends on",
+    ):
+        assert statement in text, statement
+    assert "run under the same uid" not in text
 
 
 def test_mcp_tools_documents_the_release_line_and_the_lot_header() -> None:
