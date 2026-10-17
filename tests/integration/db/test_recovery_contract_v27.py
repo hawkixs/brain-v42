@@ -1,7 +1,8 @@
 """Replay measured v27 against fresh 069 and real restores from 068 and 069."""
 
 import json
-import os
+from collections.abc import Iterator
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -11,6 +12,7 @@ from tests.integration.db.test_recovery_contract_v26 import (
     PINNED_DISABLED_TRIGGER_DRIFT,
     PROJECT_ROOT,
     RESTORE_BUILD_VECTOR_VERSIONS,
+    _database_url_or_skip,
     _dump,
     _require_pg_tools,
     _restore,
@@ -50,24 +52,24 @@ def assert_contract(failures, *, restored):
     assert non_data["brain_runtime_032_036_037"]["observed"] == PINNED_DISABLED_TRIGGER_DRIFT
 
 
-async def test_v27_matches_a_fresh_069_database():
-    admin = os.environ["BRAIN_V42_TEST_DB_URL"]
+@pytest.fixture(scope="module")
+def fresh_069_db_url() -> Iterator[str]:
+    admin = _database_url_or_skip()
     database = f"brain_v27_fresh_{uuid4().hex[:12]}"
     create_database(admin, database)
     try:
         url = swap_database(admin, database)
         _upgrade(url, "069")
-        assert_contract(
-            await replay_attestation(url, RECOVERY / "brain-v42-v27.sql"), restored=False
-        )
+        yield url
     finally:
         drop_database(admin, database)
 
 
-@pytest.mark.parametrize("source_revision", ["068", "069"])
-async def test_v27_matches_real_pgrestore_then_migration(source_revision, tmp_path):
+@pytest.fixture(params=["068", "069"])
+def restored_069_db_url(request: pytest.FixtureRequest, tmp_path: Path) -> Iterator[str]:
     _require_pg_tools()
-    admin = os.environ["BRAIN_V42_TEST_DB_URL"]
+    admin = _database_url_or_skip()
+    source_revision = request.param
     source, target = (f"brain_v27_{tag}_{uuid4().hex[:12]}" for tag in ("src", "dst"))
     create_database(admin, source)
     try:
@@ -81,11 +83,24 @@ async def test_v27_matches_real_pgrestore_then_migration(source_revision, tmp_pa
             _restore(target_url, archive)
             if source_revision != "069":
                 _upgrade(target_url, "069")
-            assert_contract(
-                await replay_attestation(target_url, RECOVERY / "brain-v42-v27-pgrestore.sql"),
-                restored=True,
-            )
+            yield target_url
         finally:
             drop_database(admin, target)
     finally:
         drop_database(admin, source)
+
+
+@pytest.mark.asyncio
+async def test_v27_matches_a_fresh_069_database(fresh_069_db_url: str) -> None:
+    assert_contract(
+        await replay_attestation(fresh_069_db_url, RECOVERY / "brain-v42-v27.sql"),
+        restored=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_v27_matches_real_pgrestore_then_migration(restored_069_db_url: str) -> None:
+    assert_contract(
+        await replay_attestation(restored_069_db_url, RECOVERY / "brain-v42-v27-pgrestore.sql"),
+        restored=True,
+    )

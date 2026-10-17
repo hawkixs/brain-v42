@@ -27,6 +27,7 @@ from brain_v42.services.focus_slot_service import FocusSlotService
 from brain_v42.services.learning_service import LearningService
 from brain_v42.services.runbook_service import RunbookService
 from brain_v42.services.snippet_service import SnippetService
+from tests.integration.db.test_claim_extraction_write_path import _EmbeddingService
 from tests.integration.db.test_delivery_focus_slots import ensure_project, ticket
 
 pytestmark = pytest.mark.integration
@@ -72,7 +73,7 @@ async def test_verified_author_is_stored_and_survives_update(
     await ensure_project(factory, project)
     server = FastMCP("author-persistence")
     services = {
-        "decision_svc": DecisionService(PgDecisionRepo(factory)),
+        "decision_svc": DecisionService(PgDecisionRepo(factory), _EmbeddingService()),
         "learning_svc": LearningService(PgLearningRepo(factory)),
         "snippet_svc": SnippetService(PgSnippetRepo(factory)),
         "runbook_svc": RunbookService(PgRunbookRepo(factory)),
