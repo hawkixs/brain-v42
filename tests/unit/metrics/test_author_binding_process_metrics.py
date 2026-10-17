@@ -6,7 +6,9 @@ from importlib import import_module, util
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastmcp.exceptions import AuthorizationError
 
+from brain_v42.credentials.reasons import reset_refusal_counts
 from brain_v42.metrics.collector import MetricsCollector
 from brain_v42.metrics.flusher import MetricsFlusher
 from brain_v42.metrics.server import MetricsServer
@@ -16,8 +18,45 @@ from tests.unit.metrics.test_pseudo_tools_filter import _MOCK_SETTINGS, _make_co
 KEY = "brain_ticket_reply:unauthenticated"
 
 
+@pytest.mark.parametrize("cause", ["scope_mismatch", "scope_unresolved", "scope_unauthenticated"])
+async def test_scope_candidates_use_the_existing_persisted_counter(
+    monkeypatch: pytest.MonkeyPatch, cause: str
+) -> None:
+    from brain_v42.mcp import tool_families
+    from tests.unit.mcp.test_tool_families import _scope_context, _scoped_access
+
+    access = (
+        None
+        if cause == "scope_unauthenticated"
+        else _scoped_access("write", projects=["brain-v42"])
+    )
+    monkeypatch.setattr(tool_families, "get_access_token", lambda: access)
+    arguments = {"project_key": "outside"} if cause == "scope_mismatch" else {}
+    middleware = tool_families.FamilyAuthorizationMiddleware(scope_mode="observe")
+    context = _scope_context("brain_learn", arguments)
+    if access is None:
+        with pytest.raises(AuthorizationError, match="family_denied"):
+            await middleware.on_call_tool(context, AsyncMock())
+    else:
+        await middleware.on_call_tool(context, AsyncMock())
+    collector = MetricsCollector(engine=MagicMock(), session_factory=MagicMock())
+    session = AsyncMock()
+    session.__aenter__.return_value = session
+    await MetricsFlusher(collector, MagicMock(return_value=session))._flush()
+    rows = [
+        call.args[1]
+        for call in session.execute.await_args_list
+        if len(call.args) == 2 and isinstance(call.args[1], dict)
+    ]
+    process = next(row for row in rows if row["agent_name"] == "_process")
+    assert json.loads(process["tool_stats"])["_author_binding_candidates"] == {
+        f"brain_learn:{cause}": 1
+    }
+
+
 @pytest.fixture(autouse=True)
 def counters(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    reset_refusal_counts()
     if util.find_spec("brain_v42.credentials.author_binding") is None:
         yield
         return
@@ -28,6 +67,7 @@ def counters(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(observer, "get_current_actor_project", lambda: None)
     yield
     module.reset_author_binding_counts()
+    reset_refusal_counts()
 
 
 async def test_flusher_persists_empty_then_cumulative_counts_only_on_process_row() -> None:

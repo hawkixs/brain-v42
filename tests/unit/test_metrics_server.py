@@ -22,6 +22,31 @@ _MOCK_SETTINGS = MagicMock(
 )
 
 
+async def test_invalid_credential_scope_mode_does_not_affect_metrics_startup(
+    monkeypatch: pytest.MonkeyPatch, collector: MetricsCollector, mock_embedding_svc: MagicMock
+) -> None:
+    from brain_v42.config import Settings
+
+    monkeypatch.setenv("BRAIN_CREDENTIAL_PROJECT_SCOPE_MODE", "bogus")
+    config = Settings(postgres_url="postgresql+asyncpg://localhost/unused", _env_file=None)
+    assert config.brain_credential_project_scope_mode == "bogus"
+    verifier = MagicMock(refresh=AsyncMock(return_value=True))
+    verifier.run_refresh_loop = AsyncMock()
+    sidecar = MetricsServer(
+        collector,
+        mock_embedding_svc,
+        port=0,
+        host="127.0.0.1",
+        receiver_auth="credentials",
+        credential_verifier=verifier,
+    )
+    try:
+        await sidecar.start()
+        assert sidecar._runner is not None
+    finally:
+        await sidecar.stop()
+
+
 async def test_rerank_chain_and_search_writer_to_reader(
     collector: MetricsCollector, mock_embedding_svc: MagicMock
 ) -> None:

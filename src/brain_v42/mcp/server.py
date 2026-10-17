@@ -904,6 +904,9 @@ def _configure_http_security(
             or settings.mcp_http_stateless
         ):
             raise HttpAuthConfigurationError("credentials mode requires exclusive stateful auth")
+        scope_mode = settings.brain_credential_project_scope_mode.strip().lower()
+        if scope_mode not in {"off", "observe", "enforce"}:
+            raise HttpAuthConfigurationError("invalid credential project scope mode")
         if credential_verifier is None:
             raise HttpAuthConfigurationError("credentials mode requires a registry verifier")
         mcp.auth = CredentialTokenVerifier(credential_verifier)
@@ -921,7 +924,11 @@ def _configure_http_security(
                 connection_id, client_id, datetime.now(UTC)
             )
 
-        mcp.add_middleware(FamilyAuthorizationMiddleware(elevation_checker=elevation_checker))
+        mcp.add_middleware(
+            FamilyAuthorizationMiddleware(
+                elevation_checker=elevation_checker, scope_mode=scope_mode
+            )
+        )
         _http_security_configured_servers.add(mcp)
         return [
             host_guard,

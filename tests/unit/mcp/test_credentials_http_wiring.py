@@ -20,6 +20,61 @@ def settings() -> Settings:
     )
 
 
+def test_scope_mode_defaults_to_observe_and_remains_a_plain_string(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("BRAIN_CREDENTIAL_PROJECT_SCOPE_MODE", raising=False)
+    assert settings().brain_credential_project_scope_mode == "observe"
+    monkeypatch.setenv("BRAIN_CREDENTIAL_PROJECT_SCOPE_MODE", "bogus")
+    assert settings().brain_credential_project_scope_mode == "bogus"
+
+
+def test_invalid_scope_mode_is_rejected_only_in_credentials_http() -> None:
+    config = settings()
+    config.brain_credential_project_scope_mode = "bogus"
+    with pytest.raises(
+        server.HttpAuthConfigurationError, match="invalid credential project scope mode"
+    ):
+        server.plan_http_transport(FastMCP("invalid-scope"), config, credential_verifier=Mock())
+
+
+@pytest.mark.parametrize("mode", ["off", "observe", "enforce", " EnFoRcE "])
+def test_scope_mode_is_normalized_and_passed_to_family_middleware(mode: str) -> None:
+    from brain_v42.mcp.tool_families import FamilyAuthorizationMiddleware
+
+    config = settings()
+    config.brain_credential_project_scope_mode = mode
+    mcp = FastMCP("scope-mode")
+    server.plan_http_transport(mcp, config, credential_verifier=Mock())
+    family = next(m for m in mcp.middleware if isinstance(m, FamilyAuthorizationMiddleware))
+    assert family._scope_mode == mode.strip().lower()
+    assert not any(type(m).__name__ == "DreamCapabilityMiddleware" for m in mcp.middleware)
+
+
+@pytest.mark.parametrize("transport", ["stdio", "http"])
+async def test_invalid_scope_mode_does_not_break_legacy_factories(
+    monkeypatch: pytest.MonkeyPatch, transport: str
+) -> None:
+    from brain_v42.mcp.tool_families import FamilyAuthorizationMiddleware
+
+    monkeypatch.setenv("BRAIN_CREDENTIAL_PROJECT_SCOPE_MODE", "bogus")
+    config = Settings(
+        postgres_url="postgresql+asyncpg://localhost/unused",
+        brain_mcp_transport=transport,
+        brain_mcp_auth_mode="shared_token",
+        mcp_http_token="legacy-fixture",
+        _env_file=None,
+    )
+    mcp = server.create_mcp_instance()
+    if transport == "http":
+        server.plan_http_transport(mcp, config)
+    else:
+        monkeypatch.setattr(mcp, "run_async", AsyncMock())
+        monkeypatch.setattr(server, "_install_signal_handlers", Mock())
+        await server._run_mcp(mcp, config)
+    assert not any(isinstance(m, FamilyAuthorizationMiddleware) for m in mcp.middleware)
+
+
 def test_registry_composition_is_dormant_in_shared_token_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -337,6 +337,48 @@ Focus slots (ADR #34) carry the topics in flight; the tools are described in
   `receipt_pending=true`. A slot found in that state came from a missed hook call: close it with
   `brain_slot_close`.
 
+## Credential project scope rollout
+
+`BRAIN_CREDENTIAL_PROJECT_SCOPE_MODE` defaults to `observe`. Only credentials HTTP
+startup validates it, after stripping whitespace and lowering case: `off`, `observe`
+and `enforce` are accepted. Invalid values refuse that startup with
+`invalid credential project scope mode`; shared-token HTTP, stdio and the metrics
+sidecar do not interpret the setting. It does not control the existing own-focus grant.
+
+1. Measure how many credentials have NULL scope before assigning scopes. NULL means
+   unrestricted under this policy; issuer patterns select accepted actor identities,
+   independently of the exact project set allowed for writes.
+2. Run with `observe`. Inspect the existing `author_binding_candidates` metrics and
+   `credential_scope.candidate` logs for `scope_mismatch`, `scope_unresolved` and
+   `scope_unauthenticated` causes. Counts use `<tool>:<cause>` in the existing process
+   author-binding counter and reach the sidecar through persisted process snapshots.
+   Repair required project arguments, credential bindings and issuer patterns. The
+   older author-binding causes remain separate observations in the same counter.
+3. Switch to `enforce` only after the operator approves the rollout. Refusals are
+   `scope_denied` for invalid/out-of-scope keys and `null_project_refused` for missing
+   required targets or programme actors, both 403. Family denials retain priority.
+   Returning to `observe` stops ordinary scope refusals; `off` also stops their counts.
+
+Enforce currently covers direct project arguments and independently resolved actors,
+including `@project`, on writes. It excludes ticket `to_project` and read operations.
+It is **not complete project isolation**: PR4 still needs stored-row ownership checks
+for session lifecycle calls after start, slot close, claim verification and
+entity-addressed knowledge writes. PR3 checks resolved actors on those deferred tools,
+but permits a NULL actor until their row resolver exists. The reviewed census is
+`src/brain_v42/mcp/project_scope.py`; every new write/delivery tool must be classified.
+
+Authorization uses the verifier's principal snapshot. Successful notification refreshes
+replace the whole snapshot; periodic refresh runs every 30 seconds. A failed refresh
+keeps the previous complete snapshot, which fails closed once older than 90 seconds.
+Recheck rescoping at the next authorization decision after refresh. The metrics sidecar
+shares credential verification but installs no MCP family/scope middleware; validate its
+existing receiver and read boundaries during rollout. Codex gateway service calls and
+the GitHub-authenticated delivery observer remain outside this MCP policy.
+
+This change introduces no migration or recovery-contract revision. The impact review
+includes `ops/recovery/`, `scripts/mint_recovery_contract_v23.py` and migration 064's
+runtime-role ACLs; their database contract is unchanged.
+
 ## Programme progress (`GET /programmes`)
 
 Programmes and their gates are written by the `brain_programme_*` tools
