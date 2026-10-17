@@ -2102,6 +2102,7 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
                 "starts `embedding`, `embedding-llama` or `embedding-shim`",
                 "requires no GPU, shim bearer secret",
                 "Neither Compose stack starts",
+                "outside both Compose stacks",
             ):
                 assert stale not in normalized
     if CLAUDE:

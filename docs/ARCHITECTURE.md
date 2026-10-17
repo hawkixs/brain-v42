@@ -161,7 +161,7 @@ a separate local shim, verify its effective bind and authentication and keep it 
 
 ### Optional local reranker: GPU with CPU fallback
 
-The retained local-development source is outside both Compose stacks and production search.
+The retained local-development source is outside production search; the development `docker-compose.yml` still builds and starts `embedding-shim` (no profile).
 `OnnxRerankBackend` (`services/embedding_shim/shim_backends.py`) prefers
 `CUDAExecutionProvider` (env `RERANK_DEVICE=auto|cuda|cpu`, default `auto`), falling back to
 `CPUExecutionProvider` when CUDA is unavailable or a CUDA run raises (retried once on CPU for
