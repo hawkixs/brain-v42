@@ -36,7 +36,7 @@ def test_absent_port_assignment_uses_the_default_contract(tmp_path: Path) -> Non
         "export MCP_HTTP_PORT=8765",
     ),
 )
-def test_exact_production_port_is_accepted(tmp_path: Path, assignment: str) -> None:
+def test_exact_retired_workstation_port_is_accepted(tmp_path: Path, assignment: str) -> None:
     shared = tmp_path / ".env"
     shared.write_text(f"{assignment}\n")
 
@@ -139,7 +139,7 @@ def test_effective_runtime_flags_require_a_token_file(
     assert "--token-file is required" in result.stderr
 
 
-def test_shared_environment_must_use_the_exact_production_host(tmp_path: Path) -> None:
+def test_shared_environment_must_use_the_exact_retired_workstation_host(tmp_path: Path) -> None:
     shared = tmp_path / ".env"
     shared.write_text("MCP_HTTP_HOST=localhost\n")
 

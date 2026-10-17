@@ -238,8 +238,9 @@ fi
 journalctl --user -u brain-mcp-http.service --since '-10 min' --no-pager
 ```
 
-After the healthcheck, run a **read-only** Brain call from a production client
-and verify its identity in the metrics. For a host migration, keep the old host
+After the healthcheck, run a **read-only** Brain call from a client configured for
+the retired workstation/systemd rollback and verify its identity in the metrics.
+For a host migration, keep the old host
 available until this proof and switch clients over one by one. Do not enable the watchdog until
 calls and logs are stable.
 

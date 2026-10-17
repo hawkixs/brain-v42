@@ -68,8 +68,9 @@ def test_the_repository_still_has_revisions_to_identify() -> None:
 def test_package_version_reports_the_installed_distribution() -> None:
     """What /health announces is the INSTALLED version, not pyproject's.
 
-    Production runs an editable install: `importlib.metadata` reads the dist-info
-    frozen at installation time. That is the honest measurement — it says which
+    The former workstation deployment (now retired) used an editable install.
+    `importlib.metadata` reads the dist-info frozen at installation time in either
+    that path or the production Compose deployment. This measurement says which
     package is running, not which package the repository claims to describe.
     """
     assert release.package_version() == importlib.metadata.version("brain_v42")

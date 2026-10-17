@@ -1177,7 +1177,7 @@ sed -e "s|__REPO_ROOT__|$REPO_ROOT|g" \
     -e "s|__MCP_PORT__|$MCP_HTTP_PORT|g" \
   "$SCRIPT_DIR/brain-mcp-http-watchdog.service.tmpl" \
   > "$RENDER_DIR/brain-mcp-http-watchdog.service"
-log "rendered brain-mcp-http-watchdog.service (fixed production port $MCP_HTTP_PORT)"
+log "rendered brain-mcp-http-watchdog.service (fixed retired workstation/systemd port $MCP_HTTP_PORT)"
 
 # Watchdog timer has no __REPO_ROOT__ or __MCP_PORT__ — straight copy.
 cp "$SCRIPT_DIR/brain-mcp-http-watchdog.timer.tmpl" \

@@ -1111,17 +1111,19 @@ brain_v42/
 | Maintenance | manual | Dream mode nightly + DecayFlusher + ConsolidationJob |
 | Observability | none | /metrics :9200 + /api/cockpit + process_metrics |
 
-## Planned deployment
+## Deployment and roadmap
 
-The planned production direction is a dedicated server operated by the red-rail
+Production runs on red-base through `deploy/compose.yaml`, operated by the red-rail
 release rail as one Compose project: PostgreSQL, Neo4j, the MCP server, metrics
 sidecar, delivery observer, a one-shot migration service that proves the recovery
-contract, and Compose-scheduled work. Clients will reach MCP over a private
-WireGuard network with bearer authentication. Each client service is planned to
-have its own credential with scoped read, write, delivery, or admin rights; admin
-access is intended to require time-boxed operator elevation. Delivery attestation
-issuers are planned to be proven against the credential in attestation API v1.1.
-After deployment work, planned priorities are search and embedding quality,
+contract, and Compose-scheduled work. Clients reach MCP over a private WireGuard
+network in credentials mode; `MCP_HTTP_TOKEN` must be absent. Only MCP
+(`BIND_ADDRESS:8765`) and metrics (`BIND_ADDRESS:9200`) publish host ports, and
+unauthenticated `POST /mcp` returns `401`. The former workstation systemd deployment
+is retired. Each client service has its own credential with scoped read, write,
+delivery, or admin rights; admin access requires time-boxed operator elevation.
+Delivery attestation issuers are planned to be proven against the credential in
+attestation API v1.1. Planned priorities are search and embedding quality,
 disaster-recovery proof, and metrics. Dream can be suspended by the operator and
 re-armed later.
 

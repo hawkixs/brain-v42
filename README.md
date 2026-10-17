@@ -338,16 +338,18 @@ release automatically.
 
 ## Roadmap
 
-Planned work moves production from a workstation to a dedicated server, deployed by
-the red-rail release rail as one Compose project: PostgreSQL, Neo4j, the MCP server,
+Production runs on red-base through `deploy/compose.yaml`, deployed by the red-rail
+release rail as one Compose project: PostgreSQL, Neo4j, the MCP server,
 metrics sidecar, delivery observer, a one-shot migration service that proves the
-recovery contract, and Compose-scheduled work. Clients are planned to reach MCP over a
-private WireGuard network with bearer authentication. The credential model is planned
-to use one scoped credential per client service (read, write, delivery, or admin), with
-admin access granted only through time-boxed operator elevation. Delivery attestation
-issuers are planned to be proven against their credential in attestation API v1.1.
-After that deployment work, priorities are search and embedding quality,
-disaster-recovery proof, and metrics. Operators can suspend Dream and re-arm it later.
+recovery contract, and Compose-scheduled work. Clients reach MCP over a private
+WireGuard network in credentials mode; `MCP_HTTP_TOKEN` must be absent. Only MCP
+(`BIND_ADDRESS:8765`) and metrics (`BIND_ADDRESS:9200`) publish host ports, and
+unauthenticated `POST /mcp` returns `401`. The former workstation systemd deployment
+is retired. Each client service uses a scoped credential (read, write, delivery, or
+admin), with admin access granted only through time-boxed operator elevation.
+Delivery attestation issuers are planned to be proven against their credential in
+attestation API v1.1. Priorities are search and embedding quality, disaster-recovery
+proof, and metrics. Operators can suspend Dream and re-arm it later.
 
 ## Versioning
 
