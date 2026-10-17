@@ -20,16 +20,15 @@ value and their ticket — never tolerated as a band: a drift that grows (049 ad
 an index) breaks the pin, a drift that heals (the asset brought up to date) breaks
 it too, and the exception is removed instead of surviving.
 
-**The current candidate is v26 for head 068.** Its declared delta of v25 adds
-six partial `idx_<table>_merged_into` indexes, six deferred
-`<table>_merge_chain_guard` constraint triggers and their shared function
-`refuse_merge_chain`, on the six tables carrying `merged_into`; no table, column,
-foreign key, sequence or grant, and no existing fingerprint moves. Catalog
-indexes go from 215 to 221. Its two SQL variants were minted from a fresh 068
-head and a real --no-owner --no-privileges restore of a chain-built 067 source
-migrated to 068. The integration twin also checks a source dumped at 068.
-PINNED_ASSET_DRIFT remains exact: any new unexplained difference fails this
-yardstick.
+**The current candidate is v27 for head 069.** Its declared delta of v26 adds
+nullable author_client_id columns and credential-format checks on decisions,
+learnings, snippets, runbooks, adrs and focus slots. Only the six corresponding
+column fingerprints may change; no index, foreign key, sequence or grant changes.
+Both SQL variants must be minted from real disposable databases: a fresh 069
+head and a --no-owner --no-privileges restore of a chain-built 068 source migrated
+to 069. Integration also checks a source dumped at 069. Generated assets are
+required by this yardstick; a missing mint is a failure, never an exemption.
+PINNED_ASSET_DRIFT remains exact: any new unexplained difference fails.
 
 The disposable databases live in the SAME server as `BRAIN_V42_TEST_DB_URL`, like
 `brain_test` itself; they are created and destroyed by the module. They never
@@ -77,9 +76,9 @@ from tests.integration.disposable_db import (
 pytestmark = pytest.mark.integration
 
 PROJECT_ROOT = Path(__file__).parents[3]
-V26_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v26.sql"
-V26_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v26.json"
-V26_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v26-pgrestore.sql"
+V27_SQL = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v27.sql"
+V27_JSON = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v27.json"
+V27_PGRESTORE = PROJECT_ROOT / "ops" / "recovery" / "brain-v42-v27-pgrestore.sql"
 
 #: The contract checks that attest the DATA carried by a restoration. A fresh
 #: database is empty by construction: they cannot pass here and that is not a
@@ -336,7 +335,7 @@ async def test_a_create_all_bench_accepts_what_production_accepts(
 async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     fresh_head_db_url: str,
 ) -> None:
-    """Replays `brain-v42-v26.sql` against the head-068 yardstick.
+    """Replays `brain-v42-v27.sql` against the head-068 yardstick.
 
     Every check of the receipt must pass, except:
     * the DATA checks (`DATA_CHECK_KINDS`) — a fresh database is empty;
@@ -354,11 +353,11 @@ async def test_the_recovery_asset_passes_against_a_fresh_head_database(
     appears on a live replay, a manual gesture" — is closed by this automatic
     replay.
     """
-    failures = await _replay(fresh_head_db_url, V26_SQL)
+    failures = await _replay(fresh_head_db_url, V27_SQL)
 
     # The receipt does not carry `kind`; each check's nature lives in the JSON
     # contract, the same source as red-backup's DSL engine.
-    contract = json.loads(V26_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V27_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure
@@ -423,9 +422,9 @@ async def test_the_pgrestore_twin_diverges_from_a_fresh_head_by_exactly_one_inde
     What this test still does not prove: the `pg_dump`/`pg_restore` round-trip
     itself. That needs a bench.
     """
-    failures = await _replay(fresh_head_db_url, V26_PGRESTORE)
+    failures = await _replay(fresh_head_db_url, V27_PGRESTORE)
 
-    contract = json.loads(V26_JSON.read_text(encoding="utf-8"))
+    contract = json.loads(V27_JSON.read_text(encoding="utf-8"))
     kinds = {check["id"]: check.get("kind") for check in contract["checks"]}
     unexplained = {
         check_id: failure

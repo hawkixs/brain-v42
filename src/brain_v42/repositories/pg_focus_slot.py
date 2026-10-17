@@ -68,7 +68,13 @@ class PgFocusSlotRepo(BasePgRepository):
     fts_columns: builtins.list[str] = []
 
     async def open(
-        self, project_key: str, title: str, body: str, anchors: Sequence[SlotAnchor]
+        self,
+        project_key: str,
+        title: str,
+        body: str,
+        anchors: Sequence[SlotAnchor],
+        *,
+        author_client_id: str | None = None,
     ) -> FocusSlotOpenResult:
         async with self.transaction() as session:
             await _require_project(session, project_key)
@@ -90,7 +96,12 @@ class PgFocusSlotRepo(BasePgRepository):
                 (
                     await session.execute(
                         pg_insert(focus_slots)
-                        .values(project_key=project_key, title=title, body=body)
+                        .values(
+                            project_key=project_key,
+                            title=title,
+                            body=body,
+                            author_client_id=author_client_id,
+                        )
                         .on_conflict_do_nothing(
                             index_elements=[focus_slots.c.project_key, focus_slots.c.title],
                             index_where=focus_slots.c.closed_at.is_(None),

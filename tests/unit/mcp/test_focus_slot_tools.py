@@ -53,7 +53,7 @@ async def test_open_list_close_forward_to_the_service() -> None:
         project_key="brain-v42", title="t", body="b", anchors=[anchor]
     )
     service.open.assert_awaited_once_with(
-        project_key="brain-v42", title="t", body="b", anchors=[anchor]
+        project_key="brain-v42", title="t", body="b", anchors=[anchor], author_client_id=None
     )
     await (await server.get_tool("brain_slot_list")).fn(project_key="brain-v42")
     service.list.assert_awaited_once_with(

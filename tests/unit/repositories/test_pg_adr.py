@@ -126,6 +126,12 @@ def repo():
     return PgADRRepo(session_factory=mock_factory)
 
 
+@pytest.mark.parametrize("author", [None, "credential-writer"])
+def test_row_conversion_preserves_original_author(repo, author):
+    row = {**_make_adr_row(), "author_client_id": author}
+    assert repo._row_to_model(row).author_client_id == author
+
+
 # ===========================================================================
 # 1. Class instantiation
 # ===========================================================================

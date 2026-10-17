@@ -75,7 +75,7 @@ class RunbookBase(BaseModel):
 
 
 class RunbookCreate(RunbookBase, ProjectKeyCanonicalMixin):
-    pass
+    author_client_id: str | None = None
 
 
 class RunbookUpdate(BaseModel):
@@ -105,6 +105,7 @@ class RunbookUpdate(BaseModel):
 
 
 class Runbook(RunbookBase, TimestampMixin, DecayMixin):
+    author_client_id: str | None = None
     id: UUID = Field(default_factory=uuid4)
     execution_count: int = 0
     last_executed_at: datetime | None = None

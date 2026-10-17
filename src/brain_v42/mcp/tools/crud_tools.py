@@ -201,7 +201,7 @@ DREAM_FRESHNESS_SOURCE = "judgment"
 HUMAN_FRESHNESS_SOURCE = "manual_update"
 
 #: The field the SERVER sets and the caller cannot forge.
-_SERVER_ONLY_UPDATE_FIELDS = frozenset({"freshness_source"})
+_SERVER_ONLY_UPDATE_FIELDS = frozenset({"freshness_source", "author_client_id"})
 
 
 def _captured_refusal(entity_type: str, entity_id: str, session_id: UUID) -> str:
@@ -339,6 +339,8 @@ def register_crud_tools(
 
         formatter = _detail_formatters[entity_type]
         formatted = formatter(entity)  # type: ignore[operator]
+        if entity.author_client_id is not None:
+            formatted += f"\nauthor_client_id: {entity.author_client_id}"
         if access_logger is not None:
             access_logger.log_access(entity_type, entity.id, "get_by_id")
         if claim_read_svc is not None:
