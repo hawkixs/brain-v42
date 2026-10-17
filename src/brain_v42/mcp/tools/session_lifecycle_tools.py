@@ -185,7 +185,7 @@ _BRIEFING_UNAVAILABLE = "## Session Briefing\n(briefing unavailable; session rem
 
 
 def _started_focus_reference(session: BrainSession) -> str | None:
-    if not isinstance(session.started_focus, str):
+    if not isinstance(session.started_focus, str) or not session.started_focus:
         return None
     # Keep the revisioned, machine-readable snapshot as the sole focus copy;
     # the live project focus may already have changed when the briefing loads.

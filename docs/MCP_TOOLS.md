@@ -948,7 +948,7 @@ and one session may own at most 100 captured artifacts in total.
 
 ### brain_session_start
 ```
-brain_session_start(project_key, client_key)
+brain_session_start(project_key, client_key, briefing='full'|'compact'='full')
 -> {session, replayed, open_session_count, briefing}
 ```
 Start a session for an existing project and return its UUID plus the action-forward project briefing. `client_key` identifies one intended session: reuse exactly the same stable key for every retry of that session, and assign a distinct stable key to each parallel session. Retrying the same open `(project_key, client_key)` returns the same session with `replayed=true`; reusing the key after a terminal state is a conflict.
@@ -958,6 +958,8 @@ Different client keys may create concurrent open sessions for the same project. 
 The session is committed before the optional briefing is assembled. A total briefing
 failure is logged and returned as an unavailable briefing marker, while the persisted
 session UUID remains visible to the caller.
+
+The focus text appears once in the answer: in `session.started_focus`, the revisioned snapshot the session started on. The briefing's `### Focus` section only refers to it. `briefing='compact'` (opt-in, also on `brain_session_relay`) returns counts and ids only, with no delivery detail lines and no recap bodies, in at most 4,000 characters; `full` is the default.
 
 ### brain_session_resume
 ```
@@ -1057,7 +1059,7 @@ brain_session_relay(session_id, expected_client_key, summary[1..10000], handover
                     new_client_key[1..128], initiator='operator'|'guard_mod',
                     expected_slot_revision>=0=None, expected_focus_revision>=0=None,
                     allow_focus_shrink=False, knowledge_ids[0..100]=None,
-                    nothing_to_capture_reason=None)
+                    nothing_to_capture_reason=None, briefing='full'|'compact'='full')
 -> {ended_session_id, session, slot, focus_revision, replayed, briefing}
 ```
 Two forms, and exactly one revision per call (`relay_expects_one_revision` otherwise; the wrong one for the session's kind is `relay_expects_slot_revision` or `relay_expects_focus_revision`, naming what to send).
