@@ -925,7 +925,11 @@ def _configure_http_security(
         _http_security_configured_servers.add(mcp)
         return [
             host_guard,
-            Middleware(CredentialGuard, verifier=credential_verifier),
+            Middleware(
+                CredentialGuard,
+                verifier=credential_verifier,
+                session_limit_per_client=settings.mcp_http_max_sessions,
+            ),
             Middleware(RequestBodyLimitGuard, max_body_bytes=settings.mcp_http_max_body_bytes),
         ]
 

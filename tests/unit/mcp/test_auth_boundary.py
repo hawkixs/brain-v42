@@ -439,7 +439,9 @@ async def test_stateful_tool_identity_uses_its_request_and_ignores_stale_context
 
 
 @asynccontextmanager
-async def minting_client() -> AsyncIterator[tuple[httpx.AsyncClient, list[tuple[str, str | None]]]]:
+async def minting_client(
+    session_limit_per_client: int = 6000,
+) -> AsyncIterator[tuple[httpx.AsyncClient, list[tuple[str, str | None]]]]:
     from brain_v42.mcp.credentials_http import CredentialGuard
 
     registry = CredentialVerifier(TwoClientRegistry(), clock=lambda: NOW, monotonic=lambda: 0.0)
@@ -459,7 +461,11 @@ async def minting_client() -> AsyncIterator[tuple[httpx.AsyncClient, list[tuple[
         await JSONResponse({"accepted": True}, headers=response_headers)(scope, receive, send)
 
     async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(CredentialGuard(accepted, verifier=registry)),
+        transport=httpx.ASGITransport(
+            CredentialGuard(
+                accepted, verifier=registry, session_limit_per_client=session_limit_per_client
+            )
+        ),
         base_url="http://localhost",
     ) as client:
         yield client, forwarded
@@ -476,58 +482,81 @@ async def test_never_minted_session_is_refused_without_forwarding(token: str, me
                 "/mcp",
                 headers={"Authorization": "Bearer " + token, "Mcp-Session-Id": session_id},
             )
-        assert response.status_code == 403
-        assert response.json() == {"error": "foreign_client_attach"}
+        assert response.status_code == 404
+        assert response.json() == {
+            "jsonrpc": "2.0",
+            "id": "server-error",
+            "error": {"code": -32600, "message": "Session not found"},
+        }
         assert forwarded == []
-        assert logs[0]["owner_client_id"] is None
+        assert "owner_client_id" not in logs[0]
         assert logs[0]["session_id"] == short_id(session_id)
         assert logs[0]["requesting_client_id"] == (
             "red-rail-reviewer" if token == TOKEN else "other-client"
         )
         assert session_id not in str(logs) + response.text
-        assert refusal_counts() == {"foreign_client_attach": 1}
+        assert refusal_counts() == {"unknown_session": 1}
 
 
 async def test_session_owner_memory_evicts_least_recently_used_binding_per_client() -> None:
-    async with minting_client() as (client, forwarded):
+    async with minting_client(session_limit_per_client=3) as (client, forwarded):
         headers = {"Authorization": "Bearer " + TOKEN}
-        for index in range(256):
+        for index in range(3):
             initialized = await client.post("/mcp", headers=headers)
             assert initialized.headers["Mcp-Session-Id"] == f"{index:032x}"
         headers["Mcp-Session-Id"] = f"{0:032x}"
         assert (await client.get("/mcp", headers=headers)).status_code == 200
-        del headers["Mcp-Session-Id"]
-        assert (await client.post("/mcp", headers=headers)).status_code == 200
+        initialized = await client.post("/mcp", headers={"Authorization": "Bearer " + TOKEN})
+        assert initialized.headers["Mcp-Session-Id"] == f"{3:032x}"
         headers["Mcp-Session-Id"] = f"{1:032x}"
         before = len(forwarded)
         for token in (TOKEN, "other-token"):
             headers["Authorization"] = "Bearer " + token
             with capture_logs() as logs:
                 response = await client.get("/mcp", headers=headers)
-            assert response.status_code == 403
-            assert logs[0]["owner_client_id"] is None
+            assert response.status_code == 404
+            assert "owner_client_id" not in logs[0]
+            assert logs[0]["reason"] == "unknown_session"
         assert len(forwarded) == before
         headers["Authorization"] = "Bearer other-token"
         headers["Mcp-Session-Id"] = f"{0:032x}"
         assert (await client.get("/mcp", headers=headers)).status_code == 403
         headers["Authorization"] = "Bearer " + TOKEN
         assert (await client.get("/mcp", headers=headers)).status_code == 200
-        headers["Mcp-Session-Id"] = f"{256:032x}"
+        headers["Mcp-Session-Id"] = f"{3:032x}"
         assert (await client.get("/mcp", headers=headers)).status_code == 200
 
 
+async def test_session_binding_survives_more_than_256_sessions() -> None:
+    async with minting_client(session_limit_per_client=6000) as (client, forwarded):
+        headers = {"Authorization": "Bearer " + TOKEN}
+        for index in range(257):
+            initialized = await client.post("/mcp", headers=headers)
+            assert initialized.headers["Mcp-Session-Id"] == f"{index:032x}"
+        headers["Mcp-Session-Id"] = f"{0:032x}"
+        before = len(forwarded)
+        response = await client.get("/mcp", headers=headers)
+        assert response.status_code == 200
+        assert len(forwarded) == before + 1
+
+
 async def test_client_quota_cannot_evict_or_steal_another_clients_minted_session() -> None:
-    async with minting_client() as (client, forwarded):
+    async with minting_client(session_limit_per_client=3) as (client, forwarded):
         victim = await client.post("/mcp", headers={"Authorization": "Bearer " + TOKEN})
         victim_id = victim.headers["Mcp-Session-Id"]
         headers = {"Authorization": "Bearer other-token", "Mcp-Session-Id": victim_id}
         # Ownership must exist before the owner's first attach.
         assert (await client.get("/mcp", headers=headers)).status_code == 403
         del headers["Mcp-Session-Id"]
-        for _ in range(257):
+        for _ in range(4):
             assert (await client.post("/mcp", headers=headers)).status_code == 200
+        headers["Mcp-Session-Id"] = f"{4:032x}"
+        assert (await client.get("/mcp", headers=headers)).status_code == 200
         headers["Mcp-Session-Id"] = f"{1:032x}"
-        assert (await client.get("/mcp", headers=headers)).status_code == 403
+        before = len(forwarded)
+        response = await client.get("/mcp", headers=headers)
+        assert response.status_code == 404
+        assert len(forwarded) == before
         headers["Mcp-Session-Id"] = victim_id
         before = len(forwarded)
         assert (await client.get("/mcp", headers=headers)).status_code == 403
@@ -551,8 +580,9 @@ async def test_only_an_authorized_delete_expires_the_session_binding() -> None:
             headers["Authorization"] = "Bearer " + token
             with capture_logs() as logs:
                 response = await client.get("/mcp", headers=headers)
-            assert response.status_code == 403
-            assert logs[0]["owner_client_id"] is None
+            assert response.status_code == 404
+            assert "owner_client_id" not in logs[0]
+            assert logs[0]["reason"] == "unknown_session"
         assert len(forwarded) == before
 
 

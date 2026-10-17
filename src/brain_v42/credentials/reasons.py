@@ -15,6 +15,7 @@ TRANSPORT_STATUSES = MappingProxyType(
         "expired_token": 401,
         "agent_mismatch": 403,
         "foreign_client_attach": 403,
+        "unknown_session": 404,
         "rate_limited": 429,
         "registry_unavailable": 503,
     }
@@ -46,8 +47,8 @@ def emit_refusal(
         raise ValueError("unknown refusal reason")
     if status != REFUSAL_STATUSES[reason]:
         raise ValueError("incorrect refusal status")
-    if reason == "foreign_client_attach" and requesting_client_id is None:
-        raise ValueError("foreign client attach requires requesting_client_id")
+    if reason in {"foreign_client_attach", "unknown_session"} and requesting_client_id is None:
+        raise ValueError("session refusal requires requesting_client_id")
     context = {
         "client_id": None if client_id is None else client_id[:128],
         "requesting_client_id": None

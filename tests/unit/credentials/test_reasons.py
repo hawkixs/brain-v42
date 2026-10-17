@@ -19,6 +19,7 @@ PAIRS = [
     ("expired_token", 401),
     ("agent_mismatch", 403),
     ("foreign_client_attach", 403),
+    ("unknown_session", 404),
     ("rate_limited", 429),
     ("registry_unavailable", 503),
     ("family_denied", 403),

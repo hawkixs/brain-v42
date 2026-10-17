@@ -42,7 +42,6 @@ class _RequestVerification:
 _request_verification: ContextVar[_RequestVerification | None] = ContextVar(
     "brain_v42_request_verification", default=None
 )
-_SESSION_LIMIT_PER_CLIENT = 256
 _logger = structlog.get_logger(__name__)
 # Sessions parked outside a project repeat the same warning on every call.
 # Stop at a hard cap so varying declared agents cannot grow a process-wide memo.
@@ -155,12 +154,21 @@ class CredentialTokenVerifier(TokenVerifier):
 class CredentialGuard:
     """Own HTTP refusals and isolate the verified client to the current request."""
 
-    def __init__(self, app: ASGIApp, *, verifier: CredentialVerifier) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        verifier: CredentialVerifier,
+        session_limit_per_client: int = 6000,
+    ) -> None:
+        if session_limit_per_client < 1:
+            raise ValueError("session_limit_per_client must be at least 1")
         self._route_app = app
         self.app = app
         for middleware in reversed(CredentialTokenVerifier(verifier).verified_request_middleware()):
             self.app = middleware.cls(self.app, *middleware.args, **middleware.kwargs)
         self.verifier = verifier
+        self._session_limit_per_client = session_limit_per_client
         # Only server-minted IDs enter these maps. Each client can evict only
         # its own sessions, with fixed-size keys and a separate LRU quota.
         self._session_owners: dict[bytes, str] = {}
@@ -201,6 +209,8 @@ class CredentialGuard:
             principal = await self.verifier.verify(token)
             if session_key is not None:
                 owner = self._session_owners.get(session_key)
+                if owner is None:
+                    raise CredentialRefused("unknown_session")
                 if owner != principal.client_id:
                     raise CredentialRefused("foreign_client_attach")
             actor = principal.client_id if declared_agent is None else declared_agent
@@ -223,19 +233,28 @@ class CredentialGuard:
                 exc.reason,
                 status=status,
                 client_id=None
-                if principal is None or exc.reason == "foreign_client_attach"
+                if principal is None or exc.reason in {"foreign_client_attach", "unknown_session"}
                 else principal.client_id,
                 requesting_client_id=principal.client_id
-                if principal is not None and exc.reason == "foreign_client_attach"
+                if principal is not None
+                and exc.reason in {"foreign_client_attach", "unknown_session"}
                 else None,
                 owner_client_id=owner if exc.reason == "foreign_client_attach" else None,
-                session_id=short_id(session_id) if exc.reason == "foreign_client_attach" else None,
+                session_id=short_id(session_id)
+                if exc.reason in {"foreign_client_attach", "unknown_session"}
+                else None,
                 declared_agent=declared_agent,
                 peer=None if client is None else client[0],
                 path=scope.get("path"),
             )
             await JSONResponse(
-                {"error": exc.reason},
+                {
+                    "jsonrpc": "2.0",
+                    "id": "server-error",
+                    "error": {"code": -32600, "message": "Session not found"},
+                }
+                if exc.reason == "unknown_session"
+                else {"error": exc.reason},
                 status_code=status,
                 headers={"WWW-Authenticate": "Bearer"} if status == 401 else None,
             )(scope, receive, send)
@@ -262,7 +281,7 @@ class CredentialGuard:
                         sessions = self._client_sessions.setdefault(client_id, OrderedDict())
                         self._session_owners[minted_key] = client_id
                         sessions[minted_key] = None
-                        if len(sessions) > _SESSION_LIMIT_PER_CLIENT:
+                        if len(sessions) > self._session_limit_per_client:
                             evicted_key, _ = sessions.popitem(last=False)
                             del self._session_owners[evicted_key]
             # Bind before exposing the minted ID to the client.
