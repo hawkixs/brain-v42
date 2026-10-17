@@ -1961,7 +1961,7 @@ def test_documented_transport_matches_default_and_production_client() -> None:
 
 
 def test_documented_mcp_transport_rejects_stale_loopback_production_claims() -> None:
-    for document in (README, SECURITY, CLAUDE, ARCHITECTURE):
+    for document in (README, SECURITY, CLAUDE, ARCHITECTURE, OPERATIONS):
         normalized = " ".join(document.split())
         for stale_claim in (
             "production = HTTP loopback",

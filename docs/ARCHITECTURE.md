@@ -38,7 +38,7 @@ registry exposes definitions and measured values through `brain_fact_get` and
                                  v
  +-------------------------------+--+  +----------------------+  +----------------------+
  | FastMCP server (Python 3.12+)     |  | Metrics runtime      |  | Automation runtime   |
- | 84 always-on + 2 graph-gated = 86 |  | BIND_ADDRESS:9200    |  | loopback :9201       |
+ | 84 always-on + 2 graph-gated = 86 |  | BIND_ADDRESS:9200    |  | 127.0.0.1:9201       |
  | service layer + search fan-out    |  | /metrics / cockpit   |  | health / webhook     |
  | MCP background flushers/indexer   |  | optional legacy owner|  | dedup scheduler      |
  +----------------+------------------+  +----------+-----------+  +-----------+----------+

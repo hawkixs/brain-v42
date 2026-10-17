@@ -80,9 +80,10 @@ python -m brain_v42.mcp.server
 The opt-in is required only when the database name is exactly `brain`; never export it persistently.
 
 Alembic reads its URL from the environment, not directly from `.env`, and rejects DSN
-query parameters: use the plain `postgresql+asyncpg://user:password@host:port/db` form. Production HTTP
-requires bearer authentication; an empty token is refused unless the explicit
-development-only unauthenticated option is enabled. For local stdio MCP configuration:
+query parameters: use the plain `postgresql+asyncpg://user:password@host:port/db` form. Local HTTP in the
+default `shared_token` mode requires bearer authentication; an empty token is refused
+unless the explicit development-only unauthenticated option is enabled. Production
+(red-base) uses credentials mode instead, where `MCP_HTTP_TOKEN` must be absent. For local stdio MCP configuration:
 
 ```bash
 claude mcp add brain-v42 -- python -m brain_v42.mcp.server
