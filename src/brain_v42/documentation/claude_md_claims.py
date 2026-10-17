@@ -17,7 +17,7 @@ document the other side rejects — the very drift this ticket describes,
 reproduced inside its own fix.
 
 Everything that CAN be derived IS derived, at call time: the Alembic head, the
-port from `Settings`, the transport URL from the `Settings` MCP HTTP defaults, the FastMCP major from
+port from `Settings`, the local transport URL from the `Settings` MCP HTTP defaults, the FastMCP major from
 `uv.lock`. A retyped number goes stale exactly like the document it guards. What
 stays literal is prose that has no machine-readable source — the three
 operator-facing paragraphs — and it lives here rather than in a test so the
@@ -29,6 +29,7 @@ from __future__ import annotations
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 CLAUDE_MD = REPO_ROOT / "CLAUDE.md"
@@ -80,10 +81,10 @@ def _locked_version(package_name: str, root: Path | None = None) -> str:
     return str(versions.pop())
 
 
-def _production_mcp_url() -> str:
+def _local_mcp_url() -> str:
     # The repository's .mcp.json declares no server: each operator configures the
-    # client at user scope, so the documented address comes from the server's own
-    # defaults (FastMCP serves streamable HTTP on /mcp).
+    # client at user scope. The local HTTP example follows the server's defaults;
+    # the production host publish uses BIND_ADDRESS instead.
     from brain_v42.config import Settings  # noqa: PLC0415
 
     host = Settings.model_fields["mcp_http_host"].default
@@ -92,8 +93,6 @@ def _production_mcp_url() -> str:
 
 
 def _reranker_port() -> int:
-    from urllib.parse import urlsplit  # noqa: PLC0415
-
     from brain_v42.config import Settings  # noqa: PLC0415
 
     default = Settings.model_fields["reranker_url"].default
@@ -149,9 +148,15 @@ SEC2_RESIDUALS_CONTRACT = (
 
 
 def mcp_transport_contract() -> str:
+    from urllib.parse import urlsplit  # noqa: PLC0415
+
+    local_url = _local_mcp_url()
     return (
-        f"**MCP transport**: production = HTTP loopback `{_production_mcp_url()}`; "
-        "configuration default and dev/fallback = `stdio`."
+        "**MCP transport**: production (red-base) = HTTP on the host's WireGuard address "
+        f"(`BIND_ADDRESS`, port {urlsplit(local_url).port}, path `/mcp`) in credentials mode, "
+        "every call authenticated; local HTTP (workstation/dev) = loopback "
+        f"`{local_url}` (the configuration default bind); "
+        "configuration default and dev/fallback transport = `stdio`."
     )
 
 

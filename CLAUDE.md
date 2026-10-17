@@ -8,7 +8,7 @@
 - **Stack**: Python 3.12+, FastMCP 3.x, SQLAlchemy 2.0 async, asyncpg, Alembic, pgvector, httpx, Pydantic 2, structlog
 - **Status**: in active production; maintenance, hardening and the Sol Ultra roadmap in progress
 
-**MCP transport**: production = HTTP loopback `http://127.0.0.1:8765/mcp`; configuration default and dev/fallback = `stdio`.
+**MCP transport**: production (red-base) = HTTP on the host's WireGuard address (`BIND_ADDRESS`, port 8765, path `/mcp`) in credentials mode, every call authenticated; local HTTP (workstation/dev) = loopback `http://127.0.0.1:8765/mcp` (the configuration default bind); configuration default and dev/fallback transport = `stdio`.
 
 **Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
 
@@ -299,7 +299,7 @@ it.
 
 ## Architecture
 
-MCP over HTTP loopback in production, stdio in dev/fallback → PostgreSQL 16 + pgvector + Neo4j 5.
+MCP over authenticated HTTP on `BIND_ADDRESS:8765/mcp` in production (red-base), loopback for local HTTP, stdio in dev/fallback → PostgreSQL 16 + pgvector + Neo4j 5.
 
 - **PG (5433)** — source of truth: CRUD, FTS, pgvector semantic search
 - **Neo4j (bolt 7687, browser 7474)** — relation index, traversals, invisible to the LLM
@@ -309,8 +309,10 @@ MCP over HTTP loopback in production, stdio in dev/fallback → PostgreSQL 16 + 
 - **Schema** managed by Alembic; the **repository** carries migration 068 (recovery contract v26 candidate). The **live**
   head is measured, it is not read here.
 - **Ledger/outbox** PostgreSQL → Neo4j, active in production
-- **Network model**: personal agents on a trusted LAN; MCP, PostgreSQL, Neo4j and the
-  dedicated automation runtime are constrained to loopback. Metrics are bound there by
+- **Network model**: personal agents on a trusted LAN; production MCP uses the host's
+  WireGuard address (`BIND_ADDRESS`) in credentials mode. PostgreSQL and Neo4j publish
+  no host port in production; development databases and the dedicated automation runtime
+  are constrained to loopback. Metrics are bound there by
   default but their bind stays configurable; while the legacy automation compatibility is
   active, its `/gitlab/webhook` route shares that bind. `:8003` carries **no application
   bearer** — what closes it is the bind, not authentication, and a client placed on

@@ -7,7 +7,8 @@ brain-v42 is a Python 3.12 application built with FastMCP 3.x, SQLAlchemy's asyn
 ## Architecture
 
 ```text
-MCP clients ── HTTP loopback /mcp (production) or stdio (development)
+MCP clients ── authenticated HTTP BIND_ADDRESS:8765/mcp (production)
+               or loopback HTTP /mcp (local) or stdio (dev/fallback)
                     │
               brain-v42 / FastMCP
                ├── PostgreSQL 16 + pgvector (source of truth)
@@ -15,7 +16,7 @@ MCP clients ── HTTP loopback /mcp (production) or stdio (development)
                └── Neo4j 5 (optional relationship projection)
 ```
 
-**MCP transport**: production = HTTP loopback `http://127.0.0.1:8765/mcp`; configuration default and dev/fallback = `stdio`.
+**MCP transport**: production (red-base) = HTTP on the host's WireGuard address (`BIND_ADDRESS`, port 8765, path `/mcp`) in credentials mode, every call authenticated; local HTTP (workstation/dev) = loopback `http://127.0.0.1:8765/mcp` (the configuration default bind); configuration default and dev/fallback transport = `stdio`.
 
 PostgreSQL is the single source of truth. Neo4j is a disposable projection fed by a
 relational ledger/outbox — it can always be rebuilt from PostgreSQL, never the other
@@ -197,7 +198,10 @@ For a no-GPU setup, point the OpenAI-compatible backend at a local endpoint such
 set `BRAIN_EMBEDDING_BACKEND=openai`, `EMBEDDING_SERVICE_URL` to its URL,
 `BRAIN_EMBEDDING_MODEL` to a model it serves, and `EMBEDDING_DIMENSION=768`.
 
-HTTP transport binds to loopback by default and requires a non-empty `MCP_HTTP_TOKEN`.
+Local HTTP binds to loopback by default; the default `shared_token` auth mode requires
+a non-empty `MCP_HTTP_TOKEN`. Production (red-base) uses
+`BRAIN_MCP_AUTH_MODE=credentials`: every MCP call needs a valid client credential,
+and `MCP_HTTP_TOKEN` must be absent.
 Never place `MCP_HTTP_TOKEN` or `MCP_HTTP_DREAM_TOKENS` in the shared `.env`; keep
 them in private, permission-restricted secret files such as `mcp-token.env`.
 `GRAPH_PROJECTOR_*`, provider API
@@ -209,8 +213,10 @@ reference.
 
 ## Network trust model
 
-The deployment targets personal agents on a trusted LAN. MCP, PostgreSQL and Neo4j
-bind to loopback; metrics and automation default to loopback.
+The deployment targets personal agents on a trusted LAN. Production (red-base)
+publishes MCP on `BIND_ADDRESS:8765` in credentials mode and metrics on
+`BIND_ADDRESS:9200`; PostgreSQL and Neo4j publish no host port. Local HTTP and
+development database publishes default to loopback, as do metrics and automation.
 
 **Embedding topology**: production/default = local unified endpoint `http://localhost:8003`; the personal `dev-pc` deployment is a superseded rollback/reference path, now private.
 

@@ -28,6 +28,7 @@ from brain_v42.documentation.claude_md_claims import (
 
 REPO_ROOT = Path(__file__).parent.parent.parent
 README = (REPO_ROOT / "README.md").read_text()
+SECURITY = (REPO_ROOT / "SECURITY.md").read_text()
 OPERATIONS = (REPO_ROOT / "docs" / "OPERATIONS.md").read_text()
 # CLAUDE.md is tracked since 2026-09-22 (ticket 5081f3ff), after a month in
 # which decision 14856555 kept it out of the public repository: every worktree
@@ -1910,16 +1911,27 @@ def test_repository_mcp_config_declares_no_server() -> None:
 def test_documented_transport_matches_default_and_production_client() -> None:
     transport_default = Settings.model_fields["brain_mcp_transport"].default
     transport_section = ARCHITECTURE.split("## Transport", maxsplit=1)[1]
-    json_block = re.search(r"```json\s*(.*?)\s*```", transport_section, re.DOTALL)
+    production_heading = "### Production: HTTP (WireGuard)"
+    local_heading = "### Local HTTP (workstation/dev)"
+    production_section, local_section = transport_section.split(local_heading, maxsplit=1)
+    production_section = production_section.split(production_heading, maxsplit=1)[1]
+    assert "`BIND_ADDRESS:8765/mcp`" in production_section
+    assert "`BRAIN_MCP_AUTH_MODE=credentials`" in production_section
+    assert "Every MCP call must be authenticated" in production_section
+    local_section = local_section.split("### ", maxsplit=1)[0]
+    assert "configuration default bind is loopback" in local_section
+    assert "default `shared_token` auth" in local_section
+    json_block = re.search(r"```json\s*(.*?)\s*```", local_section, re.DOTALL)
     assert json_block is not None
-    production = json.loads(json_block.group(1))["mcpServers"]["brain-v42"]
+    local = json.loads(json_block.group(1))["mcpServers"]["brain-v42"]
 
     assert transport_default == "stdio"
-    assert production["type"] == "http"
-    production_url = production["url"]
-    parsed_url = urlsplit(production_url)
+    assert local["type"] == "http"
+    local_url = local["url"]
+    parsed_url = urlsplit(local_url)
     assert parsed_url.scheme == "http"
     assert parsed_url.hostname in LOOPBACK_HOSTS
+    assert parsed_url.hostname == Settings.model_fields["mcp_http_host"].default
     assert parsed_url.port == Settings.model_fields["mcp_http_port"].default
     assert parsed_url.path == "/mcp"
     assert not parsed_url.username
@@ -1928,17 +1940,38 @@ def test_documented_transport_matches_default_and_production_client() -> None:
     assert not parsed_url.fragment
     assert "user scope" in transport_section.split("### Dev/fallback", maxsplit=1)[0]
     contract = mcp_transport_contract()
-    assert production_url in contract
+    assert contract == (
+        "**MCP transport**: production (red-base) = HTTP on the host's WireGuard address "
+        f"(`BIND_ADDRESS`, port {parsed_url.port}, path `/mcp`) in credentials mode, "
+        "every call authenticated; local HTTP (workstation/dev) = loopback "
+        f"`{local_url}` (the configuration default bind); "
+        "configuration default and dev/fallback transport = `stdio`."
+    )
+    assert local["headers"]["Authorization"] == "Bearer ${MCP_HTTP_TOKEN}"
     assert contract in README
     if CLAUDE:
         assert contract in CLAUDE
-    assert production_url in ARCHITECTURE
+    assert local_url in ARCHITECTURE
     assert "### Dev/fallback: stdio" in ARCHITECTURE
     for stale_claim in ("in-process MCP server", "MCP server in-process"):
         assert stale_claim not in ARCHITECTURE
     assert "mode http dormant" not in README.lower()
     assert "dormant http" not in ARCHITECTURE.lower()
     assert "dormant http" not in MCP_TOOLS.lower()
+
+
+def test_documented_mcp_transport_rejects_stale_loopback_production_claims() -> None:
+    for document in (README, SECURITY, CLAUDE, ARCHITECTURE):
+        normalized = " ".join(document.split())
+        for stale_claim in (
+            "production = HTTP loopback",
+            "Production: HTTP (loopback only)",
+            "The server binds only to `127.0.0.1`",
+            "MCP, PostgreSQL and Neo4j bind to loopback",
+            "MCP over HTTP loopback in production",
+            "HTTP loopback /mcp (production)",
+        ):
+            assert stale_claim not in normalized
 
 
 def test_documented_reranker_uses_unified_embedding_endpoint() -> None:
