@@ -1981,6 +1981,21 @@ def test_documented_embedding_topology_matches_restored_local_default() -> None:
     # tests/unit/test_documentation_contract_internal.py in that repository.
 
 
+def test_network_boundary_contract_describes_wireguard_perimeter() -> None:
+    contract = " ".join(NETWORK_BOUNDARY_CONTRACT.split())
+    for statement in (
+        "the MCP listener binds to the host's WireGuard address (`BIND_ADDRESS`)",
+        "never `0.0.0.0`, and every MCP call must carry a valid bearer",
+        "the `DOCKER-USER` chain on `wg0` is owned by `red-watcher`",
+        "PostgreSQL and Neo4j stay on loopback",
+        "loopback remains the local-development default for MCP",
+        "`METRICS_HOST` is fail-closed",
+        "do not copy this line forward",
+    ):
+        assert statement in contract, statement
+    assert "MCP, PostgreSQL and Neo4j bind to loopback" not in contract
+
+
 def test_documented_network_boundary_matches_tracked_bindings() -> None:
     compose = yaml.safe_load((REPO_ROOT / "docker-compose.yml").read_text())
 
@@ -1999,6 +2014,11 @@ def test_documented_network_boundary_matches_tracked_bindings() -> None:
     assert all(service.get("network_mode") != "host" for service in compose["services"].values())
     for field_name in ("mcp_http_host", "metrics_host", "automation_host"):
         assert Settings.model_fields[field_name].default in LOOPBACK_HOSTS
+
+    deployment = yaml.safe_load((REPO_ROOT / "deploy" / "compose.yaml").read_text())
+    assert deployment["services"]["mcp"]["ports"] == ["${BIND_ADDRESS}:8765:8765"]
+    assert deployment["services"]["metrics"]["ports"] == ["${BIND_ADDRESS}:9200:9200"]
+    assert deployment["services"]["mcp"]["environment"]["BRAIN_MCP_AUTH_MODE"] == "credentials"
 
     # The three operator-facing paragraphs live in
     # `brain_v42.documentation.claude_md_claims` and are IMPORTED here, not
