@@ -92,6 +92,7 @@ class PgLearningRepo(BasePgRepository):
     ) -> Learning:
         """Insert a new learning. embedding is optional (set by service layer)."""
         values: dict = {
+            "author_client_id": data.author_client_id,
             "topic": data.topic,
             "insight": data.insight,
             "source": data.source,

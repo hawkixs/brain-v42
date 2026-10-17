@@ -98,6 +98,7 @@ class PgDecisionRepo(BasePgRepository):
         """Build an INSERT payload dict from a DecisionCreate model."""
         return {
             "id": id if id is not None else uuid.uuid4(),
+            "author_client_id": data.author_client_id,
             "title": data.title,
             "description": data.description,
             "reasoning": data.reasoning,

@@ -29,7 +29,7 @@ class DecisionBase(BaseModel):
 
 
 class DecisionCreate(DecisionBase, ProjectKeyCanonicalMixin):
-    pass
+    author_client_id: str | None = None
 
 
 class DecisionUpdate(ProjectKeyCanonicalMixin):
@@ -58,6 +58,7 @@ class DecisionUpdate(ProjectKeyCanonicalMixin):
 
 
 class Decision(DecisionBase, TimestampMixin, DecayMixin):
+    author_client_id: str | None = None
     id: UUID = Field(default_factory=uuid4)
     superseded_by: UUID | None = None
     embedding: list[float] | None = None

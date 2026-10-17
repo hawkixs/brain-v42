@@ -35,6 +35,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import BeforeValidator, Field
 from sqlalchemy.exc import IntegrityError
 
+from brain_v42.mcp.client_principal import current_author_client_id
 from brain_v42.mcp.dream_project_authorization import get_dream_project_scope
 from brain_v42.mcp.tools.capture_rule import CAPTURE_RULE
 from brain_v42.mcp.tools.claim_rendering import claim_suffix_map
@@ -248,6 +249,7 @@ def register_tools(
     ) -> str:
         """Capture a choice between options (A vs B, lib X vs Y) with its reasons: the WHY, not just the WHAT."""
         data = DecisionCreate(
+            author_client_id=current_author_client_id(),
             title=title,
             description=f"Context: {context}\n\nDecision: {decision_made}",
             reasoning=reasoning,
@@ -346,6 +348,7 @@ def register_tools(
     ) -> str:
         """Supersede an existing decision with a new one."""
         data = DecisionCreate(
+            author_client_id=current_author_client_id(),
             title=title,
             description=f"Context: {context}\n\nDecision: {decision_made}",
             reasoning=reasoning,
@@ -571,6 +574,7 @@ def register_tools(
     ) -> str:
         """Record an insight, gotcha, or discovery (last-resort tool)."""
         data = LearningCreate(
+            author_client_id=current_author_client_id(),
             topic=topic,
             insight=insight,
             source=source,
@@ -702,6 +706,7 @@ def register_tools(
     ) -> ADRCreate:
         """The ADR body, identical on both paths — proposal and promotion."""
         return ADRCreate(
+            author_client_id=current_author_client_id(),
             title=title,
             context=context,
             decision=decision,

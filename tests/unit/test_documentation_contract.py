@@ -1748,7 +1748,7 @@ def test_environment_assignment_parser_preserves_duplicates_and_indentation() ->
     assert assignments == ["GRAPH_PROJECTOR_ENABLED", "GRAPH_PROJECTOR_ENABLED"]
 
 
-def test_repository_head_068_is_documented_without_claiming_a_deployed_head() -> None:
+def test_repository_head_069_is_documented_without_claiming_a_deployed_head() -> None:
     """The repository head is a fact this repository owns. The deployed head is not.
 
     Until 2026-08-04 these docs asserted a production head of `037` while the
@@ -1758,7 +1758,10 @@ def test_repository_head_068_is_documented_without_claiming_a_deployed_head() ->
 
     The head in this test's NAME is deliberate: bumping the repository head cannot
     be done without renaming the guard, which is what stops it from drifting
-    silently. Bumped to 068 on 2026-10-14 — deferred merge-chain guards on six
+    silently. Bumped to 069 on 2026-10-17 — nullable original-author columns on
+    five knowledge tables and focus_slots; recovery contract v27 remains a
+    candidate pending mint, with no deployment claim. Previously bumped to 068
+    on 2026-10-14 — deferred merge-chain guards on six
     tables, recovery contract v26. Previously bumped to 067 for exact credential
     scopes, with no deployment claim and the recovery contract update reserved for
     a separate operator delivery.
@@ -1839,7 +1842,7 @@ def test_repository_head_068_is_documented_without_claiming_a_deployed_head() ->
     in the same breath.
     """
     head = _repository_head()
-    assert head == "068"
+    assert head == "069"
 
     # Everything below is DERIVED from that measured head. It used to be COPIED,
     # and that is precisely how `SCHEMA.md` came to announce 049 while the chain

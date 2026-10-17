@@ -243,7 +243,7 @@ the first provider proves nothing about fallthrough.
 
 ## Production state
 
-The repository migration target is migration 068 (merge-chain guards; recovery contract v26 candidate). No page in this repository proves a
+The repository migration target is migration 069 (original-author attribution; recovery contract v27 candidate pending mint). No page in this repository proves a
 live schema head — **measure it, do not read it here**:
 
 ```bash

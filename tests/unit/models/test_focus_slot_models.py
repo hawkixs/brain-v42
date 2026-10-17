@@ -13,11 +13,32 @@ from brain_v42.models.focus_slot import (
     SLOT_TITLE_MAX_LENGTH,
     BrainSessionBindResult,
     BrainSessionRelayResult,
+    FocusSlot,
     FocusSlotError,
+    FocusSlotView,
     SlotAnchor,
     slot_is_stale,
     validate_anchor_shape,
 )
+
+
+@pytest.mark.parametrize("model", [FocusSlot, FocusSlotView])
+def test_slot_author_stays_internal_in_both_schema_modes(model: type[FocusSlot]) -> None:
+    now = datetime(2026, 10, 17, tzinfo=UTC)
+    slot = model(
+        id=uuid4(),
+        project_key="brain-v42",
+        title="Topic",
+        body="Work",
+        revision=0,
+        opened_at=now,
+        body_updated_at=now,
+        author_client_id="original-client",
+    )
+    assert slot.author_client_id == "original-client"
+    assert "author_client_id" not in slot.model_dump()
+    assert "author_client_id" not in model.model_json_schema(mode="validation")["properties"]
+    assert "author_client_id" not in model.model_json_schema(mode="serialization")["properties"]
 
 
 def test_bounds_are_the_spec_values() -> None:
